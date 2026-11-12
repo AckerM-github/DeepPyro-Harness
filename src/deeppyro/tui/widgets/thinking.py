@@ -1,8 +1,10 @@
-"""Collapsible reasoning block: a six-line streaming tail, one line when done.
+"""Rolling one-line reasoning ticker that collapses when the answer starts.
 
-Reasoning is noisy and mostly transient, so during streaming the block only shows
-the tail of the stream. When the turn ends it collapses to a single line such as
-"· thinking (1.2k chars)"; clicking that line expands or collapses the full text.
+Reasoning is noisy: showing paragraphs of it pushes the actual answer off screen.
+The block therefore shows exactly one line at a time - the newest sentence of the
+stream - so a turn reads like a live progress line rather than a wall of text.
+When the answer starts (or the turn ends) the ticker collapses to a single
+summary line; clicking it expands the accumulated reasoning for inspection.
 """
 
 from __future__ import annotations
@@ -13,13 +15,15 @@ from textual.widgets import Static
 
 from deeppyro.tui.format import compact_text
 
-#: Number of trailing reasoning lines visible while streaming.
-STREAMING_LINES = 6
-#: Maximum characters per streaming line before truncating.
+#: Maximum characters of the live sentence visible while streaming.
 STREAMING_LINE_CHARS = 120
 #: Expanded view limits; the full reasoning can be very long.
 EXPANDED_LINES = 40
 EXPANDED_CHARS = 4000
+
+_STREAM_MARK = "✻ "
+_SUMMARY_MARK = "· thinking · "
+_ENDINGS = "。！？!?；;"
 
 
 def format_char_count(count: int) -> str:
@@ -30,8 +34,47 @@ def format_char_count(count: int) -> str:
     return str(value)
 
 
+def split_sentences(text: str) -> list[str]:
+    """Split reasoning into sentences (CJK/ASCII terminators and newlines)."""
+    sentences: list[str] = []
+    buffer = ""
+    for char in text:
+        if char == "\n":
+            piece = buffer.strip()
+            if piece:
+                sentences.append(piece)
+            buffer = ""
+            continue
+        buffer += char
+        if char in _ENDINGS:
+            piece = buffer.strip()
+            if piece:
+                sentences.append(piece)
+            buffer = ""
+    tail = buffer.strip()
+    if tail:
+        sentences.append(tail)
+    return sentences
+
+
+def latest_sentence(text: str) -> str:
+    """Return the newest sentence, or an empty string for empty reasoning."""
+    sentences = split_sentences(text)
+    if not sentences:
+        return ""
+    return " ".join(sentences[-1].split())
+
+
+def _trim_tail(line: str, *, limit: int = STREAMING_LINE_CHARS) -> str:
+    """Keep the newest characters of a long live sentence."""
+    line = " ".join(line.split())
+    if len(line) <= limit:
+        return line
+    return "…" + line[-(limit - 1) :]
+
+
 class ThinkingBlock(Static):
-    """Reasoning stream that ends as a clickable one-line summary."""
+    """Single-line reasoning ticker that ends as a clickable summary."""
 
     def __init__(self) -> None:
         super().__init__("", classes="thinking-block")
@@ -53,6 +96,10 @@ class ThinkingBlock(Static):
     def finished(self) -> bool:
         return self._finished
 
+    @property
+    def sentence_count(self) -> int:
+        return len(split_sentences(self._text))
+
     def on_mount(self) -> None:
         self._mounted = True
         self._refresh()
@@ -67,7 +114,7 @@ class ThinkingBlock(Static):
             self._refresh()
 
     def finish(self) -> None:
-        """Collapse the block into its summary line (idempotent)."""
+        """Collapse the ticker into its summary line (idempotent)."""
         if self._finished:
             return
         self._finished = True
@@ -94,13 +141,16 @@ class ThinkingBlock(Static):
     def _build_text(self) -> Text:
         text = Text()
         if not self._finished:
-            tail = self._text.rstrip().splitlines()[-STREAMING_LINES:]
-            for index, line in enumerate(tail):
-                if index:
-                    text.append("\n")
-                text.append(_trim(line), style="dim italic")
+            sentence = latest_sentence(self._text)
+            if not sentence:
+                sentence = _trim_tail(self._text)
+            text.append(_STREAM_MARK, style="dim")
+            text.append(_trim_tail(sentence), style="dim italic")
             return text
-        text.append(f"· thinking ({format_char_count(self.char_count)} chars)", style="dim italic")
+        count = max(self.sentence_count, 1)
+        unit = "sentence" if count == 1 else "sentences"
+        text.append(f"{_SUMMARY_MARK}{count} {unit}", style="dim italic")
+        text.append("  (click to collapse)" if self._expanded else "  (click to expand)", style="dim")
         if not self._expanded:
             return text
         body = compact_text(self._text, max_lines=EXPANDED_LINES, max_chars=EXPANDED_CHARS)
@@ -110,9 +160,12 @@ class ThinkingBlock(Static):
         return text
 
 
-def _trim(line: str, *, limit: int = STREAMING_LINE_CHARS) -> str:
-    line = line.rstrip()
-    return line if len(line) <= limit else line[: limit - 1] + "…"
-
-
-__all__ = ["ThinkingBlock", "format_char_count"]
+__all__ = [
+    "EXPANDED_CHARS",
+    "EXPANDED_LINES",
+    "STREAMING_LINE_CHARS",
+    "ThinkingBlock",
+    "format_char_count",
+    "latest_sentence",
+    "split_sentences",
+]

@@ -125,7 +125,7 @@ async def _make_runtime(app: DeepPyroApp) -> FakeRuntime:
 
 
 async def test_app_boots_and_streams_a_turn() -> None:
-    app = DeepPyroApp(runtime_factory=_make_runtime)
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         assert isinstance(app.runtime, FakeRuntime)
@@ -141,7 +141,7 @@ async def test_app_boots_and_streams_a_turn() -> None:
 
 
 async def test_slash_command_help_renders() -> None:
-    app = DeepPyroApp(runtime_factory=_make_runtime)
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
@@ -155,7 +155,7 @@ async def test_slash_command_help_renders() -> None:
 
 
 async def test_unknown_command_reports_error() -> None:
-    app = DeepPyroApp(runtime_factory=_make_runtime)
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         prompt = app.query_one(PromptArea)
@@ -166,7 +166,7 @@ async def test_unknown_command_reports_error() -> None:
 
 
 async def test_new_session_command_resets_conversation() -> None:
-    app = DeepPyroApp(runtime_factory=_make_runtime)
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
@@ -179,7 +179,7 @@ async def test_new_session_command_resets_conversation() -> None:
 
 
 async def test_resume_without_argument_uses_picker(monkeypatch: Any) -> None:
-    app = DeepPyroApp(runtime_factory=_make_runtime)
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         calls: list[tuple[str, list[tuple[str, str, str]]]] = []
@@ -195,7 +195,7 @@ async def test_resume_without_argument_uses_picker(monkeypatch: Any) -> None:
 
 
 async def test_model_without_argument_uses_picker(monkeypatch: Any) -> None:
-    app = DeepPyroApp(runtime_factory=_make_runtime)
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
 
@@ -209,7 +209,7 @@ async def test_model_without_argument_uses_picker(monkeypatch: Any) -> None:
 
 
 async def test_ctrl_c_clears_the_composer_when_idle() -> None:
-    app = DeepPyroApp(runtime_factory=_make_runtime)
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         prompt = app.query_one(PromptArea)
@@ -223,7 +223,7 @@ async def test_ctrl_c_clears_the_composer_when_idle() -> None:
 async def test_plugins_command_opens_the_plugin_manager() -> None:
     from deeppyro.tui.screens.plugins import PluginScreen
 
-    app = DeepPyroApp(runtime_factory=_make_runtime)
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         prompt = app.query_one(PromptArea)
@@ -237,3 +237,20 @@ async def test_plugins_command_opens_the_plugin_manager() -> None:
         await pilot.press("escape")
         await pilot.pause(0.3)
         assert not isinstance(app.screen, PluginScreen)
+
+
+async def test_splash_screen_shows_until_any_key() -> None:
+    from deeppyro.tui.screens.splash import SplashScreen
+
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=True)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.15)
+        assert isinstance(app.screen, SplashScreen)
+        splash = app.screen
+        # The runtime line is filled in once the fake runtime is booted.
+        assert "fake · fake-1" in splash.full_text()
+        await pilot.press("space")
+        await pilot.pause(0.2)
+        assert not isinstance(app.screen, SplashScreen)
+        assert app._prompt is not None
+        assert app._prompt.has_focus

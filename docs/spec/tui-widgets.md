@@ -59,9 +59,13 @@
 
 ## 4. 思考块（ThinkingBlock）
 
-- 流式：只显示最后 `STREAMING_LINES = 6` 行，单行超过 `STREAMING_LINE_CHARS = 120` 截断，
-  dim italic。长思考不会把正文挤出屏幕。
-- 结束（`finish()`，幂等）：折叠成一行 `· thinking (N chars)`；N >= 1000 显示 `1.2k`。
+- 单行滚动 ticker：流式期只显示“最新一句”（`split_sentences` 按 `。！？!?；;` 与换行切句，
+  `latest_sentence` 取最后一句），前缀 `✻ `，dim italic；单行上限 `STREAMING_LINE_CHARS = 120`，
+  超长时保留尾部并以 `…` 开头，保证滚动感。
+- 答句开始时自动折叠：`AssistantBlock.append_text` 首次收到正文即调 `finish()`；
+  `finish()` 幂等，turn 结束/工具调用前也会调用。
+- 折叠行：`· thinking · N sentences  (click to expand)`（N = 句数，单句用单数）；
+  展开后提示变为 `(click to collapse)`。
 - 交互：折叠状态下点击展开，再点收起；展开上限 `EXPANDED_LINES = 40` / `EXPANDED_CHARS = 4000`
   （`compact_text`），避免超长 reasoning 卡死布局。
 - 没有内容时 `display = False`，不占行。

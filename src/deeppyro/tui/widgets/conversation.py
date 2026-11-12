@@ -58,6 +58,9 @@ class AssistantBlock(Vertical):
     def append_text(self, chunk: str) -> None:
         if not chunk:
             return
+        # The moment the answer starts, the reasoning ticker collapses into its
+        # one-line summary so the answer itself gets the space.
+        self._thinking.finish()
         self._text += chunk
         if self._mounted:
             self._refresh_preview()

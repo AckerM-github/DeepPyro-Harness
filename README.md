@@ -8,6 +8,8 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
 - 产品形态：**只有一套终端前端** —— Textual 全屏 TUI（`dpyro`，唯一交互形态）+
   headless 一次性模式（`dpyro --headless "prompt"`，支持 `--json` NDJSON，供脚本/CI）。
   不做 Web UI。
+- 启动页是 FIGlet `ansi_shadow` 像素字标（火色 / 冰蓝渐变、逐行揭示）；思考过程用单行滚动 ticker
+  实时展示最新一句，回答一开始就折叠成一行，点击可展开全文。
 - 内核直接 vendor 了 [cordis](https://github.com/cordiverse/cordis) 的 Python 移植
   （`src/deeppyro/_vendor/cordis_port`，MIT）：服务、依赖注入、事件总线、fiber 生命周期
   都与 DSH 同构；领域模块不 import cordis，只有 `kernel/` 负责装配。

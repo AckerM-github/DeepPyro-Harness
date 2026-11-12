@@ -1,6 +1,6 @@
 # DeepPyro TUI 规格（Textual 8.2.8）
 
-状态：TUI 已完整实现（对话流、多行输入与 slash 补全、选择器、审批、插件管理、状态栏），642 测试与 ruff 全绿；真实模型端到端冒烟通过。
+状态：TUI 已完整实现（FIGlet 像素字标启动页、单行滚动思考 ticker、对话流、多行输入与 slash 补全、选择器、审批、插件管理、状态栏），651 测试与 ruff 全绿；真实模型端到端冒烟通过（启动页 → 任意键 → 工具调用 → 回答）。
 
 ## 1. 形态与范围
 
@@ -18,6 +18,7 @@
 | runtime.py | TuiRuntime：boot 内核五服务、创建/切换会话、重建 AgentSession、compact_now、close | Lead |
 | sink.py | TuiSink：EventSink 实现，累计 usage/final/error 并转发 dict 事件 | Lead |
 | format.py | 纯函数格式化（短 session id、token、上下文百分比、文本截断） | Lead |
+| wordmark.py | FIGlet ansi_shadow 预渲染像素字标 + 逐字符渐变色（宽/窄两套） | Lead |
 | commands.py | slash 命令定义与分发 | tui-dev |
 | widgets/conversation.py | 对话流：user/assistant/tool/thinking 块 | ui-dev |
 | widgets/status_bar.py | 底部状态栏 | ui-dev |
@@ -26,6 +27,7 @@
 | screens/approval.py | 审批模态 | tui-dev |
 | screens/picker.py | 会话/模型选择器 | tui-dev |
 | screens/plugins.py | 外部插件管理界面 | plugin-dev |
+| screens/splash.py | 启动 splash：逐行揭示、运行时信息回填、任意键/自动关闭 | Lead |
 | theme.tcss | 深色主题与布局样式 | ui-dev |
 
 领域模块（session/llm/tools/agent/compact）与内核（kernel/、_vendor/cordis_port）不允许 import textual；
@@ -34,11 +36,12 @@
 ## 3. 启动流程
 
 1. dpyro（无参数）→ main.main → DeepPyroApp(cwd/provider/model 可选)。
-2. App.on_mount：focus 输入框，然后 await TuiRuntime.boot(sink=app.sink, ask=app.ask_approval)。
-3. TuiRuntime.boot：load_config → resolve_workspace → 校验 provider/model → kernel.boot（llm/sessions/sandbox/tools/agents 五服务）→ 取 llm.provider、tools.registry_for(workspace)、sandbox.gate(workspace, ask=ask) → new_session()。
-4. new_session：SessionStore.create → agents.options(model=, context_window=) → agents.create(session/provider/registry/options/sink/permission/cwd) → AgentSession。
-5. 失败：conversation.add_error(failed to start: ...)，App 仍可退出。
-6. App.on_unmount：await runtime.close()（kernel_app.stop 逆序释放插件）；幂等。
+2. App.on_mount：先 push_screen(SplashScreen(...), callback=重新聚焦输入框)，再 await TuiRuntime.boot(sink=app.sink, ask=app.ask_approval)。
+3. SplashScreen：内容按 40ms/行逐行揭示（宽 >= 72 且高 >= 24 用 22 行大字标，否则退化为单行字标），任意键立即关闭，全部揭示后保持 1.5s 自动关闭；boot 完成后 App 调 set_runtime 回填 provider/model/cwd；boot 失败时立即关闭 splash 并显示错误。
+4. TuiRuntime.boot：load_config → resolve_workspace → 校验 provider/model → kernel.boot（llm/sessions/sandbox/tools/agents 五服务）→ 取 llm.provider、tools.registry_for(workspace)、sandbox.gate(workspace, ask=ask) → new_session()。
+5. new_session：SessionStore.create → agents.options(model=, context_window=) → agents.create(session/provider/registry/options/sink/permission/cwd) → AgentSession。
+6. 失败：conversation.add_error(failed to start: ...)，App 仍可退出。
+7. App.on_unmount：await runtime.close()（kernel_app.stop 逆序释放插件）；幂等。
 
 ## 4. 事件流（单线程原则）
 
@@ -59,6 +62,7 @@
 | Ctrl+C | turn 运行中：中断当前 turn；空闲且有输入：清空输入；空闲空输入 1.2 秒内双击：退出 |
 | Ctrl+D | 退出 |
 | Ctrl+P | 聚焦输入框（命令面板预留） |
+| 任意键（splash 显示时） | 跳过启动画面进入对话 |
 | Esc | 关闭模态（审批/选择器/插件管理） |
 
 ## 6. Slash 命令
@@ -88,7 +92,8 @@
 
 - 流式文本 60ms 节流（STREAM_REFRESH_SECONDS），避免每 token 重排。
 - 流式阶段 Markdown 增量更新，结束后定稿；局部 Markdown 非法不得抛异常。
-- thinking 流式显示 dim italic 尾部，结束后折叠一行，可点击展开。
+- thinking 是单行滚动 ticker：流式只显示“最新一句”（按句末标点/换行切句，单行上限 120 字符，超长保留尾部），答句一开始就折叠成 “· thinking · N sentences (click to expand)”，点击展开全文（40 行 / 4000 字）。
+- splash 使用 wordmark.py 里预渲染的 ansi_shadow 字形：DEEPPYRO 火色渐变、HARNESS 冰蓝色渐变，逐行揭示；不依赖 pyfiglet 等运行时字体工具。
 - 工具调用：name + 参数摘要；结果 1-3 行预览，错误红色；write/edit 显示 diff（能力上限见 tui-widgets.md）。
 - 用户消息块左 accent 边框；系统 info/error 用 dim/红色静态行。
 - 状态栏单行：session 短 id、provider/model、cwd、↑输入 ↓输出 ⚡缓存、ctx 百分比（>=75% 黄色）、approval、phase。
@@ -96,8 +101,9 @@
 ## 9. 开发与验证
 
 - 单元/组件测试：pytest tests/tui，用 App.run_test(size=...) 无终端渲染；假 runtime 注入（runtime_factory）。
-- 视觉预览：D:/dshworkspace/.dsh-tmp/tui_preview.py 以假 runtime 渲染并 export_screenshot(title=...) 出 SVG；
+- 视觉预览：D:/dshworkspace/.dsh-tmp/tui_preview.py 与 splash_preview.py 以假 runtime 渲染并 export_screenshot(title=...) 出 SVG；
   再用 npx --yes sharp-cli -i x.svg -o x.png 转 PNG 自查（本机无 cairo/ImageMagick）。
+- 截图脚本必须先 os.environ.pop("NO_COLOR", None) 并设 COLORTERM=truecolor，否则 Textual 导出全灰度 SVG（DSH 终端 env 默认 NO_COLOR=1）。
 - 真实链路冒烟：D:/dshworkspace/.dsh-tmp/runtime_smoke.py（TuiRuntime.boot + agent.send，需本地 8000 推理服务）。
 - 回归红线：不得再次出现 widget 方法名为 _render（Textual 私有名，会把 Widget._render 顶掉导致 render_strips 崩溃）。
 - 所有 widget 刷新只允许在 Textual 事件循环线程内；后台线程只允许 put_message/post_message。
@@ -110,3 +116,8 @@
 - 审批 always 粒度是 gate 级（本会话全局），未做 per-tool。
 - 无 PTY/后台任务界面（run_in_background 工具未实现）。
 - Ctrl+C 语义依赖 Textual 绑定；真实终端下的双击退出阈值 1.2s。
+- splash 是纯文本逐行揭示（无淡入/逐字动画），且依赖 Unicode 方块字符；极窄或极矮终端用单行字标。
+- thinking 单行滚动不保留已滚过的句子，只有折叠后点击展开才能看到全文。
+- 本机 8000 的 llama.cpp 端点（DeepSeek-V4-Pro-Qwen3.5-9B Q4_K_M）不返回 reasoning_content，
+  因此真实模型冒烟看不到 thinking；ticker 行为由单测与假 provider 预览覆盖，接支持 reasoning 的
+  provider 即自动生效。

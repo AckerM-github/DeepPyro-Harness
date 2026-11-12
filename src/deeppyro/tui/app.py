@@ -21,10 +21,12 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Header
 
+from deeppyro import __version__
 from deeppyro.tui.commands import HELP_TEXT, dispatch
 from deeppyro.tui.format import compact_text, context_percent, short_session_id
 from deeppyro.tui.screens.approval import ALLOW_ALWAYS, ApprovalScreen
 from deeppyro.tui.screens.picker import PickerScreen
+from deeppyro.tui.screens.splash import SplashScreen
 from deeppyro.tui.sink import TuiSink
 from deeppyro.tui.widgets.conversation import ConversationView
 from deeppyro.tui.widgets.prompt_area import PromptArea
@@ -53,12 +55,14 @@ class DeepPyroApp(App[None]):
         provider: str | None = None,
         model: str | None = None,
         runtime_factory: RuntimeFactory | None = None,
+        splash: bool = True,
     ) -> None:
         super().__init__()
         self._cwd = cwd
         self._provider = provider
         self._model = model
         self._runtime_factory = runtime_factory
+        self._splash_enabled = splash
         self.runtime: Any = None
         self._sink = TuiSink(self.handle_event)
         self._prompt: PromptArea | None = None
@@ -77,7 +81,18 @@ class DeepPyroApp(App[None]):
 
     async def on_mount(self) -> None:
         self._prompt = self.query_one(PromptArea)
-        self._prompt.focus()
+        if self._splash_enabled:
+            self.push_screen(
+                SplashScreen(
+                    version=__version__,
+                    cwd=str(self._cwd or Path.cwd()),
+                    provider=self._provider or "",
+                    model=self._model or "",
+                ),
+                callback=self._on_splash_closed,
+            )
+        else:
+            self._prompt.focus()
         try:
             if self._runtime_factory is not None:
                 self.runtime = await self._runtime_factory(self)
@@ -93,8 +108,10 @@ class DeepPyroApp(App[None]):
                 )
         except Exception as exc:  # noqa: BLE001 - a broken boot must stay visible
             self.conversation.add_error(f"failed to start: {type(exc).__name__}: {exc}")
+            self._dismiss_splash()
             self.refresh_status()
             return
+        self._update_splash()
         self._render_welcome()
         self.refresh_status()
 
@@ -106,6 +123,29 @@ class DeepPyroApp(App[None]):
             await runtime.close()
         except Exception:  # noqa: BLE001, S110 - shutdown never raises into Textual
             pass
+
+    # -- splash ----------------------------------------------------------
+    def _splash_screen(self) -> SplashScreen | None:
+        for screen in self.screen_stack:
+            if isinstance(screen, SplashScreen):
+                return screen
+        return None
+
+    def _on_splash_closed(self, result: Any = None) -> None:
+        if self._prompt is not None:
+            self._prompt.focus()
+
+    def _update_splash(self) -> None:
+        screen = self._splash_screen()
+        runtime = self.runtime
+        if screen is None or runtime is None:
+            return
+        screen.set_runtime(runtime.provider_name, runtime.model, cwd=str(runtime.cwd))
+
+    def _dismiss_splash(self) -> None:
+        screen = self._splash_screen()
+        if screen is not None:
+            screen.action_dismiss_splash()
 
     # -- public accessors ------------------------------------------------
     @property
@@ -279,7 +319,8 @@ class DeepPyroApp(App[None]):
             phase=self._phase,
         )
         self.sub_title = f"{runtime.provider_name}/{runtime.model}"
-        if self._prompt is not None:
+        # Never steal focus from an overlay (splash, picker, approval modal).
+        if self._prompt is not None and len(self.screen_stack) <= 1:
             self._prompt.focus()
 
     # -- session rendering ----------------------------------------------
