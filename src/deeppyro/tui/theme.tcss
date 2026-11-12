@@ -283,3 +283,76 @@ SplashScreen {
     content-align: center middle;
     background: $bg;
 }
+
+/* --- control bar: policy / approval / workspace ---------------------- */
+
+#control-bar {
+    height: 3;
+    padding: 0 1;
+    background: $surface;
+    border-bottom: solid $border;
+    align-vertical: middle;
+}
+
+#control-bar .control-label {
+    width: auto;
+    height: 3;
+    padding: 0 1 0 0;
+    content-align: center middle;
+    color: $dim;
+}
+
+#control-bar Select {
+    width: auto;
+    min-width: 17;
+    max-width: 34;
+    height: 3;
+    margin: 0 1 0 0;
+}
+
+#control-bar #select-cwd {
+    width: 1fr;
+    max-width: 64;
+}
+
+#control-bar SelectCurrent {
+    height: 3;
+    padding: 0 1;
+    background: $surface-2;
+    color: $text;
+    align-vertical: middle;
+}
+
+#control-bar Select:focus > SelectCurrent {
+    background-tint: $accent 12%;
+    border: tall $accent;
+}
+
+/* --- free-text workspace path modal ---------------------------------- */
+
+PathPromptScreen {
+    align: center middle;
+    background: rgba(15, 17, 21, 0.82);
+}
+
+#path-dialog {
+    width: 78;
+    height: auto;
+    border: round $accent;
+    background: $surface;
+    padding: 1 2;
+}
+
+#path-title {
+    color: $accent;
+    text-style: bold;
+}
+
+#path-input {
+    margin: 1 0 0 0;
+}
+
+#path-hint {
+    color: $dim;
+    margin: 1 0 0 0;
+}

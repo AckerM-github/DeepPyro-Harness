@@ -1,6 +1,6 @@
 # TUI 对话渲染与状态栏规格（widgets）
 
-状态：task-6 已实现；对应 M0 截图问题的修复已落地并有视觉验证。
+状态：task-6 已实现；M0 截图问题修复、控制栏（control_bar）与状态栏字段精简已落地并有视觉验证。
 
 本文件描述 `src/deeppyro/tui/widgets/` 中对话流、思考块、工具卡与状态栏的**渲染语义**，
 以及从 fixtures 事件与终端截图逆向出的取舍。总体形态、键位与启动流程见 `docs/spec/tui.md`；
@@ -13,14 +13,17 @@
 | `widgets/conversation.py` | `ConversationView`：user/assistant/system 块、流式文本、同 turn 标签去重、工具卡挂载 |
 | `widgets/thinking.py` | `ThinkingBlock`：思考流式尾部、结束折叠、点击展开 |
 | `widgets/tool_card.py` | `ToolCallCard`：调用行摘要、结果预览、错误着色、write/edit diff 推断 |
-| `widgets/status_bar.py` | `StatusBar`：单行状态；`short_cwd` 路径压缩 |
+| `widgets/status_bar.py` | `StatusBar`：单行状态（session/model/tokens/ctx/phase） |
+| `widgets/control_bar.py` | `ControlBar`：顶部控制栏，权限预设/审批策略/工作目录三个下拉（纯视图） |
 | `theme.tcss` | 调色板、user/assistant/tool/thinking/状态栏样式、Markdown 边距覆盖 |
-| `tests/tui/test_conversation.py`、`test_tool_card.py`、`test_status_bar.py` | 组件与纯函数回归测试 |
+| `tests/tui/test_conversation.py`、`test_tool_card.py`、`test_status_bar.py`、`test_control_bar.py` | 组件与纯函数回归测试 |
 
 公开 API 兼容性是硬约束：`ConversationView` 的 `add_user/add_info/add_error/stream_text/`
 `stream_thinking/finish_assistant/add_tool_call/add_tool_result/clear` 方法名、参数与语义保持不变
-（`app.py` 直接调用）；`StatusBar.show()` 的关键字参数保持不变。只做了新增（如 `ThinkingBlock`
-的只读属性、`ToolCallCard.summary`）。
+（`app.py` 直接调用）；`StatusBar.show()` 的关键字参数在控制栏引入时精简为
+`session_id/provider/model/input_tokens/output_tokens/cached_tokens/context_window/phase`
+（`cwd` 与 `approval` 移到控制栏）。只做了新增（如 `ThinkingBlock` 的只读属性、`ToolCallCard.summary`、
+`ControlBar.sync`）。
 
 ## 2. 事件到 widget 的映射
 
@@ -100,16 +103,34 @@
 **限制**：diff 由调用参数推断，不是真实文件 diff（未读文件、未做上下文合并）；多段 edit 只展示
 首尾片段；无法解析参数时只有普通结果预览。这些都在卡片上以“摘要”而非“权威 diff”呈现。
 
-## 6. 状态栏（StatusBar）
+## 6. 状态栏与控制栏
 
-单行字段顺序：`session <短id> · <provider>/<model> · <cwd>   ↑输入 ↓输出 [⚡缓存] · ctx N% · approval · phase`。
+### 6.1 状态栏（StatusBar）
+
+单行字段顺序：`session <短id> · <provider>/<model> · ↑输入 ↓输出 [⚡缓存] · ctx N% · phase`。
 
 - 短 id：去掉 `session-` 前缀后前 8 位（fixtures 的 id 是 `session-<uuid>`，字面前 8 位无区分度）。
-- cwd：`short_cwd` 超长时保留最后两段，如 `…\deep\nested\folder`；`MAX_CWD_CHARS = 42`。
 - model：`MAX_MODEL_CHARS = 40`，超长截断加 `…`；provider 为空时只显示 model。
 - ctx：`round(100 * input / context_window)`，>= 75% 用黄色；token 数量 k/M 缩写。
-- 颜色：session 蓝、model 青、token 绿、ask 黄、phase 非 idle 蓝；其余 dim。
+- 颜色：session 蓝、model 青、token 绿、phase 非 idle 蓝；其余 dim。
 - 行级 `text-wrap: nowrap` + ellipsis，保证永远一行；不换行比截断选项更可预期。
+- `show()` 关键字参数：`session_id/provider/model/input_tokens/output_tokens/cached_tokens/context_window/phase`；
+  `cwd` 与 `approval` 已移到控制栏（v0.1 的字段顺序变化见 `tui.md` §8）。
+
+### 6.2 控制栏（ControlBar）
+
+- 位置：Header 下方、会话区上方；`Horizontal#control-bar` 内三个 `Static` label（policy/approval/cwd）
+  与三个紧凑 `Select`（`select-preset` / `select-approval` / `select-cwd`）。
+- 纯视图：不 import 领域模块；选项值来自 `sandbox.types` 的 `PRESETS` / `APPROVALS`，
+  `sync(*, preset, approval, cwd, workspaces=(), enabled=True)` 只在值变化时赋值，cwd 选项变化时
+  `set_options`；`disabled` 由 app 在 turn 运行中置 True。
+- 当前值回填：`app._sync_control_bar()` 在 boot 完成与每次 `refresh_status` 时调用（程序化赋值触发的
+  `Select.Changed` 与 runtime 当前值相同，因此被忽略，不会回环）。
+- 立即生效：`TuiRuntime.set_preset/set_approval/set_workspace` 更新 sandbox gate 与工具注册表，并写
+  `permission/preset`、`approval/policy`、`working-directory/change` 记录；切换只影响后续 turn 的工具调用边界。
+- cwd 选项 = 当前目录 + `known_workspaces()`（最近会话 cwd，`normcase/normpath` 去重、保留首次拼写、
+  上限 12）+ `Enter path...`（`PathPromptScreen` 路径模态）。
+- 视觉：`SelectCurrent` 显式 `align-vertical: middle`，否则 label 居中而 Select 文本顶对齐会错行。
 
 ## 7. 主题与 CSS 取舍
 
@@ -161,6 +182,7 @@ kernel；覆盖：挂载前流式不丢字、同 turn 单标签、`clear` 重置
 2. 同 turn 单标签是启发式：以 `add_user` 为 turn 边界；若 agent 在同一 user 消息内产生多个
    独立回答块（例如多次 final），只有第一个带标签。
 3. 历史回放不重放 thinking/usage 明细，因此展开状态无法在 /resume 后恢复。
-4. 状态栏 rich Text 的颜色是十六进制常量，不能引用 CSS 变量；改主题需同步改 `status_bar.py`。
+4. 状态栏与控制栏里 rich Text 的颜色是十六进制常量，不能引用 CSS 变量；改主题需同步改
+   `status_bar.py` / `control_bar.py` 以及 `theme.tcss` 的 `#control-bar` 段。
 5. 工具参数若非合法 JSON 且不是 Python 字面量，只显示原文摘要，不显示 diff。
 6. 预览/截图依赖本机 `npx sharp-cli`；无终端环境下颜色与字符宽度可能与真实终端不同。

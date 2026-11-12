@@ -169,6 +169,65 @@ class TuiRuntime:
         if self.session is not None:
             await self._attach(self.session)
 
+    # -- policy / workspace switching -----------------------------------
+    async def set_preset(self, preset: str) -> None:
+        """Switch the sandbox preset used by subsequent tool calls."""
+        setter = getattr(self.permission, "set_preset", None)
+        if setter is None:
+            raise DeeppyroError("permission gate does not support preset switching")
+        setter(preset)
+        self._record("permission/preset", {"preset": preset})
+
+    async def set_approval(self, approval: str) -> None:
+        """Switch the approval policy used by subsequent gated actions."""
+        setter = getattr(self.permission, "set_approval", None)
+        if setter is None:
+            raise DeeppyroError("permission gate does not support approval switching")
+        setter(approval)
+        self._record("approval/policy", {"policy": approval})
+
+    async def set_workspace(self, path: str | Path) -> Path:
+        """Rebind tools and approvals to a new workspace, keeping the session."""
+        workspace = resolve_workspace(path)
+        if workspace == self.cwd:
+            return workspace
+        kernel_app = self.kernel_app
+        if kernel_app is None:
+            raise DeeppyroError("cannot switch workspace after the kernel has stopped")
+        current = self.permission
+        gate = kernel_app.service("sandbox").gate(workspace, ask=self.ask)
+        gate.set_preset(str(getattr(current, "preset", "workspace-write")))
+        gate.set_approval(str(getattr(current, "approval", "ask")))
+        registry = kernel_app.service("tools").registry_for(workspace)
+        self.permission = gate
+        self.registry = registry
+        self.cwd = workspace
+        self._record("working-directory/change", {"cwd": str(workspace)})
+        if self.session is not None:
+            await self._attach(self.session)
+        return workspace
+
+    def known_workspaces(self, limit: int = 12) -> list[str]:
+        """Workspace paths remembered by previous sessions, newest first."""
+        paths: list[str] = []
+        try:
+            infos = self.store.list()
+        except Exception:  # noqa: BLE001 - the dropdown must keep working
+            infos = []
+        for info in infos:
+            cwd = str(getattr(info, "cwd", "") or "")
+            if cwd and cwd not in paths:
+                paths.append(cwd)
+            if len(paths) >= max(limit, 1):
+                break
+        return paths
+
+    def _record(self, record_type: str, data: dict[str, Any]) -> None:
+        """Append one non-surface event to the active session (best effort)."""
+        append = getattr(self.session, "append", None)
+        if callable(append):
+            append(record_type, data)
+
     @property
     def session_id(self) -> str:
         return str(getattr(self.session, "session_id", "") or "")

@@ -98,6 +98,12 @@ class PermissionGate:
             raise ConfigError(f"invalid approval policy: {approval!r}")
         self._approval = approval
 
+    def set_preset(self, preset: Preset) -> None:
+        """Switch the sandbox preset for this session (UI: policy dropdown)."""
+        if preset not in PRESETS:
+            raise ConfigError(f"invalid permission preset: {preset!r}")
+        self._preset = preset
+
     @property
     def workspace(self) -> Path:
         return self._workspace

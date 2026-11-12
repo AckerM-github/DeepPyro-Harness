@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from deeppyro.tui.app import DeepPyroApp
+from deeppyro.tui.widgets.control_bar import CUSTOM_WORKSPACE, ControlBar
 from deeppyro.tui.widgets.conversation import ConversationView
 from deeppyro.tui.widgets.prompt_area import PromptArea
 from deeppyro.tui.widgets.status_bar import StatusBar
@@ -28,7 +29,15 @@ class FakeSession:
 
 
 class FakePermission:
-    approval = "ask"
+    def __init__(self) -> None:
+        self.preset = "workspace-write"
+        self.approval = "ask"
+
+    def set_preset(self, preset: str) -> None:
+        self.preset = preset
+
+    def set_approval(self, approval: str) -> None:
+        self.approval = approval
 
 
 class FakeCompactor:
@@ -103,6 +112,22 @@ class FakeRuntime:
 
     def models(self) -> list[str]:
         return ["fake-1", "fake-2"]
+
+    def known_workspaces(self, limit: int = 12) -> list[str]:
+        workspaces = [str(Path("D:/work")), str(Path("D:/other"))]
+        return workspaces[:limit]
+
+    async def set_preset(self, preset: str) -> None:
+        self.permission.set_preset(preset)
+
+    async def set_approval(self, approval: str) -> None:
+        self.permission.set_approval(approval)
+
+    async def set_workspace(self, path: Any) -> Path:
+        workspace = Path(path)
+        if workspace != self.cwd:
+            self.cwd = workspace
+        return workspace
 
     def recent_sessions(self, limit: int = 20) -> list[Any]:
         return [
@@ -254,3 +279,93 @@ async def test_splash_screen_shows_until_any_key() -> None:
         assert not isinstance(app.screen, SplashScreen)
         assert app._prompt is not None
         assert app._prompt.has_focus
+
+
+async def test_control_bar_reflects_runtime_state() -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        bar = app.query_one(ControlBar)
+        assert bar.preset_select.value == "workspace-write"
+        assert bar.approval_select.value == "ask"
+        assert bar.cwd_select.value == str(Path("D:/work"))
+        assert str(Path("D:/work")) in bar.cwd_values
+        assert str(Path("D:/other")) in bar.cwd_values
+        assert CUSTOM_WORKSPACE in bar.cwd_values
+
+
+async def test_control_bar_switches_preset_and_approval() -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        bar = app.query_one(ControlBar)
+        bar.preset_select.value = "read-only"
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if app.runtime.permission.preset == "read-only":
+                break
+        assert app.runtime.permission.preset == "read-only"
+        assert bar.preset_select.value == "read-only"
+        bar.approval_select.value = "never"
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if app.runtime.permission.approval == "never":
+                break
+        assert app.runtime.permission.approval == "never"
+        assert bar.approval_select.value == "never"
+
+
+async def test_control_bar_switches_workspace() -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        bar = app.query_one(ControlBar)
+        target = str(Path("D:/other"))
+        bar.cwd_select.value = target
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if str(app.runtime.cwd) == target:
+                break
+        assert str(app.runtime.cwd) == target
+        assert bar.cwd_select.value == str(app.runtime.cwd)
+
+
+async def test_control_bar_custom_workspace_uses_path_prompt(monkeypatch: Any) -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        asked: list[str] = []
+
+        target = str(Path("D:/custom"))
+
+        async def fake_prompt() -> str:
+            asked.append("prompt")
+            return target
+
+        monkeypatch.setattr(app, "_ask_workspace_path", fake_prompt)
+        bar = app.query_one(ControlBar)
+        bar.cwd_select.value = CUSTOM_WORKSPACE
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if str(app.runtime.cwd) == target:
+                break
+        assert asked == ["prompt"]
+        assert str(app.runtime.cwd) == target
+
+
+async def test_control_bar_is_disabled_during_a_turn() -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        bar = app.query_one(ControlBar)
+        assert bar.preset_select.disabled is False
+        app._working = True
+        app.refresh_status()
+        await pilot.pause(0.1)
+        assert bar.preset_select.disabled is True
+        assert bar.approval_select.disabled is True
+        assert bar.cwd_select.disabled is True
+        app._working = False
+        app.refresh_status()
+        await pilot.pause(0.1)
+        assert bar.preset_select.disabled is False

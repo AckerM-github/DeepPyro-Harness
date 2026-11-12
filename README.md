@@ -10,6 +10,9 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   不做 Web UI。
 - 启动页是 FIGlet `ansi_shadow` 像素字标（火色 / 冰蓝渐变、逐行揭示）；思考过程用单行滚动 ticker
   实时展示最新一句，回答一开始就折叠成一行，点击可展开全文。
+- 会话区上方的**控制栏**用三个下拉直接切换权限预设（read-only / workspace-write /
+  danger-full-access）、审批策略（ask / never / always）与工作目录，切换立即作用于当前会话
+  （并写入 `permission/preset`、`approval/policy`、`working-directory/change` 记录）。
 - 内核直接 vendor 了 [cordis](https://github.com/cordiverse/cordis) 的 Python 移植
   （`src/deeppyro/_vendor/cordis_port`，MIT）：服务、依赖注入、事件总线、fiber 生命周期
   都与 DSH 同构；领域模块不 import cordis，只有 `kernel/` 负责装配。
@@ -56,6 +59,7 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
     echo "1+1=?" | uv run dpyro --headless --json # stdin 管道
 
 TUI 里输入 `/help` 查看 slash 命令（`/new /resume /model /status /compact /clear /plugins /exit`）；
+会话区上方控制栏的权限预设 / 审批策略 / 工作目录三个下拉同样立即生效（turn 运行中禁用）；
 `Ctrl+C` 在 turn 中取消当前 turn，空闲时清空输入，再按退出；`Ctrl+D` 退出。
 
 ### 配置与数据目录

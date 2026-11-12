@@ -1,6 +1,6 @@
 # DeepPyro TUI 规格（Textual 8.2.8）
 
-状态：TUI 已完整实现（FIGlet 像素字标启动页、单行滚动思考 ticker、对话流、多行输入与 slash 补全、选择器、审批、插件管理、状态栏），651 测试与 ruff 全绿；真实模型端到端冒烟通过（启动页 → 任意键 → 工具调用 → 回答）。
+状态：TUI 已完整实现（FIGlet 像素字标启动页、单行滚动思考 ticker、顶部控制栏、对话流、多行输入与 slash 补全、选择器、审批、插件管理、状态栏），669 测试与 ruff 全绿；真实模型端到端冒烟通过（启动页 → 任意键 → 工具调用 → 回答；控制栏切到 read-only/never 并切换工作目录）。
 
 ## 1. 形态与范围
 
@@ -21,13 +21,15 @@
 | wordmark.py | FIGlet ansi_shadow 预渲染像素字标 + 逐字符渐变色（宽/窄两套） | Lead |
 | commands.py | slash 命令定义与分发 | tui-dev |
 | widgets/conversation.py | 对话流：user/assistant/tool/thinking 块 | ui-dev |
-| widgets/status_bar.py | 底部状态栏 | ui-dev |
+| widgets/status_bar.py | 底部状态栏（session/model/tokens/ctx/phase） | ui-dev |
+| widgets/control_bar.py | 顶部控制栏：权限预设/审批策略/工作目录三个下拉 | Lead |
+| screens/path_prompt.py | 自定义工作目录路径模态 | Lead |
 | widgets/prompt_input.py / prompt_area.py | 输入框（单行 → 多行） | tui-dev |
 | widgets/completion.py / history.py | slash 补全、输入历史 | tui-dev |
 | screens/approval.py | 审批模态 | tui-dev |
 | screens/picker.py | 会话/模型选择器 | tui-dev |
 | screens/plugins.py | 外部插件管理界面 | plugin-dev |
-| screens/splash.py | 启动 splash：逐行揭示、运行时信息回填、任意键/自动关闭 | Lead |
+| screens/splash.py | 启动 splash：逐行揭示、运行时信息回填、任意键关闭 | Lead |
 | theme.tcss | 深色主题与布局样式 | ui-dev |
 
 领域模块（session/llm/tools/agent/compact）与内核（kernel/、_vendor/cordis_port）不允许 import textual；
@@ -63,6 +65,7 @@
 | Ctrl+D | 退出 |
 | Ctrl+P | 聚焦输入框（命令面板预留） |
 | 任意键（splash 显示时） | 关闭启动画面进入对话（splash 不会自动关闭） |
+| 控制栏下拉 | 鼠标点击或聚焦后 Enter 打开；切换立即生效（turn 运行中禁用） |
 | Esc | 关闭模态（审批/选择器/插件管理） |
 
 ## 6. Slash 命令
@@ -96,7 +99,8 @@
 - splash 使用 wordmark.py 里预渲染的 ansi_shadow 字形：DEEPPYRO 火色渐变、HARNESS 冰蓝色渐变，逐行揭示；不依赖 pyfiglet 等运行时字体工具。
 - 工具调用：name + 参数摘要；结果 1-3 行预览，错误红色；write/edit 显示 diff（能力上限见 tui-widgets.md）。
 - 用户消息块左 accent 边框；系统 info/error 用 dim/红色静态行。
-- 状态栏单行：session 短 id、provider/model、cwd、↑输入 ↓输出 ⚡缓存、ctx 百分比（>=75% 黄色）、approval、phase。
+- 顶部控制栏位于 Header 下方、会话区上方：三个紧凑下拉（权限预设 / 审批策略 / 工作目录）。切换立即作用于同一会话——sandbox gate 与工具注册表随工作目录更新，并写 permission/preset、approval/policy、working-directory/change 记录；turn 运行中三个下拉禁用。cwd 选项 = 当前目录 + 最近会话目录（去重，上限 12）+ Enter path…（路径模态）。
+- 状态栏单行：session 短 id、provider/model、↑输入 ↓输出 ⚡缓存、ctx 百分比（>=75% 黄色）、phase。
 
 ## 9. 开发与验证
 
@@ -110,9 +114,9 @@
 
 ## 9.1 思考过程的来源
 
-TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasoning_content` 字段）。本地 dshinfer 端点默认
-`DSHINFER_ENABLE_THINKING=false`，模型不会返回思考，ticker 自然为空；要看到逐句思考，用
-`$env:DSHINFER_ENABLE_THINKING="true"; uv run uvicorn dshinfer.api:app --port 8000` 重启推理服务即可。
+TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasoning_content` 字段）。本地 dshinfer 端点是否
+返回思考由 `DSHINFER_ENABLE_THINKING` 控制（默认 `false`，即只出答案）；要看到逐句思考，用
+`$env:DSHINFER_ENABLE_THINKING="true"; uv run uvicorn dshinfer.api:app --port 8000` 启动推理服务即可（本机真实冒烟即用此配置）。
 `[agent] maxTokens` 默认 4096：思考与答案共用这个输出预算，太小会把答案截断。
 
 ## 10. 已知偏离与待办
@@ -125,6 +129,6 @@ TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasonin
 - Ctrl+C 语义依赖 Textual 绑定；真实终端下的双击退出阈值 1.2s。
 - splash 是纯文本逐行揭示（无淡入/逐字动画），且依赖 Unicode 方块字符；极窄或极矮终端用单行字标。
 - thinking 单行滚动不保留已滚过的句子，只有折叠后点击展开才能看到全文。
-- 本机 8000 的 llama.cpp 端点（DeepSeek-V4-Pro-Qwen3.5-9B Q4_K_M）不返回 reasoning_content，
-  因此真实模型冒烟看不到 thinking；ticker 行为由单测与假 provider 预览覆盖，接支持 reasoning 的
-  provider 即自动生效。
+- 控制栏切换策略/审批不改写已生成的 system prompt（提示词里的沙箱说明仍是 turn 开始时的快照）；
+  session header 的 cwd 保持会话创建值，切换只写 working-directory/change 记录。
+- 切换工作目录要求当前无运行中 turn；cwd 下拉只列当前目录与最近会话目录，任意路径走路径模态。

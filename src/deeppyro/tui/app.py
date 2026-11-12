@@ -19,15 +19,17 @@ from typing import Any, ClassVar
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Header
+from textual.widgets import Footer, Header, Select
 
 from deeppyro import __version__
 from deeppyro.tui.commands import HELP_TEXT, dispatch
 from deeppyro.tui.format import compact_text, context_percent, short_session_id
 from deeppyro.tui.screens.approval import ALLOW_ALWAYS, ApprovalScreen
+from deeppyro.tui.screens.path_prompt import PathPromptScreen
 from deeppyro.tui.screens.picker import PickerScreen
 from deeppyro.tui.screens.splash import SplashScreen
 from deeppyro.tui.sink import TuiSink
+from deeppyro.tui.widgets.control_bar import CUSTOM_WORKSPACE, ControlBar
 from deeppyro.tui.widgets.conversation import ConversationView
 from deeppyro.tui.widgets.prompt_area import PromptArea
 from deeppyro.tui.widgets.status_bar import StatusBar
@@ -74,6 +76,7 @@ class DeepPyroApp(App[None]):
     # -- composition -----------------------------------------------------
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
+        yield ControlBar()
         yield ConversationView()
         yield StatusBar()
         yield PromptArea()
@@ -280,6 +283,7 @@ class DeepPyroApp(App[None]):
             if setter is not None:
                 setter("always")
             self.notify("approval policy: always")
+            self.refresh_status()
         return decision in (ALLOW_ALWAYS, "once")
 
     # -- status ----------------------------------------------------------
@@ -294,41 +298,145 @@ class DeepPyroApp(App[None]):
                 session_id="-",
                 provider="boot",
                 model="starting",
-                cwd=str(self._cwd or Path.cwd()),
                 input_tokens=0,
                 output_tokens=0,
                 cached_tokens=0,
                 context_window=0,
-                approval="ask",
                 phase="starting",
             )
+            self._sync_control_bar()
             return
         usage = runtime.session_usage()
         window = int(getattr(runtime, "context_window", 0) or 0)
-        permission = getattr(runtime, "permission", None)
         status.show(
             session_id=runtime.session_id,
             provider=runtime.provider_name,
             model=runtime.model,
-            cwd=str(runtime.cwd),
             input_tokens=usage["input"],
             output_tokens=usage["output"],
             cached_tokens=usage["cached"],
             context_window=window,
-            approval=str(getattr(permission, "approval", "ask")),
             phase=self._phase,
         )
         self.sub_title = f"{runtime.provider_name}/{runtime.model}"
+        self._sync_control_bar()
         # Never steal focus from an overlay (splash, picker, approval modal).
         if self._prompt is not None and len(self.screen_stack) <= 1:
             self._prompt.focus()
+
+    # -- control bar -----------------------------------------------------
+    def _sync_control_bar(self) -> None:
+        """Push the authoritative runtime policy/workspace into the dropdowns."""
+        try:
+            bar = self.query_one(ControlBar)
+        except Exception:  # noqa: BLE001 - composition not ready yet
+            return
+        runtime = self.runtime
+        if runtime is None:
+            return
+        permission = getattr(runtime, "permission", None)
+        known = getattr(runtime, "known_workspaces", None)
+        workspaces = known() if callable(known) else []
+        bar.sync(
+            preset=str(getattr(permission, "preset", "workspace-write")),
+            approval=str(getattr(permission, "approval", "ask")),
+            cwd=str(runtime.cwd),
+            workspaces=workspaces,
+            enabled=not self._working,
+        )
+
+    @on(Select.Changed)
+    def _on_control_changed(self, event: Select.Changed) -> None:
+        runtime = self.runtime
+        if runtime is None or event.value is None or event.value is Select.NULL:
+            return
+        value = str(event.value)
+        select_id = getattr(event.select, "id", "")
+        if select_id == "select-preset":
+            current = str(getattr(getattr(runtime, "permission", None), "preset", ""))
+            if value != current:
+                self.run_worker(self._apply_preset(value), group="control")
+        elif select_id == "select-approval":
+            current = str(getattr(getattr(runtime, "permission", None), "approval", ""))
+            if value != current:
+                self.run_worker(self._apply_approval(value), group="control")
+        elif select_id == "select-cwd":
+            if value == CUSTOM_WORKSPACE:
+                self.run_worker(self._ask_and_switch_workspace(), group="control")
+            elif value != str(runtime.cwd):
+                self.run_worker(self._apply_workspace(value), group="control")
+
+    async def _apply_preset(self, preset: str) -> None:
+        if self._working:
+            self.notify("cannot change policy during a running turn", severity="warning")
+            self.refresh_status()
+            return
+        try:
+            await self.runtime.set_preset(preset)
+        except Exception as exc:  # noqa: BLE001 - surface, then resync the view
+            self.notify(f"preset switch failed: {exc}", severity="error")
+        else:
+            self.notify(f"permission preset: {preset}")
+        finally:
+            self.refresh_status()
+
+    async def _apply_approval(self, approval: str) -> None:
+        if self._working:
+            self.notify("cannot change approval during a running turn", severity="warning")
+            self.refresh_status()
+            return
+        try:
+            await self.runtime.set_approval(approval)
+        except Exception as exc:  # noqa: BLE001
+            self.notify(f"approval switch failed: {exc}", severity="error")
+        else:
+            self.notify(f"approval policy: {approval}")
+        finally:
+            self.refresh_status()
+
+    async def _apply_workspace(self, path: str | Path) -> None:
+        if self._working:
+            self.notify("cannot switch workspace during a running turn", severity="warning")
+            self.refresh_status()
+            return
+        runtime = self.runtime
+        try:
+            workspace = await runtime.set_workspace(path)
+        except Exception as exc:  # noqa: BLE001
+            self.notify(f"workspace switch failed: {exc}", severity="error")
+        else:
+            self.conversation.add_info(f"workspace switched to {workspace}")
+            self.notify(f"cwd: {workspace}")
+        finally:
+            self.refresh_status()
+
+    async def _ask_and_switch_workspace(self) -> None:
+        if self._working:
+            self.notify("cannot switch workspace during a running turn", severity="warning")
+            self.refresh_status()
+            return
+        path = await self._ask_workspace_path()
+        if path:
+            await self._apply_workspace(path)
+        else:
+            self.refresh_status()
+
+    async def _ask_workspace_path(self) -> str | None:
+        runtime = self.runtime
+        current = str(getattr(runtime, "cwd", "") or self._cwd or "")
+        try:
+            return await self.push_screen_wait(PathPromptScreen(current))
+        except Exception:  # noqa: BLE001 - outside a worker there is no modal
+            return None
 
     # -- session rendering ----------------------------------------------
     def _render_welcome(self) -> None:
         runtime = self.runtime
         conversation = self.conversation
         conversation.add_info("DeepPyro Harness — python core, terminal UI")
-        conversation.add_info(f"{runtime.provider_name}/{runtime.model}  ·  cwd {runtime.cwd}")
+        conversation.add_info(
+            f"{runtime.provider_name}/{runtime.model}  ·  switch policy, approval and workspace in the bar above"
+        )
         conversation.add_info("Type a message. /help lists commands. Ctrl+C interrupts, Ctrl+D quits.")
 
     def _render_history(self) -> None:
@@ -461,10 +569,13 @@ class DeepPyroApp(App[None]):
         usage = runtime.session_usage()
         session = getattr(runtime, "session", None)
         records = len(getattr(session, "records", []) or [])
+        permission = getattr(runtime, "permission", None)
+        policy = f"{getattr(permission, 'preset', 'n/a')} · {getattr(permission, 'approval', 'n/a')}"
         lines = [
             f"session  {runtime.session_id}",
             f"model    {runtime.provider_name}/{runtime.model}",
             f"cwd      {runtime.cwd}",
+            f"policy   {policy}",
             f"tokens   input {usage['input']}  output {usage['output']}  cached {usage['cached']}",
             f"context  {context_percent(self._context_used, runtime.context_window)}% of {runtime.context_window}",
             f"records  {records}  turns {getattr(session, 'turn_count', lambda: 0)()}",
