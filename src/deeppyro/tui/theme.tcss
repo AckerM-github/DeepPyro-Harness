@@ -1,0 +1,271 @@
+/* DeepPyro Harness - terminal theme (dark).
+   One palette, one place: widgets must not hard-code colours. */
+
+$bg: #0f1115;
+$surface: #161a22;
+$surface-2: #1b2029;
+$border: #2a3040;
+$text: #c0caf5;
+$dim: #565f89;
+$accent: #7aa2f7;
+$green: #9ece6a;
+$yellow: #e0af68;
+$red: #f7768e;
+$cyan: #7dcfff;
+
+Screen {
+    background: $bg;
+    color: $text;
+}
+
+Header {
+    background: $surface;
+    color: $dim;
+}
+
+Footer {
+    background: $surface;
+    color: $dim;
+}
+
+Footer > .footer--key {
+    background: $surface-2;
+    color: $accent;
+}
+
+Footer > .footer--description {
+    color: $dim;
+}
+
+#conversation {
+    height: 1fr;
+    padding: 1 2 0 2;
+    scrollbar-size: 1 1;
+    /* Neutral scrollbar: the default accent handle reads as a bright blue bar
+       next to the conversation. */
+    scrollbar-color: $surface-2;
+    scrollbar-color-hover: $border;
+    scrollbar-color-active: $accent;
+    scrollbar-background: $bg;
+}
+
+Conversation {
+    height: auto;
+}
+
+/* --- user / assistant / system blocks ------------------------------- */
+
+.user-block {
+    height: auto;
+    width: 1fr;
+    margin: 1 0 0 0;
+    padding: 0 1;
+    border-left: thick $accent;
+    background: $surface-2;
+}
+
+.user-text {
+    width: 1fr;
+    height: auto;
+    color: $text;
+}
+
+.assistant-block {
+    height: auto;
+    margin: 1 0 0 0;
+}
+
+.system-block {
+    height: auto;
+    margin: 1 0 0 0;
+    color: $dim;
+}
+
+.block-label {
+    height: 1;
+    color: $accent;
+    text-style: bold;
+}
+
+.block-label-assistant {
+    color: $green;
+}
+
+.assistant-markdown {
+    height: auto;
+    width: 1fr;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+}
+
+/* Markdown ships generous heading and paragraph margins; inside a chat bubble
+   they turn short replies into large empty bands. Keep one line of breathing
+   room at most and left-align headings instead of centring H1. */
+.assistant-markdown MarkdownHeader {
+    margin: 0 0 1 0;
+}
+
+.assistant-markdown MarkdownH1 {
+    content-align: left top;
+    background: transparent;
+    color: $text;
+}
+
+.assistant-markdown MarkdownH2,
+.assistant-markdown MarkdownH3,
+.assistant-markdown MarkdownH4,
+.assistant-markdown MarkdownH5,
+.assistant-markdown MarkdownH6 {
+    background: transparent;
+    color: $text;
+}
+
+.assistant-markdown MarkdownParagraph {
+    margin: 0 0 1 0;
+}
+
+.assistant-markdown MarkdownFence {
+    margin: 0 0 1 0;
+}
+
+.thinking-block {
+    height: auto;
+    width: 1fr;
+    color: $dim;
+    text-style: italic;
+    margin: 0;
+}
+
+/* --- tool cards ----------------------------------------------------- */
+
+.tool-card {
+    height: auto;
+    width: 1fr;
+    /* Tool activity belongs to the assistant turn, not to the user bubble
+       above it: without a gap the user block background reads as one box
+       around the first tool card. */
+    margin: 1 0 0 1;
+    padding: 0;
+    background: transparent;
+}
+
+.tool-card .tool-call {
+    height: auto;
+    padding: 0 1;
+    border-left: thick $cyan;
+    background: $surface;
+}
+
+.tool-card .tool-result-line {
+    height: auto;
+    padding: 0 1 0 2;
+    border-left: thick $border;
+    background: $surface;
+    color: $dim;
+}
+
+/* --- status bar ----------------------------------------------------- */
+
+#status-bar {
+    height: 1;
+    padding: 0 2;
+    background: $surface;
+    color: $dim;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
+}
+
+#status-bar .status-session { color: $accent; }
+#status-bar .status-model { color: $cyan; }
+#status-bar .status-tokens { color: $green; }
+#status-bar .status-warn { color: $yellow; }
+#status-bar .status-error { color: $red; }
+#status-bar .status-idle { color: $dim; }
+
+/* --- prompt --------------------------------------------------------- */
+
+#prompt {
+    height: 3;
+    margin: 1 1 0 1;
+    border: tall $border;
+    background: $surface;
+    color: $text;
+}
+
+#prompt:focus {
+    border: tall $accent;
+}
+
+#prompt-placeholder {
+    color: $dim;
+}
+
+/* --- approval modal ------------------------------------------------- */
+
+ApprovalScreen {
+    align: center middle;
+    background: rgba(15, 17, 21, 0.82);
+}
+
+#approval-dialog {
+    width: 78;
+    height: auto;
+    max-height: 24;
+    border: round $yellow;
+    background: $surface;
+    padding: 1 2;
+}
+
+#approval-title {
+    color: $yellow;
+    text-style: bold;
+}
+
+#approval-summary {
+    color: $text;
+    margin: 1 0 0 0;
+}
+
+#approval-detail {
+    color: $dim;
+    margin: 1 0 0 0;
+}
+
+#approval-buttons {
+    height: auto;
+    margin: 1 0 0 0;
+    align-horizontal: right;
+}
+
+#approval-buttons Button {
+    margin-left: 2;
+}
+
+/* --- command palette / pickers placeholder -------------------------- */
+
+PickerScreen {
+    align: center middle;
+    background: rgba(15, 17, 21, 0.82);
+}
+
+#picker-dialog {
+    width: 82;
+    height: auto;
+    max-height: 26;
+    border: round $accent;
+    background: $surface;
+    padding: 1 2;
+}
+
+#picker-title {
+    color: $accent;
+    text-style: bold;
+}
+
+#picker-list {
+    height: auto;
+    max-height: 18;
+    margin: 1 0 0 0;
+}

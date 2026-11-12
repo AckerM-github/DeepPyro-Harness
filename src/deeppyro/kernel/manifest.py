@@ -13,7 +13,7 @@ so the kernel keeps cordis-free dependencies):
     config = { root = "C:/Users/me/sessions" }
 
     [[plugins]]
-    id = "frontend"
+    id = "sandbox"
     disabled = true
 
 Fields:

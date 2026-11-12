@@ -4,17 +4,16 @@ This module is the **only** place where the kernel imports the domain packages
 (and it does so lazily, inside constructors/methods), so the two layers stay
 honest:
 
-* domain modules (session/llm/tools/sandbox/agent/prompt/compact/cli) hold pure
+* domain modules (session/llm/tools/sandbox/agent/prompt/compact) hold pure
   logic and never import cordis;
 * the kernel owns the service graph and boot order;
-* the CLI resolves services from the booted app instead of assembling modules
-  by hand.
+* the terminal front end (TUI or headless) resolves services from the booted
+  app instead of assembling modules by hand.
 
 Service names are stable API:
 
 ======== ==============================================================
 config    KernelConfig (registered by `create_app`, value: Config)
-frontend  FrontendPlugin.frontend -> cli.frontend.TerminalFrontend
 llm       LlmPlugin.registry -> llm.LlmRegistry; .provider(name)
 sessions  SessionPlugin.store -> session.SessionStore; .create/.open/.list
 sandbox   SandboxPlugin.gate(workspace, ask) -> sandbox.PermissionGate
@@ -28,18 +27,6 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from deeppyro._vendor.cordis_port import Service
-
-
-class FrontendPlugin(Service):
-    """Provides the single terminal presentation service (name: `frontend`)."""
-
-    provide = "frontend"
-
-    def __init__(self, ctx: Any, config: dict[str, Any] | None = None) -> None:
-        super().__init__(ctx)
-        from deeppyro.cli.frontend import TerminalFrontend
-
-        self.frontend = TerminalFrontend()
 
 
 class LlmPlugin(Service):

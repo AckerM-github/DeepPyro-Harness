@@ -1,1 +1,0 @@
-"""CLI front-end tests."""

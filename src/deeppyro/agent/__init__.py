@@ -1,7 +1,7 @@
 """Agent loop: options and the turn/step session driver.
 
-Event sinks are a frontend concern; the single implementation lives in
-`deeppyro.cli.render` (INTERFACES section 7). The loop only accepts an
+Event sinks are a frontend concern; the terminal implementations live in
+`deeppyro.headless` (one-shot) and `deeppyro.tui.sink` (interactive). The loop only accepts an
 injected `EventSink`.
 """
 

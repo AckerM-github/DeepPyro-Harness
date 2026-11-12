@@ -1,7 +1,7 @@
 """Integration: boot the real default bundle and exercise service factories.
 
-Session/agent plugins are disabled here until their domain modules land; the
-rest of the bundle (frontend, llm, sandbox, tools) must boot from config alone.
+Session/agent plugins are disabled here; the rest of the bundle (llm, sandbox,
+tools) must boot from config alone.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ async def app(tmp_path: Path):
 
 
 async def test_bundle_services_are_available(app) -> None:
-    for name in ("frontend", "llm", "sandbox", "tools"):
+    for name in ("llm", "sandbox", "tools"):
         assert app.has_service(name), name
     assert not app.has_service("sessions")
     assert not app.has_service("agents")

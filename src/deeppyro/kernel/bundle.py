@@ -21,7 +21,6 @@ from deeppyro.kernel.manifest import PluginSpec, register_alias, resolve_specs
 
 #: Short names usable in patch manifests and by the bundle layer.
 _ALIASES = {
-    "frontend": "deeppyro.kernel.plugins:FrontendPlugin",
     "llm": "deeppyro.kernel.plugins:LlmPlugin",
     "sessions": "deeppyro.kernel.plugins:SessionPlugin",
     "sandbox": "deeppyro.kernel.plugins:SandboxPlugin",
@@ -31,9 +30,8 @@ _ALIASES = {
 for _alias, _target in _ALIASES.items():
     register_alias(_alias, _target)
 
-#: Ordered bundle layer. `frontend` first so later plugins may inject it.
+#: Ordered bundle layer: llm first so every later plugin may inject it.
 DEFAULT_PLUGINS: tuple[PluginSpec, ...] = (
-    PluginSpec(id="frontend", name="frontend"),
     PluginSpec(id="llm", name="llm"),
     PluginSpec(id="sessions", name="sessions"),
     PluginSpec(id="sandbox", name="sandbox"),

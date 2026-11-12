@@ -23,7 +23,8 @@
 | `src/deeppyro/llm/**` | llm-dev | OpenAI 兼容 provider、SSE、重试 |
 | `src/deeppyro/tools/**`、`src/deeppyro/sandbox/**` | tools-dev | 工具注册表/流水线/内置工具/权限闸门 |
 | `src/deeppyro/agent/**`、`src/deeppyro/prompt/**`、`src/deeppyro/compact/**` | loop-dev | turn/step 循环、事件、提示词、压缩 |
-| `src/deeppyro/cli/**`、`src/deeppyro/tui/**` | ui-dev | typer 入口、render、rich TUI |
+| `src/deeppyro/tui/**` | ui-dev/tui-dev | Textual 全屏 TUI（唯一前端）：widgets、命令、选择器、审批 |
+| `src/deeppyro/headless.py` | **Lead** | 一次性 headless 运行（`--headless` / `--json`），自包含 |
 | `docs/spec/*.md` | 各自 | 除本文件外，按模块各写一份 |
 | `tests/<area>/**` | 各自 | 单测；跨模块集成测试归 Lead |
 | `fixtures/**`、`tools/**` | **Lead** | 真实会话样本与生成器（只读使用） |
@@ -35,7 +36,7 @@
 - Python 3.13，`from __future__ import annotations`，全异步优先用 `asyncio`。
 - 路径一律 `pathlib.Path`；时间戳一律 int 毫秒。
 - 公开 API 都在各包 `__init__.py` 里 re-export，便于外部导入。
-- 依赖只用已装好的：httpx、pydantic v2、typer、rich、zstandard、platformdirs、pytest/respx。
+- 依赖只用已装好的：httpx、pydantic v2、rich、textual、zstandard、platformdirs、pytest/respx。typer 已移除。
 - 风格：ruff line-length=110；pytest `asyncio_mode=auto`（async 测试不用加装饰器）。
 - 每个模块自带 docstring；错误用 `deeppyro.core.errors` 里的类型，不要裸 `Exception`。
 
@@ -242,21 +243,26 @@ class Compactor:
   4. `compaction/end` data `{compactionId, sourceCommandId?, turn?, error?}`。
 - 自动压缩必须在 open turn 内；手动压缩要求无 open turn。**不存在 `session/compact` 事件类型。**
 
-**Sink 归属（唯一来源）**：`JsonLinesSink`/`RichSink` 属于前端层，唯一实现在 `deeppyro/cli/render.py`；`agent` 包只接收注入的 `EventSink`，不得定义或再导出任何 sink。测试需要 sink 时从 `deeppyro.cli.render` 导入，或写 5 行假 sink。
+**Sink 归属（唯一来源）**：`JsonLinesSink`/`RichSink` 属于 headless 前端层，唯一实现在 `deeppyro/headless.py`；TUI 用 `deeppyro/tui/sink.py` 的 `TuiSink`。`agent` 包只接收注入的 `EventSink`，不得定义或再导出任何 sink。测试需要 sink 时从 `deeppyro.headless` 导入，或写 5 行假 sink。
 
-## 8. cli + tui（ui-dev）
+## 8. 终端前端：TUI + headless（Lead / ui-dev / tui-dev）
 
-```python
-# deeppyro.cli.main:app  (typer.Typer)
-dpyro run "prompt" [--model M] [--provider P] [--json] [--cwd DIR] [--max-steps N]
-dpyro chat [--resume SESSION_ID] [--cwd DIR]
-dpyro sessions [--limit N]          # 列出本地会话
-dpyro config show                  # 打印生效配置（apiKey 打码）
+唯一产品形态是 Textual 全屏 TUI（`dpyro` 无参数启动）；一次性脚本路径是 headless（
+`dpyro --headless "prompt"` 或 stdin 管道），二者都不做 Web UI。
+
+```text
+dpyro                               # 打开 TUI（唯一交互式产品形态）
+dpyro --headless "prompt" [--model M] [--provider P] [--json] [--cwd DIR] [--max-steps N]
+echo prompt | dpyro --headless --json
 ```
-- `--json`：NDJSON 一行一事件，stderr 只放错误，stdout 纯净（供脚本消费）。
-- `chat`：rich 交互；输入 `/exit` 退出、`/new` 新会话、`/sessions` 列表、`Ctrl+C` 中断当前 turn（不退出）。
-- TUI 只依赖 `AgentSession` + `EventSink`，不得直接读写 session 文件。
+
+- 入口：`deeppyro.tui.main:main`（argparse；唯一 console script `dpyro`/`deeppyro`）。
+- TUI：`deeppyro.tui.app.DeepPyroApp` + `TuiRuntime`（kernel 五服务 llm/sessions/sandbox/tools/agents），
+  slash 命令见 `docs/spec/tui.md`；只依赖 `AgentSession` + `EventSink`，不得直接读写 session 文件。
+- headless：`deeppyro/headless.py` 自包含（`run_once`/`boot_runtime`/`JsonLinesSink`/`RichSink`），
+  `--json` 输出 NDJSON 一行一事件，stderr 只放错误，stdout 纯净（供脚本消费）。
 - 退出码：0 成功；1 运行错误；2 参数/配置错误；130 用户中断。
+- 已删除：typer 命令面、`src/deeppyro/cli/`、`tests/cli/`、`run/chat/sessions/config show` 子命令。
 
 ## 9. fixtures 与黄金对照（Lead 提供，只读）
 
@@ -270,7 +276,7 @@ dpyro config show                  # 打印生效配置（apiKey 打码）
 - llm：用 fixtures 里真实 `request/header` + `assistant/message` 构造请求/响应；respx mock SSE。
 - tools：从 fixtures 提取真实工具调用参数做回归样本。
 - agent：脚本化假 provider 驱动完整 turn，断言记录序列与事件顺序。
-- cli：`typer.testing.CliRunner`，用 `--json` 断言 NDJSON。
+- headless：`tests/tui/test_headless.py` 用假 runtime 断言 `--json` NDJSON 与退出码。
 
 ## 10. 完成定义（DoD）
 
@@ -285,9 +291,9 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
   `src/deeppyro/_vendor/cordis_port/`（MIT，纯标准库零依赖，9 个 .py + LICENSE + py.typed）。
   `pyproject.toml` 不加依赖；上游 = cordiverse/cordis v4.0.0-rc.12。
 - **分层铁律**：
-  - 领域模块（session/llm/tools/sandbox/agent/prompt/compact/cli）是纯逻辑，**禁止 import cordis**；
+  - 领域模块（session/llm/tools/sandbox/agent/prompt/compact）是纯逻辑，**禁止 import cordis**；
   - `src/deeppyro/kernel/**` 是唯一装配层：插件清单 + 服务图 + 生命周期；
-  - CLI 只通过 `App.service(name)` 取服务，不再手写领域模块串联。
+  - 终端前端（TUI/headless）只通过 `App.service(name)` 取服务，不再手写领域模块串联。
 - 所有权：`src/deeppyro/kernel/**` 归 **Lead**。
 
 ### 11.2 清单分层（对照 DSH `cordis.patch.yml`）
@@ -304,7 +310,7 @@ id = "llm"
 config = { timeout_s = 300 }
 
 [[plugins]]
-id = "frontend"
+id = "tools"
 disabled = true
 
 [[plugins]]
@@ -347,14 +353,13 @@ await app.stop()        # 逆序 dispose 所有 fiber；teardown 尽力而为
 
 | 插件 id | 插件类（`deeppyro.kernel.plugins`） | 服务名 | 服务对象 / 关键方法 |
 |---|---|---|---|
-| `frontend` | `FrontendPlugin` | `frontend` | `TerminalFrontend`（唯一终端前端，持有 sink） |
 | `llm` | `LlmPlugin` | `llm` | `.registry: LlmRegistry`；`.provider(name)` |
 | `sessions` | `SessionPlugin` | `sessions` | `.store: SessionStore`；`.create/.open/.list` |
 | `sandbox` | `SandboxPlugin` | `sandbox` | `.gate(workspace, ask=None) -> PermissionGate` |
 | `tools` | `ToolsPlugin` | `tools` | `.registry_for(workspace) -> ToolRegistry` |
 | `agents` | `AgentPlugin` | `agents` | `.create(session, provider, registry, options, sink, permission, cwd)`；`.options(**overrides)` |
 
-- bundle 层顺序：`frontend → llm → sessions → sandbox → tools → agents`（后者可 inject 前者）。
+- bundle 层顺序：`llm → sessions → sandbox → tools → agents`（后者可 inject 前者）。
 - 领域模块只暴露无状态/半状态组件；**每次命令的 workspace 相关对象**（PermissionGate、
   ToolRegistry、AgentSession）通过上面的工厂方法按 workspace 构造，不塞进全局单例。
 - kernel 插件内对领域模块的 import 必须是**函数体内延迟 import**，保证内核可独立测试。

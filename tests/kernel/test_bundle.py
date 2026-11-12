@@ -15,7 +15,7 @@ from deeppyro.kernel import (
     create_app,
 )
 
-EXPECTED_ORDER = ["frontend", "llm", "sessions", "sandbox", "tools", "agents"]
+EXPECTED_ORDER = ["llm", "sessions", "sandbox", "tools", "agents"]
 
 
 def _config() -> Config:
@@ -67,7 +67,6 @@ config = { start = 5 }
     assert by_id["llm"].config == {"timeout_s": 42}
     assert by_id["agents"].disabled is True
     assert [spec.id for spec in specs] == [
-        "frontend",
         "llm",
         "echo",
         "sessions",
@@ -89,10 +88,9 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
     app = await boot(_config(), manifest_paths=[str(manifest)])
     try:
         assert app.has_service("llm")
-        assert app.has_service("frontend")
         assert not app.has_service("sessions")
         # started only lists active plugin fibers, in manifest order.
-        assert list(app.started) == ["frontend", "llm"]
+        assert list(app.started) == ["llm"]
         assert all(state == "ACTIVE" for state in app.started.values())
     finally:
         await app.stop()

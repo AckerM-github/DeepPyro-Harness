@@ -1,4 +1,4 @@
-"""Frozen runtime protocols shared by session / llm / tools / agent / cli.
+"""Frozen runtime protocols shared by session / llm / tools / agent / front end.
 
 These are the seams between workstreams. Change them only with the Lead.
 """

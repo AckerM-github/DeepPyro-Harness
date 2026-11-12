@@ -21,7 +21,7 @@ Modules:
 
 ```python
 from deeppyro.agent import AgentOptions, AgentSession
-from deeppyro.cli.render import JsonLinesSink, RichSink   # frontend layer (INTERFACES section 7)
+from deeppyro.headless import JsonLinesSink, RichSink   # frontend layer (INTERFACES section 7)
 from deeppyro.prompt import PromptContext, build_system_prompt, collect_instructions
 from deeppyro.compact import Compactor
 
@@ -160,7 +160,7 @@ Ordering rules implemented here:
 * `final` is emitted only for successful turn ends (completed, max-tokens, max-steps) and
   never for errors/aborts.
 * `status done` is emitted at the end of every turn, after `turn/end`.
-* Concrete sinks are a frontend concern and live in `deeppyro/cli/render.py` (INTERFACES
+* Concrete sinks are a frontend concern and live in `deeppyro/headless.py` (INTERFACES
   section 7): `JsonLinesSink` writes one compact JSON object per line (`ensure_ascii=False`)
   and flushes after each event so a consumer can read a running turn; `RichSink` renders the
   same events for a terminal. The agent package only defines the `EventSink` protocol usage.
@@ -364,7 +364,7 @@ the region from `session.records`, so seqs remain authoritative.
 ## 10. Test coverage (`uv run pytest tests/agent -q`)
 
 38 tests, all green: prompt 7, loop 15, compaction 11, plus sink-free loop assumptions.
-(Sink behavior itself is covered by `tests/cli/test_render.py`.)
+(Sink behavior itself is covered by `tests/tui/test_headless.py`.)
 
 * `tests/agent/fakes.py` — `FakeSessionLog` (append with seq + envelope, surface-fold
   `derive_messages`, `records_of`/`seq_for`), `ScriptedProvider` (scripted stream turns,

@@ -92,6 +92,12 @@ class PermissionGate:
     def approval(self) -> Approval:
         return self._approval
 
+    def set_approval(self, approval: Approval) -> None:
+        """Switch the approval policy for this session (UI: always allow)."""
+        if approval not in APPROVALS:
+            raise ConfigError(f"invalid approval policy: {approval!r}")
+        self._approval = approval
+
     @property
     def workspace(self) -> Path:
         return self._workspace
