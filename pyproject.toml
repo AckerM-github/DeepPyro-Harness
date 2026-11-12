@@ -1,0 +1,43 @@
+[project]
+name = "deeppyro-harness"
+version = "0.1.0"
+description = "DeepPyro Harness — terminal-first Python port of DeepSeek Harness (DSH)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "httpx>=0.28",
+  "pydantic>=2.10",
+  "typer>=0.15",
+  "rich>=13.9",
+  "zstandard>=0.23",
+  "platformdirs>=4.3",
+  "typing-extensions>=4.12",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "respx>=0.22",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+dpyro = "deeppyro.cli.main:app"
+deeppyro = "deeppyro.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deeppyro"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
