@@ -10,9 +10,11 @@ arguments are JSON strings).  OpenAI-compatible servers expect a different shape
 * tool results are role=tool messages keyed by tool_call_id;
 * reasoning is replayed through the DeepSeek reasoning_content field (see docs/spec/llm.md).
 
-Conversion is deliberately tolerant: unknown content parts are skipped, empty messages are
-dropped, and developer instructions become system messages because llama.cpp and the
-DeepSeek API do not accept role=developer.
+Conversion is deliberately tolerant for everything except tool-call arguments: unknown
+content parts are skipped, empty messages are dropped, and developer instructions become
+system messages because llama.cpp and the DeepSeek API do not accept role=developer.
+Argument strings are validated but forwarded byte-for-byte (json.loads would otherwise
+reorder keys/whitespace and break prompt-cache replays); invalid JSON is a request error.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from deeppyro.core.wire import (
     TextPart,
     ToolCallPart,
 )
+from deeppyro.llm.errors import CODE_BAD_REQUEST, LlmRequestError
 
 
 def _part_type(part: Any) -> str:
@@ -66,21 +69,24 @@ def message_tool_calls(message: Message) -> list[ToolCallPart]:
 
 
 def normalize_arguments(raw: str | None) -> str:
-    """Return tool-call arguments as a canonical JSON string.
+    """Validate tool-call arguments and return the original string unchanged.
 
-    The wire contract stores arguments as a JSON string (fixtures tool/call record:
-    arguments is stringified JSON).  OpenAI also wants a string, so we only validate and
-    re-serialise; malformed input is forwarded unchanged instead of failing the request.
+    The session log stores arguments as a JSON string (fixtures tool/call record:
+    arguments is stringified JSON) and OpenAI also wants a string, so the bytes are
+    forwarded verbatim: re-serialising would reorder keys/whitespace and make prompt-cache
+    replays diverge.  A string that is not valid JSON cannot be sent to the API at all, so
+    it raises LlmRequestError (code BAD_REQUEST, not retryable) instead of being hidden.
     """
     if raw is None:
         return "{}"
     try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError):
-        return raw
-    if isinstance(parsed, str):
-        return raw
-    return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+        json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise LlmRequestError(
+            f"tool-call arguments are not valid JSON: {raw[:120]!r}",
+            code=CODE_BAD_REQUEST,
+        ) from exc
+    return raw
 
 
 def image_part_url(part: ImagePart | dict[str, Any]) -> str | None:
@@ -108,10 +114,14 @@ def image_part_url(part: ImagePart | dict[str, Any]) -> str | None:
 
 def tool_to_json(tool: ToolSchema) -> dict[str, Any]:
     """Convert a ToolSchema to an OpenAI tool definition."""
-    parameters = tool.parameters if isinstance(tool.parameters, dict) and tool.parameters else {
-        "type": "object",
-        "properties": {},
-    }
+    parameters = (
+        tool.parameters
+        if isinstance(tool.parameters, dict) and tool.parameters
+        else {
+            "type": "object",
+            "properties": {},
+        }
+    )
     return {
         "type": "function",
         "function": {

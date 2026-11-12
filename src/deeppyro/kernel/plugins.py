@@ -25,7 +25,7 @@ agents    AgentPlugin.create(...) -> agent.AgentSession
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from deeppyro._vendor.cordis_port import Service
 
@@ -46,7 +46,7 @@ class LlmPlugin(Service):
     """Provides the LLM provider registry (name: `llm`)."""
 
     provide = "llm"
-    inject = ["config"]
+    inject: ClassVar[list[str]] = ["config"]
 
     def __init__(self, ctx: Any, config: dict[str, Any] | None = None) -> None:
         super().__init__(ctx)
@@ -63,7 +63,7 @@ class SessionPlugin(Service):
     """Provides the durable session store (name: `sessions`)."""
 
     provide = "sessions"
-    inject = ["config"]
+    inject: ClassVar[list[str]] = ["config"]
 
     def __init__(self, ctx: Any, config: dict[str, Any] | None = None) -> None:
         super().__init__(ctx)
@@ -86,7 +86,7 @@ class SandboxPlugin(Service):
     """Provides sandbox gate factories (name: `sandbox`)."""
 
     provide = "sandbox"
-    inject = ["config"]
+    inject: ClassVar[list[str]] = ["config"]
 
     def __init__(self, ctx: Any, config: dict[str, Any] | None = None) -> None:
         super().__init__(ctx)
@@ -108,7 +108,7 @@ class ToolsPlugin(Service):
     """Provides tool-registry factories (name: `tools`)."""
 
     provide = "tools"
-    inject = ["config"]
+    inject: ClassVar[list[str]] = ["config"]
 
     def __init__(self, ctx: Any, config: dict[str, Any] | None = None) -> None:
         super().__init__(ctx)
@@ -124,7 +124,7 @@ class AgentPlugin(Service):
     """Provides AgentSession factories (name: `agents`)."""
 
     provide = "agents"
-    inject = ["config"]
+    inject: ClassVar[list[str]] = ["config"]
 
     def __init__(self, ctx: Any, config: dict[str, Any] | None = None) -> None:
         super().__init__(ctx)

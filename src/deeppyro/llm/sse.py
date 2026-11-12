@@ -81,7 +81,7 @@ class SseDecoder:
         buffer = self._buffer
         for index, char in enumerate(buffer):
             if char == "\n":
-                self._buffer = buffer[index + 1:]
+                self._buffer = buffer[index + 1 :]
                 line = buffer[:index]
                 return line.removesuffix("\r")
             if char == "\r":
@@ -89,9 +89,9 @@ class SseDecoder:
                     # Might be the first half of a CRLF pair that is still in flight.
                     return None
                 if buffer[index + 1] == "\n":
-                    self._buffer = buffer[index + 2:]
+                    self._buffer = buffer[index + 2 :]
                 else:
-                    self._buffer = buffer[index + 1:]
+                    self._buffer = buffer[index + 1 :]
                 return buffer[:index]
         return None
 

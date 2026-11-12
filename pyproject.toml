@@ -41,3 +41,9 @@ addopts = "-q"
 [tool.ruff]
 line-length = 110
 target-version = "py312"
+# Vendored third-party code (cordis-port, MIT) is kept byte-faithful with upstream.
+extend-exclude = ["src/deeppyro/_vendor"]
+
+[tool.ruff.format]
+# Spec docs are prose; format only Python sources.
+exclude = ["docs/**"]

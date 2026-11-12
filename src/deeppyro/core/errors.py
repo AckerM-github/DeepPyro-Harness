@@ -18,8 +18,9 @@ class SessionError(DeeppyroError):
 class LlmError(DeeppyroError):
     """Provider/transport failure."""
 
-    def __init__(self, message: str, *, provider: str | None = None, status: int | None = None,
-                 retryable: bool = False) -> None:
+    def __init__(
+        self, message: str, *, provider: str | None = None, status: int | None = None, retryable: bool = False
+    ) -> None:
         super().__init__(message)
         self.provider = provider
         self.status = status

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from deeppyro._vendor.cordis_port import Service
 
@@ -24,7 +24,7 @@ class CounterPlugin(Service):
 class ConsumerPlugin:
     """Depends on `counter` and records that it saw the dependency."""
 
-    inject = ["counter"]
+    inject: ClassVar[list[str]] = ["counter"]
 
     def __init__(self, ctx: Any, config: dict[str, Any] | None = None) -> None:
         self.ctx = ctx

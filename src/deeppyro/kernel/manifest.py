@@ -28,9 +28,10 @@ from __future__ import annotations
 
 import importlib
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 
 class ManifestError(ValueError):
@@ -74,9 +75,7 @@ def resolve_plugin_name(name: str) -> type:
     """Resolve `"module:Class"` or a registered alias to a plugin class."""
     target = _ALIASES.get(name, name)
     if ":" not in target:
-        raise ManifestError(
-            f"plugin reference {name!r} is not 'module:Class' and is not a registered alias"
-        )
+        raise ManifestError(f"plugin reference {name!r} is not 'module:Class' and is not a registered alias")
     module_name, _, attr = target.partition(":")
     try:
         module = importlib.import_module(module_name)
@@ -150,9 +149,7 @@ def _insert_position(order: list[str], spec: PluginSpec) -> int | None:
     return None
 
 
-def merge_plugins(
-    base: Iterable[PluginSpec], patch: Iterable[PluginSpec]
-) -> tuple[PluginSpec, ...]:
+def merge_plugins(base: Iterable[PluginSpec], patch: Iterable[PluginSpec]) -> tuple[PluginSpec, ...]:
     """Apply patch entries on top of a base layer, in DSH patch semantics.
 
     - same `id`: config shallow-merged (patch wins), name/disabled overridden
@@ -184,9 +181,7 @@ def merge_plugins(
     return tuple(specs[pid] for pid in order)
 
 
-def resolve_specs(
-    base: Iterable[PluginSpec], manifests: Iterable[str | Path] = ()
-) -> tuple[PluginSpec, ...]:
+def resolve_specs(base: Iterable[PluginSpec], manifests: Iterable[str | Path] = ()) -> tuple[PluginSpec, ...]:
     """Merge the base layer with one or more patch-layer manifest files."""
     merged = tuple(base)
     for path in manifests:

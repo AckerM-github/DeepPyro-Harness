@@ -119,11 +119,11 @@ class TerminalFrontend:
             parts.append(f"session {session_id}")
         usage = getattr(sink, "usage", None)
         if usage:
-            parts.append(
-                "tokens in={input} out={output} cached={cached}".format(**usage)
-            )
+            parts.append("tokens in={input} out={output} cached={cached}".format(**usage))
         if parts:
-            self.console.print(Text(" · ".join(parts), style="dim"))
+            # One footer line even on narrow terminals; soft_wrap suppresses the
+            # implicit line break so the session id and usage stay greppable.
+            self.console.print(Text(" · ".join(parts), style="dim"), soft_wrap=True)
 
     def turn_usage(self, sink: Any) -> None:
         """Print the per-turn usage line used by the interactive chat loop."""
@@ -138,19 +138,21 @@ class TerminalFrontend:
         )
 
     # -- chat helpers ----------------------------------------------------
-    def chat_header(
-        self, *, cwd: str, provider: str, model: str, session_id: str, resumed: bool
-    ) -> None:
+    def chat_header(self, *, cwd: str, provider: str, model: str, session_id: str, resumed: bool) -> None:
         """Print the interactive preamble for a chat session."""
         self.banner(cwd=cwd, provider=provider, model=model, session_id=session_id)
         if resumed:
             self.dim("(resumed)")
-        self.dim("commands: /exit /new /sessions · Ctrl+C interrupts the current turn")
+        self.console.print(
+            Text("commands: /exit /new /sessions · Ctrl+C interrupts the current turn", style="dim"),
+            soft_wrap=True,
+        )
 
     def chat_help(self) -> None:
         """Print the slash-command reference."""
         self.console.print(
-            Text("commands: /exit /new /sessions · Ctrl+C interrupts the turn", style="dim")
+            Text("commands: /exit /new /sessions · Ctrl+C interrupts the turn", style="dim"),
+            soft_wrap=True,
         )
 
     # -- sessions / config ----------------------------------------------

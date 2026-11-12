@@ -45,9 +45,7 @@ def create_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) 
             timeout_s=timeout_s,
         )
     supported = ", ".join(sorted(_OPENAI_COMPAT_APIS))
-    raise ConfigError(
-        f"provider {name!r} uses unsupported api {pc.api!r}; supported: {supported}"
-    )
+    raise ConfigError(f"provider {name!r} uses unsupported api {pc.api!r}; supported: {supported}")
 
 
 def _context_window(pc: ProviderConfig) -> int | None:

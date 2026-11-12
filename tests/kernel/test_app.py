@@ -11,7 +11,9 @@ def _config() -> Config:
     return Config.model_validate(
         {
             "agent": {"provider": "local", "model": "m"},
-            "providers": {"local": {"api": "openai", "baseURL": "http://127.0.0.1:8000/v1", "models": [{"id": "m"}]}},
+            "providers": {
+                "local": {"api": "openai", "baseURL": "http://127.0.0.1:8000/v1", "models": [{"id": "m"}]}
+            },
         }
     )
 

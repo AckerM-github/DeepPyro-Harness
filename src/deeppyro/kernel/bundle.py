@@ -13,7 +13,6 @@ The service contract lives in `docs/spec/INTERFACES.md` section 11.
 from __future__ import annotations
 
 from pathlib import Path
-
 from typing import Any
 
 from platformdirs import user_config_dir
@@ -43,7 +42,7 @@ DEFAULT_PLUGINS: tuple[PluginSpec, ...] = (
 )
 
 #: Default patch-layer manifest location (~/.config/deeppyro/plugins.toml on Linux).
-DEFAULT_MANIFEST_PATH = Path(user_config_dir("deeppyro")) / "plugins.toml"
+DEFAULT_MANIFEST_PATH = Path(user_config_dir("deeppyro", appauthor=False, roaming=True)) / "plugins.toml"
 
 
 def default_manifest_paths() -> tuple[str, ...]:

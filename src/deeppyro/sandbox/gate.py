@@ -39,7 +39,10 @@ DANGEROUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "force push",
         re.compile(r"\bgit\s+push\b[^\n]*(?:--force-with-lease\b|--force\b|\s-f\b)", re.IGNORECASE),
     ),
-    ("machine shutdown", re.compile(r"\b(?:shutdown|Restart-Computer|Stop-Computer|reboot)\b", re.IGNORECASE)),
+    (
+        "machine shutdown",
+        re.compile(r"\b(?:shutdown|Restart-Computer|Stop-Computer|reboot)\b", re.IGNORECASE),
+    ),
     ("registry deletion", re.compile(r"\breg\s+delete\b", re.IGNORECASE)),
     ("cipher wipe", re.compile(r"\bcipher\s+/w\b", re.IGNORECASE)),
 )
@@ -133,7 +136,9 @@ class PermissionGate:
         label = self._dangerous_label(command)
         if label is None:
             return Decision(True)
-        denied = Decision(False, reason=f"command looks destructive ({label}): {command}", needs_approval=True)
+        denied = Decision(
+            False, reason=f"command looks destructive ({label}): {command}", needs_approval=True
+        )
         return self._apply_approval(denied)
 
     def validate_escalation(self, target: str) -> None:
@@ -145,7 +150,9 @@ class PermissionGate:
         if target not in _PRESET_ORDER:
             raise ConfigError(f"invalid sandbox mode: {target!r}")
         if _PRESET_ORDER[target] <= _PRESET_ORDER[self._preset]:
-            raise ConfigError(f"sandbox mode {target!r} is not wider than the current preset {self._preset!r}")
+            raise ConfigError(
+                f"sandbox mode {target!r} is not wider than the current preset {self._preset!r}"
+            )
 
     # -- approvals ---------------------------------------------------------
 

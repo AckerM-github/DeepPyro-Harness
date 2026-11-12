@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from deeppyro.core.wire import (
     ImagePart,
     Message,
@@ -9,6 +11,7 @@ from deeppyro.core.wire import (
     TextPart,
     ToolCallPart,
 )
+from deeppyro.llm.errors import CODE_BAD_REQUEST, LlmRequestError
 from deeppyro.llm.messages import (
     build_chat_payload,
     convert_messages,
@@ -65,7 +68,7 @@ def test_assistant_text_and_reasoning_and_tool_calls() -> None:
         {
             "id": "call_abc",
             "type": "function",
-            "function": {"name": "read", "arguments": '{"path":"a.txt"}'},
+            "function": {"name": "read", "arguments": '{"path": "a.txt"}'},
         }
     ]
 
@@ -131,10 +134,28 @@ def test_unresolvable_attachment_is_skipped() -> None:
     assert message_to_chat(message) is None
 
 
-def test_normalize_arguments_compacts_valid_json() -> None:
-    assert normalize_arguments('{ "path" : "a.txt" }') == '{"path":"a.txt"}'
+def test_normalize_arguments_is_byte_for_byte_identical() -> None:
+    raw = '{ "path" : "a.txt", "n": 1 }'
+    assert normalize_arguments(raw) == raw
+    assert normalize_arguments('{"b":2,"a":1}') == '{"b":2,"a":1}'
     assert normalize_arguments(None) == "{}"
-    assert normalize_arguments("not json") == "not json"
+    assert normalize_arguments("{}") == "{}"
+
+
+def test_normalize_arguments_rejects_invalid_json() -> None:
+    with pytest.raises(LlmRequestError) as info:
+        normalize_arguments("not json")
+    assert info.value.code == CODE_BAD_REQUEST
+    assert info.value.retryable is False
+
+
+def test_tool_call_with_invalid_arguments_raises() -> None:
+    message = Message(
+        role="assistant",
+        content=[ToolCallPart(id="call_bad", name="read", arguments="{oops")],
+    )
+    with pytest.raises(LlmRequestError, match="not valid JSON"):
+        message_to_chat(message)
 
 
 def test_tool_to_json() -> None:

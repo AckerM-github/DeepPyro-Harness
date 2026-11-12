@@ -12,7 +12,9 @@ is handled the same way so chat survives both signal styles.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+import inspect
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from rich.text import Text
@@ -30,7 +32,26 @@ HELP_COMMAND = "/help"
 class Interruptible(Protocol):
     """The subset of AgentSession needed to cancel the running turn."""
 
-    def interrupt(self) -> None: ...
+    def interrupt(self) -> Any: ...
+
+
+async def await_maybe(value: Any) -> Any:
+    """Await an awaitable, or return a plain value (sync test doubles)."""
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def _await(value: Awaitable[Any]) -> Any:
+    return await value
+
+
+async def interrupt_agent(agent: Any) -> None:
+    """Interrupt a running turn, accepting sync and async AgentSession shapes."""
+    try:
+        await await_maybe(agent.interrupt())
+    except Exception:  # noqa: BLE001, S110 - interrupt is best effort, never fatal
+        pass
 
 
 class TurnInterrupts:
@@ -46,6 +67,7 @@ class TurnInterrupts:
         self._agent: Interruptible | None = None
         self._armed = False
         self._fired = False
+        self._tasks: list[asyncio.Task[Any]] = []
 
     @property
     def fired(self) -> bool:
@@ -71,9 +93,27 @@ class TurnInterrupts:
         if not armed or agent is None:
             return
         try:
-            agent.interrupt()
-        except Exception:  # pragma: no cover - interrupt must never kill the UI
-            pass
+            result = agent.interrupt()
+        except Exception:  # noqa: BLE001 - interrupt must never kill the UI
+            return
+        if not inspect.isawaitable(result):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - press outside the chat loop
+            if inspect.iscoroutine(result):
+                result.close()
+            return
+        self._tasks.append(loop.create_task(_await(result)))
+
+    async def drain(self) -> None:
+        """Wait for interrupt requests scheduled from the signal handler."""
+        tasks, self._tasks = self._tasks, []
+        for task in tasks:
+            try:
+                await task
+            except BaseException:  # noqa: BLE001, S110 - interrupt is best effort
+                pass
 
 
 def _console_read_line(frontend: TerminalFrontend) -> str:
@@ -83,7 +123,7 @@ def _console_read_line(frontend: TerminalFrontend) -> str:
     return input()
 
 
-def chat_loop(
+async def chat_loop(
     frontend: TerminalFrontend,
     store: Any,
     session: Any,
@@ -137,16 +177,12 @@ def chat_loop(
         if interrupt_requests is not None:
             interrupt_requests.arm(agent)
         sink.begin_turn()
+        interrupted = False
         try:
-            agent.send(text)
+            await await_maybe(agent.send(text))
         except KeyboardInterrupt:
-            try:
-                agent.interrupt()
-            except Exception:  # pragma: no cover - interrupt is best effort
-                pass
-            sink.end_turn()
-            frontend.warning("interrupted")
-            continue
+            await interrupt_agent(agent)
+            interrupted = True
         except DeeppyroError as exc:
             sink.end_turn()
             frontend.error(f"error: {exc}")
@@ -154,6 +190,12 @@ def chat_loop(
         finally:
             if interrupt_requests is not None:
                 interrupt_requests.disarm()
+        if interrupt_requests is not None:
+            await interrupt_requests.drain()
+            interrupted = interrupted or interrupt_requests.fired
         sink.end_turn()
+        if interrupted:
+            frontend.warning("interrupted")
+            continue
         turns += 1
         frontend.turn_usage(sink)

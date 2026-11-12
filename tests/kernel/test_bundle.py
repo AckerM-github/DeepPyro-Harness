@@ -13,8 +13,6 @@ from deeppyro.kernel import (
     boot,
     bundle_specs,
     create_app,
-    load_manifest,
-    merge_plugins,
 )
 
 EXPECTED_ORDER = ["frontend", "llm", "sessions", "sandbox", "tools", "agents"]
@@ -82,22 +80,10 @@ config = { start = 5 }
 async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
     manifest = tmp_path / "plugins.toml"
     manifest.write_text(
-        "\n".join(
-            [
-                "[[plugins]]",
-                'id = "sessions"',
-                "disabled = true",
-                "[[plugins]]",
-                'id = "sandbox"',
-                "disabled = true",
-                "[[plugins]]",
-                'id = "tools"',
-                "disabled = true",
-                "[[plugins]]",
-                'id = "agents"',
-                "disabled = true",
-            ]
-        ),
+        '[[plugins]]\nid = "sessions"\ndisabled = true\n'
+        '[[plugins]]\nid = "sandbox"\ndisabled = true\n'
+        '[[plugins]]\nid = "tools"\ndisabled = true\n'
+        '[[plugins]]\nid = "agents"\ndisabled = true\n',
         encoding="utf-8",
     )
     app = await boot(_config(), manifest_paths=[str(manifest)])

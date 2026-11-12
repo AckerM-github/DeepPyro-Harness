@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from deeppyro.core.wire import LogRecord, Message, SessionHeader
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"

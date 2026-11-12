@@ -14,7 +14,13 @@ Domain code must stay cordis-free; plugins wrap it.
 """
 
 from deeppyro.kernel.app import App, create_app
-from deeppyro.kernel.bundle import DEFAULT_MANIFEST_PATH, DEFAULT_PLUGINS, boot, bundle_specs, default_manifest_paths
+from deeppyro.kernel.bundle import (
+    DEFAULT_MANIFEST_PATH,
+    DEFAULT_PLUGINS,
+    boot,
+    bundle_specs,
+    default_manifest_paths,
+)
 from deeppyro.kernel.config_service import KernelConfig, provide_config
 from deeppyro.kernel.manifest import (
     ManifestError,
@@ -25,18 +31,18 @@ from deeppyro.kernel.manifest import (
 )
 
 __all__ = [
-    "App",
     "DEFAULT_MANIFEST_PATH",
     "DEFAULT_PLUGINS",
-    "boot",
-    "bundle_specs",
-    "default_manifest_paths",
-    "create_app",
+    "App",
     "KernelConfig",
-    "provide_config",
     "ManifestError",
     "PluginSpec",
+    "boot",
+    "bundle_specs",
+    "create_app",
+    "default_manifest_paths",
     "load_manifest",
     "merge_plugins",
+    "provide_config",
     "resolve_plugin_name",
 ]

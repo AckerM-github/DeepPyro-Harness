@@ -71,9 +71,7 @@ def text_stream(*parts: str, finish: str = "stop", usage: bool = False) -> str:
     return sse_doc(chunks)
 
 
-def sse_response(
-    body: str, *, status: int = 200, headers: dict[str, str] | None = None
-) -> httpx.Response:
+def sse_response(body: str, *, status: int = 200, headers: dict[str, str] | None = None) -> httpx.Response:
     merged = dict(SSE_HEADERS)
     if headers:
         merged.update(headers)
@@ -117,10 +115,10 @@ def text_tool(name: str = "read", description: str = "Read a file") -> ToolSchem
 
 
 __all__ = [
+    "SSE_HEADERS",
     "ImagePart",
     "Message",
     "ReasoningPart",
-    "SSE_HEADERS",
     "TextPart",
     "ToolCallPart",
     "chat_chunk",

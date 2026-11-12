@@ -6,9 +6,10 @@ These are the seams between workstreams. Change them only with the Lead.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import Field
 

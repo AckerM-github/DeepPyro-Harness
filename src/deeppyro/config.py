@@ -65,8 +65,10 @@ class Config(BaseModel):
         return provider, model
 
 
-DEFAULT_CONFIG_PATH = Path(user_config_dir("deeppyro")) / "config.toml"
-DEFAULT_SESSION_DIR = Path(user_data_dir("deeppyro")) / "sessions"
+# `appauthor=False` keeps the Windows layout at %APPDATA%\deeppyro instead of
+# the doubled %APPDATA%\deeppyro\deeppyro platformdirs would otherwise build.
+DEFAULT_CONFIG_PATH = Path(user_config_dir("deeppyro", appauthor=False, roaming=True)) / "config.toml"
+DEFAULT_SESSION_DIR = Path(user_data_dir("deeppyro", appauthor=False)) / "sessions"
 
 DEFAULT_TOML = """
 # deeppyro configuration

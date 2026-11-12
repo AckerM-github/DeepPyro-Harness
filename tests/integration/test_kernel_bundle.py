@@ -32,8 +32,7 @@ def _config(tmp_path: Path) -> Config:
 async def app(tmp_path: Path):
     manifest = tmp_path / "plugins.toml"
     manifest.write_text(
-        '[[plugins]]\nid = "sessions"\ndisabled = true\n'
-        '[[plugins]]\nid = "agents"\ndisabled = true\n',
+        '[[plugins]]\nid = "sessions"\ndisabled = true\n[[plugins]]\nid = "agents"\ndisabled = true\n',
         encoding="utf-8",
     )
     app = await boot(_config(tmp_path), manifest_paths=[str(manifest)])
@@ -61,7 +60,6 @@ async def test_llm_service_resolves_configured_provider(app) -> None:
 async def test_sandbox_service_builds_gate_for_workspace(app, tmp_path: Path) -> None:
     gate = app.service("sandbox").gate(tmp_path)
     # workspace-write preset allows writes inside the workspace
-    from deeppyro.sandbox import Decision
 
     decision = gate.check_write(tmp_path / "a.txt") if hasattr(gate, "check_write") else None
     assert decision is None or decision.allowed is True

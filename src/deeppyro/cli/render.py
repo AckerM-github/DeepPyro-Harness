@@ -120,9 +120,7 @@ class JsonLinesSink:
 
     def emit(self, event: Mapping[str, Any]) -> None:
         """Serialize and flush one event as a single NDJSON line."""
-        payload = json.dumps(
-            dict(event), ensure_ascii=False, separators=(",", ":"), default=_json_default
-        )
+        payload = json.dumps(dict(event), ensure_ascii=False, separators=(",", ":"), default=_json_default)
         out = self.stream
         out.write(payload + "\n")
         out.flush()
@@ -350,7 +348,7 @@ class RichSink:
                 transient=True,
             )
             self._live.start()
-        except Exception:  # pragma: no cover - terminal-only best effort
+        except Exception:  # noqa: BLE001 - terminal-only best effort
             self._live = None
 
     def _update_live(self) -> None:
@@ -362,7 +360,7 @@ class RichSink:
         self._live_updated = now
         try:
             self._live.update(Markdown(self._text))
-        except Exception:  # pragma: no cover - terminal-only best effort
+        except Exception:  # noqa: BLE001 - terminal-only best effort
             self._stop_live()
 
     def _stop_live(self) -> None:
@@ -371,7 +369,7 @@ class RichSink:
             return
         try:
             live.stop()
-        except Exception:  # pragma: no cover - terminal-only best effort
+        except Exception:  # noqa: BLE001, S110 - terminal-only best effort
             pass
 
 
@@ -448,27 +446,31 @@ def effective_config_summary(cfg: Config, *, path: Path | None = None) -> dict[s
 
 
 def render_config_summary(console: Console, summary: Mapping[str, Any]) -> None:
-    """Print the effective configuration: paths, agent defaults and providers."""
+    """Print the effective configuration: paths, agent defaults and providers.
+
+    Providers are printed as indented key/value blocks instead of a wide table:
+    URLs, key ids and model lists must never be ellipsized, even in an 80-column
+    terminal (or in tests that render with a narrow console).
+    """
     missing = "" if summary.get("configExists") else " [yellow](missing, using built-in defaults)[/]"
-    console.print(f"[bold]config[/]: {summary.get('configPath')}{missing}")
-    console.print(f"[bold]sessions[/]: {summary.get('sessionDir')}")
+    console.print(f"[bold]config[/]: {summary.get('configPath')}{missing}", soft_wrap=True)
+    console.print(f"[bold]sessions[/]: {summary.get('sessionDir')}", soft_wrap=True)
     agent = summary.get("agent") or {}
     console.print(
         "[bold]agent[/]: "
         f"provider={agent.get('provider')} model={agent.get('model')} "
         f"preset={agent.get('permissionPreset')} approval={agent.get('approvalPolicy')} "
-        f"maxSteps={agent.get('maxSteps')}"
+        f"maxSteps={agent.get('maxSteps')} maxTokens={agent.get('maxTokens')} "
+        f"temperature={agent.get('temperature')}",
+        soft_wrap=True,
     )
-    table = Table(box=None, header_style="bold", pad_edge=False, show_edge=False)
-    table.add_column("provider", style="cyan")
-    table.add_column("api", style="dim")
-    table.add_column("baseURL")
-    table.add_column("apiKey")
-    table.add_column("models")
+    console.print("[bold]providers[/]")
     for name, pc in (summary.get("providers") or {}).items():
         key = pc.get("apiKey") or "-"
         if pc.get("apiKeySource"):
             key = f"{key} ({pc['apiKeySource']})"
         models = ", ".join(str(model.get("id")) for model in pc.get("models") or []) or "-"
-        table.add_row(name, str(pc.get("api") or "-"), str(pc.get("baseURL") or "-"), key, models)
-    console.print(table)
+        console.print(f"  [cyan]{name}[/] ({pc.get('api') or '-'})", soft_wrap=True)
+        console.print(f"    baseURL  {pc.get('baseURL') or '-'}", soft_wrap=True)
+        console.print(f"    apiKey   {key}", soft_wrap=True)
+        console.print(f"    models   {models}", soft_wrap=True)

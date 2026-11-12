@@ -6,7 +6,7 @@ Do not rename them: the log is a compatibility contract.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -60,15 +60,9 @@ class UnknownPart(WireModel):
     type: str
 
 
-ContentPart = Union[
-    TextPart,
-    ReasoningPart,
-    ToolCallPart,
-    ImagePart,
-    ToolAdditionPart,
-    ToolRemovalPart,
-    UnknownPart,
-]
+ContentPart = (
+    TextPart | ReasoningPart | ToolCallPart | ImagePart | ToolAdditionPart | ToolRemovalPart | UnknownPart
+)
 
 
 # --------------------------------------------------------------------------

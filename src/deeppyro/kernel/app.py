@@ -13,9 +13,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Any
 
-from deeppyro._vendor.cordis_port import Context, Fiber, FiberState
+from deeppyro._vendor.cordis_port import Context, Fiber
 from deeppyro.config import Config, load_config
 from deeppyro.kernel.config_service import provide_config
 from deeppyro.kernel.manifest import PluginSpec, resolve_specs

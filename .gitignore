@@ -15,3 +15,8 @@ uv.lock.bak
 # local
 .env
 *.local.toml
+
+# local runtime artefacts
+.e2e-sessions/
+.deeppyro/
+*.zstd

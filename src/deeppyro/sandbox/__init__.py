@@ -14,10 +14,10 @@ from deeppyro.sandbox.types import (
 
 __all__ = [
     "APPROVALS",
+    "DANGEROUS_PATTERNS",
     "PRESETS",
     "Approval",
     "ApprovalRequest",
-    "DANGEROUS_PATTERNS",
     "Decision",
     "PermissionGate",
     "Preset",

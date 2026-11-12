@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
 from deeppyro import config
-from deeppyro.core.errors import ConfigError
 
 
 def test_default_toml_parses(tmp_path: Path) -> None:

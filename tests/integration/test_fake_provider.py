@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from deeppyro.core.protocols import Finish, LlmProvider, LlmRequest, TextDelta
 
-from .fake_provider import Response, ScriptedProvider, text_response, tool_response
+from .fake_provider import Response, ScriptedProvider, tool_response
 
 
 async def test_scripted_provider_is_a_provider() -> None:
