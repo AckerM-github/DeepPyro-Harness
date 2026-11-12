@@ -42,7 +42,9 @@ class AgentConfig(BaseModel):
     provider: str = "local"
     model: str = ""
     temperature: float | None = None
-    maxTokens: int | None = None
+    # Output cap per request. Reasoning consumes this budget too, so a low value
+    # truncates answers that think first (the dshinfer default is just 512).
+    maxTokens: int | None = 4096
     maxSteps: int = 100
     permissionPreset: Literal["read-only", "workspace-write", "danger-full-access"] = "workspace-write"
     approvalPolicy: Literal["ask", "never", "always"] = "ask"
@@ -75,6 +77,7 @@ DEFAULT_TOML = """
 [agent]
 provider = "local"
 model = "deepseek-v4-pro-qwen3.5-9b"
+maxTokens = 4096
 permissionPreset = "workspace-write"
 approvalPolicy = "ask"
 

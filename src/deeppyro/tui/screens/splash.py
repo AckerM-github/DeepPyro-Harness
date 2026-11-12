@@ -1,9 +1,9 @@
 """Startup splash screen: pixel wordmark with a line-by-line reveal.
 
 The splash is a modal screen so the chat layout can finish mounting and the
-runtime can boot underneath it. It dismisses on any key, or by itself shortly
-after the reveal animation finishes. Rows are revealed top-to-bottom; the
-runtime line is updated by the app once the kernel is ready.
+runtime can boot underneath it. It stays until the user presses any key; rows
+are revealed top-to-bottom and the runtime line is updated by the app once the
+kernel is ready.
 """
 
 from __future__ import annotations
@@ -27,8 +27,6 @@ from deeppyro.tui.wordmark import (
 
 #: Delay between two revealed rows.
 REVEAL_INTERVAL = 0.04
-#: Extra time the splash stays visible after the last row.
-HOLD_SECONDS = 1.5
 #: Below these sizes the big wordmark does not fit and the compact one is used.
 FULL_MIN_WIDTH = 72
 FULL_MIN_HEIGHT = 24
@@ -93,7 +91,6 @@ class SplashScreen(ModalScreen[None]):
         self._visible = 0
         self._refresh()
         self._interval_timer = self.set_interval(REVEAL_INTERVAL, self._advance)
-        self.set_timer(REVEAL_INTERVAL * len(self._lines) + HOLD_SECONDS, self.action_dismiss_splash)
 
     # -- public API ------------------------------------------------------
     @property
@@ -200,7 +197,6 @@ class SplashScreen(ModalScreen[None]):
 __all__ = [
     "FULL_MIN_HEIGHT",
     "FULL_MIN_WIDTH",
-    "HOLD_SECONDS",
     "REVEAL_INTERVAL",
     "SplashScreen",
 ]

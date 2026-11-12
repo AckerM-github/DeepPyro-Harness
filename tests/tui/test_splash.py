@@ -7,7 +7,6 @@ from typing import Any
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
-from deeppyro.tui.screens import splash as splash_module
 from deeppyro.tui.screens.splash import SplashScreen
 from deeppyro.tui.wordmark import (
     ART_WIDTH,
@@ -99,15 +98,14 @@ async def test_set_runtime_fills_the_boot_line() -> None:
         assert "D:/code/deeppyro" in text
 
 
-async def test_splash_dismisses_itself_after_the_hold(monkeypatch: Any) -> None:
-    monkeypatch.setattr(splash_module, "REVEAL_INTERVAL", 0.005)
-    monkeypatch.setattr(splash_module, "HOLD_SECONDS", 0.02)
+async def test_splash_stays_open_until_a_key_is_pressed() -> None:
     app = SplashHost(version="0.1.0", cwd="D:/work")
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.02)
-        assert isinstance(app.screen, SplashScreen)
-        for _ in range(40):
-            await pilot.pause(0.05)
-            if not isinstance(app.screen, SplashScreen):
-                break
+        await pilot.pause(2.4)
+        screen = app.screen
+        assert isinstance(screen, SplashScreen)
+        assert screen.line_count == len(screen.visible_text().splitlines())
+
+        await pilot.press("enter")
+        await pilot.pause(0.2)
         assert not isinstance(app.screen, SplashScreen)

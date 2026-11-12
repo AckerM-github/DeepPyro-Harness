@@ -37,7 +37,7 @@
 
 1. dpyro（无参数）→ main.main → DeepPyroApp(cwd/provider/model 可选)。
 2. App.on_mount：先 push_screen(SplashScreen(...), callback=重新聚焦输入框)，再 await TuiRuntime.boot(sink=app.sink, ask=app.ask_approval)。
-3. SplashScreen：内容按 40ms/行逐行揭示（宽 >= 72 且高 >= 24 用 22 行大字标，否则退化为单行字标），任意键立即关闭，全部揭示后保持 1.5s 自动关闭；boot 完成后 App 调 set_runtime 回填 provider/model/cwd；boot 失败时立即关闭 splash 并显示错误。
+3. SplashScreen：内容按 40ms/行逐行揭示（宽 >= 72 且高 >= 24 用 22 行大字标，否则退化为单行字标），**揭示完成后一直停留，直到用户按任意键才进入主界面**（不自动关闭）；boot 完成后 App 调 set_runtime 回填 provider/model/cwd；boot 失败时立即关闭 splash 并显示错误。
 4. TuiRuntime.boot：load_config → resolve_workspace → 校验 provider/model → kernel.boot（llm/sessions/sandbox/tools/agents 五服务）→ 取 llm.provider、tools.registry_for(workspace)、sandbox.gate(workspace, ask=ask) → new_session()。
 5. new_session：SessionStore.create → agents.options(model=, context_window=) → agents.create(session/provider/registry/options/sink/permission/cwd) → AgentSession。
 6. 失败：conversation.add_error(failed to start: ...)，App 仍可退出。
@@ -62,7 +62,7 @@
 | Ctrl+C | turn 运行中：中断当前 turn；空闲且有输入：清空输入；空闲空输入 1.2 秒内双击：退出 |
 | Ctrl+D | 退出 |
 | Ctrl+P | 聚焦输入框（命令面板预留） |
-| 任意键（splash 显示时） | 跳过启动画面进入对话 |
+| 任意键（splash 显示时） | 关闭启动画面进入对话（splash 不会自动关闭） |
 | Esc | 关闭模态（审批/选择器/插件管理） |
 
 ## 6. Slash 命令
@@ -107,6 +107,13 @@
 - 真实链路冒烟：D:/dshworkspace/.dsh-tmp/runtime_smoke.py（TuiRuntime.boot + agent.send，需本地 8000 推理服务）。
 - 回归红线：不得再次出现 widget 方法名为 _render（Textual 私有名，会把 Widget._render 顶掉导致 render_strips 崩溃）。
 - 所有 widget 刷新只允许在 Textual 事件循环线程内；后台线程只允许 put_message/post_message。
+
+## 9.1 思考过程的来源
+
+TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasoning_content` 字段）。本地 dshinfer 端点默认
+`DSHINFER_ENABLE_THINKING=false`，模型不会返回思考，ticker 自然为空；要看到逐句思考，用
+`$env:DSHINFER_ENABLE_THINKING="true"; uv run uvicorn dshinfer.api:app --port 8000` 重启推理服务即可。
+`[agent] maxTokens` 默认 4096：思考与答案共用这个输出预算，太小会把答案截断。
 
 ## 10. 已知偏离与待办
 
