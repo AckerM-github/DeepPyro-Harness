@@ -14,6 +14,12 @@ from deeppyro.tools import builtin_tools
 from deeppyro.tools.builtin.web import DUCKDUCKGO_HTML_ENDPOINT, FETCH_NOTICE
 from tests.tools.helpers import FIXTURES, load_real_tool_calls, make_context, write_file
 
+if not FIXTURES.is_dir():
+    pytest.skip(
+        "real DSH fixtures not present; run: node tools/gen_fixtures.mjs",
+        allow_module_level=True,
+    )
+
 TOOLS = {tool.name: tool for tool in builtin_tools(object(), Path.cwd())}
 
 

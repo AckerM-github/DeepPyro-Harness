@@ -176,6 +176,7 @@ def test_fork_errors(tmp_path: pathlib.Path) -> None:
     assert excinfo.value.code == "INVALID_BOUNDARY"
 
 
+@support.requires_fixtures
 def test_fork_of_trimmed_session_is_rejected(tmp_path: pathlib.Path) -> None:
     store = _store(tmp_path)
     fixture = support.SESSIONS_DIR / "session-66de8981-4091-4bdc-9ff1-b23470ad6fa9.jsonl"
@@ -189,6 +190,7 @@ def test_fork_of_trimmed_session_is_rejected(tmp_path: pathlib.Path) -> None:
     assert "trimmed" in str(excinfo.value)
 
 
+@support.requires_fixtures
 def test_fork_preserves_subagent_origin_from_real_fixture(tmp_path: pathlib.Path) -> None:
     store = _store(tmp_path)
     fixture = support.SESSIONS_DIR / "7fdb12e1-c6c4-4059-8a53-e7d9d566de7c.jsonl"

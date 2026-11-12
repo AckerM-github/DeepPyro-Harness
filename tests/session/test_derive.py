@@ -42,6 +42,7 @@ def _append_chain() -> list:
     ]
 
 
+@support.requires_fixtures
 @pytest.mark.parametrize("path", support.session_files(), ids=lambda p: p.stem)
 def test_strict_derive_every_fixture(path: pathlib.Path) -> None:
     result = reader.read_session_file(path)
@@ -52,6 +53,7 @@ def test_strict_derive_every_fixture(path: pathlib.Path) -> None:
     assert len({message.id for message in messages}) == len(messages)
 
 
+@support.requires_fixtures
 def test_system_prompt_replacement_keeps_head_position() -> None:
     result = reader.read_session_file(_ddb1ba3d())
     replacement = next(
@@ -65,6 +67,7 @@ def test_system_prompt_replacement_keeps_head_position() -> None:
     assert replacement.sourceEventSeqs == [8]
 
 
+@support.requires_fixtures
 def test_developer_retirement_hides_shadowed_user_message() -> None:
     result = reader.read_session_file(_d745())
     retired = next(record for record in result.records if record.seq == 13)
@@ -74,6 +77,7 @@ def test_developer_retirement_hides_shadowed_user_message() -> None:
     assert "developer" not in {message.role for message in messages}
 
 
+@support.requires_fixtures
 def test_multiple_developer_retirements() -> None:
     result = reader.read_session_file(_04a44e0f())
     retired_ids = {

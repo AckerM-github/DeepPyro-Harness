@@ -14,6 +14,12 @@ from deeppyro.core.wire import LogRecord
 from deeppyro.session import events, layout, reader, writer
 from tests.session import support
 
+if not support.FIXTURES.is_dir():
+    pytest.skip(
+        "real DSH fixtures not present; run: node tools/gen_fixtures.mjs",
+        allow_module_level=True,
+    )
+
 MANIFEST = support.manifest_by_file()
 TYPE_SAMPLES = support.load_manifest()["typeSamples"]
 

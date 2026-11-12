@@ -1,11 +1,14 @@
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { fileURLToPath } from 'node:url';
 
-const HOME = process.env.USERPROFILE || 'C:/Users/74185';
-const SESS_ROOT = path.join(HOME, '.dsh', 'sessions');
-const OUT = 'D:/code/deeppyro/fixtures';
+const HOME = process.env.USERPROFILE || os.homedir();
+const SESS_ROOT = process.env.DSH_SESSIONS || path.join(HOME, '.dsh', 'sessions');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const OUT = process.env.DEEPPYRO_FIXTURES || path.join(ROOT, 'fixtures');
 const SESS_OUT = path.join(OUT, 'sessions');
 const TYPE_OUT = path.join(OUT, 'records', 'by-type');
 fs.mkdirSync(SESS_OUT, { recursive: true });

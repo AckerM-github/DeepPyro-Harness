@@ -14,6 +14,11 @@ from deeppyro.llm.retry import RETRYABLE_CODES, RetryPolicy
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
+requires_fixtures = pytest.mark.skipif(
+    not FIXTURES.is_dir(),
+    reason="privacy: real-session fixtures are not committed; run node tools/gen_fixtures.mjs",
+)
+
 
 def policy_with_sleeps(**kwargs: object) -> tuple[RetryPolicy, list[float]]:
     sleeps: list[float] = []
@@ -166,6 +171,7 @@ def test_from_policy_maps_recorded_shape() -> None:
     assert policy.retryable_codes == RETRYABLE_CODES
 
 
+@requires_fixtures
 def test_from_policy_reads_fixture_policy_key() -> None:
     record = json.loads(
         (FIXTURES / "records" / "by-type" / "llm_retry.jsonl").read_text("utf-8").splitlines()[0]
@@ -229,6 +235,7 @@ def test_from_policy_rejects_bad_shapes() -> None:
         RetryPolicy.from_policy("{not json}")
 
 
+@requires_fixtures
 def test_retryable_codes_match_fixture_policy_key() -> None:
     """fixtures pin the retry policy key of the DSH log; our code set must agree."""
     record = json.loads(

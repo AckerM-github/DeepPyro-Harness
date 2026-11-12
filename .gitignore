@@ -20,3 +20,6 @@ uv.lock.bak
 .e2e-sessions/
 .deeppyro/
 *.zstd
+
+# real DSH session logs (personal data) - generated locally by tools/gen_fixtures.mjs
+fixtures/

@@ -42,7 +42,6 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
     docs/spec/  契约与逆向出的 DSH 语义（INTERFACES / tui / headless / session / llm / tools / loop / plugins）
     tests/      单测 + 黄金对照测试
     tools/      fixture 生成器（Node，只读 ~/.dsh）
-    fixtures/   解码后的真实会话样本
 
 ## 开发
 
@@ -61,3 +60,13 @@ TUI 里输入 `/help` 查看 slash 命令（`/new /resume /model /status /compac
 插件清单（可选）：`%APPDATA%\deeppyro\plugins.toml`，用 `[[plugins]]` + `id/disabled/config`
 覆盖内置插件（`llm / sessions / sandbox / tools / agents`），也支持 `module:Class` 自带插件；
 TUI 的 `/plugins` 管理外部插件（entry point / 用户目录 plugin.toml / 用户清单）。
+
+### 测试 fixtures 含个人会话，故意不入库
+
+真实 DSH 会话日志属于个人数据，仓库里不含 `fixtures/`（已 gitignore）。需要跑黄金对照 /
+记录类型回归测试时，在本机生成：
+
+    node tools/gen_fixtures.mjs    # 读 %USERPROFILE%\.dsh\sessions，写 ../fixtures/
+    # 可用 DSH_SESSIONS / DEEPPYRO_FIXTURES 覆盖输入、输出目录
+
+缺少 fixtures 时，相关测试会自动 skip，其余测试照常运行。

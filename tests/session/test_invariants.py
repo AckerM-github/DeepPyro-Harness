@@ -15,6 +15,12 @@ from deeppyro.session.derive import APPEND, REPLACE, fold_surface, plan_surface_
 from deeppyro.session.events import KNOWN_EVENT_TYPES, SURFACE_EVENTS
 from tests.session import support
 
+if not support.FIXTURES.is_dir():
+    pytest.skip(
+        "real DSH fixtures not present; run: node tools/gen_fixtures.mjs",
+        allow_module_level=True,
+    )
+
 MESSAGE_ROLES = {"system", "user", "assistant", "tool", "developer"}
 
 

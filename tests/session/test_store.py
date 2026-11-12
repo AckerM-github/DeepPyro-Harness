@@ -271,7 +271,7 @@ def test_layout_encoding() -> None:
     assert layout.encode_segment("..") == "~002E~002E"
     assert layout.encode_segment("a/b") == "a~002Fb"
     assert layout.encode_segment("a~b") == "a~007Eb"
-    assert layout.project_key("C:\\Users\\74185\\.dsh\\im") == "--C-Users-74185-.dsh-im--"
+    assert layout.project_key("C:\\Users\\example\\.dsh\\im") == "--C-Users-example-.dsh-im--"
     assert layout.project_key("/home/user/project") == "--home-user-project--"
     assert layout.log_filename() == "session.v4.jsonl"
     assert layout.log_filename(zstd=True) == "session.v4.jsonl.zstd"

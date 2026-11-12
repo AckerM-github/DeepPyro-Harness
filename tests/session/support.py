@@ -6,6 +6,8 @@ import json
 import pathlib
 from typing import Any
 
+import pytest
+
 from deeppyro.core.wire import LogRecord, Message, SessionHeader
 from deeppyro.session.events import normalize_event
 
@@ -13,6 +15,11 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "fixtures"
 SESSIONS_DIR = FIXTURES / "sessions"
 BY_TYPE_DIR = FIXTURES / "records" / "by-type"
+
+requires_fixtures = pytest.mark.skipif(
+    not FIXTURES.is_dir(),
+    reason="privacy: real-session fixtures are not committed; run node tools/gen_fixtures.mjs",
+)
 
 
 def load_manifest() -> dict[str, Any]:

@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from deeppyro.core.wire import LogRecord
 from deeppyro.session.derive import derive_messages
 
 from .golden import assistant_responses, first_session_with_assistant, load_session_records, user_texts
+
+_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
+if not (_FIXTURES / "sessions").is_dir():
+    pytest.skip(
+        "real DSH fixtures not present; run: node tools/gen_fixtures.mjs",
+        allow_module_level=True,
+    )
 
 
 def test_golden_helpers_load_a_real_session() -> None:

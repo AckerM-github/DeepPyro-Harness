@@ -6,12 +6,20 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from deeppyro.core.protocols import ToolSchema
 from deeppyro.core.wire import Message, ToolCallPart
 from deeppyro.llm.messages import message_to_chat, tool_to_json
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 BY_TYPE = FIXTURES / "records" / "by-type"
+
+if not BY_TYPE.is_dir():
+    pytest.skip(
+        "real DSH fixtures not present; run: node tools/gen_fixtures.mjs",
+        allow_module_level=True,
+    )
 
 
 def _record(name: str) -> dict[str, Any]:

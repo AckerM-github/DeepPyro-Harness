@@ -54,7 +54,7 @@ so locally created sessions are easy to inspect; open/list accept the flat layou
 Encoding rules (copied from DSH):
 
 * encodeSegment(id): "." -> "~002E", ".." -> "~002E~002E"; ASCII [A-Za-z0-9._-] (except ~) passes through; every other UTF-16 code unit becomes ~XXXX (upper-case hex). session-<uuid> is therefore unchanged.
-* projectKey(cwd): runs of /, \, : collapse to -; safe characters pass through; everything else is ~XXXX; the readable part is left-stripped of -, falls back to "root", is truncated to 251 chars, and is wrapped as --<readable>--. Example: C:\Users\74185\.dsh\im -> --C-Users-74185-.dsh-im--.
+* projectKey(cwd): runs of /, \, : collapse to -; safe characters pass through; everything else is ~XXXX; the readable part is left-stripped of -, falls back to "root", is truncated to 251 chars, and is wrapped as --<readable>--. Example: C:\Users\example\.dsh\im -> --C-Users-example-.dsh-im--.
 * Current log file name: session.v4.jsonl or session.v4.jsonl.zstd.
 
 ### 2.2 JSONL framing

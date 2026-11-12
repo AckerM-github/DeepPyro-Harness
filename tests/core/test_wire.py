@@ -5,9 +5,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from deeppyro.core.wire import LogRecord, Message, SessionHeader
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
+
+pytestmark = pytest.mark.skipif(
+    not FIXTURES.is_dir(),
+    reason="real DSH fixtures not present; run: node tools/gen_fixtures.mjs",
+)
 
 
 def _fixture_sessions() -> list[Path]:
