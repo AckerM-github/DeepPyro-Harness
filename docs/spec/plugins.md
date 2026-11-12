@@ -18,7 +18,7 @@
 
 (a) Python entry point：组名 deeppyro.plugins。用 importlib.metadata.entry_points() 枚举，优先调用其 .select(group=...)，兼容旧 dict 形式与可迭代形式。行 id 为 entry point 名字；value 必须是 module:Class 字符串（也允许裸 module，但只有 load() 后才能解析出类）；version 取 distribution.version，origin 形如 dist-name==version，description 取 metadata 的 Summary。value 为空时该行带 error，不抛异常。
 
-(b) 用户插件目录：默认为用户清单同级的 plugins/ 目录，即 platformdirs 的 user_config_dir("deeppyro", appauthor=False, roaming=True) 下（Windows 为 %APPDATA%/deeppyro/plugins/）。每个插件一个子目录 <name>/，必须含 plugin.toml：
+(b) 用户插件目录：默认为 ~/.dpro/plugins/（deeppyro.paths.plugins_dir()；DEEPPYRO_PLUGINS_DIR 可覆盖；显式传入 manifest 时默认用 manifest 同级的 plugins/）。每个插件一个子目录 <name>/，必须含 plugin.toml：
 
     name = "Demo Plugin"
     version = "0.1.0"
@@ -29,7 +29,7 @@
 
 name/version/description/class 必须是字符串；module 必须是非空字符串；解析目标为 module:Class，若 class 为空则 module 本身必须已含冒号。id 恒为目录名（额外顶层键忽略）。provides 是可选扩展键，仅用于展示。没有 plugin.toml 的子目录直接忽略；TOML 语法错误、字段类型错误或无法解析目标时生成带 error 的行而不是抛异常。扫描时默认把插件目录插入 sys.path 头部（inject_sys_path=True），以便 validate 能 import 该目录里的模块。
 
-(c) 用户清单：%APPDATA%/deeppyro/plugins.toml 的 [[plugins]] 条目。完全复用 kernel.manifest 的 load_manifest / PluginSpec / enabled() 语义；只有当一个 id 没有在 (a)(b) 中出现时，清单条目本身才会作为 source=manifest 的行展示（name 即 module:Class）。清单是启用状态的唯一存储层：对 (a)(b) 的插件写 disabled 标志，插入新条目时用 id + name=module:Class。
+(c) 用户清单：~/.dpro/plugins.toml 的 [[plugins]] 条目（deeppyro.paths.plugins_manifest_path()；DEEPPYRO_PLUGINS_MANIFEST 可覆盖）。完全复用 kernel.manifest 的 load_manifest / PluginSpec / enabled() 语义；只有当一个 id 没有在 (a)(b) 中出现时，清单条目本身才会作为 source=manifest 的行展示（name 即 module:Class）。清单是启用状态的唯一存储层：对 (a)(b) 的插件写 disabled 标志，插入新条目时用 id + name=module:Class。
 
 发现顺序与优先级：目录 → entry point → 清单；同一 id 先出现者胜出并记录 warning（目录 > entry point > 清单）。任何来源使用 bundle 里的 id（llm/sessions/sandbox/tools/agents，动态取自 kernel.bundle.DEFAULT_PLUGINS）都会被忽略并记录 warning，管理器永远不会改动默认 bundle 插件。清单读取失败（ManifestError/OSError）只记入 errors，其余来源继续列出。
 
@@ -117,7 +117,7 @@ manager 省略时延迟构造真实的 PluginManager（读真实用户目录）�
 
 命令：@uv run pytest tests/plugins tests/kernel -q；ruff：@uv run ruff check src/deeppyro/plugins src/deeppyro/tui/screens/plugins.py tests/plugins。
 
-当前结果：tests/plugins 62 passed + tests/kernel 18 passed（tests/plugins 覆盖 @tests/plugins/test_manifest_store.py 11、@tests/plugins/test_discovery.py 19、@tests/plugins/test_manager.py 19、@tests/plugins/test_screen.py 13），ruff 无告警。tui 相关用例用 App.run_test 注入假 manager，不触碰真实 %APPDATA%；所有目录/entry point 用例在 tmp_path 构造，conftest 在用例结束后恢复 sys.path 并清理新导入模块。
+当前结果：tests/plugins 62 passed + tests/kernel 18 passed（tests/plugins 覆盖 @tests/plugins/test_manifest_store.py 11、@tests/plugins/test_discovery.py 19、@tests/plugins/test_manager.py 19、@tests/plugins/test_screen.py 13），ruff 无告警。tui 相关用例用 App.run_test 注入假 manager，不触碰真实用户目录；所有目录/entry point 用例在 tmp_path 构造，conftest 在用例结束后恢复 sys.path 并清理新导入模块。
 
 覆盖要点：三类来源字段与优先级、坏 TOML/坏 value 的行级错误、bundle id 过滤、清单 enabled 语义、原子写 round-trip（含 unicode/转义/嵌套 config/空清单删文件/无 .tmp 残留）、enable/disable 幂等与配置保留、读写失败不覆盖清单、bundle 保护、未知 id、目录删除边界、entry point 不卸载、validate 成功/失败、屏幕渲染/按键/通知/关闭/空列表/默认 manager 注入。
 

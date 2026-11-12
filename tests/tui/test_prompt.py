@@ -209,8 +209,8 @@ def test_default_history_path_honours_the_environment(tmp_path: Path, monkeypatc
     monkeypatch.setenv(HISTORY_PATH_ENV, str(override))
     assert default_history_path() == override
     monkeypatch.delenv(HISTORY_PATH_ENV)
-    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
-    assert default_history_path() == tmp_path / "appdata" / "deeppyro" / "history.jsonl"
+    monkeypatch.setenv("DEEPPYRO_HOME", str(tmp_path / "home"))
+    assert default_history_path() == tmp_path / "home" / "history.jsonl"
 
 
 async def test_slash_opens_the_completion_popup(tmp_path: Path) -> None:

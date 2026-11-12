@@ -12,11 +12,9 @@ The service contract lives in `docs/spec/INTERFACES.md` section 11.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from platformdirs import user_config_dir
-
+from deeppyro import paths
 from deeppyro.kernel.manifest import PluginSpec, register_alias, resolve_specs
 
 #: Short names usable in patch manifests and by the bundle layer.
@@ -39,14 +37,15 @@ DEFAULT_PLUGINS: tuple[PluginSpec, ...] = (
     PluginSpec(id="agents", name="agents"),
 )
 
-#: Default patch-layer manifest location (~/.config/deeppyro/plugins.toml on Linux).
-DEFAULT_MANIFEST_PATH = Path(user_config_dir("deeppyro", appauthor=False, roaming=True)) / "plugins.toml"
+#: Default patch-layer manifest location (~/.dpro/plugins.toml; DEEPPYRO_HOME moves the root).
+DEFAULT_MANIFEST_PATH = paths.default_plugins_manifest_path()
 
 
 def default_manifest_paths() -> tuple[str, ...]:
     """Patch manifests that exist on disk, in merge order."""
-    if DEFAULT_MANIFEST_PATH.exists():
-        return (str(DEFAULT_MANIFEST_PATH),)
+    manifest = paths.plugins_manifest_path()
+    if manifest.exists():
+        return (str(manifest),)
     return ()
 
 

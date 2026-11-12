@@ -48,7 +48,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
-    { name = "platformdirs" },
     { name = "pydantic" },
     { name = "rich" },
     { name = "textual" },
@@ -66,7 +65,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
-    { name = "platformdirs", specifier = ">=4.3" },
     { name = "pydantic", specifier = ">=2.10" },
     { name = "rich", specifier = ">=13.9" },
     { name = "textual", specifier = ">=8.2,<9" },

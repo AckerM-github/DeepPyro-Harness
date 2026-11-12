@@ -22,7 +22,7 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
 | 发行名 (PyPI) | `deeppyro-harness` |
 | import 名 | `deeppyro` |
 | CLI 命令 | `dpyro` / `deeppyro`（同一个 TUI 入口） |
-| 配置目录 | `%APPDATA%\deeppyro` |
+| 配置目录 | `~/.dpro`（Windows: `C:\Users\<user>\.dpro`，单目录存放全部用户级状态） |
 
 ## 布局
 
@@ -39,6 +39,7 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
       compact/  上下文压缩
       tui/      Textual 全屏 TUI（唯一前端：app/widgets/screens/commands/sink/runtime）
       headless.py  一次性 headless（run_once / NDJSON+rich sink，自包含）
+      paths.py  用户目录解析（~/.dpro、DEEPPYRO_HOME）与旧数据迁移
     docs/spec/  契约与逆向出的 DSH 语义（INTERFACES / tui / headless / session / llm / tools / loop / plugins）
     tests/      单测 + 黄金对照测试
     tools/      fixture 生成器（Node，只读 ~/.dsh）
@@ -48,7 +49,7 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
     uv sync
     uv run pytest
 
-    # 首次运行会自动生成 %APPDATA%deeppyroconfig.toml（默认 provider: local）
+    # 首次运行会在 ~/.dpro 生成 config.toml（默认 provider: local）
     uv run dpyro                                  # 打开 TUI（唯一交互形态）
     uv run dpyro --headless "列出 pyproject.toml 里的依赖"
     uv run dpyro --headless --json "1+1=?"        # NDJSON 事件流
@@ -57,7 +58,25 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
 TUI 里输入 `/help` 查看 slash 命令（`/new /resume /model /status /compact /clear /plugins /exit`）；
 `Ctrl+C` 在 turn 中取消当前 turn，空闲时清空输入，再按退出；`Ctrl+D` 退出。
 
-插件清单（可选）：`%APPDATA%\deeppyro\plugins.toml`，用 `[[plugins]]` + `id/disabled/config`
+### 配置与数据目录
+
+所有用户级状态集中在一个目录：默认 `~/.dpro`（Windows 为 `C:\Users\<user>\.dpro`），
+结构对齐 DSH 的 `~/.dsh`：
+
+| 路径 | 内容 |
+|---|---|
+| `config.toml` | provider / model / agent 配置（首次运行自动生成） |
+| `sessions/` | `session.v4.jsonl` 会话日志 |
+| `plugins.toml` | 用户插件清单 |
+| `plugins/` | 外部插件目录 |
+| `history.jsonl` | TUI 输入历史 |
+
+- `DEEPPYRO_HOME` 覆盖整个目录；`DEEPPYRO_CONFIG` / `DEEPPYRO_SESSION_DIR` / `DEEPPYRO_HISTORY` /
+  `DEEPPYRO_PLUGINS_MANIFEST` / `DEEPPYRO_PLUGINS_DIR` 覆盖单项路径。
+- 旧版本散落在 `%APPDATA%\deeppyro` / `%LOCALAPPDATA%\deeppyro` 的数据，首次运行会自动复制到
+  `~/.dpro`（只补缺失文件、不覆盖已有文件、不删除旧目录）。
+
+插件清单（可选）：`~/.dpro/plugins.toml`，用 `[[plugins]]` + `id/disabled/config`
 覆盖内置插件（`llm / sessions / sandbox / tools / agents`），也支持 `module:Class` 自带插件；
 TUI 的 `/plugins` 管理外部插件（entry point / 用户目录 plugin.toml / 用户清单）。
 

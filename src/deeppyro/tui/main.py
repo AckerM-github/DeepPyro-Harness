@@ -44,6 +44,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"deeppyro-harness {_version()}")
         return 0
 
+    from deeppyro.paths import migrate_legacy_layout
+
+    migrate_legacy_layout()
+
     headless = bool(args.headless or args.prompt)
     if not headless:
         from deeppyro.tui.app import DeepPyroApp

@@ -22,6 +22,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from deeppyro import paths
 from deeppyro.kernel.manifest import ManifestError, PluginSpec, load_manifest
 from deeppyro.plugins.model import (
     SOURCE_DIR,
@@ -57,18 +58,20 @@ class PluginDiscovery:
         bundle_ids: Iterable[str] | None = None,
         inject_sys_path: bool = True,
     ) -> None:
+        explicit_manifest = manifest_path is not None
         if manifest_path is None:
-            from deeppyro.kernel.bundle import DEFAULT_MANIFEST_PATH
-
-            manifest_path = DEFAULT_MANIFEST_PATH
+            manifest_path = paths.plugins_manifest_path()
         if bundle_ids is None:
             from deeppyro.kernel.bundle import DEFAULT_PLUGINS
 
             bundle_ids = (spec.id for spec in DEFAULT_PLUGINS)
         self.manifest_path = Path(manifest_path)
-        self.plugins_dir = (
-            Path(plugins_dir) if plugins_dir is not None else self.manifest_path.parent / "plugins"
-        )
+        if plugins_dir is not None:
+            self.plugins_dir = Path(plugins_dir)
+        elif explicit_manifest:
+            self.plugins_dir = self.manifest_path.parent / "plugins"
+        else:
+            self.plugins_dir = paths.plugins_dir()
         self._entry_points_factory = entry_points
         self._bundle_ids = frozenset(bundle_ids)
         self.inject_sys_path = inject_sys_path

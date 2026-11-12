@@ -19,6 +19,7 @@
 |---|---|---|
 | `src/deeppyro/core/**` | **Lead** | wire 模型、runtime protocols、errors、ids（冻结） |
 | `src/deeppyro/config.py` | **Lead** | 配置模型与加载 |
+| `src/deeppyro/paths.py` | **Lead** | 用户目录解析（`~/.dpro` / `DEEPPYRO_HOME`）与旧数据迁移 |
 | `src/deeppyro/session/**` | session-dev | 日志模型/读写/derive/fork/store |
 | `src/deeppyro/llm/**` | llm-dev | OpenAI 兼容 provider、SSE、重试 |
 | `src/deeppyro/tools/**`、`src/deeppyro/sandbox/**` | tools-dev | 工具注册表/流水线/内置工具/权限闸门 |
@@ -36,7 +37,7 @@
 - Python 3.13，`from __future__ import annotations`，全异步优先用 `asyncio`。
 - 路径一律 `pathlib.Path`；时间戳一律 int 毫秒。
 - 公开 API 都在各包 `__init__.py` 里 re-export，便于外部导入。
-- 依赖只用已装好的：httpx、pydantic v2、rich、textual、zstandard、platformdirs、pytest/respx。typer 已移除。
+- 依赖只用已装好的：httpx、pydantic v2、rich、textual、zstandard、typing-extensions、pytest/respx。typer、platformdirs 已移除。
 - 风格：ruff line-length=110；pytest `asyncio_mode=auto`（async 测试不用加装饰器）。
 - 每个模块自带 docstring；错误用 `deeppyro.core.errors` 里的类型，不要裸 `Exception`。
 
@@ -302,8 +303,9 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 ### 11.2 清单分层（对照 DSH `cordis.patch.yml`）
 
 - **bundle 层**：`deeppyro/kernel/bundle.py` 的 `DEFAULT_PLUGINS`（有序）。
-- **patch 层**：TOML 文件 `[[plugins]]`，默认路径 `%APPDATA%\deeppyro\plugins.toml`
-  （`platformdirs.user_config_dir("deeppyro")`；`default_manifest_paths()` 只在文件存在时返回）。
+- **patch 层**：TOML 文件 `[[plugins]]`，默认路径 `~/.dpro/plugins.toml`
+  （`deeppyro.paths.plugins_manifest_path()`，`DEEPPYRO_PLUGINS_MANIFEST` 可覆盖；
+  `default_manifest_paths()` 只在文件存在时返回）。
 - 合并语义 = DSH：同 `id` → `config` 浅合并（patch 优先），`name`/`disabled` 仅当 patch 显式设置才覆盖；
   新 `id` → 按 `before`/`after` 插入，否则追加；锚点不存在/新条目缺 name → `ManifestError`。
 

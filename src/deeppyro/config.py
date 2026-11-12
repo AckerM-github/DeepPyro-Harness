@@ -7,8 +7,9 @@ import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
-from platformdirs import user_config_dir, user_data_dir
 from pydantic import BaseModel, ConfigDict, Field
+
+from deeppyro import paths
 
 
 class ModelConfig(BaseModel):
@@ -67,10 +68,11 @@ class Config(BaseModel):
         return provider, model
 
 
-# `appauthor=False` keeps the Windows layout at %APPDATA%\deeppyro instead of
-# the doubled %APPDATA%\deeppyro\deeppyro platformdirs would otherwise build.
-DEFAULT_CONFIG_PATH = Path(user_config_dir("deeppyro", appauthor=False, roaming=True)) / "config.toml"
-DEFAULT_SESSION_DIR = Path(user_data_dir("deeppyro", appauthor=False)) / "sessions"
+# User-scoped locations live under one home directory (DSH-style, ~/.dpro).
+# DEEPPYRO_HOME overrides the root; DEEPPYRO_CONFIG and DEEPPYRO_SESSION_DIR
+# override individual paths at call time.
+DEFAULT_CONFIG_PATH = paths.default_config_path()
+DEFAULT_SESSION_DIR = paths.default_sessions_dir()
 
 DEFAULT_TOML = """
 # deeppyro configuration
@@ -96,15 +98,13 @@ models = [{ id = "deepseek-chat", contextWindow = 65536 }]
 
 
 def config_path() -> Path:
-    override = os.environ.get("DEEPPYRO_CONFIG")
-    return Path(override) if override else DEFAULT_CONFIG_PATH
+    return paths.config_path()
 
 
 def session_dir(cfg: Config | None = None) -> Path:
     if cfg is not None and cfg.sessionDir is not None:
         return Path(cfg.sessionDir)
-    override = os.environ.get("DEEPPYRO_SESSION_DIR")
-    return Path(override) if override else DEFAULT_SESSION_DIR
+    return paths.sessions_dir()
 
 
 def load_config(path: Path | None = None, create: bool = True) -> Config:

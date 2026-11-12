@@ -1,9 +1,9 @@
 """Persistent prompt history for the TUI.
 
-History is stored as JSON Lines (one object per submitted prompt) under the
-per-user application data directory, capped at MAX_HISTORY entries. Read and
-write failures are ignored on purpose: history is a convenience and must never
-stop the user from submitting input.
+History is stored as JSON Lines (one object per submitted prompt) in the
+DeepPyro home directory, capped at MAX_HISTORY entries. Read and write
+failures are ignored on purpose: history is a convenience and must never stop
+the user from submitting input.
 """
 
 from __future__ import annotations
@@ -13,26 +13,21 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
+from deeppyro import paths
+
 MAX_HISTORY = 200
-APP_DIR_NAME = "deeppyro"
+APP_DIR_NAME = paths.HOME_DIR_NAME
 HISTORY_FILE_NAME = "history.jsonl"
-HISTORY_PATH_ENV = "DEEPPYRO_HISTORY"
+HISTORY_PATH_ENV = paths.HISTORY_ENV
 
 
 def default_history_path() -> Path:
     """Return the history file path, honouring test and portable overrides.
 
-    Priority: DEEPPYRO_HISTORY environment variable, then APPDATA on Windows,
-    then a dot directory in the user home. The file name is always
-    history.jsonl.
+    Priority: DEEPPYRO_HISTORY, then <DEEPPYRO_HOME or ~/.dpro>/history.jsonl.
+    The file name is always history.jsonl.
     """
-    override = os.environ.get(HISTORY_PATH_ENV)
-    if override:
-        return Path(override)
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        return Path(appdata) / APP_DIR_NAME / HISTORY_FILE_NAME
-    return Path.home() / ("." + APP_DIR_NAME) / HISTORY_FILE_NAME
+    return paths.history_path()
 
 
 class History:

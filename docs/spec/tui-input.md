@@ -74,8 +74,8 @@ commands.candidates(prefix)，按注册表顺序显示，同时匹配命令名�
 
 ## 3. 历史持久化（widgets/history.py）
 
-- 路径优先级：环境变量 DEEPPYRO_HISTORY（完整文件路径）> Windows 的
-  %APPDATA%/deeppyro/history.jsonl > ~/.deeppyro/history.jsonl。
+- 路径优先级：环境变量 DEEPPYRO_HISTORY（完整文件路径）> ~/.dpro/history.jsonl
+  （DEEPPYRO_HOME 可移动整个用户目录）。
 - 文件格式：JSON Lines，每行一个对象，例如
   {"text": "hello", "at": "2026-11-12T22:39:26+00:00"}。
 - 上限 MAX_HISTORY = 200：超出后丢弃最旧的记录；只保留最近 200 条。

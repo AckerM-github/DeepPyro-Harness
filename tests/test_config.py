@@ -47,3 +47,11 @@ def test_env_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEEPPYRO_SESSION_DIR", str(tmp_path / "s"))
     assert config.config_path() == tmp_path / "c.toml"
     assert config.session_dir() == tmp_path / "s"
+
+
+def test_defaults_live_in_the_deeppyro_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEEPPYRO_HOME", str(tmp_path / "home"))
+    for name in ("DEEPPYRO_CONFIG", "DEEPPYRO_SESSION_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    assert config.config_path() == tmp_path / "home" / "config.toml"
+    assert config.session_dir() == tmp_path / "home" / "sessions"
