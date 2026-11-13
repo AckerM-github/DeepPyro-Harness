@@ -158,6 +158,18 @@ class TuiRuntime:
         self.session = session
         self.agent = agent
 
+    # -- services -------------------------------------------------------
+    @property
+    def commands(self) -> Any | None:
+        """The kernel commands service, when the bundle provides one."""
+        app = self.kernel_app
+        if app is None:
+            return None
+        try:
+            return app.service("commands")
+        except LookupError:
+            return None
+
     # -- model / session introspection ----------------------------------
     async def set_model(self, model_id: str) -> None:
         """Switch the model for subsequent turns and rebuild the agent."""

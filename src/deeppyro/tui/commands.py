@@ -1,10 +1,9 @@
 """Slash-command registry and dispatch for the TUI.
 
-Every command is a thin wrapper around a public method on the app, so the
-behaviour is testable without the command-line syntax. The registry drives
-dispatch(), the help text and the slash completion popup.
-
-Unknown commands return False and the app renders an error.
+Command metadata and handlers come from the commands service, so both built-in
+and plugin-contributed commands use one path. The static COMMANDS list mirrors
+the built-in plugin and keeps the parser usable before a runtime is booted
+(tests, early startup, completion defaults).
 """
 
 from __future__ import annotations
@@ -13,43 +12,7 @@ import inspect
 from dataclasses import dataclass
 from typing import Any
 
-CommandHandler = Any
-
-
-async def _run_help(app: Any, argument: str) -> None:
-    app.show_help()
-
-
-async def _run_new(app: Any, argument: str) -> None:
-    await app.new_session()
-
-
-async def _run_resume(app: Any, argument: str) -> None:
-    await app.resume(argument)
-
-
-async def _run_model(app: Any, argument: str) -> None:
-    await app.model_command(argument)
-
-
-async def _run_status(app: Any, argument: str) -> None:
-    app.show_status()
-
-
-async def _run_compact(app: Any, argument: str) -> None:
-    await app.compact()
-
-
-async def _run_clear(app: Any, argument: str) -> None:
-    app.clear_conversation()
-
-
-async def _run_plugins(app: Any, argument: str) -> None:
-    await app.show_plugins()
-
-
-async def _run_exit(app: Any, argument: str) -> None:
-    app.exit()
+from deeppyro.builtin.commands_builtin import core_command_specs
 
 
 @dataclass(frozen=True)
@@ -60,7 +23,7 @@ class Command:
     aliases: tuple[str, ...]
     summary: str
     usage: str
-    handler: CommandHandler
+    handler: Any
 
     def matches(self, token: str) -> bool:
         """True when token is the command name or one of its aliases."""
@@ -75,38 +38,36 @@ class Command:
         return self.name.startswith(prefix) or any(alias.startswith(prefix) for alias in self.aliases)
 
 
-COMMANDS: list[Command] = [
-    Command("help", ("?", "h"), "show this help", "/help", _run_help),
-    Command("new", (), "start a new session", "/new", _run_new),
-    Command(
-        "resume",
-        (),
-        "open a previous session (no argument lists them)",
-        "/resume [id|index]",
-        _run_resume,
-    ),
-    Command("model", (), "show or switch the model", "/model [id]", _run_model),
-    Command("status", (), "show session and runtime details", "/status", _run_status),
-    Command("compact", (), "compact the conversation now", "/compact", _run_compact),
-    Command("clear", (), "clear the conversation view", "/clear", _run_clear),
-    Command("plugins", (), "list loaded plugins", "/plugins", _run_plugins),
-    Command("exit", ("quit", "q"), "quit DeepPyro", "/exit", _run_exit),
-]
+def _from_spec(spec: Any) -> Command:
+    return Command(
+        name=spec.name,
+        aliases=tuple(spec.aliases),
+        summary=spec.summary,
+        usage=spec.usage,
+        handler=spec.handler,
+    )
 
 
-def _command_index() -> dict[str, Command]:
+COMMANDS: list[Command] = [_from_spec(spec) for spec in core_command_specs()]
+
+
+def command_list(source: Any = None) -> list[Command]:
+    """Commands exposed by a commands service, or the built-in fallback."""
+    if source is None:
+        return list(COMMANDS)
+    return [_from_spec(spec) for spec in source.all()]
+
+
+def _index(commands: list[Command] | None) -> dict[str, Command]:
     index: dict[str, Command] = {}
-    for command in COMMANDS:
+    for command in COMMANDS if commands is None else commands:
         index[command.name] = command
         for alias in command.aliases:
             index[alias] = command
     return index
 
 
-_INDEX = _command_index()
-
-
-def parse(line: str) -> tuple[Command | None, str]:
+def parse(line: str, commands: list[Command] | None = None) -> tuple[Command | None, str]:
     """Split one input line into (command, argument).
 
     The command is None when the name is unknown. A leading slash is optional
@@ -116,30 +77,41 @@ def parse(line: str) -> tuple[Command | None, str]:
     if not body:
         return None, ""
     name, _, argument = body.partition(" ")
-    command = _INDEX.get(name.lower())
+    command = _index(commands).get(name.lower())
     return command, argument.strip()
 
 
-def candidates(prefix: str) -> list[Command]:
+def candidates(prefix: str, commands: list[Command] | None = None) -> list[Command]:
     """Return commands matching the completion token, in registry order."""
     token = prefix.lstrip("/").strip().lower()
-    return [command for command in COMMANDS if command.matches_prefix(token)]
+    source = COMMANDS if commands is None else commands
+    return [command for command in source if command.matches_prefix(token)]
 
 
-def _build_help_text() -> str:
+def help_text(commands: list[Command] | None = None) -> str:
+    source = COMMANDS if commands is None else commands
     lines = ["Commands"]
-    for command in COMMANDS:
+    for command in source:
         lines.append("  " + command.usage.ljust(18) + " " + command.summary)
     lines.append("Anything else is sent to the model.")
     return "\n".join(lines)
 
 
-HELP_TEXT = _build_help_text()
+HELP_TEXT = help_text()
+
+
+def live_commands(app: Any) -> list[Command] | None:
+    """Commands from the booted runtime, or None when it has no service."""
+    runtime = getattr(app, "runtime", None)
+    service = getattr(runtime, "commands", None) if runtime is not None else None
+    if service is None:
+        return None
+    return command_list(service)
 
 
 async def dispatch(app: Any, line: str) -> bool:
     """Execute one slash command; return True when the line was a command."""
-    command, argument = parse(line)
+    command, argument = parse(line, live_commands(app))
     if command is None:
         return False
     result = command.handler(app, argument)
@@ -153,6 +125,9 @@ __all__ = [
     "HELP_TEXT",
     "Command",
     "candidates",
+    "command_list",
     "dispatch",
+    "help_text",
+    "live_commands",
     "parse",
 ]

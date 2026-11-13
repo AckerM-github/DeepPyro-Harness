@@ -22,7 +22,7 @@ from textual.binding import Binding
 from textual.widgets import Footer, Header, Select
 
 from deeppyro import __version__
-from deeppyro.tui.commands import HELP_TEXT, dispatch
+from deeppyro.tui.commands import dispatch, help_text, live_commands
 from deeppyro.tui.format import compact_text, context_percent, short_session_id
 from deeppyro.tui.screens.approval import ALLOW_ALWAYS, ApprovalScreen
 from deeppyro.tui.screens.path_prompt import PathPromptScreen
@@ -84,6 +84,7 @@ class DeepPyroApp(App[None]):
 
     async def on_mount(self) -> None:
         self._prompt = self.query_one(PromptArea)
+        self._prompt.set_commands_provider(self.command_list)
         if self._splash_enabled:
             self.push_screen(
                 SplashScreen(
@@ -463,8 +464,12 @@ class DeepPyroApp(App[None]):
                 conversation.add_info(f"[tool result] {preview}")
 
     # -- commands (called by deeppyro.tui.commands) ----------------------
+    def command_list(self) -> list[Any] | None:
+        """Live command list (plugins included), or None for the fallback."""
+        return live_commands(self)
+
     def show_help(self) -> None:
-        self.conversation.add_info(HELP_TEXT)
+        self.conversation.add_info(help_text(self.command_list()))
 
     async def new_session(self) -> None:
         if self._working:

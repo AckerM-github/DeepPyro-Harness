@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import inspect
 
+from deeppyro.api import CommandSpec
 from deeppyro.tui.commands import (
     COMMANDS,
     HELP_TEXT,
     candidates,
     dispatch,
+    help_text,
+    live_commands,
     parse,
 )
 
@@ -177,6 +180,56 @@ async def test_dispatch_plugins_forwards_to_the_app() -> None:
     app = FakeApp()
     assert await dispatch(app, "/plugins") is True
     assert app.calls == [("plugins", "")]
+
+
+class FakeRuntime:
+    """Only the attribute the TUI probes for a commands service."""
+
+    def __init__(self, commands: FakeCommandsService) -> None:
+        self.commands = commands
+
+
+class FakeCommandsService:
+    def __init__(self, specs: list[CommandSpec]) -> None:
+        self._specs = specs
+
+    def all(self) -> list[CommandSpec]:
+        return list(self._specs)
+
+
+class PluginApp(FakeApp):
+    def __init__(self, specs: list[CommandSpec]) -> None:
+        super().__init__()
+        self.runtime = FakeRuntime(FakeCommandsService(specs))
+
+
+async def test_plugin_commands_join_the_live_registry() -> None:
+    async def deploy(host: FakeApp, argument: str) -> None:
+        host.calls.append(("deploy", argument))
+
+    specs = [
+        CommandSpec(
+            name="deploy",
+            summary="ship it",
+            usage="/deploy [env]",
+            aliases=("d",),
+            handler=deploy,
+        )
+    ]
+    app = PluginApp(specs)
+    listed = live_commands(app)
+    assert listed is not None
+    assert [command.name for command in listed] == ["deploy"]
+    assert [command.name for command in candidates("de", listed)] == ["deploy"]
+    assert [command.name for command in candidates("d", listed)] == ["deploy"]
+    assert "/deploy [env]" in help_text(listed)
+    assert await dispatch(app, "/deploy prod") is True
+    assert app.calls == [("deploy", "prod")]
+
+
+def test_live_commands_without_a_runtime_falls_back_to_builtins() -> None:
+    assert live_commands(FakeApp()) is None
+    assert [command.name for command in candidates("he", live_commands(FakeApp()))] == ["help"]
 
 
 async def test_dispatch_unknown_command_does_nothing() -> None:

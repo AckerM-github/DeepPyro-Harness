@@ -41,5 +41,9 @@ id = "commands"
 plugin = "deeppyro.builtin.commands:CommandsPlugin"
 
 [[plugins]]
+id = "commands-builtin"
+plugin = "deeppyro.builtin.commands_builtin:CommandsBuiltinPlugin"
+
+[[plugins]]
 id = "agents"
 plugin = "deeppyro.builtin.agents:AgentsPlugin"

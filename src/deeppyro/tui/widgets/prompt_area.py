@@ -30,6 +30,7 @@ height, so theme.tcss styling keeps working.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from textual import events
 from textual.message import Message
@@ -80,6 +81,11 @@ class PromptArea(TextArea):
         self._popup_ready = False
         self._suppress_next_completion = False
         self._applied_height = 0
+        self._commands_provider: Any = None
+
+    def set_commands_provider(self, provider: Any) -> None:
+        """Install a callable returning the live command list (plugins included)."""
+        self._commands_provider = provider
 
     async def on_mount(self) -> None:
         await self.screen.mount(self._completion)
@@ -208,7 +214,9 @@ class PromptArea(TextArea):
         if prefix is None:
             self._hide_completion()
             return
-        matches = candidates(prefix)
+        provider = self._commands_provider
+        commands = provider() if provider is not None else None
+        matches = candidates(prefix, commands)
         if not matches:
             self._hide_completion()
             return

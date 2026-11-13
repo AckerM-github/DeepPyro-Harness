@@ -287,90 +287,71 @@ echo prompt | dpyro --headless --json
 每个 workstream 交付：代码 + `docs/spec/<area>.md`（逆向出的语义与取舍）+ 测试（`uv run pytest tests/<area> -q` 全绿）+ `uv run python -c "import deeppyro.<area>"` 通过。
 Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到端验收（假 provider 全链路 + 真 API 冒烟）。
 
-## 11. 内核 kernel（Lead；建立在 vendor 的 cordis 之上）
+## 11. 内核 kernel 与插件核心（Lead；详见 docs/spec/plugin-core.md）
 
-### 11.1 vendor 与边界
+### 11.1 vendor 与分层
 
-- 内核直接用 PyPI `cordis-port 0.1.8` 的 Python 移植，**已 vendor** 到
-  `src/deeppyro/_vendor/cordis_port/`（MIT，纯标准库零依赖，9 个 .py + LICENSE + py.typed）。
-  `pyproject.toml` 不加依赖；上游 = cordiverse/cordis v4.0.0-rc.12。
-- **分层铁律**：
-  - 领域模块（session/llm/tools/sandbox/agent/prompt/compact）是纯逻辑，**禁止 import cordis**；
-  - `src/deeppyro/kernel/**` 是唯一装配层：插件清单 + 服务图 + 生命周期；
-  - 终端前端（TUI/headless）只通过 `App.service(name)` 取服务，不再手写领域模块串联。
-- 所有权：`src/deeppyro/kernel/**` 归 **Lead**。
+- 内核用 PyPI `cordis-port 0.1.8` 的 Python 移植，**已 vendor** 到
+  `src/deeppyro/_vendor/cordis_port/`（MIT，纯标准库，9 个 .py + LICENSE）。
+- 不可插件化的核心：`core/wire.py`、`core/protocols.py`、`session/**`、`kernel/**`、`api/**`、
+  vendor 的 cordis。其余全部是插件：`builtin/**` 是默认插件集，TUI/headless 是宿主。
+- 领域模块禁止 import cordis；`kernel/**` 是唯一装配层；前端只通过 `App.service(name)` 取服务。
 
-### 11.2 清单分层（对照 DSH `cordis.patch.yml`）
+### 11.2 插件契约（`deeppyro.api`）
 
-- **bundle 层**：`deeppyro/kernel/bundle.py` 的 `DEFAULT_PLUGINS`（有序）。
-- **patch 层**：TOML 文件 `[[plugins]]`，默认路径 `~/.dpro/plugins.toml`
-  （`deeppyro.paths.plugins_manifest_path()`，`DEEPPYRO_PLUGINS_MANIFEST` 可覆盖；
-  `default_manifest_paths()` 只在文件存在时返回）。
-- 合并语义 = DSH：同 `id` → `config` 浅合并（patch 优先），`name`/`disabled` 仅当 patch 显式设置才覆盖；
-  新 `id` → 按 `before`/`after` 插入，否则追加；锚点不存在/新条目缺 name → `ManifestError`。
+- `Plugin`：`plugin_id`/`version`/`api_version`/`inject`/`Config`(pydantic)/`setup(ctx, config)`；
+  可选 `async stop()` 清理。
+- `Service(Plugin, cordis Service)`：类属性 `provide`，构造即注册服务。
+- `PluginContext`：`service/get/has`、`tools/prompt/commands/llm` 快捷属性、
+  `effect/on/once/emit/plugin/inject/isolate/intercept`，以及
+  `register_tool/register_prompt_section/register_command/register_provider`（注册随 fiber 自动注销）。
+- 插件类型判定：`issubclass(cls, deeppyro.api.Plugin)` 走新适配器（pydantic Config 校验 +
+  PluginContext + setup + stop disposer）；旧式 cordis 类直接 `ctx.plugin(cls, config)` 兼容。
 
-```toml
-[[plugins]]
-id = "llm"
-config = { timeout_s = 300 }
+### 11.3 组合：bundle + row + patch
 
-[[plugins]]
-id = "tools"
-disabled = true
+- bundle = 含 `bundle.toml` 的目录：`[bundle]` 元数据 + 有序 `[[plugins]]` 行；
+  `plugin` 支持 `module:Class` 或相对 bundle 目录的 `file.py:Class`。
+- 行字段：`id/plugin/config/disabled/before/after/critical/name/isolate/intercept`。
+- 合并语义：同 id → `config` **整体替换**（绝不深合并）、`disabled/critical` 覆盖、`isolate/intercept` 合并、
+  插件类不可更换；新 id → 按 `before/after` 插入否则追加。
+- 层顺序：core bundle → `~/.dpro/bundles/*/bundle.toml`（按 order,id）→ 显式 bundle 路径 → 用户 manifest
+  （`~/.dpro/plugins.toml`）。
+- core 行 `critical=true`：失败抛 `KernelBootError` 并 dispose 已启动 fiber；外部行默认非 critical：
+  失败记录进 `App.failures`，boot 继续。
 
-[[plugins]]
-id = "my-plugin"
-name = "deeppyro.plugins.mine:MyPlugin"
-after = "agents"
-```
+### 11.4 服务图（core bundle 行）
 
-API（`deeppyro.kernel.manifest`）：`PluginSpec(id, name, config, disabled, before, after)`、
-`load_manifest(path)`、`merge_plugins(base, patch)`、`resolve_specs(base, manifests)`、
-`register_alias(alias, "module:Class")`、`resolve_plugin_name(name)`。
+| 行 id | 模块 | 服务名 / 关键方法 |
+|---|---|---|
+| `llm` | `builtin.llm` | `llm`：`.provider(name)`、`.add_provider` |
+| `sessions` | `builtin.sessions` | `sessions`：`.store`（SessionStore） |
+| `sandbox` | `builtin.sandbox` | `sandbox`：`.gate(workspace, ask=None)` |
+| `tools` | `builtin.tools` | `tools`：`.add(factory, scope=...)`、`.registry_for(workspace, scope=None)` |
+| `tools-builtin` | `builtin.tools` | 11 个内置工具 |
+| `prompt` | `builtin.prompt_service` | `prompt`：`.add_section`、`.build(tools, prompt_context)` |
+| `prompt-core` | `builtin.prompt_core` | 5 个核心提示词段（order 10/20/30/40/50） |
+| `commands` | `builtin.commands` | `commands`：`.add`、`.all()`、`.resolve()`、`.invoke()` |
+| `commands-builtin` | `builtin.commands_builtin` | 9 个内置 slash 命令 |
+| `agents` | `builtin.agents` | `agents`：`.create(...)`、`.options(**overrides)` |
 
-### 11.3 启动与生命周期
+### 11.5 API
 
 ```python
-from deeppyro.kernel import create_app, boot, DEFAULT_PLUGINS, default_manifest_paths
+from deeppyro.kernel import boot, create_app, default_composition
 
-# 显式装配（测试/嵌入）
-app = await create_app(cfg, plugins=DEFAULT_PLUGINS, manifest_paths=[...], extra_plugins=[...])
-# 默认装配（CLI）：bundle 层 + 磁盘上存在的 patch manifest
-app = await boot(cfg)
-
-app.ctx                 # 根 cordis Context
-app.config              # 已校验 Config
-app.service("llm")      # 取服务；不存在/未激活 → LookupError
-app.has_service("llm")  # → bool
-app.started             # {plugin_id: fiber state name}，按清单顺序
-await app.stop()        # 逆序 dispose 所有 fiber；teardown 尽力而为
+app = await boot(cfg)                       # core + ~/.dpro/bundles + ~/.dpro/plugins.toml
+app = await boot(cfg, bundle_paths=[...])   # 额外 bundle
+app = await create_app(cfg, extra_plugins=[PluginSpec(...)])  # 测试/嵌入
+app.service("tools")                       # 不存在/未激活 -> LookupError
+app.started                                # {row_id: fiber state name}
+app.failures                               # 非 critical 行的失败状态
+await app.stop()                           # 逆序 dispose
 ```
 
-- boot 顺序 = 清单顺序；`fiber = ctx.plugin(cls, spec.config or {})`，**await 加载**，
-  失败立即抛 `KernelBootError`（带 plugin id + fiber 状态 + 原始异常）。
-- `config` 服务由 `provide_config()` 在根 ctx 先注册，值 = `KernelConfig`（`.value: Config`）。
-- 取服务必须走 `ctx.reflect.get`：cordis 的 `ctx.foo` 对未知服务返回 `None` 而不抛异常。
-- 插件类两种写法（都支持）：
-  1. `class X(Service): provide="name"; def __init__(self, ctx, config)`（构造即注册，服务名全局唯一）；
-  2. 普通类 + `inject = [...]` + `init()`（依赖就绪后调用）。
+### 11.6 测试
 
-### 11.4 服务图（bundle 层插件与稳定服务名）
+- `tests/kernel/`：假插件 boot、patch 顺序、critical 失败、`tests/kernel/plugins_dummy.py`。
+- `tests/integration/test_plugin_composition.py`：临时目录外部 bundle 贡献工具/提示词/命令/provider。
+- `tests/tui/test_commands.py`：插件贡献的 slash 命令进入 TUI 实时命令表并被执行。
 
-| 插件 id | 插件类（`deeppyro.kernel.plugins`） | 服务名 | 服务对象 / 关键方法 |
-|---|---|---|---|
-| `llm` | `LlmPlugin` | `llm` | `.registry: LlmRegistry`；`.provider(name)` |
-| `sessions` | `SessionPlugin` | `sessions` | `.store: SessionStore`；`.create/.open/.list` |
-| `sandbox` | `SandboxPlugin` | `sandbox` | `.gate(workspace, ask=None) -> PermissionGate` |
-| `tools` | `ToolsPlugin` | `tools` | `.registry_for(workspace) -> ToolRegistry` |
-| `agents` | `AgentPlugin` | `agents` | `.create(session, provider, registry, options, sink, permission, cwd)`；`.options(**overrides)` |
-
-- bundle 层顺序：`llm → sessions → sandbox → tools → agents`（后者可 inject 前者）。
-- 领域模块只暴露无状态/半状态组件；**每次命令的 workspace 相关对象**（PermissionGate、
-  ToolRegistry、AgentSession）通过上面的工厂方法按 workspace 构造，不塞进全局单例。
-- kernel 插件内对领域模块的 import 必须是**函数体内延迟 import**，保证内核可独立测试。
-
-### 11.5 测试
-
-- 内核单测用 `tests/kernel/plugins_dummy.py` 的假插件（`CounterPlugin`/`ConsumerPlugin`/
-  `ExplodingPlugin`），不依赖任何领域模块：`uv run pytest tests/kernel -q`。
-- 集成测试（Lead，`tests/integration`）才 boot 真实 bundle + 假 provider。

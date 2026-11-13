@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from deeppyro.builtin.agents import AgentsPlugin
 from deeppyro.builtin.commands import CommandsPlugin
+from deeppyro.builtin.commands_builtin import CommandsBuiltinPlugin
 from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.builtin.prompt_core import PromptCorePlugin
 from deeppyro.builtin.prompt_service import PromptPlugin
@@ -19,6 +20,7 @@ from deeppyro.builtin.tools import BuiltinToolsPlugin, ToolsPlugin
 __all__ = [
     "AgentsPlugin",
     "BuiltinToolsPlugin",
+    "CommandsBuiltinPlugin",
     "CommandsPlugin",
     "LlmPlugin",
     "PromptCorePlugin",

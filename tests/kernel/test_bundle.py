@@ -24,6 +24,7 @@ EXPECTED_ORDER = [
     "prompt",
     "prompt-core",
     "commands",
+    "commands-builtin",
     "agents",
 ]
 
@@ -87,6 +88,7 @@ config = { start = 5 }
         "prompt",
         "prompt-core",
         "commands",
+        "commands-builtin",
         "agents",
     ]
 
@@ -112,6 +114,7 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
             "prompt",
             "prompt-core",
             "commands",
+            "commands-builtin",
         ]
         # tools-builtin injects the tools service, so it waits for a provider.
         assert app.started["tools-builtin"] == "PENDING"
@@ -119,6 +122,7 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
         assert app.started["prompt"] == "ACTIVE"
         assert app.started["prompt-core"] == "ACTIVE"
         assert app.started["commands"] == "ACTIVE"
+        assert app.started["commands-builtin"] == "ACTIVE"
     finally:
         await app.stop()
     assert not app.has_service("llm")
