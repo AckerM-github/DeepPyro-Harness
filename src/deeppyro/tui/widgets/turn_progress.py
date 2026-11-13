@@ -58,6 +58,8 @@ class TurnProgress(Static):
         height: auto;
         color: $text-muted;
         padding: 0 1;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
     TurnProgress:hover {
         color: $text;

@@ -149,6 +149,16 @@ async def test_click_posts_thinking_requested_with_the_reasoning() -> None:
         assert app.requests[0] is widget.reasoning
 
 
+async def test_progress_line_never_wraps_to_a_second_row() -> None:
+    widget = TurnProgress(turn=1)
+    app = ProgressHost(widget)
+    async with app.run_test(size=(40, 10)) as pilot:
+        widget.begin_step(1)
+        widget.append("这是一个很长的思考句子，" * 20 + "最后一句。")
+        await pilot.pause()
+        assert widget.outer_size.height == 1
+
+
 async def test_loads_a_finished_turn_reasoning() -> None:
     reasoning = _reasoning(turn=4)
     widget = TurnProgress(reasoning=reasoning)
