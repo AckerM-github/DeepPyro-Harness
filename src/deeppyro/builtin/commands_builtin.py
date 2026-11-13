@@ -25,7 +25,22 @@ _ROWS: tuple[tuple[str, tuple[str, ...], str, str, str, bool], ...] = (
         "resume",
         True,
     ),
-    ("model", (), "show or switch the model", "/model [id]", "model_command", True),
+    (
+        "provider",
+        (),
+        "show or switch the LLM provider",
+        "/provider [name]",
+        "provider_command",
+        True,
+    ),
+    (
+        "model",
+        (),
+        "show or switch the model",
+        "/model [id] or /model <provider>/<id>",
+        "model_command",
+        True,
+    ),
     (
         "preset",
         (),

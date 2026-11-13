@@ -43,7 +43,7 @@
 2. App.on_mount：先 push_screen(SplashScreen(...), callback=重新聚焦输入框)，再 await TuiRuntime.boot(sink=app.sink, ask=app.ask_approval)。
 3. SplashScreen：内容按 40ms/行逐行揭示（宽 >= 72 且高 >= 24 用 22 行大字标，否则退化为单行字标），**揭示完成后一直停留，直到用户按任意键才进入主界面**（不自动关闭）；boot 完成后 App 调 set_runtime 回填 provider/model/cwd；boot 失败时立即关闭 splash 并显示错误。
 4. TuiRuntime.boot：load_config → resolve_workspace → 校验 provider/model → kernel.boot（core bundle 17 行，首行 kernel 运行时）→ 取 llm.provider、tools.registry_for(workspace)、sandbox.gate(workspace, ask=ask)，并把 kernel/plugin_manager/settings/inspect 服务一并注入 AgentSession.services → presets.ensure_all() 物化全部 preset revision → new_session()。
-5. new_session：preset_revision 清空 → SessionStore.create → _attach（agents.options(model=, context_window=) → agents.create(..., preset=, preset_revision=)）→ 写 agent-preset/selected（含 revision）→ AgentSession；open_session 从 header 的 agentPreset 与日志里的 agent-preset/selected revision 恢复固定 revision，revision 已被删除时回退 latest。
+5. new_session：preset_revision 清空 → SessionStore.create → _attach（agents.options(model=, context_window=) → agents.create(..., preset=, preset_revision=)）→ 写 model/selection（初始 provider/model）→ 写 agent-preset/selected（含 revision）→ AgentSession；open_session 先按日志最后一条 model/selection 恢复 provider/model（provider 不存在时忽略），再从 header 的 agentPreset 与日志里的 agent-preset/selected revision 恢复固定 revision，revision 已被删除时回退 latest。
 6. 失败：conversation.add_error(failed to start: ...)，App 仍可退出。
 7. App.on_unmount：await runtime.close()（kernel_app.stop 逆序释放插件）；幂等。
 
@@ -76,12 +76,13 @@
 | /help 或 /? 或 /h | 帮助 |
 | /new | 新建会话（保留当前 App 与 sink，重建 AgentSession） |
 | /resume [id 或序号] | 恢复最近会话；无参打开选择器 |
-| /model [id] | 切换模型；无参打开选择器 |
+| /provider [name] | 查看/切换 LLM provider；无参打开选择器（缺失 API key 会标注）；切换后重建 provider 与 AgentSession，写 model/selection 并持久化到 config [agent] |
+| /model [id] | 切换模型；支持跨 provider 的 provider/model 形式；无参打开选择器（多 provider 时值为 provider/model）；写 model/selection 并持久化 |
 | /preset [id] | 切换 agent preset（按会话组合工具/提示词）；无参打开选择器 |
 | /policy [preset] | 查看/切换权限预设（read-only / workspace-write / danger-full-access）；无参打开选择器；写 permission/preset 记录 |
 | /approval [policy] | 查看/切换审批策略（ask / never / always）；无参打开选择器；写 approval/policy 记录 |
 | /cwd [path] | 查看/切换工作目录；无参打开选择器（当前 + 最近会话目录 + 自定义路径模态）；写 working-directory/change 记录 |
-| /status | 当前 provider/model/preset/policy/cwd/session/tokens/上下文 |
+| /status | 当前 provider（含 key 状态）与可用 providers、model、preset、policy、cwd、session、tokens、上下文 |
 | /compact | 手动压缩（要求无运行中 turn；Compactor.compact） |
 | /clear | 清空对话视图（不删除会话日志） |
 | /plugins | 外部插件/ bundle 管理界面（PluginScreen，数据来自 plugin_manager 服务） |
@@ -105,6 +106,7 @@
 - splash 使用 wordmark.py 里预渲染的 ansi_shadow 字形：DEEPPYRO 火色渐变、HARNESS 冰蓝色渐变，逐行揭示；不依赖 pyfiglet 等运行时字体工具。
 - 工具调用：name + 参数摘要；结果 1-3 行预览，错误红色；write/edit 显示 diff（能力上限见 tui-widgets.md）。
 - 用户消息块左 accent 边框；系统 info/error 用 dim/红色静态行。
+- provider/model 切换：/provider 重建 llm.client 与 AgentSession（同会话继续，不新建 session），/model 支持裸模型名或 provider/model；两者都写 model/selection 记录并调用 save_agent_selection 持久化到 config.toml 的 [agent]（写失败只提示，不打断切换）。
 - 会话设置全部走 slash 命令，不再有顶部下拉：/policy 切权限预设、/approval 切审批策略、/cwd 切工作目录。切换立即作用于同一会话——sandbox gate 与工具注册表随工作目录更新，并写 permission/preset、approval/policy、working-directory/change 记录；turn 运行中拒绝切换并提示。无参命令打开 PickerScreen（当前值标记 current），/cwd 额外提供 Enter path… 选项打开 PathPromptScreen。
 - 状态栏单行：session 短 id、provider/model、↑输入 ↓输出 ⚡缓存、ctx 百分比（>=75% 黄色）、policy（preset/approval）、phase。
 - 插件状态栏项：状态栏上方另有一行 PluginStatusBar，插件通过 slots.add_status_item 注册的渲染器按 (order,id) 排序渲染；每次 refresh_status 重新求值，渲染异常显示为 dim 错误标记而不影响主状态栏。
@@ -127,6 +129,7 @@
 - 所有 widget 刷新只允许在 Textual 事件循环线程内；后台线程只允许 put_message/post_message。
 - 插件槽位测试：tests/tui/test_slots.py（注册表排序/去重/dispose、theme/locale）与 test_plugin_slots.py（状态栏、对话行、面板宿主）、test_ui_package.py（ui.toml 声明式包、坏 entry 隔离）；跨层集成在 tests/integration/test_plugin_services.py。
 - preset revision 接线测试：tests/tui/test_runtime_presets.py（new_session 记录 revision、resume 固定 revision、revision 失效回退、/preset 物化最新 revision）。
+- provider/model 接线测试：tests/tui/test_runtime_models.py（set_provider/set_model、model/selection 记录、resume 恢复、_resolve_model 不跨 provider 泄漏、持久化失败兜底）与 tests/test_config.py（save_agent_selection 注释保留/原子写/校验）。
 
 ## 9.1 思考过程的来源
 

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any, Literal
@@ -10,6 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from deeppyro import paths
+from deeppyro.core.errors import ConfigError
 
 
 class ModelConfig(BaseModel):
@@ -116,3 +120,127 @@ def load_config(path: Path | None = None, create: bool = True) -> Config:
         p.write_text(DEFAULT_TOML, encoding="utf-8")
     data: dict[str, Any] = tomllib.loads(p.read_text(encoding="utf-8"))
     return Config.model_validate(data)
+
+
+_AGENT_HEADER = re.compile(r"^\s*\[\s*agent\s*\]\s*(?:#.*)?$")
+_ANY_SECTION_HEADER = re.compile(r"^\s*\[")
+
+
+def _toml_string(value: str) -> str:
+    """Render a TOML basic string (JSON escaping is TOML-compatible here)."""
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _trailing_comment(line: str) -> str:
+    """Return the trailing comment of a TOML key/value line, if any."""
+    in_basic = False
+    in_literal = False
+    escaped = False
+    for index, char in enumerate(line):
+        if in_basic:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_basic = False
+        elif in_literal:
+            if char == "'":
+                in_literal = False
+        elif char == '"':
+            in_basic = True
+        elif char == "'":
+            in_literal = True
+        elif char == "#":
+            return line[index:].rstrip()
+    return ""
+
+
+def _set_agent_value(lines: list[str], key: str, value: str) -> list[str]:
+    """Set one key inside the [agent] table, preserving every other line."""
+    rendered = f"{key} = {_toml_string(value)}"
+    header = next((index for index, line in enumerate(lines) if _AGENT_HEADER.match(line)), None)
+    if header is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(["[agent]", rendered])
+        return lines
+    end = len(lines)
+    for index in range(header + 1, len(lines)):
+        if _ANY_SECTION_HEADER.match(lines[index]):
+            end = index
+            break
+    key_pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    for index in range(header + 1, end):
+        if key_pattern.match(lines[index]):
+            indent = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
+            comment = _trailing_comment(lines[index])
+            lines[index] = indent + rendered + (f"  {comment}" if comment else "")
+            return lines
+    lines.insert(end, rendered)
+    return lines
+
+
+def save_agent_selection(provider: str, model: str, path: Path | None = None) -> Path:
+    """Persist provider/model under [agent] without rewriting unrelated text.
+
+    The update is line-oriented so comments and the rest of the file survive;
+    the result is re-parsed with tomllib before an atomic replace. Returns the
+    path that was written.
+    """
+    provider = (provider or "").strip()
+    model = (model or "").strip()
+    if not provider:
+        raise ConfigError("provider name is required")
+    if not model:
+        raise ConfigError("model id is required")
+    target = Path(path) if path is not None else config_path()
+    text = target.read_text(encoding="utf-8") if target.exists() else DEFAULT_TOML
+    lines = text.splitlines()
+    lines = _set_agent_value(lines, "provider", provider)
+    lines = _set_agent_value(lines, "model", model)
+    rendered = "\n".join(lines).rstrip("\n") + "\n"
+    try:
+        data: dict[str, Any] = tomllib.loads(rendered)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"invalid config file {target}: {exc}") from exc
+    agent = data.get("agent")
+    if not isinstance(agent, dict) or agent.get("provider") != provider or agent.get("model") != model:
+        raise ConfigError(f"could not update [agent] provider/model in {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+            newline="\n",
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(rendered)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
+    return target
+
+
+__all__ = [
+    "DEFAULT_CONFIG_PATH",
+    "DEFAULT_SESSION_DIR",
+    "DEFAULT_TOML",
+    "AgentConfig",
+    "Config",
+    "ModelConfig",
+    "ProviderConfig",
+    "config_path",
+    "load_config",
+    "save_agent_selection",
+    "session_dir",
+]

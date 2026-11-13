@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from deeppyro.api import PluginDependencyError
-from deeppyro.config import Config, load_config
+from deeppyro.config import Config, load_config, save_agent_selection
 from deeppyro.core.errors import ConfigError, DeeppyroError
 
 DEFAULT_CONTEXT_WINDOW = 32768
@@ -77,6 +77,7 @@ class TuiRuntime:
     preset_revision: int | None = None
     session: Any = None
     agent: Any = None
+    last_persist_error: str | None = None
     _closed: bool = field(default=False, repr=False)
 
     # -- construction ---------------------------------------------------
@@ -137,12 +138,21 @@ class TuiRuntime:
         self.preset_revision = None
         session = self.store.create(str(self.cwd), agent_preset=self.agent_preset)
         await self._attach(session)
+        self._record_model_selection()
         self._record_preset()
         return session
 
     async def open_session(self, session_id: str) -> Any:
         """Open an existing session and rebuild the agent around it."""
         session = self.store.open(session_id)
+        selection = _recorded_model_selection(session)
+        if selection is not None:
+            provider_name, model_id = selection
+            if provider_name in self.cfg.providers:
+                try:
+                    self._activate_provider(provider_name, model_id)
+                except Exception:  # noqa: BLE001, S110 - resume must not brick the UI
+                    pass
         preset = str(getattr(session.header, "agentPreset", "") or "").strip()
         if preset:
             self.agent_preset = preset
@@ -258,16 +268,116 @@ class TuiRuntime:
         except LookupError:
             return None
 
-    # -- model / session introspection ----------------------------------
-    async def set_model(self, model_id: str) -> None:
-        """Switch the model for subsequent turns and rebuild the agent."""
+    # -- provider / model switching -------------------------------------
+    def providers(self) -> list[str]:
+        """Configured provider names, in config order."""
+        return [str(name) for name in self.cfg.providers]
+
+    def models(self, provider: str | None = None) -> list[str]:
+        """Model ids configured for one provider (the active one by default)."""
+        provider_cfg = self._provider_config(provider or self.provider_name)
+        return [str(entry.id) for entry in list(provider_cfg.models or [])]
+
+    def model_choices(self) -> list[tuple[str, str]]:
+        """Every (provider, model) pair the configuration offers."""
+        return [(name, model_id) for name in self.providers() for model_id in self.models(name)]
+
+    def has_api_key(self, provider: str) -> bool:
+        """Whether the provider can resolve an API key right now."""
+        provider_cfg = self.cfg.providers.get(provider)
+        if provider_cfg is None:
+            return False
+        try:
+            return bool(provider_cfg.resolve_api_key())
+        except Exception:  # noqa: BLE001 - display only
+            return False
+
+    async def set_provider(
+        self,
+        name: str,
+        *,
+        model: str | None = None,
+        persist: bool = True,
+    ) -> tuple[str, str]:
+        """Switch the active LLM provider (and optionally its model)."""
+        provider_name = (name or "").strip()
+        if not provider_name:
+            raise ConfigError("provider name is required")
+        self._provider_config(provider_name)
+        model_id = (model or "").strip()
+        if not model_id:
+            model_id = _resolve_model(self.cfg, provider_name, model=None)
+        self._validate_model(provider_name, model_id)
+        if provider_name == self.provider_name and model_id == self.model:
+            return self.provider_name, self.model
+        await self._apply_selection(provider_name, model_id, persist=persist)
+        return self.provider_name, self.model
+
+    async def set_model(self, model_id: str, *, persist: bool = True) -> str:
+        """Switch the model on the active provider and rebuild the agent."""
+        model_id = (model_id or "").strip()
+        if not model_id:
+            raise ConfigError("model id is required")
+        self._validate_model(self.provider_name, model_id)
         if model_id == self.model:
-            return
-        provider_cfg = self.cfg.providers[self.provider_name]
+            if persist:
+                self._persist_selection()
+            return self.model
+        await self._apply_selection(self.provider_name, model_id, persist=persist)
+        return self.model
+
+    def _provider_config(self, name: str) -> Any:
+        provider_cfg = self.cfg.providers.get(name)
+        if provider_cfg is None:
+            choices = ", ".join(self.providers()) or "(none configured)"
+            raise ConfigError(f"unknown provider: {name} (choose from {choices})")
+        return provider_cfg
+
+    def _validate_model(self, provider_name: str, model_id: str) -> None:
+        available = self.models(provider_name)
+        if available and model_id not in available:
+            raise ConfigError(
+                f"unknown model: {model_id} (provider {provider_name} offers {', '.join(available)})"
+            )
+
+    def _build_provider(self, provider_name: str) -> Any:
+        app = self.kernel_app
+        if app is None:
+            raise DeeppyroError("cannot switch provider after the kernel has stopped")
+        try:
+            service = app.service("llm")
+        except LookupError as exc:
+            raise DeeppyroError("llm service is not available") from exc
+        try:
+            return service.provider(provider_name)
+        except KeyError as exc:
+            raise ConfigError(f"unknown provider: {provider_name}") from exc
+
+    def _activate_provider(self, provider_name: str, model_id: str) -> None:
+        """Swap the provider client and model without touching the session."""
+        provider_cfg = self._provider_config(provider_name)
+        provider = self._build_provider(provider_name)
+        self.provider = provider
+        self.provider_name = provider_name
         self.model = model_id
         self.context_window = _context_window(provider_cfg, model_id)
+
+    async def _apply_selection(self, provider_name: str, model_id: str, *, persist: bool) -> None:
+        self._activate_provider(provider_name, model_id)
         if self.session is not None:
             await self._attach(self.session)
+        self._record_model_selection()
+        if persist:
+            self._persist_selection()
+
+    def _persist_selection(self) -> None:
+        """Best-effort write of the [agent] selection; failures stay visible."""
+        try:
+            save_agent_selection(self.provider_name, self.model)
+        except Exception as exc:  # noqa: BLE001 - the switch itself still succeeded
+            self.last_persist_error = str(exc)
+        else:
+            self.last_persist_error = None
 
     # -- policy / workspace switching -----------------------------------
     async def set_preset(self, preset: str) -> None:
@@ -343,6 +453,10 @@ class TuiRuntime:
             data["revision"] = self.preset_revision
         self._record("agent-preset/selected", data)
 
+    def _record_model_selection(self) -> None:
+        """Persist the active provider/model so a resume reproduces it."""
+        self._record("model/selection", {"provider": self.provider_name, "model": self.model})
+
     def _record(self, record_type: str, data: dict[str, Any]) -> None:
         """Append one non-surface event to the active session (best effort)."""
         append = getattr(self.session, "append", None)
@@ -367,11 +481,6 @@ class TuiRuntime:
         except Exception:  # noqa: BLE001 - usage display must never break the UI
             return {"input": 0, "output": 0, "cached": 0}
         return {key: int(usage.get(key, 0)) for key in ("input", "output", "cached")}
-
-    def models(self) -> list[str]:
-        """Model ids available on the active provider."""
-        provider_cfg = self.cfg.providers[self.provider_name]
-        return [entry.id for entry in list(provider_cfg.models or [])]
 
     def recent_sessions(self, limit: int = 20) -> list[Any]:
         """Most recent sessions, newest first."""
@@ -417,20 +526,48 @@ def _recorded_preset_revision(session: Any) -> int | None:
     return None
 
 
+def _recorded_model_selection(session: Any) -> tuple[str, str] | None:
+    """The last model/selection written to the session, if still readable."""
+    records = getattr(session, "records", None) or []
+    for record in reversed(list(records)):
+        if getattr(record, "type", "") != "model/selection":
+            continue
+        data = getattr(record, "data", None)
+        if isinstance(data, dict):
+            provider = data.get("provider")
+            model = data.get("model")
+            if isinstance(provider, str) and isinstance(model, str) and provider and model:
+                return provider, model
+        return None
+    return None
+
+
 def _resolve_model(cfg: Config, provider_name: str, *, model: str | None) -> str:
-    """Resolve the model id from an override, agent config, or provider default."""
+    """Resolve the model from an override, the configured provider, or its default.
+
+    The [agent] model belongs to the configured provider: when another provider
+    is selected explicitly (--provider or /provider) its own default is used
+    instead of leaking the configured model onto a different endpoint.
+    """
     provider_cfg = cfg.providers[provider_name]
+    available = [str(entry.id) for entry in list(provider_cfg.models or [])]
     if model:
+        if available and model not in available:
+            raise ConfigError(
+                f"unknown model: {model} (provider {provider_name} offers {', '.join(available)})"
+            )
         return model
-    if cfg.agent.model:
+    if provider_name == cfg.agent.provider and cfg.agent.model:
         return cfg.agent.model
+    if available:
+        return available[0]
     if provider_name == cfg.agent.provider:
         try:
             _, resolved = cfg.resolve()
         except KeyError as exc:
             raise ConfigError(f"unknown provider: {exc.args[0]}") from exc
         return resolved
-    return provider_cfg.models[0].id if provider_cfg.models else ""
+    return ""
 
 
 __all__ = ["DEFAULT_CONTEXT_WINDOW", "TuiRuntime", "await_maybe", "resolve_workspace"]

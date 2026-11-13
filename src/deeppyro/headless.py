@@ -106,18 +106,26 @@ def _context_window(provider_cfg: Any, model_id: str) -> int:
 
 
 def _resolve_model(cfg: Config, provider_name: str, *, model: str | None) -> str:
+    """Resolve the model without leaking [agent].model onto another provider."""
     provider_cfg = cfg.providers[provider_name]
+    available = [str(entry.id) for entry in list(provider_cfg.models or [])]
     if model:
+        if available and model not in available:
+            raise ConfigError(
+                f"unknown model: {model} (provider {provider_name} offers {', '.join(available)})"
+            )
         return model
-    if cfg.agent.model:
+    if provider_name == cfg.agent.provider and cfg.agent.model:
         return cfg.agent.model
+    if available:
+        return available[0]
     if provider_name == cfg.agent.provider:
         try:
             _, resolved = cfg.resolve()
         except KeyError as exc:
             raise ConfigError(f"unknown provider: {exc.args[0]}") from exc
         return resolved
-    return provider_cfg.models[0].id if provider_cfg.models else ""
+    return ""
 
 
 async def _denying_ask(request: Any) -> bool:
@@ -338,7 +346,10 @@ class HeadlessRuntime:
     _closed: bool = field(default=False, repr=False)
 
     def create_agent(self, session: Any, sink: Any, *, max_steps: int | None = None) -> Any:
-        overrides: dict[str, Any] = {"context_window": self.context_window}
+        overrides: dict[str, Any] = {
+            "model": self.model,
+            "context_window": self.context_window,
+        }
         if max_steps is not None:
             overrides["max_steps"] = max_steps
         options = self.agents.options(**overrides)

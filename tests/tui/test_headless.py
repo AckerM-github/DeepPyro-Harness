@@ -193,6 +193,42 @@ def test_run_once_rejects_bad_max_steps() -> None:
     assert "--max-steps" in stream.getvalue()
 
 
+class RecordingAgents:
+    def __init__(self) -> None:
+        self.options_seen: list[dict[str, Any]] = []
+        self.created: list[dict[str, Any]] = []
+
+    def options(self, **overrides: Any) -> dict[str, Any]:
+        self.options_seen.append(overrides)
+        return overrides
+
+    def create(self, **kwargs: Any) -> object:
+        self.created.append(kwargs)
+        return object()
+
+
+def test_create_agent_passes_the_resolved_model() -> None:
+    agents = RecordingAgents()
+    runtime = headless.HeadlessRuntime(
+        cfg=headless.Config(),
+        cwd=Path("D:/work"),
+        kernel_app=None,
+        provider_name="fake",
+        model="fake-1",
+        context_window=8192,
+        store=FakeStore(),
+        provider=object(),
+        registry=object(),
+        permission=object(),
+        agents=agents,
+    )
+    runtime.create_agent(FakeSession(), sink=object(), max_steps=7)
+    assert agents.options_seen[-1]["model"] == "fake-1"
+    assert agents.options_seen[-1]["context_window"] == 8192
+    assert agents.options_seen[-1]["max_steps"] == 7
+    assert agents.created[-1]["cwd"] == str(Path("D:/work"))
+
+
 def test_run_once_streams_a_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     agent = FakeAgent(
         [

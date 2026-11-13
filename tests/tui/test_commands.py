@@ -19,6 +19,7 @@ EXPECTED_NAMES = [
     "help",
     "new",
     "resume",
+    "provider",
     "model",
     "preset",
     "policy",
@@ -47,6 +48,9 @@ class FakeApp:
 
     async def resume(self, argument: str) -> None:
         self.calls.append(("resume", argument))
+
+    async def provider_command(self, argument: str) -> None:
+        self.calls.append(("provider", argument))
 
     async def model_command(self, argument: str) -> None:
         self.calls.append(("model", argument))

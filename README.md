@@ -76,9 +76,9 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
     uv run dpyro --headless --json "1+1=?"        # NDJSON 事件流
     echo "1+1=?" | uv run dpyro --headless --json # stdin 管道
 
-TUI 里输入 `/help` 查看 slash 命令（`/new /resume /model /preset /policy /approval /cwd /status
-/compact /clear /plugins /panel /exit`）；`/policy`、`/approval`、`/cwd` 无参时打开选择器，
-带参数的切换立即生效（turn 运行中拒绝）；
+TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /preset /policy /approval /cwd
+/status /compact /clear /plugins /panel /exit`）；`/provider`、`/model`、`/policy`、`/approval`、
+`/cwd` 无参时打开选择器，带参数的切换立即生效（turn 运行中拒绝）；
 `Ctrl+C` 在 turn 中取消当前 turn，空闲时清空输入，再按退出；`Ctrl+D` 退出。
 
 ### 配置与数据目录
@@ -98,6 +98,11 @@ TUI 里输入 `/help` 查看 slash 命令（`/new /resume /model /preset /policy
   `DEEPPYRO_PLUGINS_MANIFEST` / `DEEPPYRO_PLUGINS_DIR` 覆盖单项路径。
 - 旧版本散落在 `%APPDATA%\deeppyro` / `%LOCALAPPDATA%\deeppyro` 的数据，首次运行会自动复制到
   `~/.dpro`（只补缺失文件、不覆盖已有文件、不删除旧目录）。
+- 在 TUI 里用 `/provider` 和 `/model` 切换 provider 与模型，选择会写回 config.toml 的 `[agent]`
+  段（保留其余内容与注释）；`/resume` 会按日志里的 `model/selection` 记录恢复 provider/model。
+- API key 两种写法：`apiKey = "sk-..."` 直接写在 provider 段；或 `apiKeyEnv = "DEEPSEEK_API_KEY"`
+  写环境变量名（注意 `apiKeyEnv` 的值是变量名，不是 key 本身）。缺失 key 时 `/provider` 选择器会标注
+  missing API key。
 
 ### 插件与组合
 

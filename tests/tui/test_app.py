@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from textual.widgets import Static
 
@@ -119,11 +119,24 @@ class FakeRuntime:
         self.opened_sessions.append(session_id)
         return self.session
 
+    PROVIDER_MODELS: ClassVar[dict[str, list[str]]] = {"fake": ["fake-1", "fake-2"], "fake-2": ["fake-3"]}
+
     async def set_model(self, model_id: str) -> None:
         self.model = model_id
 
-    def models(self) -> list[str]:
-        return ["fake-1", "fake-2"]
+    async def set_provider(self, name: str, *, model: str | None = None) -> tuple[str, str]:
+        self.provider_name = name
+        self.model = model or self.models(name)[0]
+        return self.provider_name, self.model
+
+    def providers(self) -> list[str]:
+        return list(self.PROVIDER_MODELS)
+
+    def models(self, provider: str | None = None) -> list[str]:
+        return list(self.PROVIDER_MODELS.get(provider or self.provider_name, []))
+
+    def model_choices(self) -> list[tuple[str, str]]:
+        return [(name, model) for name, models in self.PROVIDER_MODELS.items() for model in models]
 
     def presets(self) -> list[Any]:
         return [FakePreset("default", "Default"), FakePreset("reviewer", "Reviewer", "review only")]
@@ -269,6 +282,27 @@ async def test_model_without_argument_uses_picker(monkeypatch: Any) -> None:
         monkeypatch.setattr(app, "_pick", fake_pick)
         await app.model_command("")
         assert app.runtime.model == "fake-2"
+
+
+async def test_provider_command_switches_provider() -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one(PromptArea)
+        prompt.text = "/provider fake-2"
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        assert app.runtime.provider_name == "fake-2"
+        assert app.runtime.model == "fake-3"
+
+
+async def test_model_command_accepts_provider_slash_model() -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await app.model_command("fake-2/fake-3")
+        assert app.runtime.provider_name == "fake-2"
+        assert app.runtime.model == "fake-3"
 
 
 async def test_preset_command_switches_the_agent_preset() -> None:

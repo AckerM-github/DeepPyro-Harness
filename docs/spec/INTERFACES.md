@@ -344,7 +344,7 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 | `prompt` | `builtin.prompt_service` | `prompt`：`.add_section(..., scope=None, revision=...)`、`.sections(...)`、`.build(tools, prompt_context, scope=None, revision=...)` |
 | `prompt-core` | `builtin.prompt_core` | 5 个核心提示词段（order 10/20/30/40/50） |
 | `commands` | `builtin.commands` | `commands`：`.add`、`.all()`、`.resolve()`、`.invoke()` |
-| `commands-builtin` | `builtin.commands_builtin` | 14 个内置 slash 命令（含 `/preset`、`/policy`、`/approval`、`/cwd`、`/panel`） |
+| `commands-builtin` | `builtin.commands_builtin` | 15 个内置 slash 命令（含 `/provider`、`/model`、`/preset`、`/policy`、`/approval`、`/cwd`、`/panel`） |
 | `agents` | `builtin.agents` | `agents`：`.create(..., preset=None, preset_revision=None, registry=None)`、`.options(**overrides)` |
 | `plugin-tools` | `tools.builtin.plugin_tools` | 5 个 agent 工具：`plugin_manager`/`plugin_create`/`plugin_inspect`/`settings_read`/`settings_write` |
 | `slots` | `tui.slots` | `slots`：TUI 插件槽位注册表（状态栏项/对话行/面板/设置页、theme/locale） |

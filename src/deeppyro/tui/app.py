@@ -507,7 +507,8 @@ class DeepPyroApp(App[None]):
         conversation = self.conversation
         conversation.add_info("DeepPyro Harness — python core, terminal UI")
         conversation.add_info(
-            f"{runtime.provider_name}/{runtime.model}  ·  /policy, /approval and /cwd change the session settings"
+            f"{runtime.provider_name}/{runtime.model}  ·  /model and /provider switch the model;"
+            " /policy, /approval and /cwd change the session"
         )
         conversation.add_info("Type a message. /help lists commands. Ctrl+C interrupts, Ctrl+D quits.")
 
@@ -614,30 +615,170 @@ class DeepPyroApp(App[None]):
         self._render_history()
         self.refresh_status()
 
-    async def model_command(self, argument: str) -> None:
-        available = self.runtime.models()
+    def _provider_names(self) -> list[str]:
+        """Configured provider names, falling back to the active one."""
+        getter = getattr(self.runtime, "providers", None)
+        if callable(getter):
+            try:
+                values = [str(name) for name in getter()]
+                if values:
+                    return values
+            except Exception:  # noqa: BLE001, S110 - the command must keep working
+                pass
+        active = str(getattr(self.runtime, "provider_name", "") or "")
+        return [active] if active else []
+
+    def _model_choices(self) -> list[tuple[str, str]]:
+        """Every configured (provider, model) pair, if the runtime knows them."""
+        getter = getattr(self.runtime, "model_choices", None)
+        if callable(getter):
+            try:
+                return [(str(provider), str(model)) for provider, model in getter()]
+            except Exception:  # noqa: BLE001, S110
+                pass
+        getter = getattr(self.runtime, "models", None)
+        if callable(getter):
+            try:
+                provider = str(getattr(self.runtime, "provider_name", "") or "")
+                return [(provider, str(model)) for model in getter()]
+            except Exception:  # noqa: BLE001, S110
+                pass
+        return []
+
+    def _model_value(self, provider: str, model: str) -> str:
+        """Picker value: bare model with one provider, provider/model otherwise."""
+        return f"{provider}/{model}" if len(self._provider_names()) > 1 else model
+
+    def _report_persist_error(self) -> None:
+        message = getattr(self.runtime, "last_persist_error", None)
+        if message:
+            self.conversation.add_info(f"could not save the default provider/model: {message}")
+
+    async def provider_command(self, argument: str) -> None:
+        """Show or switch the active LLM provider (/provider)."""
+        if self._working:
+            self.notify("cannot switch provider during a running turn", severity="warning")
+            return
+        runtime = self.runtime
+        providers = self._provider_names()
+        current = str(getattr(runtime, "provider_name", "") or "")
         if not argument:
-            current = self.runtime.model
-            if len(available) > 1:
-                items = [(model, model, "current" if model == current else "") for model in available]
-                choice = await self._pick("Select model", items)
+            if len(providers) > 1:
+                items: list[tuple[str, str, str]] = []
+                has_key = getattr(runtime, "has_api_key", None)
+                for name in providers:
+                    note = "current" if name == current else ""
+                    if note != "current" and callable(has_key):
+                        try:
+                            note = "" if has_key(name) else "missing API key"
+                        except Exception:  # noqa: BLE001 - notes are cosmetic
+                            note = ""
+                    items.append((name, name, note))
+                choice = await self._pick("Select provider", items)
                 if choice is None:
-                    self.conversation.add_info(f"current model: {current}")
-                    self.conversation.add_info("available: " + ", ".join(available))
-                    self.conversation.add_info("use /model <id>")
+                    self.conversation.add_info(f"current provider: {current}")
+                    self.conversation.add_info("available: " + ", ".join(providers))
+                    self.conversation.add_info("use /provider <name>")
                     return
                 argument = choice
             else:
-                self.conversation.add_info(f"current model: {current}")
-                if available:
-                    self.conversation.add_info("available: " + ", ".join(available))
+                self.conversation.add_info(f"current provider: {current}")
+                self.conversation.add_info("use /provider <name>")
+                return
+        argument = argument.strip()
+        if argument not in providers:
+            self.conversation.add_error(f"unknown provider: {argument} (choose from {', '.join(providers)})")
+            return
+        try:
+            provider_name, model_id = await runtime.set_provider(argument)
+        except Exception as exc:  # noqa: BLE001 - show the runtime message
+            self.conversation.add_error(f"provider switch failed: {exc}")
+            return
+        self.conversation.add_info(f"provider switched to {provider_name} · {model_id}")
+        self._report_persist_error()
+        self.refresh_status()
+
+    async def model_command(self, argument: str) -> None:
+        """Show or switch the model, including across providers (/model)."""
+        if self._working:
+            self.notify("cannot switch model during a running turn", severity="warning")
+            return
+        runtime = self.runtime
+        providers = self._provider_names()
+        choices = self._model_choices()
+        current = (
+            str(getattr(runtime, "provider_name", "") or ""),
+            str(getattr(runtime, "model", "") or ""),
+        )
+        if not argument:
+            if len(choices) > 1:
+                items: list[tuple[str, str, str]] = []
+                for provider_name, model_id in choices:
+                    value = self._model_value(provider_name, model_id)
+                    label = model_id if len(providers) == 1 else value
+                    note = "current" if (provider_name, model_id) == current else ""
+                    items.append((value, label, note))
+                choice = await self._pick("Select model", items)
+                if choice is None:
+                    self.conversation.add_info(f"current model: {current[0]}/{current[1]}")
+                    self.conversation.add_info("available: " + ", ".join(value for value, _, _ in items))
+                    self.conversation.add_info("use /model <id> or /model <provider>/<id>")
+                    return
+                argument = choice
+            else:
+                self.conversation.add_info(f"current model: {current[0]}/{current[1]}")
                 self.conversation.add_info("use /model <id>")
                 return
-        if available and argument not in available:
-            self.conversation.add_error(f"unknown model: {argument}")
+        argument = argument.strip()
+        target: tuple[str, str] | None = None
+        if "/" in argument:
+            provider_name, _, model_id = argument.partition("/")
+            provider_name = provider_name.strip()
+            model_id = model_id.strip()
+            if provider_name not in providers:
+                self.conversation.add_error(
+                    f"unknown provider: {provider_name} (choose from {', '.join(providers)})"
+                )
+                return
+            offered = [model for provider, model in choices if provider == provider_name]
+            if model_id not in offered:
+                self.conversation.add_error(
+                    f"unknown model for provider {provider_name}: {model_id}"
+                    f" (available: {', '.join(offered) or 'none'})"
+                )
+                return
+            target = (provider_name, model_id)
+        else:
+            if argument in [model for _, model in choices]:
+                target = (current[0], argument)
+            else:
+                matches = [pair for pair in choices if pair[1] == argument]
+                if len(matches) == 1:
+                    target = matches[0]
+                elif len(matches) > 1:
+                    labels = ", ".join(f"{provider}/{model}" for provider, model in matches)
+                    self.conversation.add_error(
+                        f"model {argument} is available on several providers: {labels}"
+                    )
+                    return
+                else:
+                    available = (
+                        ", ".join(self._model_value(provider, model) for provider, model in choices) or "none"
+                    )
+                    self.conversation.add_error(f"unknown model: {argument} (available: {available})")
+                    return
+        assert target is not None
+        target_provider, target_model = target
+        try:
+            if target_provider == runtime.provider_name:
+                await runtime.set_model(target_model)
+            else:
+                await runtime.set_provider(target_provider, model=target_model)
+        except Exception as exc:  # noqa: BLE001 - show the runtime message
+            self.conversation.add_error(f"model switch failed: {exc}")
             return
-        await self.runtime.set_model(argument)
-        self.conversation.add_info(f"model switched to {argument}")
+        self.conversation.add_info(f"model switched to {target_provider}/{target_model}")
+        self._report_persist_error()
         self.refresh_status()
 
     def _preset_specs(self) -> list[Any]:
@@ -695,8 +836,17 @@ class DeepPyroApp(App[None]):
         records = len(getattr(session, "records", []) or [])
         permission = getattr(runtime, "permission", None)
         policy = f"{getattr(permission, 'preset', 'n/a')} · {getattr(permission, 'approval', 'n/a')}"
+        has_key = getattr(runtime, "has_api_key", None)
+        key_state = "n/a"
+        if callable(has_key):
+            try:
+                key_state = "api key ok" if has_key(runtime.provider_name) else "missing api key"
+            except Exception:  # noqa: BLE001 - status must never fail
+                key_state = "n/a"
         lines = [
             f"session  {runtime.session_id}",
+            f"provider {runtime.provider_name}  ({key_state})",
+            "providers " + ", ".join(self._provider_names()),
             f"model    {runtime.provider_name}/{runtime.model}",
             f"cwd      {runtime.cwd}",
             f"preset   {getattr(runtime, 'agent_preset', 'default')}",
