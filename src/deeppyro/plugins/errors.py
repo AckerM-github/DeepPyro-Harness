@@ -1,7 +1,9 @@
 """Errors raised by the external plugin manager.
 
 All errors derive from deeppyro.core.errors.DeeppyroError so the TUI can
-render them without depending on this package internals.
+render them without depending on this package internals. ManifestWriteError
+and SettingsConflict also derive from ValueError where the standard library
+would have raised one (a stale revision is an optimistic-concurrency error).
 """
 
 from __future__ import annotations
@@ -29,10 +31,15 @@ class ManifestWriteError(PluginError):
     """Raised when the user plugin manifest cannot be serialized or written."""
 
 
+class SettingsConflict(PluginError, ValueError):
+    """Raised when write() carries a stale expected_revision (CAS failure)."""
+
+
 __all__ = [
     "ManifestWriteError",
     "PluginError",
     "PluginNotFoundError",
     "PluginProtectionError",
     "PluginRemovalError",
+    "SettingsConflict",
 ]

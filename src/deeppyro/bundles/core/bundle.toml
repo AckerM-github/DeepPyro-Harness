@@ -29,6 +29,10 @@ id = "tools-builtin"
 plugin = "deeppyro.builtin.tools:BuiltinToolsPlugin"
 
 [[plugins]]
+id = "plugin-tools"
+plugin = "deeppyro.tools.builtin.plugin_tools:PluginToolsPlugin"
+
+[[plugins]]
 id = "presets"
 plugin = "deeppyro.builtin.presets:PresetsPlugin"
 
@@ -51,3 +55,19 @@ plugin = "deeppyro.builtin.commands_builtin:CommandsBuiltinPlugin"
 [[plugins]]
 id = "agents"
 plugin = "deeppyro.builtin.agents:AgentsPlugin"
+
+[[plugins]]
+id = "slots"
+plugin = "deeppyro.tui.slots:SlotsPlugin"
+
+[[plugins]]
+id = "plugin-manager"
+plugin = "deeppyro.builtin.plugin_manager:PluginManagerPlugin"
+
+[[plugins]]
+id = "settings"
+plugin = "deeppyro.builtin.settings:SettingsPlugin"
+
+[[plugins]]
+id = "inspect"
+plugin = "deeppyro.builtin.inspect:InspectPlugin"

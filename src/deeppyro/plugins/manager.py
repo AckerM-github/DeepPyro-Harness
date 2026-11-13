@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from deeppyro.kernel.manifest import ManifestError, PluginSpec, resolve_plugin_name
+from deeppyro.plugins.bundles import BundleStore
 from deeppyro.plugins.discovery import PluginDiscovery
 from deeppyro.plugins.errors import (
     PluginError,
@@ -30,6 +31,7 @@ from deeppyro.plugins.manifest_store import read_manifest, save_user_manifest
 from deeppyro.plugins.model import (
     SOURCE_DIR,
     SOURCE_ENTRY_POINT,
+    BundleInfo,
     PluginInfo,
     ValidationResult,
 )
@@ -50,6 +52,7 @@ class PluginManager:
         entry_points: Callable[[], Any] | None = None,
         bundle_ids: Iterable[str] | None = None,
         inject_sys_path: bool = True,
+        bundles_root: str | Path | None = None,
     ) -> None:
         self._discovery = PluginDiscovery(
             manifest_path=manifest_path,
@@ -57,6 +60,11 @@ class PluginManager:
             entry_points=entry_points,
             bundle_ids=bundle_ids,
             inject_sys_path=inject_sys_path,
+        )
+        self._bundles = BundleStore(
+            manifest_path=self._discovery.manifest_path,
+            root=bundles_root,
+            bundle_ids=self._discovery.bundle_ids,
         )
         self._plugins: dict[str, PluginInfo] = {}
         self.refresh()
@@ -77,6 +85,11 @@ class PluginManager:
     def bundle_ids(self) -> frozenset[str]:
         """Plugin ids owned by the built-in bundle; operations on them are refused."""
         return self._discovery.bundle_ids
+
+    @property
+    def bundles_root(self) -> Path:
+        """Directory holding installed user bundles (one subdirectory each)."""
+        return self._bundles.root
 
     @property
     def errors(self) -> tuple[str, ...]:
@@ -176,6 +189,24 @@ class PluginManager:
         self._write_specs(specs)
         self.refresh()
         return self._plugins[plugin_id]
+
+    # -- bundle lifecycle ------------------------------------------------
+
+    def list_bundles(self) -> list[BundleInfo]:
+        """Installed user bundles with their load and override state."""
+        return list(self._bundles.list())
+
+    def install_bundle(self, source: str | Path, *, force: bool = False) -> BundleInfo:
+        """Copy a bundle directory into the user bundle store."""
+        return self._bundles.install(source, force=force)
+
+    def remove_bundle(self, bundle_id: str) -> BundleInfo:
+        """Delete an installed user bundle and its orphaned manifest patches."""
+        return self._bundles.remove(bundle_id)
+
+    def set_bundle(self, bundle_id: str, enabled: bool) -> BundleInfo:
+        """Enable or disable every plugin row contributed by a bundle."""
+        return self._bundles.set_enabled(bundle_id, enabled)
 
     # -- removal ---------------------------------------------------------
 

@@ -57,9 +57,7 @@ class PromptPlugin(Service):
 
     def sections(self, *, scope: str | None = None) -> list[PromptSection]:
         """Sections visible to an agent: global ones plus those scoped to it."""
-        visible = [
-            section for section in self._sections if section.scope is None or section.scope == scope
-        ]
+        visible = [section for section in self._sections if section.scope is None or section.scope == scope]
         return sorted(visible, key=lambda section: (section.order, section.name))
 
     def build(self, tools: list[Any], prompt_context: Any, *, scope: str | None = None) -> str:

@@ -350,7 +350,22 @@ class HeadlessRuntime:
             sink=sink,
             permission=self.permission,
             cwd=str(self.cwd),
+            services=self._plugin_services(),
         )
+
+    def _plugin_services(self) -> dict[str, Any]:
+        """Plugin services the agent tools read from ToolContext.services."""
+        services: dict[str, Any] = {}
+        kernel_app = self.kernel_app
+        if kernel_app is None:
+            return services
+        for name in ("plugin_manager", "inspect", "settings"):
+            try:
+                value = kernel_app.service(name)
+            except LookupError:
+                continue
+            services[name] = value
+        return services
 
     async def aclose(self) -> None:
         if self._closed:

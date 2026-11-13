@@ -356,3 +356,43 @@ PathPromptScreen {
     color: $dim;
     margin: 1 0 0 0;
 }
+
+/* --- plugin slots ---------------------------------------------------- */
+
+#plugin-status-bar {
+    height: 1;
+    padding: 0 2;
+    background: $surface;
+    color: $dim;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
+}
+
+PluginPanelScreen {
+    align: center middle;
+    background: rgba(15, 17, 21, 0.82);
+}
+
+#plugin-panel-dialog {
+    width: 100;
+    height: auto;
+    max-height: 34;
+    border: round $accent;
+    background: $surface;
+    padding: 1 2;
+}
+
+#plugin-panel-title {
+    color: $accent;
+    text-style: bold;
+}
+
+.plugin-slot-error {
+    color: $red;
+}
+
+#plugin-table {
+    height: auto;
+    max-height: 18;
+}

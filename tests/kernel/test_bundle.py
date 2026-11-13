@@ -21,12 +21,17 @@ EXPECTED_ORDER = [
     "sandbox",
     "tools",
     "tools-builtin",
+    "plugin-tools",
     "presets",
     "prompt",
     "prompt-core",
     "commands",
     "commands-builtin",
     "agents",
+    "slots",
+    "plugin-manager",
+    "settings",
+    "inspect",
 ]
 
 
@@ -86,12 +91,17 @@ config = { start = 5 }
         "sandbox",
         "tools",
         "tools-builtin",
+        "plugin-tools",
         "presets",
         "prompt",
         "prompt-core",
         "commands",
         "commands-builtin",
         "agents",
+        "slots",
+        "plugin-manager",
+        "settings",
+        "inspect",
     ]
 
 
@@ -113,14 +123,20 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
         assert list(app.started) == [
             "llm",
             "tools-builtin",
+            "plugin-tools",
             "presets",
             "prompt",
             "prompt-core",
             "commands",
             "commands-builtin",
+            "slots",
+            "plugin-manager",
+            "settings",
+            "inspect",
         ]
-        # tools-builtin injects the tools service, so it waits for a provider.
+        # tools-builtin and plugin-tools inject the tools service, so they wait.
         assert app.started["tools-builtin"] == "PENDING"
+        assert app.started["plugin-tools"] == "PENDING"
         assert app.started["llm"] == "ACTIVE"
         assert app.started["presets"] == "ACTIVE"
         assert app.started["prompt"] == "ACTIVE"

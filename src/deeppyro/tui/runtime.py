@@ -157,11 +157,21 @@ class TuiRuntime:
             sink=self.sink,
             permission=self.permission,
             cwd=str(self.cwd),
+            services=self._plugin_services(),
             preset=self.agent_preset,
         )
         await await_maybe(getattr(self.agent, "aclose", None))
         self.session = session
         self.agent = agent
+
+    def _plugin_services(self) -> dict[str, Any]:
+        """Plugin services the agent tools read from ToolContext.services."""
+        services: dict[str, Any] = {}
+        for name in ("plugin_manager", "inspect", "settings"):
+            service = self._service(name)
+            if service is not None:
+                services[name] = service
+        return services
 
     def _service(self, name: str) -> Any | None:
         app = self.kernel_app

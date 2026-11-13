@@ -102,8 +102,13 @@ Patch semantics (deliberately different from a deep merge):
 | `prompt` | `builtin.prompt_service` | `prompt`: ordered sections, `.build(tools, prompt_context, scope=None)` |
 | `prompt-core` | `builtin.prompt_core` | identity/environment/instructions/tools/rules sections |
 | `commands` | `builtin.commands` | `commands`: slash-command registry |
-| `commands-builtin` | `builtin.commands_builtin` | the ten built-in slash commands |
+| `commands-builtin` | `builtin.commands_builtin` | eleven built-in slash commands (incl. `/panel`) |
 | `agents` | `builtin.agents` | `agents`: `.create(...)`, `.options(**overrides)` |
+| `plugin-tools` | `tools.builtin.plugin_tools` | four plugin-manager/inspect/settings agent tools |
+| `slots` | `tui.slots` | `slots`: TUI slot registry (status items, conversation rows, panels, settings pages) |
+| `plugin-manager` | `builtin.plugin_manager` | `plugin_manager`: external plugins and bundles (`.manager`) |
+| `settings` | `builtin.settings` | `settings`: config read/write with revision CAS (`.store`) |
+| `inspect` | `builtin.inspect` | `inspect`: live services, plugins, tools, prompts, commands, providers, config schema |
 
 Core rows are `critical = true`: a failure aborts boot with `KernelBootError` and disposes
 every already-mounted fiber. External rows default to non-critical: a failure is recorded in
@@ -126,6 +131,17 @@ every already-mounted fiber. External rows default to non-critical: a failure is
 - providers: `ctx.register_provider(name, factory, description=...)`; factory is
   `callable(llm_service) -> LlmProvider` and wins over a config provider with the same name.
 - services: a `Service` subclass exposes an entirely new service name.
+- runtime self-extension: the `plugin_manager`, `settings` and `inspect` services (rows
+  `plugin-manager`, `settings`, `inspect`) let an agent install/list/enable/remove external
+  bundles and plugins, read and write plugin config, and inspect the live composition. The same
+  operations are exposed to the model as the `plugin_manager`, `plugin_inspect`,
+  `settings_read` and `settings_write` tools contributed by row `plugin-tools`. Installing a
+  bundle executes third-party Python on the next boot, so it requires human approval.
+- TUI slots: the `slots` service (row `slots`, plugin `deeppyro.tui.slots:SlotsPlugin`) is a
+  Textual-free registry with four kinds: `STATUS`, `CONVERSATION`, `PANEL` and `SETTINGS`.
+  Plugins register renderers/factories with a unique `id` and optional `order`; the host renders
+  them via `PluginStatusBar`, `apply_conversation_slots`, `/panel` and the settings screen.
+  See `docs/spec/tui-slots.md` for the contract and the `SlotError`/`dispose` rules.
 
 All registration helpers return a dispose callable and are torn down with the plugin fiber.
 
@@ -181,12 +197,16 @@ class GreetPlugin(Plugin):
 | contract | `src/deeppyro/api/{__init__,errors,types,context,plugin}.py` |
 | composition | `src/deeppyro/kernel/{app,composition,bundle,manifest}.py` |
 | core plugins | `src/deeppyro/builtin/*.py`, `src/deeppyro/bundles/core/bundle.toml` |
-| tests | `tests/kernel/`, `tests/integration/test_plugin_composition.py`, `tests/integration/test_agent_presets.py`, `tests/tui/test_commands.py` |
+| tests | `tests/kernel/`, `tests/integration/test_plugin_composition.py`, `tests/integration/test_agent_presets.py`, `tests/integration/test_plugin_services.py`, `tests/tui/test_commands.py`, `tests/tui/test_slots.py` |
 
 ## 9. Known limits
 
-- No install/remove of bundles yet (layer D: `plugin_manager`), no settings editor and no live
-  inspection yet.
+- Settings writes take effect on the next boot (no hot reload); the settings store has no
+  cross-process lock and rewrites the user manifest without preserving comments.
+- `bundle install` only validates structure; the third-party code runs on the next boot, with no
+  signature or sandbox. Removing a bundle does not stop an already-loaded plugin.
+- Plugin status/conversation slots are append-only: a conversation row contributed after a
+  message was rendered is not re-rendered by the host.
 - Preset switching rebuilds the live agent but does not rewrite the current session header, so
   `agentPreset` keeps the value the session was created with; only new sessions record the new id.
 - Preset `model` overrides skip config validation; an unknown model id fails on the next request.

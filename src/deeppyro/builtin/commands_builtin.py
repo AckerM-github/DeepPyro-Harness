@@ -38,6 +38,7 @@ _ROWS: tuple[tuple[str, tuple[str, ...], str, str, str, bool], ...] = (
     ("compact", (), "compact the conversation now", "/compact", "compact", False),
     ("clear", (), "clear the conversation view", "/clear", "clear_conversation", False),
     ("plugins", (), "list loaded plugins", "/plugins", "show_plugins", False),
+    ("panel", (), "open a plugin panel", "/panel [id]", "panel_command", True),
     ("exit", ("quit", "q"), "quit DeepPyro", "/exit", "exit", False),
 )
 

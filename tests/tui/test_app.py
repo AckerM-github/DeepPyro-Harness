@@ -5,9 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from textual.widgets import Static
+
 from deeppyro.tui.app import DeepPyroApp
+from deeppyro.tui.screens.plugin_panel import PluginPanelScreen
+from deeppyro.tui.slots import SlotRegistry
 from deeppyro.tui.widgets.control_bar import CUSTOM_WORKSPACE, ControlBar
 from deeppyro.tui.widgets.conversation import ConversationView
+from deeppyro.tui.widgets.plugin_slots import PluginStatusBar
 from deeppyro.tui.widgets.prompt_area import PromptArea
 from deeppyro.tui.widgets.status_bar import StatusBar
 
@@ -162,6 +167,25 @@ class FakeRuntime:
 
 async def _make_runtime(app: DeepPyroApp) -> FakeRuntime:
     return FakeRuntime(app)
+
+
+class _FakeKernel:
+    def __init__(self, registry: SlotRegistry) -> None:
+        self.registry = registry
+
+    def service(self, name: str) -> Any:
+        if name == "slots":
+            return self.registry
+        raise LookupError(name)
+
+
+def _runtime_with_slots(registry: SlotRegistry):
+    async def factory(app: DeepPyroApp) -> FakeRuntime:
+        runtime = FakeRuntime(app)
+        runtime.kernel_app = _FakeKernel(registry)
+        return runtime
+
+    return factory
 
 
 async def test_app_boots_and_streams_a_turn() -> None:
@@ -409,3 +433,55 @@ async def test_control_bar_is_disabled_during_a_turn() -> None:
         app.refresh_status()
         await pilot.pause(0.1)
         assert bar.preset_select.disabled is False
+
+
+async def test_plugin_status_items_render() -> None:
+    registry = SlotRegistry()
+    registry.add_status_item(lambda context: "items: 3", id="queue", plugin_id="demo")
+    app = DeepPyroApp(runtime_factory=_runtime_with_slots(registry), splash=False)
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.pause()
+        bar = app.query_one(PluginStatusBar)
+        assert bar.display is True
+        assert "items: 3" in bar.plain_text
+
+
+async def test_plugin_conversation_row_renders_on_an_event() -> None:
+    registry = SlotRegistry()
+    seen: list[Any] = []
+
+    def factory(event: dict[str, Any]) -> Static:
+        seen.append(event)
+        return Static("plugin row", classes="plugin-row")
+
+    registry.add_conversation_row(
+        lambda event: event.get("type") == "final",
+        factory,
+        id="final-note",
+        plugin_id="demo",
+    )
+    app = DeepPyroApp(runtime_factory=_runtime_with_slots(registry), splash=False)
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one(PromptArea)
+        prompt.text = "hi"
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        assert [event["type"] for event in seen] == ["final"]
+        assert len(app.query(".plugin-row")) == 1
+
+
+async def test_panel_command_opens_a_plugin_panel() -> None:
+    registry = SlotRegistry()
+    registry.add_panel("Demo panel", lambda context: Static("panel body"), id="demo", plugin_id="demo")
+    app = DeepPyroApp(runtime_factory=_runtime_with_slots(registry), splash=False)
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one(PromptArea)
+        prompt.text = "/panel demo"
+        await pilot.press("enter")
+        for _ in range(40):
+            if isinstance(app.screen, PluginPanelScreen):
+                break
+            await pilot.pause(0.05)
+        assert isinstance(app.screen, PluginPanelScreen)

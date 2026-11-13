@@ -27,10 +27,18 @@ from deeppyro.tui.format import compact_text, context_percent, short_session_id
 from deeppyro.tui.screens.approval import ALLOW_ALWAYS, ApprovalScreen
 from deeppyro.tui.screens.path_prompt import PathPromptScreen
 from deeppyro.tui.screens.picker import PickerScreen
+from deeppyro.tui.screens.plugin_panel import open_plugin_panel
 from deeppyro.tui.screens.splash import SplashScreen
 from deeppyro.tui.sink import TuiSink
+from deeppyro.tui.slots import (
+    SlotRegistry,
+    apply_conversation_slots,
+    build_slot_context,
+    resolve_slot_registry,
+)
 from deeppyro.tui.widgets.control_bar import CUSTOM_WORKSPACE, ControlBar
 from deeppyro.tui.widgets.conversation import ConversationView
+from deeppyro.tui.widgets.plugin_slots import PluginStatusBar
 from deeppyro.tui.widgets.prompt_area import PromptArea
 from deeppyro.tui.widgets.status_bar import StatusBar
 
@@ -68,6 +76,7 @@ class DeepPyroApp(App[None]):
         self.runtime: Any = None
         self._sink = TuiSink(self.handle_event)
         self._prompt: PromptArea | None = None
+        self._slots: SlotRegistry | None = None
         self._working = False
         self._phase = "idle"
         self._context_used = 0
@@ -79,6 +88,7 @@ class DeepPyroApp(App[None]):
         yield ControlBar()
         yield ConversationView()
         yield StatusBar()
+        yield PluginStatusBar()
         yield PromptArea()
         yield Footer()
 
@@ -115,9 +125,21 @@ class DeepPyroApp(App[None]):
             self._dismiss_splash()
             self.refresh_status()
             return
+        self._bind_slots()
         self._update_splash()
         self._render_welcome()
         self.refresh_status()
+
+    def _bind_slots(self) -> None:
+        """Attach the optional `slots` service to the plugin chrome."""
+        self._slots = resolve_slot_registry(self.runtime)
+        if self._slots is None:
+            return
+        try:
+            bar = self.query_one(PluginStatusBar)
+            bar.bind(self._slots, lambda: build_slot_context(self))
+        except Exception:  # noqa: BLE001, S110 - optional chrome never blocks boot
+            pass
 
     async def on_unmount(self) -> None:
         runtime = self.runtime
@@ -194,6 +216,7 @@ class DeepPyroApp(App[None]):
                 conversation.add_error(str(event.get("message") or "unknown error"))
             elif kind == "status":
                 self._phase = str(event.get("phase") or "idle")
+            apply_conversation_slots(conversation, event, self._slots, context=build_slot_context(self))
         except Exception:  # noqa: BLE001, S110 - rendering must never kill a turn
             pass
         self.refresh_status()
@@ -289,6 +312,7 @@ class DeepPyroApp(App[None]):
 
     # -- status ----------------------------------------------------------
     def refresh_status(self) -> None:
+        self._refresh_plugin_status()
         try:
             status = self.query_one(StatusBar)
         except Exception:  # noqa: BLE001 - composition not ready yet
@@ -324,6 +348,14 @@ class DeepPyroApp(App[None]):
         # Never steal focus from an overlay (splash, picker, approval modal).
         if self._prompt is not None and len(self.screen_stack) <= 1:
             self._prompt.focus()
+
+    def _refresh_plugin_status(self) -> None:
+        """Re-render plugin status items; the line hides itself when empty."""
+        try:
+            bar = self.query_one(PluginStatusBar)
+        except Exception:  # noqa: BLE001 - composition not ready yet
+            return
+        bar.refresh_items(build_slot_context(self))
 
     # -- control bar -----------------------------------------------------
     def _sync_control_bar(self) -> None:
@@ -590,9 +622,7 @@ class DeepPyroApp(App[None]):
                 for spec in presets:
                     preset_id = str(getattr(spec, "id", "") or "")
                     label = str(getattr(spec, "name", "") or preset_id)
-                    note = "current" if preset_id == current else str(
-                        getattr(spec, "description", "") or ""
-                    )
+                    note = "current" if preset_id == current else str(getattr(spec, "description", "") or "")
                     items.append((preset_id, label, note))
                 choice = await self._pick("Select agent preset", items)
                 if choice is None:
@@ -652,12 +682,38 @@ class DeepPyroApp(App[None]):
         self.conversation.clear()
         self._render_welcome()
 
+    async def panel_command(self, argument: str) -> None:
+        """Open a plugin-contributed panel by id (or the first one)."""
+        registry = self._slots
+        if registry is None:
+            self.conversation.add_info("plugin panels are not available in this session")
+            return
+        screen = open_plugin_panel(
+            self,
+            registry,
+            slot_id=argument.strip() or None,
+            context=build_slot_context(self),
+        )
+        if screen is not None:
+            return
+        panels = [row.id for row in registry.list("panel")]
+        if panels:
+            self.conversation.add_info("plugin panels: " + ", ".join(panels))
+            self.conversation.add_info("use /panel <id>")
+        else:
+            self.conversation.add_info("no plugin panels are registered")
+
     async def show_plugins(self) -> None:
         """Open the external plugin manager, or list kernel plugins as fallback."""
         try:
             from deeppyro.tui.screens.plugins import PluginScreen
 
-            await self.push_screen_wait(PluginScreen())
+            manager = None
+            service = getattr(self.runtime, "_service", None)
+            if callable(service):
+                plugin_manager = service("plugin_manager")
+                manager = getattr(plugin_manager, "manager", None)
+            await self.push_screen_wait(PluginScreen(manager))
             return
         except Exception:  # noqa: BLE001, S110 - outside a worker or manager failure
             pass

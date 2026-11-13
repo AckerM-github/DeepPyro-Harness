@@ -25,6 +25,7 @@ EXPECTED_NAMES = [
     "compact",
     "clear",
     "plugins",
+    "panel",
     "exit",
 ]
 

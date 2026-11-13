@@ -17,55 +17,55 @@ from deeppyro.kernel import boot
 from deeppyro.prompt import PromptContext
 
 PLUGIN_SOURCE = (
-    'from deeppyro.api import Plugin, PresetSpec\n'
-    'from deeppyro.core.protocols import ToolResult\n'
-    'from deeppyro.tools.base import BaseTool, make_parameters\n'
-    '\n'
-    '\n'
-    'class ReviewTool(BaseTool):\n'
+    "from deeppyro.api import Plugin, PresetSpec\n"
+    "from deeppyro.core.protocols import ToolResult\n"
+    "from deeppyro.tools.base import BaseTool, make_parameters\n"
+    "\n"
+    "\n"
+    "class ReviewTool(BaseTool):\n"
     '    name = "review_note"\n'
     '    description = "Record one review note."\n'
     '    parameters = make_parameters({"note": {"type": "string"}}, required=["note"])\n'
-    '\n'
-    '    async def run(self, args, ctx):\n'
+    "\n"
+    "    async def run(self, args, ctx):\n"
     '        return ToolResult(text="noted: " + str(args.get("note", "")))\n'
-    '\n'
-    '\n'
-    'class SharedTool(BaseTool):\n'
+    "\n"
+    "\n"
+    "class SharedTool(BaseTool):\n"
     '    name = "shared_ping"\n'
     '    description = "Available to every preset."\n'
-    '    parameters = make_parameters({})\n'
-    '\n'
-    '    async def run(self, args, ctx):\n'
+    "    parameters = make_parameters({})\n"
+    "\n"
+    "    async def run(self, args, ctx):\n"
     '        return ToolResult(text="pong")\n'
-    '\n'
-    '\n'
-    'class PresetPlugin(Plugin):\n'
+    "\n"
+    "\n"
+    "class PresetPlugin(Plugin):\n"
     '    plugin_id = "preset-bundle"\n'
     '    version = "0.1.0"\n'
     '    inject = ["tools", "prompt", "presets"]\n'
-    '\n'
-    '    def setup(self, ctx, config):\n'
-    '        ctx.register_preset(PresetSpec(\n'
+    "\n"
+    "    def setup(self, ctx, config):\n"
+    "        ctx.register_preset(PresetSpec(\n"
     '            id="reviewer",\n'
     '            name="Reviewer",\n'
     '            description="read-only review mode",\n'
     '            model="reviewer-model",\n'
     '            instructions=("Review only.",),\n'
-    '            order=20,\n'
-    '        ))\n'
-    '        ctx.register_tool(lambda config, workspace: SharedTool())\n'
+    "            order=20,\n"
+    "        ))\n"
+    "        ctx.register_tool(lambda config, workspace: SharedTool())\n"
     '        ctx.register_tool(lambda config, workspace: ReviewTool(), scope="reviewer")\n'
-    '        ctx.register_prompt_section(\n'
+    "        ctx.register_prompt_section(\n"
     '            "review-hint",\n'
-    '            45,\n'
+    "            45,\n"
     '            lambda tools, prompt_ctx: "## Review mode\\nDo not edit files.",\n'
     '            scope="reviewer",\n'
-    '        )\n'
+    "        )\n"
 )
 BUNDLE_TOML = (
     '[bundle]\nid = "preset-bundle"\nname = "Preset bundle"\nversion = "0.1.0"\norder = 50\n'
-    '\n'
+    "\n"
     '[[plugins]]\nid = "preset-bundle"\nplugin = "preset_plugin.py:PresetPlugin"\n'
 )
 

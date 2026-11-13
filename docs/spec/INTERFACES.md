@@ -333,8 +333,13 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 | `prompt` | `builtin.prompt_service` | `prompt`：`.add_section(..., scope=None)`、`.build(tools, prompt_context, scope=None)` |
 | `prompt-core` | `builtin.prompt_core` | 5 个核心提示词段（order 10/20/30/40/50） |
 | `commands` | `builtin.commands` | `commands`：`.add`、`.all()`、`.resolve()`、`.invoke()` |
-| `commands-builtin` | `builtin.commands_builtin` | 10 个内置 slash 命令（含 `/preset`） |
+| `commands-builtin` | `builtin.commands_builtin` | 11 个内置 slash 命令（含 `/preset`、`/panel`） |
 | `agents` | `builtin.agents` | `agents`：`.create(..., preset=None)`、`.options(**overrides)` |
+| `plugin-tools` | `tools.builtin.plugin_tools` | 4 个 agent 工具：`plugin_manager`/`plugin_inspect`/`settings_read`/`settings_write` |
+| `slots` | `tui.slots` | `slots`：TUI 插件槽位注册表（状态栏项/对话行/面板/设置页） |
+| `plugin-manager` | `builtin.plugin_manager` | `plugin_manager`：外部插件与 bundle（`.manager`） |
+| `settings` | `builtin.settings` | `settings`：插件配置读写 + revision CAS（`.store`） |
+| `inspect` | `builtin.inspect` | `inspect`：live services/plugins/tools/prompts/commands/providers/config schema |
 
 ### 11.5 API
 
@@ -355,4 +360,6 @@ await app.stop()                           # 逆序 dispose
 - `tests/kernel/`：假插件 boot、patch 顺序、critical 失败、`tests/kernel/plugins_dummy.py`。
 - `tests/integration/test_plugin_composition.py`：临时目录外部 bundle 贡献工具/提示词/命令/provider。
 - `tests/tui/test_commands.py`：插件贡献的 slash 命令进入 TUI 实时命令表并被执行。
+- `tests/integration/test_plugin_services.py`：D 层四个工具经 `ToolContext.services` 取内核服务并真实执行；外部 bundle 注册 TUI 槽位后在 `slots` 服务可见。
+- `tests/tui/test_slots.py`/`test_plugin_slots.py`：槽位注册、排序、去重、状态栏渲染与面板打开。
 
