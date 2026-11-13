@@ -364,7 +364,8 @@ class DeepPyroApp(App[None]):
             approval=self._current_approval(),
             context_tokens=context_used,
         )
-        self.sub_title = f"{runtime.provider_name}/{runtime.model}"
+        suffix = " · team" if self._agent_mode() == "team" else ""
+        self.sub_title = f"{runtime.provider_name}/{runtime.model}{suffix}"
         # Never steal focus from an overlay (splash, picker, approval modal).
         if self._prompt is not None and len(self.screen_stack) <= 1:
             self._prompt.focus()
@@ -414,6 +415,16 @@ class DeepPyroApp(App[None]):
         self.push_screen(ThinkingScreen([event.reasoning]))
 
     # -- policy / approval / workspace commands --------------------------
+    def _agent_preset(self) -> str:
+        return str(getattr(self.runtime, "agent_preset", "default") or "default")
+
+    def _agent_mode(self) -> str:
+        reader = getattr(self.runtime, "agent_mode", "default")
+        try:
+            return str(reader or "default")
+        except Exception:  # noqa: BLE001 - status display must never fail
+            return "default"
+
     def _current_preset(self) -> str:
         permission = getattr(self.runtime, "permission", None)
         return str(getattr(permission, "preset", "workspace-write"))
@@ -560,9 +571,11 @@ class DeepPyroApp(App[None]):
         conversation = self.conversation
         conversation.add_info("DeepPyro Harness — python core, terminal UI")
         conversation.add_info(
-            f"{runtime.provider_name}/{runtime.model}  ·  /model and /provider switch the model;"
-            " /policy, /approval and /cwd change the session"
+            f"{runtime.provider_name}/{runtime.model}  ·  agent preset {self._agent_preset()}"
+            f" ({self._agent_mode()} mode)  ·  /model and /provider switch the model;"
+            " /preset switches the agent preset"
         )
+        conversation.add_info("/policy, /approval and /cwd change the session settings")
         conversation.add_info("Type a message. /help lists commands. Ctrl+C interrupts, Ctrl+D quits.")
 
     def _render_history(self) -> None:
@@ -886,7 +899,9 @@ class DeepPyroApp(App[None]):
         except Exception as exc:  # noqa: BLE001 - show the service message
             self.conversation.add_error(f"preset switch failed: {exc}")
             return
-        self.conversation.add_info(f"agent preset switched to {selected}")
+        mode = self._agent_mode()
+        hint = "team tools enabled for the lead" if mode == "team" else "subagent delegation enabled"
+        self.conversation.add_info(f"agent preset switched to {selected} · {mode} mode ({hint})")
         self.refresh_status()
 
     def show_status(self) -> None:
@@ -909,7 +924,7 @@ class DeepPyroApp(App[None]):
             "providers " + ", ".join(self._provider_names()),
             f"model    {runtime.provider_name}/{runtime.model}",
             f"cwd      {runtime.cwd}",
-            f"preset   {getattr(runtime, 'agent_preset', 'default')}",
+            f"preset   {self._agent_preset()}  ({self._agent_mode()} mode)",
             f"policy   {policy}",
             f"tokens   input {usage['input']}  output {usage['output']}  cached {usage['cached']}",
             f"context  {context_percent(self._context_used, runtime.context_window)}% of {runtime.context_window}",
@@ -990,6 +1005,9 @@ class DeepPyroApp(App[None]):
     async def _open_team(self, argument: str = "") -> None:
         """Open the team roster or the shared task board (/team [board])."""
         members, tasks, team_id = self._team_snapshot()
+        if self._agent_mode() != "team" and not members and not tasks:
+            self.conversation.add_info("agent team mode is off; use /preset team to enable team tools")
+            return
         spec = argument.strip().lower()
         if spec in ("board", "tasks", "task-board"):
             try:

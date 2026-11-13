@@ -14,6 +14,14 @@ from .context import PluginContext
 from .errors import PluginConfigError, PluginDependencyError, PluginError
 from .plugin import Plugin, Service
 from .types import (
+    AGENT_MODE_DEFAULT,
+    AGENT_MODE_TEAM,
+    CHILD_DISABLED_TOOLS,
+    DEFAULT_PRESET_ID,
+    SUBAGENT_TOOL_NAMES,
+    TEAM_MODE_DISABLED_TOOLS,
+    TEAM_PRESET_ID,
+    TEAM_TOOL_NAMES,
     CommandSpec,
     PluginStatus,
     PresetPluginRow,
@@ -26,7 +34,15 @@ from .types import (
 API_VERSION = 1
 
 __all__ = [
+    "AGENT_MODE_DEFAULT",
+    "AGENT_MODE_TEAM",
     "API_VERSION",
+    "CHILD_DISABLED_TOOLS",
+    "DEFAULT_PRESET_ID",
+    "SUBAGENT_TOOL_NAMES",
+    "TEAM_MODE_DISABLED_TOOLS",
+    "TEAM_PRESET_ID",
+    "TEAM_TOOL_NAMES",
     "CommandSpec",
     "Plugin",
     "PluginConfigError",

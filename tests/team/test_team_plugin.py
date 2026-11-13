@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from deeppyro.api import TEAM_PRESET_ID
 from deeppyro.builtin.team import TeamPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.kernel import PluginSpec, boot
@@ -57,7 +58,7 @@ def test_plugin_provides_team_service_and_registers_tools() -> None:
     assert plugin.service is service
     assert len(ctx.tool_factories) == 1
     factory, scope = ctx.tool_factories[0]
-    assert scope is None
+    assert scope == TEAM_PRESET_ID
     tools = factory(None, "C:/work")
     assert [tool.name for tool in tools] == EXPECTED_TOOLS
     assert all(tool.parallel_safe is False for tool in tools)
@@ -80,7 +81,11 @@ async def test_team_plugin_boots_in_kernel() -> None:
         assert "team" in app.started
         service = app.service("team")
         assert isinstance(service, TeamService)
-        names = app.service("tools").names("C:/work")
-        assert [name for name in names if name.startswith("team_")] == EXPECTED_TOOLS
+        tools = app.service("tools")
+        # Team tools belong to the explicit team preset, never the host set.
+        host_names = tools.names("C:/work")
+        assert [name for name in host_names if name.startswith("team_")] == []
+        preset_names = tools.registry_for("C:/work", scope=TEAM_PRESET_ID).names()
+        assert [name for name in preset_names if name.startswith("team_")] == EXPECTED_TOOLS
     finally:
         await app.stop()

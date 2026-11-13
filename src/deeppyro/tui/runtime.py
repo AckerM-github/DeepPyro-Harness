@@ -76,6 +76,7 @@ class TuiRuntime:
     activity: Any = None
     jobs: Any = None
     team: Any = None
+    subagent: Any = None
     agent_preset: str = "default"
     preset_revision: int | None = None
     session: Any = None
@@ -131,6 +132,11 @@ class TuiRuntime:
             team = kernel_app.service("team")
         except LookupError:
             pass
+        subagent = None
+        try:
+            subagent = kernel_app.service("subagent")
+        except LookupError:
+            pass
         runtime = cls(
             cfg=cfg,
             cwd=workspace,
@@ -148,9 +154,11 @@ class TuiRuntime:
             activity=activity,
             jobs=jobs,
             team=team,
+            subagent=subagent,
         )
         await runtime.ensure_presets()
         runtime._configure_team(None)
+        runtime._configure_subagent(None)
         await runtime.new_session()
         return runtime
 
@@ -216,6 +224,7 @@ class TuiRuntime:
         self.agent = agent
         self.preset_revision = getattr(agent, "preset_revision", None)
         self._configure_team(session)
+        self._configure_subagent(session)
 
     def _configure_team(self, session: Any) -> None:
         """Keep the team service pointed at the live lead session context."""
@@ -243,10 +252,49 @@ class TuiRuntime:
         except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
             pass
 
+    def _configure_subagent(self, session: Any) -> None:
+        """Keep the subagent service pointed at the live lead session context."""
+        service = self.subagent
+        if service is None:
+            return
+        configure = getattr(service, "configure", None)
+        try:
+            if configure is not None:
+                configure(
+                    cwd=self.cwd,
+                    provider=self.provider,
+                    registry=self._scoped_registry(self.cwd),
+                    permission=self.permission,
+                    model=self.model,
+                    context_window=self.context_window,
+                    preset=self.agent_preset,
+                    preset_revision=self.preset_revision,
+                    services=self._plugin_services(),
+                    ask=self.ask,
+                )
+            bind = getattr(service, "bind_session", None)
+            if bind is not None and session is not None:
+                bind(session)
+        except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
+            pass
+
+    @property
+    def agent_mode(self) -> str:
+        """Mode of the active agent preset ("default" or "team")."""
+        service = self._service("presets")
+        resolver = getattr(service, "resolve", None)
+        spec: Any = None
+        if callable(resolver):
+            try:
+                spec = resolver(self.agent_preset, revision=self.preset_revision)
+            except Exception:  # noqa: BLE001 - status display must never fail
+                spec = None
+        return str(getattr(spec, "mode", "default") or "default")
+
     def _plugin_services(self) -> dict[str, Any]:
         """Plugin services the agent tools read from ToolContext.services."""
         services: dict[str, Any] = {}
-        for name in ("plugin_manager", "inspect", "settings", "jobs", "team"):
+        for name in ("llm", "plugin_manager", "inspect", "settings", "jobs", "team", "subagent"):
             service = self._service(name)
             if service is not None:
                 services[name] = service
@@ -567,6 +615,13 @@ class TuiRuntime:
         if cancel_all is not None:
             try:
                 await await_maybe(cancel_all())
+            except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
+                pass
+        subagent = self.subagent
+        close_subagent = getattr(subagent, "close", None)
+        if close_subagent is not None:
+            try:
+                await await_maybe(close_subagent())
             except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
                 pass
         team = self.team

@@ -6,7 +6,13 @@ from dataclasses import replace
 from typing import Any, ClassVar
 
 from deeppyro.agent import AgentOptions, AgentSession
-from deeppyro.api import PluginDependencyError, Service
+from deeppyro.api import (
+    AGENT_MODE_TEAM,
+    TEAM_MODE_DISABLED_TOOLS,
+    TEAM_TOOL_NAMES,
+    PluginDependencyError,
+    Service,
+)
 
 
 class AgentsPlugin(Service):
@@ -71,6 +77,7 @@ class AgentsPlugin(Service):
             options = replace(options, instructions=[*options.instructions, *spec.instructions])
         if registry is None:
             registry = self._registry_for(cwd, spec)
+        registry = self._filter_registry(registry, spec)
 
         def build_prompt(tools: list[Any], prompt_context: Any) -> str:
             return self._prompt_service.build(
@@ -113,3 +120,23 @@ class AgentsPlugin(Service):
                 "pass registry= explicitly"
             )
         return self._tools.registry_for(str(cwd), scope=spec.id, revision=spec.revision)
+
+    def _filter_registry(self, registry: Any, spec: Any) -> Any:
+        """Drop tools the preset's agent mode must not expose.
+
+        The built-in modes partition the delegation tools: a default-mode agent
+        delegates one-shot through `subagent`, while team mode orchestrates
+        persistent members through `team_*` and never gets the one-shot tool.
+        Team tools are scoped to the team preset already; filtering here keeps
+        the split true even for an explicitly supplied registry.
+        """
+        if registry is None:
+            return None
+        if getattr(spec, "mode", "") == AGENT_MODE_TEAM:
+            disabled = TEAM_MODE_DISABLED_TOOLS
+        else:
+            disabled = TEAM_TOOL_NAMES
+        without = getattr(registry, "without", None)
+        if callable(without):
+            return without(disabled)
+        return registry

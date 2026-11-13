@@ -91,6 +91,9 @@ class PresetSpec:
     plugins: tuple[PresetPluginRow, ...] = ()
     #: Host-filled: the immutable revision of this preset snapshot.
     revision: int = 0
+    #: Agent mode selected by this preset. default exposes single-agent tools
+    #: (including delegation); team swaps in the agent-team toolset.
+    mode: str = "default"
     #: Base directory used to resolve relative '.py' plugin targets.
     base: Path | None = None
 
@@ -136,7 +139,45 @@ class PluginStatus:
     effects: list[str] = field(default_factory=list)
 
 
+#: Canonical preset ids understood by the host.
+DEFAULT_PRESET_ID = "default"
+TEAM_PRESET_ID = "team"
+
+#: Agent modes carried by PresetSpec.mode.
+AGENT_MODE_DEFAULT = "default"
+AGENT_MODE_TEAM = "team"
+
+#: Tools contributed by the built-in team plugin.
+TEAM_TOOL_NAMES: tuple[str, ...] = (
+    "team_spawn",
+    "team_send",
+    "team_wait",
+    "team_cancel",
+    "team_members",
+    "team_task_create",
+    "team_task_list",
+    "team_task_get",
+    "team_task_update",
+)
+
+#: Tools contributed by the built-in subagent plugin.
+SUBAGENT_TOOL_NAMES: tuple[str, ...] = ("subagent",)
+
+#: Delegation tools hidden from the lead agent while in team mode.
+TEAM_MODE_DISABLED_TOOLS: tuple[str, ...] = SUBAGENT_TOOL_NAMES
+
+#: Tools hidden from spawned children so they cannot nest orchestration.
+CHILD_DISABLED_TOOLS: tuple[str, ...] = TEAM_TOOL_NAMES + SUBAGENT_TOOL_NAMES
+
 __all__ = [
+    "AGENT_MODE_DEFAULT",
+    "AGENT_MODE_TEAM",
+    "CHILD_DISABLED_TOOLS",
+    "DEFAULT_PRESET_ID",
+    "SUBAGENT_TOOL_NAMES",
+    "TEAM_MODE_DISABLED_TOOLS",
+    "TEAM_PRESET_ID",
+    "TEAM_TOOL_NAMES",
     "CommandSpec",
     "PluginStatus",
     "PresetPluginRow",

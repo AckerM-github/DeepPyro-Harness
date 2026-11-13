@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from deeppyro.api import CHILD_DISABLED_TOOLS
 from deeppyro.core.ids import new_session_id, now_ms
 from deeppyro.core.wire import SessionHeader
 from deeppyro.session.layout import flat_session_path
@@ -37,6 +38,7 @@ from deeppyro.team.types import (
     MemberInfo,
     TaskInfo,
 )
+from deeppyro.tools.registry import ToolRegistry
 
 _DEFAULT_PRESET = "default"
 _DEFAULT_CONTEXT_WINDOW = 32768
@@ -396,6 +398,28 @@ class TeamService:
                 raise TeamError(f"unknown llm provider {provider!r}: {exc}") from exc
         raise TeamError(f"unknown llm provider {provider!r}")
 
+    def _child_registry(self) -> Any:
+        """Return the tool registry a member agent may use.
+
+        Members must not delegate further: both the team tools and the one-shot
+        `subagent` tool are removed from the registry handed to their agent.
+        Opaque registry doubles without a `without` method or iterable tools are
+        passed through unchanged.
+        """
+        registry = self._registry
+        if registry is None:
+            return None
+        without = getattr(registry, "without", None)
+        if callable(without):
+            return without(CHILD_DISABLED_TOOLS)
+        try:
+            tools = list(registry)
+        except TypeError:
+            return registry
+        if not all(getattr(tool, "name", None) for tool in tools):
+            return registry
+        return ToolRegistry(tool for tool in tools if tool.name not in CHILD_DISABLED_TOOLS)
+
     def _child_permission(self) -> Any:
         sandbox = self._sandbox
         parent = self._permission
@@ -431,7 +455,7 @@ class TeamService:
             return self._agents.create(
                 session=child_session,
                 provider=resolved,
-                registry=self._registry,
+                registry=self._child_registry(),
                 options=options,
                 sink=_MemberSink(),
                 permission=self._child_permission(),

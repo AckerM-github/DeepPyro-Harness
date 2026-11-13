@@ -98,7 +98,11 @@ async def test_runtime_services_expose_manager_objects(tmp_path: Path) -> None:
         assert callable(activity.refresh)
         registry = app.service("tools").registry_for(tmp_path)
         assert "job_list" in registry
-        assert "team_task_list" in registry
+        # Team tools are scoped to the explicit team preset, so they are absent
+        # from the host-wide registry but present in the team composition.
+        assert "team_task_list" not in registry
+        team_registry = app.service("tools").registry_for(tmp_path, scope="team")
+        assert "team_task_list" in team_registry
     finally:
         await app.stop()
 

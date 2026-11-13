@@ -54,7 +54,7 @@
 1. dpyro（无参数）→ main.main → DeepPyroApp(cwd/provider/model 可选)。
 2. App.on_mount：先 push_screen(SplashScreen(...), callback=重新聚焦输入框)，再 await TuiRuntime.boot(sink=app.sink, ask=app.ask_approval)。
 3. SplashScreen：内容按 40ms/行逐行揭示（宽 >= 72 且高 >= 24 用 22 行大字标，否则退化为单行字标），**揭示完成后一直停留，直到用户按任意键才进入主界面**（不自动关闭）；boot 完成后 App 调 set_runtime 回填 provider/model/cwd；boot 失败时立即关闭 splash 并显示错误。
-4. TuiRuntime.boot：load_config → resolve_workspace → 校验 provider/model → kernel.boot（core bundle 20 行，首行 kernel 运行时）→ 取 llm.provider、tools.registry_for(workspace)、sandbox.gate(workspace, ask=ask)、activity/jobs/team 服务，并把 kernel/plugin_manager/inspect/settings/jobs/team 服务一并注入 AgentSession.services → presets.ensure_all() 物化全部 preset revision → 为 team 服务 configure + bind_session → new_session()。
+4. TuiRuntime.boot：load_config → resolve_workspace → 校验 provider/model → kernel.boot（core bundle 21 行，首行 kernel 运行时）→ 取 llm.provider、tools.registry_for(workspace)、sandbox.gate(workspace, ask=ask)、activity/jobs/team/subagent 服务，并把 kernel/plugin_manager/inspect/settings/jobs/team/subagent 服务一并注入 AgentSession.services → presets.ensure_all() 物化全部 preset revision → 为 team 与 subagent 服务 configure + bind_session → new_session()。
 5. new_session：preset_revision 清空 → SessionStore.create → _attach（agents.options(model=, context_window=) → agents.create(..., preset=, preset_revision=)）→ 写 model/selection（初始 provider/model）→ 写 agent-preset/selected（含 revision）→ AgentSession；open_session 先按日志最后一条 model/selection 恢复 provider/model（provider 不存在时忽略），再从 header 的 agentPreset 与日志里的 agent-preset/selected revision 恢复固定 revision，revision 已被删除时回退 latest。
 6. 失败：conversation.add_error(failed to start: ...)，App 仍可退出。
 7. App.on_unmount：await runtime.close()（kernel_app.stop 逆序释放插件）；幂等。
@@ -93,7 +93,7 @@
 | /resume [id 或序号] | 恢复最近会话；无参打开选择器 |
 | /provider [name] | 查看/切换 LLM provider；无参打开选择器（缺失 API key 会标注）；切换后重建 provider 与 AgentSession，写 model/selection 并持久化到 config [agent] |
 | /model [id] | 切换模型；支持跨 provider 的 provider/model 形式；无参打开选择器（多 provider 时值为 provider/model）；写 model/selection 并持久化 |
-| /preset [id] | 切换 agent preset（按会话组合工具/提示词）；无参打开选择器 |
+| /preset [id] | 切换 agent preset（按会话组合工具/提示词与 agent mode）；无参打开选择器。`/preset team` 进入 Team 模式（Lead 获得 `team_*`、收起 `subagent`），`/preset default` 回到默认单 Agent + `subagent` |
 | /policy [preset] | 查看/切换权限预设（read-only / workspace-write / danger-full-access）；无参打开选择器；写 permission/preset 记录 |
 | /approval [policy] | 查看/切换审批策略（ask / never / always）；无参打开选择器；写 approval/policy 记录 |
 | /cwd [path] | 查看/切换工作目录；无参打开选择器（当前 + 最近会话目录 + 自定义路径模态）；写 working-directory/change 记录 |
@@ -134,14 +134,16 @@
 - 插件状态栏项：状态栏上方另有一行 PluginStatusBar，插件通过 slots.add_status_item 注册的渲染器按 (order,id) 排序渲染；每次 refresh_status 重新求值，渲染异常显示为 dim 错误标记而不影响主状态栏。
 - 活动栏：Header 与对话区之间一行 ActivityBar，数据来自 activity 服务对 todo/write、job/registered|settled、team/member、subagent/descriptor|catalog、plan/mode 的投影；空段隐藏，点击段打开 PlanScreen / JobsPanelScreen / TeamPanelScreen。
 - 后台任务：JobsPanelScreen 只读展示 jobs 服务快照（超长输出由 job_output 工具按 head/tail 预览）；/jobs 与活动栏 jobs 段等价。
-- 团队：TeamPanelScreen 展示成员与任务，TaskBoardScreen 按 pending → in_progress → completed 排序；/team 无参打开团队面板，/team board 打开任务板；活动栏 agents 段打开团队面板。
+- 团队：TeamPanelScreen 展示成员与任务，TaskBoardScreen 按 pending → in_progress → completed 排序；/team 无参打开团队面板，/team board 打开任务板；活动栏 agents 段打开团队面板。default 模式且无成员/任务时 /team 提示用 /preset team 显式开启 Team 模式。
+- agent mode：内置 preset `default`（mode default）与 `team`（mode team）。default 模式注入 host-wide `subagent` 工具（一次性子会话委派）；team 模式只给 Lead 注入 `team_*` 工具并隐藏 `subagent`；Team 成员子会话两者都没有（防嵌套）。欢迎页与 /status 显示 `agent preset X (mode Y)`，状态栏标题在 team 模式追加 ` · team`。
 - 插件对话行：handle_event 在 status 事件后调用 apply_conversation_slots，插件按 predicate 匹配事件并追加自定义行（只追加、宿主不重放历史）。
 - 插件面板：/panel 从 slots 的 PANEL 槽位取工厂，打开 PluginPanelScreen（表格/自定义 widget 二选一）。
 - agent preset：会话创建时把 preset id 写进 session header 的 agentPreset，并把最新 revision 写进
   agent-preset/selected 记录；/resume 先按该记录固定 revision 重建 agent（revision 已不存在时回退
   最新并重新记录），/preset 切换物化最新 revision 并重建当前会话的 agent（当前会话 header 不重写，
   只影响后续新建会话）。prompt 段与工具贡献按 preset scope + revision 过滤，preset 内声明的子插件
-  在独立 realm 中物化。
+  在独立 realm 中物化。preset 的 `mode` 还决定委派工具集（见上条 agent mode）；AgentsService.create
+  会按 mode 做防御性过滤，即使显式传入 registry 也不会让 team 模式看到 `subagent`。
 
 ## 9. 开发与验证
 

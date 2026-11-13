@@ -52,6 +52,17 @@ class ToolRegistry:
         """Return registered tool names in registration order."""
         return list(self._tools)
 
+    def without(self, names: Iterable[str]) -> ToolRegistry:
+        """Return a new registry without the tools called `names`.
+
+        Non-mutating: the original registry is left untouched, so callers can
+        narrow the tool set for one consumer (a restricted agent mode or a
+        child agent) without affecting anyone else. Unknown names are ignored
+        and the remaining tools keep their registration order.
+        """
+        excluded = set(names)
+        return ToolRegistry(tool for tool in self._tools.values() if tool.name not in excluded)
+
     def __len__(self) -> int:
         return len(self._tools)
 

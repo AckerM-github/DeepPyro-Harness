@@ -74,6 +74,10 @@ id = "team"
 plugin = "deeppyro.builtin.team:TeamPlugin"
 
 [[plugins]]
+id = "subagent"
+plugin = "deeppyro.builtin.subagent:SubagentPlugin"
+
+[[plugins]]
 id = "activity"
 plugin = "deeppyro.builtin.activity:ActivityPlugin"
 

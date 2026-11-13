@@ -41,6 +41,25 @@ def test_registry_get_and_duplicate_name() -> None:
         registry.register(_Echo())
 
 
+def _named_tool(name: str) -> _Echo:
+    tool = _Echo()
+    tool.name = name  # type: ignore[misc]
+    return tool
+
+
+def test_registry_without_is_non_mutating_and_order_preserving() -> None:
+    registry = ToolRegistry([_named_tool("a"), _named_tool("b"), _named_tool("c")])
+    narrowed = registry.without(("b", "missing"))
+    assert narrowed is not registry
+    assert narrowed.names() == ["a", "c"]
+    assert registry.names() == ["a", "b", "c"]
+    # Any iterable works, including sets and generators.
+    assert registry.without({name for name in ("a", "c")}).names() == ["b"]
+    assert registry.without(name for name in ("a", "b", "c")).names() == []
+    assert narrowed.get("b") is None
+    assert narrowed.get("a") is registry.get("a")
+
+
 def test_registry_schemas_are_model_facing() -> None:
     registry = ToolRegistry([_Echo()])
     schemas = registry.schemas()

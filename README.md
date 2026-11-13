@@ -24,8 +24,9 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   按 id 覆盖 config（整体替换）、`before/after` 插入、`disabled/critical/isolate/intercept`；
   还支持 group 行（`group = true` + 子行）、`include` 外部行文件、`[bundle].requires`
   依赖拓扑排序，以及 active/failed/disabled/overridden/restart-required 活状态。
-  core bundle 只有 20 行（kernel 运行时 + LLM、会话、沙箱、工具、提示词、命令、agent、
-  activity 活动栏、jobs 后台任务、team 团队、插件管理、设置、inspect、TUI 槽位），其余能力都由插件贡献。插件可注册工具、提示词段、
+  core bundle 只有 21 行（kernel 运行时 + LLM、会话、沙箱、工具、提示词、命令、agent、
+  activity 活动栏、jobs 后台任务、subagent 委派、team 团队、插件管理、设置、inspect、TUI 槽位），
+  其余能力都由插件贡献。插件可注册工具、提示词段、
   slash 命令、LLM provider、agent preset（带 revision 与 per-preset realm 子插件），以及
   TUI 状态栏项 / 对话行 / 面板 / 设置页。
 - **活动栏与多任务**：对话区上方一行活动栏（plan / jobs / agents，空段隐藏）；待办计划来自
@@ -33,6 +34,10 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   job id，`/jobs` 或 `job_output` / `job_kill` / `job_list` 管理，headless 退出时自动取消；
   team 服务支持最多 8 个成员、共享任务板、成员消息与独立子会话（`/team`、`/team board`，
   agent 侧有 `team_*` 工具），记录按 DSH 的 `team/*`、`subagent/*` 形状落盘。
+- **默认 subagent，Team 是显式模式**：默认单 Agent 直接持有 `subagent` 工具，把独立子任务委派给
+  一次性子会话（结果回传，不进入 Team 协作层）；`/preset team` 切到内置 team preset 后，Lead 获得
+  `team_*` 工具（spawn / 任务板 / 消息）并收起 `subagent`，Team 成员子会话两者都没有，避免嵌套。
+  两种模式的子会话都按 DSH 形状写 `subagent/*`、`team/*` 记录，`/preset default` 可切回单 Agent。
 - **运行时自扩展**：`/plugins` 界面与 `plugin_manager` / `plugin_inspect` /
   `settings_read` / `settings_write` / `plugin_create` 五个工具让 agent 自己安装/脚手架
   外部 bundle、启停插件、读改插件配置、查看 live 组合（安装/脚手架会执行或生成第三方代码，
@@ -55,9 +60,10 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
       kernel/   cordis 服务图、composition/bundle/patch、boot（唯一装配层）
       api/      插件契约（Plugin/Service/PluginContext/注册表/preset spec）
       builtin/  core 插件行（llm/sessions/sandbox/tools/prompt/commands/agents/activity/
-                jobs/team/presets/plugin_manager/settings/inspect）
-      bundles/core/bundle.toml  core bundle 的 20 个插件行（首行 kernel 运行时）
+                jobs/subagent/team/presets/plugin_manager/settings/inspect）
+      bundles/core/bundle.toml  core bundle 的 21 个插件行（首行 kernel 运行时）
       jobs/     后台任务服务（JobHandle/JobResult、job/registered|settled）
+      subagent/ 一次性子智能体委派（默认模式的 subagent 工具、子会话、subagent/* 记录）
       team/     子智能体团队与共享任务板（成员、消息、子会话、team/* 记录）
       core/     冻结的 wire 模型 + 运行时协议（共享契约）
       session/  session.v4 日志：模型、append 校验、derive、fork、store
@@ -71,7 +77,8 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
       plugins/  外部插件发现与管理（entry point / 插件目录 / 用户清单 / bundle 安装与设置）
       headless.py  一次性 headless（run_once / NDJSON+rich sink，自包含）
       paths.py  用户目录解析（~/.dpro、DEEPPYRO_HOME）与旧数据迁移
-    docs/spec/  契约与逆向出的 DSH 语义（INTERFACES / tui / headless / session / llm / tools / loop / plugins）
+    docs/spec/  契约与逆向出的 DSH 语义（INTERFACES / tui / headless / session / llm / tools / loop /
+                plugins / agent-presets / subagent / activity）
     tests/      单测 + 黄金对照测试
     tools/      fixture 生成器（Node，只读 ~/.dsh）
 
@@ -89,7 +96,8 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
 TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /preset /policy /approval /cwd
 /status /plan /jobs /team /thinking /compact /clear /plugins /panel /exit`）；`/provider`、`/model`、
 `/policy`、`/approval`、`/cwd`、`/team` 等无参时打开选择器或面板，带参数的切换立即生效（turn
-运行中拒绝）；
+运行中拒绝）。`/preset team` 是 Team 模式的显式开关（`/preset default` 切回默认的单 Agent +
+`subagent`），Team 模式只给 Lead 开放 `team_*` 工具；
 `Ctrl+C` 在 turn 中取消当前 turn，空闲时清空输入，再按退出；`Ctrl+D` 退出。
 
 ### 配置与数据目录
@@ -117,7 +125,7 @@ TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /pres
 
 ### 插件与组合
 
-- core bundle：`src/deeppyro/bundles/core/bundle.toml`（20 行，首行 `kernel` 运行时服务，`critical = true`）。
+- core bundle：`src/deeppyro/bundles/core/bundle.toml`（21 行，首行 `kernel` 运行时服务，`critical = true`）。
 - 外部 bundle：`~/.dpro/bundles/<id>/bundle.toml` + Python 文件；`/plugins` 或
   `plugin_manager` 工具可安装/启停/卸载（安装只做结构校验，下次 boot 执行第三方代码）。
 - 其他插件来源：entry point 组 `deeppyro.plugins`、`~/.dpro/plugins/<id>/plugin.toml`、

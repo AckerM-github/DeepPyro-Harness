@@ -103,6 +103,7 @@ def make_team(
     services: dict[str, Any] | None = None,
     preset: str = "default",
     model: str = "parent-model",
+    registry: Any = "registry",
     context_window: int = 8192,
     ask: Any = "ask-callback",
 ) -> TeamEnv:
@@ -121,7 +122,7 @@ def make_team(
     service.configure(
         cwd=tmp_path,
         provider=provider,
-        registry="registry",
+        registry=registry,
         permission=permission,
         model=model,
         context_window=context_window,

@@ -345,6 +345,7 @@ class HeadlessRuntime:
     agents: Any
     jobs: Any = None
     team: Any = None
+    subagent: Any = None
     _closed: bool = field(default=False, repr=False)
 
     def create_agent(self, session: Any, sink: Any, *, max_steps: int | None = None) -> Any:
@@ -372,7 +373,7 @@ class HeadlessRuntime:
         kernel_app = self.kernel_app
         if kernel_app is None:
             return services
-        for name in ("plugin_manager", "inspect", "settings", "jobs", "team"):
+        for name in ("llm", "plugin_manager", "inspect", "settings", "jobs", "team", "subagent"):
             try:
                 value = kernel_app.service(name)
             except LookupError:
@@ -384,6 +385,13 @@ class HeadlessRuntime:
         if self._closed:
             return
         self._closed = True
+        subagent = self.subagent
+        close_subagent = getattr(subagent, "close", None)
+        if close_subagent is not None:
+            try:
+                await await_maybe(close_subagent())
+            except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
+                pass
         team = self.team
         close_team = getattr(team, "close", None)
         if close_team is not None:
@@ -437,6 +445,11 @@ async def boot_runtime(
         team = kernel_app.service("team")
     except LookupError:
         pass
+    subagent = None
+    try:
+        subagent = kernel_app.service("subagent")
+    except LookupError:
+        pass
     runtime = HeadlessRuntime(
         cfg=cfg,
         cwd=workspace,
@@ -451,6 +464,7 @@ async def boot_runtime(
         agents=services["agents"],
         jobs=jobs,
         team=team,
+        subagent=subagent,
     )
     configure_team = getattr(team, "configure", None)
     if configure_team is not None:
@@ -466,6 +480,21 @@ async def boot_runtime(
                 ask=ask or _denying_ask,
             )
         except Exception:  # noqa: BLE001, S110 - the optional team service must not break headless
+            pass
+    configure_subagent = getattr(subagent, "configure", None)
+    if configure_subagent is not None:
+        try:
+            configure_subagent(
+                cwd=workspace,
+                provider=llm_provider,
+                registry=registry,
+                permission=permission,
+                model=model_id,
+                context_window=runtime.context_window,
+                services=runtime._plugin_services(),
+                ask=ask or _denying_ask,
+            )
+        except Exception:  # noqa: BLE001, S110 - the optional subagent service must not break headless
             pass
     return runtime
 
@@ -562,6 +591,10 @@ async def _run_async(
         bind_team = getattr(team, "bind_session", None)
         if bind_team is not None:
             bind_team(session)
+        subagent = getattr(runtime, "subagent", None)
+        bind_subagent = getattr(subagent, "bind_session", None)
+        if bind_subagent is not None:
+            bind_subagent(session)
         agent = runtime.create_agent(session, sink, max_steps=max_steps)
         sink.begin_turn()
         try:

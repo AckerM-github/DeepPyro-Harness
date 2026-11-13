@@ -22,8 +22,8 @@
 | `resolve_workspace(path=None)` | 解析并校验工作目录；不存在 → ConfigError |
 | `JsonLinesSink` | NDJSON：每个事件一行 compact JSON（`ensure_ascii=False`），emit 即 flush |
 | `RichSink` | rich 终端渲染：流式 text、dim thinking、工具调用/结果预览、usage/final/error |
-| `HeadlessRuntime` | boot 后服务门面：`create_agent(session, sink, max_steps=)`、`aclose()`；携带 activity/jobs/team 服务 |
-| `boot_runtime(...)` | load_config → 校验 provider/model → `kernel.boot` → 取 llm/sessions/sandbox/tools/agents 五服务（外加 activity/jobs/team）→ 建 workspace 级 ToolRegistry/PermissionGate → 配置 team 服务 |
+| `HeadlessRuntime` | boot 后服务门面：`create_agent(session, sink, max_steps=)`、`aclose()`；携带 activity/jobs/team/subagent 服务 |
+| `boot_runtime(...)` | load_config → 校验 provider/model → `kernel.boot` → 取 llm/sessions/sandbox/tools/agents 五服务（外加 activity/jobs/team/subagent）→ 建 workspace 级 ToolRegistry/PermissionGate → 配置 team 与 subagent 服务 |
 | `run_once(prompt, ...)->int` | 一次性执行入口，返回退出码 |
 
 ## 3. 事件语义
@@ -46,12 +46,16 @@
 | 2 | 参数或配置错误（空 prompt、`max_steps < 1`、`ConfigError`） |
 | 130 | 用户中断（KeyboardInterrupt → `agent.interrupt()`） |
 
-## 5. 后台任务与团队
+## 5. 后台任务、subagent 与团队
 
 - 后台任务：headless 可调用 `job_*` 工具与 `shell run_in_background`；`run_once` 在关闭 agent 后、
   返回前调用 `jobs.cancel_owner(session_id)`，一次性进程不会留下后台子进程。
-- 团队：boot 时把 team 服务 `configure(..., ask=_denying_ask)`，创建 session 后 `bind_session(session)`，
-  退出时 `aclose()` 关闭所有成员子会话；`team_*` 工具在 headless 下可用，审批一律拒绝。
+- subagent：boot 时把 subagent 服务 `configure(..., ask=_denying_ask)`，创建 session 后 `bind_session(session)`，
+  退出时 `aclose()` 取消在途子会话；默认模式下 `subagent` 工具可用（子会话审批一律拒绝）。
+- 团队：team 服务同样 `configure`/`bind_session`，退出时 `aclose()` 关闭所有成员子会话；
+  `team_*` 工具只在 session 的 agentPreset 为 `team` 时可见；headless 不自动切换 preset。
+- 默认 vs Team：默认单 Agent + `subagent` 委派；Team 是显式模式（TUI 用 `/preset team`，
+  headless 需预先选择 team preset）。两者记录都按 DSH 的 `subagent/*`、`team/*` 形状落盘。
 
 ## 6. 审批
 

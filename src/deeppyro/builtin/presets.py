@@ -22,7 +22,11 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from deeppyro.api import (
+    AGENT_MODE_DEFAULT,
+    AGENT_MODE_TEAM,
     API_VERSION,
+    DEFAULT_PRESET_ID,
+    TEAM_PRESET_ID,
     Plugin,
     PluginConfigError,
     PluginContext,
@@ -31,8 +35,6 @@ from deeppyro.api import (
     PresetSpec,
     Service,
 )
-
-DEFAULT_PRESET_ID = "default"
 
 logger = logging.getLogger("deeppyro.presets")
 
@@ -143,11 +145,26 @@ class PresetsPlugin(Service):
             order=0,
             plugin_id="presets",
             revision=0,
+            mode=AGENT_MODE_DEFAULT,
+        )
+        #: The team preset is the explicit team-mode switch (/preset team):
+        #: it exposes the team tools and hides one-shot delegation instead.
+        team = PresetSpec(
+            id=TEAM_PRESET_ID,
+            name="Team",
+            description="explicit team mode: orchestrate persistent members instead of one-shot delegation",
+            order=200,
+            plugin_id="presets",
+            revision=0,
+            mode=AGENT_MODE_TEAM,
         )
         #: preset id -> {revision: immutable spec}
-        self._presets: dict[str, dict[int, PresetSpec]] = {DEFAULT_PRESET_ID: {0: default}}
+        self._presets: dict[str, dict[int, PresetSpec]] = {
+            DEFAULT_PRESET_ID: {0: default},
+            TEAM_PRESET_ID: {0: team},
+        }
         #: preset id -> latest revision
-        self._latest: dict[str, int] = {DEFAULT_PRESET_ID: 0}
+        self._latest: dict[str, int] = {DEFAULT_PRESET_ID: 0, TEAM_PRESET_ID: 0}
         #: host-assigned monotonic revision counter
         self._next_revision = 1
         #: (preset id, revision) -> realm materialization state
@@ -453,4 +470,4 @@ class PresetsPlugin(Service):
                 logger.exception("preset realm fiber teardown failed")
 
 
-__all__ = ["DEFAULT_PRESET_ID", "PresetsPlugin", "RealmFailure"]
+__all__ = ["DEFAULT_PRESET_ID", "TEAM_PRESET_ID", "PresetsPlugin", "RealmFailure"]

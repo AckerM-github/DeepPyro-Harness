@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from deeppyro.api import CHILD_DISABLED_TOOLS, SUBAGENT_TOOL_NAMES, TEAM_TOOL_NAMES
 from deeppyro.team import (
     LIVE_PHASES,
     MAX_MEMBERS,
@@ -20,6 +21,7 @@ from deeppyro.team import (
     TeamError,
     TeamService,
 )
+from deeppyro.tools.registry import ToolRegistry
 from tests.team.helpers import (
     FakeAgents,
     FakeGate,
@@ -116,6 +118,20 @@ async def test_spawn_creates_child_session_agent_and_records(tmp_path) -> None:
     assert payloads[-1]["context"] == "default"
     assert member_records[-1]["version"] == 1
     assert member_records[-1]["teamId"] == env.parent.session_id
+    await env.service.close()
+
+
+async def test_member_agent_registry_excludes_nested_delegation_tools(tmp_path) -> None:
+    names = [*TEAM_TOOL_NAMES, *SUBAGENT_TOOL_NAMES, "read"]
+    registry = ToolRegistry([SimpleNamespace(name=name) for name in names])
+    env = make_team(tmp_path, registry=registry)
+    info = env.service.spawn("scout", "researches the bug", "find the bug")
+    child_registry = env.agents.created[0]["registry"]
+    assert set(child_registry.names()) == {"read"}
+    assert not set(CHILD_DISABLED_TOOLS) & set(child_registry.names())
+    # The caller's registry is untouched: only the member's view is narrowed.
+    assert registry.names() == names
+    await env.service.wait(info.id)
     await env.service.close()
 
 

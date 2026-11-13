@@ -340,14 +340,15 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 | `sandbox` | `builtin.sandbox` | `sandbox`：`.gate(workspace, ask=None)` |
 | `tools` | `builtin.tools` | `tools`：`.add(factory, scope=..., revision=...)`、`.registry_for(workspace, scope=None, revision=None)` |
 | `tools-builtin` | `builtin.tools` | 11 个内置工具 |
-| `presets` | `builtin.presets` | `presets`：`.add`、`.resolve(id)`、`.resolve_revision(id, revision)`、`.ensure(..., revision=...)`、`.ensure_all()`、`.revisions()`、`.all()`、`.ids()` |
+| `presets` | `builtin.presets` | `presets`：`.add`、`.resolve(id)`、`.resolve_revision(id, revision)`、`.ensure(..., revision=...)`、`.ensure_all()`、`.revisions()`、`.all()`、`.ids()`；内置 `default`（mode default）与 `team`（mode team）不占 host revision |
 | `prompt` | `builtin.prompt_service` | `prompt`：`.add_section(..., scope=None, revision=...)`、`.sections(...)`、`.build(tools, prompt_context, scope=None, revision=...)` |
 | `prompt-core` | `builtin.prompt_core` | 5 个核心提示词段（order 10/20/30/40/50） |
 | `commands` | `builtin.commands` | `commands`：`.add`、`.all()`、`.resolve()`、`.invoke()` |
 | `commands-builtin` | `builtin.commands_builtin` | 19 个内置 slash 命令（含 `/provider`、`/model`、`/preset`、`/policy`、`/approval`、`/cwd`、`/plan`、`/jobs`、`/team`、`/thinking`、`/panel`） |
 | `agents` | `builtin.agents` | `agents`：`.create(..., preset=None, preset_revision=None, registry=None)`、`.options(**overrides)` |
 | `activity` | `builtin.activity` | `activity`：`.state`、`.refresh(session)`、`.subscribe(listener)`；投影 todo/job/team/subagent/plan 记录 |
-| `team` | `builtin.team` | `team`：`.configure(...)`、`.bind_session`、`.spawn/.send/.wait/.cancel`、任务板 `.create_task/.update_task`；9 个 `team_*` 工具 |
+| `subagent` | `builtin.subagent` | `subagent`：`.configure(...)`、`.bind_session`、`.run(prompt, ...)->SubagentResult`；1 个 host-wide `subagent` 工具（team preset 下由 AgentsService 过滤） |
+| `team` | `builtin.team` | `team`：`.configure(...)`、`.bind_session`、`.spawn/.send/.wait/.cancel`、任务板 `.create_task/.update_task`；9 个 `team_*` 工具（scope=`team`） |
 | `jobs` | `builtin.jobs` | `jobs`：`.start(...)`、`.get/.list/.output/.wait/.kill/.cancel_owner/.cancel_all`；`job_output/job_kill/job_list` 工具 |
 | `slots` | `tui.slots` | `slots`：TUI 插件槽位注册表（状态栏项/对话行/面板/设置页、theme/locale） |
 | `plugin-manager` | `builtin.plugin_manager` | `plugin_manager`：外部插件与 bundle（`.manager`，含 `.create_bundle`） |

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import TEAM_PRESET_ID, Plugin
 from deeppyro.team.manager import TeamService
 from deeppyro.tools.builtin.team import team_tools
 
@@ -29,7 +29,10 @@ class TeamPlugin(Plugin):
         )
         self.service = service
         ctx.provide("team", service)
-        ctx.register_tool(lambda _config, _workspace: team_tools())
+        # Team tools are part of the explicit team mode only: scoping the
+        # contribution to the team preset keeps them out of a default-mode
+        # agent's tool registry (and out of the host-wide tool list).
+        ctx.register_tool(lambda _config, _workspace: team_tools(), scope=TEAM_PRESET_ID)
 
 
 __all__ = ["TeamPlugin"]

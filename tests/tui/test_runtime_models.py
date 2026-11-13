@@ -278,3 +278,62 @@ def test_recorded_model_selection_reads_the_last_record() -> None:
     )
     assert _recorded_model_selection(session) == ("deepseek", "deepseek-chat")
     assert _recorded_model_selection(FakeSession()) is None
+
+
+class FakeSubagent:
+    def __init__(self) -> None:
+        self.configures: list[dict[str, Any]] = []
+        self.bound: list[Any] = []
+        self.closed = False
+
+    def configure(self, **kwargs: Any) -> None:
+        self.configures.append(kwargs)
+
+    def bind_session(self, session: Any) -> None:
+        self.bound.append(session)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def test_attach_configures_and_binds_the_subagent_service() -> None:
+    runtime, _, _ = make_runtime()
+    subagent = FakeSubagent()
+    runtime.subagent = subagent
+    session = FakeSession()
+    await runtime._attach(session)
+    assert len(subagent.configures) == 1
+    configure = subagent.configures[0]
+    assert configure["cwd"] == Path("D:/work")
+    assert configure["model"] == "local-model"
+    assert configure["preset"] == "default"
+    assert configure["services"]["llm"].provider("local") == "provider:local"
+    assert subagent.bound == [session]
+
+
+async def test_close_closes_the_subagent_service() -> None:
+    runtime, _, _ = make_runtime()
+    subagent = FakeSubagent()
+    runtime.subagent = subagent
+    await runtime.close()
+    assert subagent.closed is True
+
+
+class FakePresets:
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+
+    def resolve(self, preset_id: str, revision: int | None = None) -> SimpleNamespace:
+        return SimpleNamespace(id=preset_id, mode=self.mode)
+
+
+def test_agent_mode_reads_the_active_preset() -> None:
+    runtime, _, _ = make_runtime()
+    runtime.kernel_app.services["presets"] = FakePresets("team")
+    runtime.agent_preset = "team"
+    assert runtime.agent_mode == "team"
+
+
+def test_agent_mode_defaults_when_presets_are_missing() -> None:
+    runtime, _, _ = make_runtime()
+    assert runtime.agent_mode == "default"

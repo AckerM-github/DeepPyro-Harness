@@ -14,12 +14,23 @@ from typing import Any
 
 import pytest
 
-from deeppyro.api import PluginDependencyError, PresetPluginRow, PresetSpec
+from deeppyro.api import (
+    AGENT_MODE_DEFAULT,
+    AGENT_MODE_TEAM,
+    SUBAGENT_TOOL_NAMES,
+    TEAM_PRESET_ID,
+    TEAM_TOOL_NAMES,
+    PluginDependencyError,
+    PresetPluginRow,
+    PresetSpec,
+)
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.core.errors import DeeppyroError
 from deeppyro.kernel.app import App
 from deeppyro.kernel.bundle import boot
 from deeppyro.prompt import PromptContext
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.registry import ToolRegistry
 
 BUNDLE_TOML = (
     '[bundle]\nid = "{bundle_id}"\nname = "Preset revisions"\nversion = "0.1.0"\norder = 50\n'
@@ -213,6 +224,12 @@ BROKEN_PLUGIN = (
 class DummySink:
     def emit(self, event: dict[str, Any]) -> None:
         pass
+
+
+def _named_tool(name: str) -> Any:
+    tool = BaseTool()
+    tool.name = name  # type: ignore[misc]
+    return tool
 
 
 def _config(tmp_path: Path) -> Config:
@@ -487,5 +504,77 @@ async def test_realm_contributions_are_removed_with_the_revision(tmp_path: Path)
         for _ in range(10):
             await asyncio.sleep(0)
         assert "realm_note_v2" not in tools.registry_for(str(tmp_path), scope="writer", revision=2).names()
+    finally:
+        await app.stop()
+
+
+async def test_builtin_presets_offer_default_and_explicit_team_mode(tmp_path: Path) -> None:
+    bundle_dir = _write_bundle(
+        tmp_path,
+        "writer",
+        PRESET_PLUGIN,
+        {"realm_plugin.py": REALM_PLUGIN},
+    )
+    app = await _boot(tmp_path, bundle_dir)
+    try:
+        presets = app.service("presets")
+        default = presets.resolve()
+        assert default.id == "default"
+        assert default.mode == AGENT_MODE_DEFAULT
+        assert default.revision == 0
+
+        team = presets.resolve(TEAM_PRESET_ID)
+        assert team.id == TEAM_PRESET_ID
+        assert team.name == "Team"
+        assert team.mode == AGENT_MODE_TEAM
+        assert team.order == 200
+        assert team.revision == 0
+        assert team.plugins == ()
+        assert {"default", TEAM_PRESET_ID} <= set(presets.ids())
+        assert presets.revision_of(TEAM_PRESET_ID) == 0
+        assert presets.revisions(TEAM_PRESET_ID) == [0]
+        # /preset team is simply resolving the built-in team preset.
+        assert presets.resolve("team").mode == AGENT_MODE_TEAM
+        assert [spec.id for spec in presets.all()][-1] == TEAM_PRESET_ID
+    finally:
+        await app.stop()
+
+
+async def test_agent_mode_filters_delegation_tools(tmp_path: Path) -> None:
+    bundle_dir = _write_bundle(
+        tmp_path,
+        "writer",
+        PRESET_PLUGIN,
+        {"realm_plugin.py": REALM_PLUGIN},
+    )
+    app = await _boot(tmp_path, bundle_dir)
+    try:
+        sessions = app.service("sessions")
+        agents = app.service("agents")
+        all_names = [*TEAM_TOOL_NAMES, *SUBAGENT_TOOL_NAMES, "read"]
+        registry = ToolRegistry([_named_tool(name) for name in all_names])
+
+        def make_agent(preset: str | None) -> Any:
+            session = sessions.create(str(tmp_path), agent_preset=preset)
+            return agents.create(
+                session=session,
+                provider=object(),
+                registry=registry,
+                options=agents.options(),
+                sink=DummySink(),
+                cwd=str(tmp_path),
+                preset=preset,
+            )
+
+        team_agent = make_agent(TEAM_PRESET_ID)
+        assert set(team_agent._registry.names()) == {*TEAM_TOOL_NAMES, "read"}
+        assert "subagent" not in team_agent._registry
+
+        default_agent = make_agent(None)
+        assert set(default_agent._registry.names()) == {"subagent", "read"}
+        assert not set(TEAM_TOOL_NAMES) & set(default_agent._registry.names())
+
+        # Filtering never mutates the caller's registry.
+        assert registry.names() == all_names
     finally:
         await app.stop()
