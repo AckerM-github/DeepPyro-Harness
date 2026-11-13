@@ -602,6 +602,8 @@ async def test_clicking_a_process_step_opens_the_thinking_viewer() -> None:
         app.handle_event({"type": "thinking", "text": "first thought。second thought。"})
         await pilot.pause()
         process = app.query_one(AgentProcess)
+        process.toggle()
+        await pilot.pause()
         step = process.query_one(".process-step", Static)
         await pilot.click(step)
         for _ in range(40):

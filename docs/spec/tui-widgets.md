@@ -74,11 +74,14 @@
   `begin_step(turn, step)` 在 turn 变化或上一条已结束时新建，否则复用并切换 step。
 - 结构：header 一行 + body 内的有序条目。body 条目按事件到达顺序排列——思考 step 行（`.process-step`）
   与工具行（`.process-tool`）交替，**不再分成两个独立区域**；这对应“思考一行、工具一行，都属于 agent 的过程”。
-- 运行中：header 为 `✻ Step N · 当前 step 最新一句`，body 可见；思考行只显示当前 step 的最新完整句
-  （按句末标点/换行切句），单行上限 120 字符，超长保留尾部加 `…`。
+- 运行中：**body 默认收起**，对话里只保留一条滚动 header：`✻ Step N · 当前 step 最新一句`；
+  若当前有工具正在执行，header 改为 `✻ Step N · → 工具名 摘要`，结果回来后回到思考句。
+  思考行只显示当前 step 的最新完整句（按句末标点/换行切句），单行上限 120 字符，超长保留尾部加 `…`。
+  header 末尾有 `(click to view)` 提示，点击才展开下面的 step/tool 明细。
 - 结束：`finish()` 幂等，`finish_turn` 调用；body 收起（display=False），header 变为
   `· agent process · N steps · M tools · K sentences  (click to view)`（单复数）。
-- 交互：点击 header 切换展开/收起（展开后提示 `(click to collapse)`）；点击有内容的 step 行发
+- 交互：点击 header 切换展开/收起（展开后提示 `(click to collapse)`，运行中也可展开查看已发生
+  的 step/tool 明细）；点击有内容的 step 行发
   `AgentProcess.ThinkingRequested(reasoning)`，app 打开 `ThinkingScreen([reasoning])`，按 Turn/Step
   显示完整文本（markup=False，可滚动）。
 - 没有 reasoning 也没有工具时 `display = False`；turn 内 assistant 正文与工具行不会结束 process，

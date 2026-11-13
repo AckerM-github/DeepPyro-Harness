@@ -1,14 +1,16 @@
 """One collapsible agent process block per user turn.
 
 A turn is more than the final answer: the model thinks, calls tools, reads the
-results and thinks again. This widget keeps that whole trail in one place. While
-the turn runs the body is expanded with one line per thinking step and one line
-per tool call, in the order they happened. When the turn ends the body collapses
-to a single summary line, so the conversation stays readable and the final answer
-gets the spotlight.
+results and thinks again. This widget keeps that whole trail in one place. The
+conversation only shows a single live header line: the newest reasoning sentence
+of the current step, or the tool call that is currently running. The detailed
+trail (one line per thinking step and one line per tool call, in the order they
+happened) stays collapsed so it never pushes the answer off screen; clicking the
+header expands it for inspection. When the turn ends the header becomes one
+summary line, so the conversation stays readable.
 
 Interaction:
-- clicking the header expands or collapses the body
+- clicking the header expands or collapses the detailed trail
 - clicking a thinking step opens the full-screen reasoning viewer
 - clicking a tool line expands its complete arguments and result
 
@@ -267,7 +269,7 @@ class AgentProcess(Vertical):
         self._widget_steps: dict[int, int] = {}
         self._mounted = False
         self._finished = False
-        self._expanded = True
+        self._expanded = False
         self._header_widget: Static | None = None
         self._body_widget: Vertical | None = None
 
@@ -419,8 +421,7 @@ class AgentProcess(Vertical):
         if self._header_widget is not None:
             self._header_widget.update(self._build_header())
         if self._body_widget is not None:
-            visible = self.has_content and (not self._finished or self._expanded)
-            self._body_widget.display = visible
+            self._body_widget.display = self.has_content and self._expanded
         for step in self._reasoning.steps:
             widget = self._step_widgets.get(step.step)
             if widget is not None:
@@ -443,10 +444,22 @@ class AgentProcess(Vertical):
         step = self._current.step if self._current is not None else (self.step_count or 1)
         text.append("✻ ", style="dim")
         text.append(f"Step {step}", style="dim italic")
-        sentence = self._streaming_sentence()
-        if sentence:
-            text.append(" · " + sentence, style="dim italic")
+        active_tool = self._active_tool()
+        if active_tool is not None:
+            text.append(" · " + active_tool.line_text, style="dim")
+        else:
+            sentence = self._streaming_sentence()
+            if sentence:
+                text.append(" · " + sentence, style="dim italic")
+        if self.has_content and not self._expanded:
+            text.append("  (click to view)", style="dim")
         return Text(_one_line(text.plain))
+
+    def _active_tool(self) -> ToolProcessLine | None:
+        for kind, value in reversed(self._entries):
+            if kind == "tool" and isinstance(value, ToolProcessLine) and not value.has_result:
+                return value
+        return None
 
     def _build_step(self, step: ReasoningStep) -> Text:
         text = Text()

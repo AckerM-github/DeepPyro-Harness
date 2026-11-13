@@ -97,10 +97,12 @@ History helper: src/deeppyro/tui/history.py.
 
 A user turn owns one AgentProcess widget, not one per assistant step. Reasoning
 steps and tool calls are interleaved in the order they happened; they are all
-part of the same process. While streaming the body is visible and each step line
-shows only the latest complete sentence of the current step (one terminal line,
-120 chars). When the turn ends the whole process collapses to a single summary
-line and is never a multi-line dump of the chain of thought.
+part of the same process. While streaming only one header line is visible: the
+latest complete sentence of the current step (one terminal line, 120 chars) or
+the tool call that is currently running. The detailed trail body is collapsed by
+default and expands when the header is clicked. When the turn ends the process
+collapses to a single summary line and is never a multi-line dump of the chain
+of thought.
 
 Module: src/deeppyro/tui/widgets/agent_process.py.
 

@@ -2,7 +2,7 @@
 
 状态：TUI 已完整实现（FIGlet 像素字标启动页、每 turn 一个统一 AgentProcess（思考行 + 工具行按时间
 顺序融合、默认收起、点击展开）与全屏思考查看器、对话流、活动栏、多行输入与 slash 补全、选择器、审批、
-插件管理、插件槽位、后台任务面板、团队面板与任务板、状态栏），1073 测试与 ruff 全绿；真实模型端到端
+插件管理、插件槽位、后台任务面板、团队面板与任务板、状态栏），1075 测试与 ruff 全绿；真实模型端到端
 冒烟通过（启动页 → 任意键 → 思考/工具过程 → 回答；真机用 /policy 切到 read-only、/approval 切到 never、
 /cwd 切换工作目录；插件贡献状态栏项/对话行/面板；jobs 与 team 服务由真实内核装配）。
 
@@ -121,7 +121,7 @@
 
 - 流式文本 60ms 节流（STREAM_REFRESH_SECONDS），避免每 token 重排。
 - 流式阶段 Markdown 增量更新，结束后定稿；局部 Markdown 非法不得抛异常。
-- agent 过程按用户 turn 组织：每个 turn 只有一个 AgentProcess，思考 step 行与工具行按发生顺序排列（同一过程，不分开）。运行中过程 body 可见，step 行只显示当前 step 的最新完整句（单行上限 120 字符，超长保留尾部）。
+- agent 过程按用户 turn 组织：每个 turn 只有一个 AgentProcess，思考 step 行与工具行按发生顺序排列（同一过程，不分开）。运行中只显示一条滚动 header（当前 step 最新句，或正在执行的工具），明细 body 默认收起、点击 header 才展开；step 行只显示当前 step 的最新完整句（单行上限 120 字符，超长保留尾部）。
 - turn 结束（final）后过程自动收起为一行摘要 “· agent process · N steps · M tools · K sentences  (click to view)”；点击 header 展开/收起，展开后点击 step 行打开 ThinkingScreen（按 Turn/Step 显示完整 reasoning），点击工具行展开该工具的完整 arguments/result；/thinking 打开同一查看器（可指定最近 N 个 turn 或 all）。
 - reasoning 来源：AgentSession 把完整 ReasoningPart 写进 assistant/message，TUI 历史由 reasoning_map 从 durable 日志重建，不新增存储格式。
 - splash 使用 wordmark.py 里预渲染的 ansi_shadow 字形：DEEPPYRO 火色渐变、HARNESS 冰蓝色渐变，逐行揭示；不依赖 pyfiglet 等运行时字体工具。

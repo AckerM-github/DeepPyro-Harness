@@ -36,11 +36,48 @@ async def test_running_header_shows_the_latest_sentence_on_one_line() -> None:
     async with ProcessApp(process).run_test(size=(60, 12)) as pilot:
         await pilot.pause()
         assert process.finished is False
-        assert process.expanded is True
+        assert process.expanded is False
         assert "Step 1" in process.header_text
         assert "分析内容" in process.header_text
-        assert process.outer_size.height <= 4
+        assert "click to view" in process.header_text
+        body = process.query_one(".process-body")
+        assert body.display is False
+        assert process.outer_size.height <= 3
         assert len(_step_widgets(process)) == 1
+
+
+async def test_running_header_tracks_the_active_tool() -> None:
+    process = AgentProcess(turn=1)
+    process.begin_step(1)
+    process.append_thinking("I should inspect the file.")
+    process.add_tool_call("call-1", "read", '{"path": "README.md"}')
+    async with ProcessApp(process).run_test(size=(100, 14)) as pilot:
+        await pilot.pause()
+        assert process.expanded is False
+        assert "read" in process.header_text
+        assert "README.md" in process.header_text
+        assert process.query_one(".process-body").display is False
+        process.add_tool_result("call-1", False, "1: # DeepPyro")
+        await pilot.pause()
+        assert "DeepPyro" not in process.header_text
+
+
+async def test_body_can_be_expanded_while_the_turn_is_running() -> None:
+    process = AgentProcess(turn=1)
+    process.begin_step(1)
+    process.append_thinking("one. two.")
+    process.begin_step(2)
+    process.append_thinking("three.")
+    async with ProcessApp(process).run_test(size=(100, 16)) as pilot:
+        await pilot.pause()
+        body = process.query_one(".process-body")
+        assert body.display is False
+        process.toggle()
+        await pilot.pause()
+        assert process.expanded is True
+        assert body.display is True
+        assert "Step 1" in str(_step_widgets(process)[0].content)
+        assert "Step 2" in str(_step_widgets(process)[1].content)
 
 
 async def test_steps_are_listed_in_begin_order() -> None:
@@ -99,6 +136,8 @@ async def test_clicking_a_tool_line_expands_full_arguments_and_result() -> None:
         await pilot.pause()
         line = _tool_line(process)
         assert line.expanded is False
+        process.toggle()
+        await pilot.pause()
         await pilot.click(line)
         await pilot.pause()
         assert line.expanded is True
@@ -155,6 +194,8 @@ async def test_clicking_a_step_posts_thinking_requested() -> None:
     app = ProcessApp(process)
     async with app.run_test(size=(100, 16)) as pilot:
         await pilot.pause()
+        process.toggle()
+        await pilot.pause()
         step = _step_widgets(process)[0]
         await pilot.click(step)
         await pilot.pause()
@@ -169,7 +210,7 @@ async def test_empty_process_hides_itself_and_ignores_toggle() -> None:
         assert process.display is False
         assert process.has_content is False
         process.toggle()
-        assert process.expanded is True
+        assert process.expanded is False
 
 
 async def test_long_sentence_is_clipped_to_one_line() -> None:
@@ -177,6 +218,8 @@ async def test_long_sentence_is_clipped_to_one_line() -> None:
     process.begin_step(1)
     process.append_thinking("很长的思考。" * 60)
     async with ProcessApp(process).run_test(size=(40, 12)) as pilot:
+        await pilot.pause()
+        process.toggle()
         await pilot.pause()
         header = process.query_one(".process-header", Static)
         step = _step_widgets(process)[0]
