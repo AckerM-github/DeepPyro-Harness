@@ -1118,10 +1118,10 @@ class DeepPyroApp(App[None]):
         return members, tasks, team_id
 
     async def _open_team(self, argument: str = "") -> None:
-        """Open the team roster or the shared task board (/team [board])."""
+        """Open the team roster or the shared task board (/team [on|off|board])."""
         members, tasks, team_id = self._team_snapshot()
         if self._agent_mode() != "team" and not members and not tasks:
-            self.conversation.add_info("agent team mode is off; use /preset team to enable team tools")
+            self.conversation.add_info("agent team mode is off; use /team on to enable team tools")
             return
         spec = argument.strip().lower()
         if spec in ("board", "tasks", "task-board"):
@@ -1131,7 +1131,7 @@ class DeepPyroApp(App[None]):
                 self.conversation.add_info(f"task board: {len(tasks)} task(s)")
             return
         if spec not in ("", "members", "team"):
-            self.conversation.add_error("usage: /team [board]")
+            self.conversation.add_error("usage: /team [on|off|board]")
             return
         try:
             await self.push_screen_wait(TeamPanelScreen(members, tasks, team_id))
@@ -1142,8 +1142,35 @@ class DeepPyroApp(App[None]):
             self.conversation.add_info(f"team: {len(members)} member(s) · {len(tasks)} task(s)")
 
     async def team_command(self, argument: str = "") -> None:
-        """Open the team panel, or the task board with /team board (/team)."""
-        await self._open_team(argument)
+        """Enter/leave team mode or open the roster/task board (/team)."""
+        spec = argument.strip().lower()
+        if spec in ("on", "enable", "start"):
+            await self._team_mode(True)
+            return
+        if spec in ("off", "disable", "stop"):
+            await self._team_mode(False)
+            return
+        await self._open_team(spec)
+
+    async def _team_mode(self, enabled: bool) -> None:
+        """Switch the current session between default and team mode."""
+        if self._working:
+            self.notify("cannot switch team mode during a turn", severity="warning")
+            return
+        try:
+            selected = await self.runtime.set_team_mode(enabled)
+        except Exception as exc:  # noqa: BLE001 - show the runtime/service message
+            self.conversation.add_error(f"team mode switch failed: {exc}")
+            return
+        if enabled:
+            self.conversation.add_info(
+                "agent team mode on · lead has team tools; subagent delegation is hidden"
+            )
+        else:
+            self.conversation.add_info(
+                f"agent team mode off · preset {selected}; subagent delegation enabled"
+            )
+        self.refresh_status()
 
     async def thinking_command(self, argument: str) -> None:
         """Open the full-screen reasoning viewer (/thinking [turns])."""

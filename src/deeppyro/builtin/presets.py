@@ -147,8 +147,9 @@ class PresetsPlugin(Service):
             revision=0,
             mode=AGENT_MODE_DEFAULT,
         )
-        #: The team preset is the explicit team-mode switch (/preset team):
-        #: it exposes the team tools and hides one-shot delegation instead.
+        #: The team preset is the explicit team-mode switch (/team on): it is
+        #: hidden from /preset, exposes the team tools, and hides one-shot
+        #: delegation instead.
         team = PresetSpec(
             id=TEAM_PRESET_ID,
             name="Team",
@@ -157,6 +158,7 @@ class PresetsPlugin(Service):
             plugin_id="presets",
             revision=0,
             mode=AGENT_MODE_TEAM,
+            hidden=True,
         )
         #: preset id -> {revision: immutable spec}
         self._presets: dict[str, dict[int, PresetSpec]] = {
@@ -288,6 +290,14 @@ class PresetsPlugin(Service):
         """Latest revision of every registered preset, ordered for display."""
         specs = [self._presets[preset_id][revision] for preset_id, revision in self._latest.items()]
         return sorted(specs, key=lambda item: (item.order, item.id))
+
+    def visible(self) -> list[PresetSpec]:
+        """Latest revision of every user-selectable preset, ordered for display.
+
+        Hidden presets stay registered: they are entered through a dedicated
+        command instead of being offered by /preset.
+        """
+        return [spec for spec in self.all() if not spec.hidden]
 
     def ids(self) -> list[str]:
         return [spec.id for spec in self.all()]

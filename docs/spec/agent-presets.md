@@ -20,21 +20,39 @@ An agent preset is an immutable snapshot of a per-session composition:
 
 ## 2. Built-in presets and agent modes
 
-Every `PresetSpec` carries a `mode` field (`AGENT_MODE_DEFAULT` = `"default"` unless set). The mode
-partitions the delegation tools an agent may see; it is part of the frozen preset snapshot just like
-the model or instructions. Two presets are built in at boot, both at revision 0, without plugin rows
-and without consuming the host revision counter:
+Every `PresetSpec` carries a `mode` field (`AGENT_MODE_DEFAULT` = `"default"` unless set) and a
+`hidden` flag (default `False`). The mode partitions the delegation tools an agent may see; it is
+part of the frozen preset snapshot just like the model or instructions. Hidden presets are not
+offered by the `/preset` picker and cannot be selected with `/preset`; they exist for a dedicated
+command. Two presets are built in at boot, both at revision 0, without plugin rows and without
+consuming the host revision counter:
 
-| id | name | order | mode | purpose |
-|---|---|---|---|---|
-| `default` | Default | 0 | `default` | host-wide tools and prompt sections; one-shot delegation |
-| `team` | Team | 200 | `team` | orchestrate persistent members instead of one-shot delegation |
+| id | name | order | mode | hidden | purpose |
+|---|---|---|---|---|---|
+| `default` | Default | 0 | `default` | no | host-wide tools and prompt sections; one-shot delegation |
+| `team` | Team | 200 | `team` | yes | orchestrate persistent members instead of one-shot delegation |
 
-`/preset team` is the explicit team-mode switch: it resolves the built-in `team` preset (the
-session header records `agentPreset="team"`) and gives that agent the team toolset. `/preset default`
-returns to the default composition. Neither built-in can be removed through the revision counter;
-editing either id through `presets.add()` creates a new immutable revision exactly like a
-plugin-registered preset.
+`/preset` lists only visible, default-mode presets; `/preset team` is rejected with a hint to use
+`/team on`, so a typo cannot silently enter team mode. Team mode is entered and left **on the
+current session** with `/team on` and `/team off`:
+
+- Both rebuild the live agent around the same durable session, so conversation history is preserved
+  and the next turn sees the new system prompt and tool set.
+- `/team on` remembers the preset that was active before team mode. Repeating `/team on` is
+  idempotent.
+- `/team off` restores that remembered preset (the `default` preset if unknown) and refuses while
+  any team member is spawning, running or idle, listing the live members; neither switch is allowed
+  during a running turn.
+- The switch is atomic from the UI's point of view: materialization and agent rebuild happen before
+  the runtime/UI state is committed; if the rebuild fails the previous preset fields and agent are
+  restored and the error is surfaced.
+- `/team` without an argument still opens the roster panel (or a hint when the team is empty and
+  team mode is off); `/team board` opens the task board.
+
+The active preset and (for team mode) the remembered previous preset are persisted in the session
+record described in §9, so reopening a session restores team mode and can later leave it correctly.
+Neither built-in can be removed through the revision counter; editing either id through
+`presets.add()` creates a new immutable revision exactly like a plugin-registered preset.
 
 ### Tool sets by mode
 
@@ -203,7 +221,15 @@ agent.preset_spec       # the immutable PresetSpec used
   agents. Awaiting only the preset the user picked is enough.
 - To reproduce a session faithfully after a restart, persist the revision alongside the preset id
   and pass it back through `agents.create(preset_revision=...)`; if that revision was removed,
-  fall back to the latest and surface the change. Session headers do not record the revision.
+  fall back to the latest and surface the change. Session headers only record the preset the session
+  was created with, so the runtime writes the last valid selection as an `agent-preset/selected`
+  session record: `{preset, mode, revision?, previous?}` (revision omitted when unpinned, previous
+  only in team mode). On resume the last record wins over the header; a team record also restores the
+  remembered preset used by the next `/team off`.
+- The TUI runtime exposes `set_agent_preset(id)` and `set_team_mode(enabled)`; the slash commands are
+  thin wrappers. Direct `agents.create(preset=TEAM_PRESET_ID)` remains valid for non-TUI hosts, but
+  a host that offers the team toggle should use `set_team_mode()` so the previous preset and the
+  live-member guard are enforced.
 - Editing UI: registering a new revision via `presets.add()` is the supported "edit" operation;
   it returns a `remove()` for rollback.
 
@@ -231,14 +257,14 @@ agent.preset_spec       # the immutable PresetSpec used
 
 ## 11. API additions at a glance
 
-`api/types.py`: `PresetPluginRow`, `PresetSpec.plugins/revision/base/mode`,
+`api/types.py`: `PresetPluginRow`, `PresetSpec.plugins/revision/base/mode/hidden`,
 `PromptSection.revision`, `ToolContribution.revision`, the `AGENT_MODE_*` / `*_TOOL_NAMES`
 constants (including `CHILD_DISABLED_TOOLS`).
 `api/context.py`: `PluginContext(default_scope=..., default_revision=...)`,
 `contribution_scope()`.
 `builtin/presets.py`: revision registry (`add/resolve/resolve_revision/revision_of/revisions`),
 realm lifecycle (`ensure/ensure_all/is_materialized/realm_failures/materialized_revisions/
-remove_revision`), `RealmFailure`, the built-in `default` and `team` presets.
+remove_revision`), `RealmFailure`, the built-in `default` and `team` presets, `visible()`.
 `builtin/tools.py` + `builtin/prompt_service.py`: revision-filtered
 `registry_for()/sections()/build()`.
 `builtin/agents.py`: `create(..., preset_revision=..., registry=None)`, mode-based registry
@@ -251,7 +277,11 @@ filtering, `preset.preset_revision`, `preset.preset_spec.mode`.
 
 - `tests/builtin/test_preset_revisions.py` – revision immutability, scope/revision filtering,
   live-agent snapshots, row failure isolation, host-first collisions, revision removal, the two
-  built-in presets/modes and mode-based delegation-tool filtering.
+  built-in presets/modes/hidden flag, `visible()`, and mode-based delegation-tool filtering.
+- `tests/tui/test_runtime_presets.py` – session preset records and resume (including team mode and
+  its previous preset), atomic switch/rollback, busy rejection, live-member guard, hidden-team
+  rejection, and `visible()` filtering.
+- `tests/tui/test_app.py` – `/preset team` rejection and `/team on`/`/team off` on the current session.
 - `tests/team/test_team_plugin.py` – team tools are registered with `scope="team"` and stay out of
   the host-wide registry.
 - `tests/team/test_team_service.py` – member agents receive a registry without `team_*`/`subagent`.

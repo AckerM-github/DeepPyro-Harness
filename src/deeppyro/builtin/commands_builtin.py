@@ -72,8 +72,8 @@ _ROWS: tuple[tuple[str, tuple[str, ...], str, str, str, bool], ...] = (
     (
         "team",
         (),
-        "show the agent team; /team board for the task board",
-        "/team [board]",
+        "enter/leave team mode or show the agent team",
+        "/team [on|off|board]",
         "team_command",
         True,
     ),

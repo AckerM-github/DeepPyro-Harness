@@ -530,10 +530,15 @@ async def test_builtin_presets_offer_default_and_explicit_team_mode(tmp_path: Pa
         assert team.order == 200
         assert team.revision == 0
         assert team.plugins == ()
+        assert team.hidden is True
+        assert default.hidden is False
         assert {"default", TEAM_PRESET_ID} <= set(presets.ids())
         assert presets.revision_of(TEAM_PRESET_ID) == 0
         assert presets.revisions(TEAM_PRESET_ID) == [0]
-        # /preset team is simply resolving the built-in team preset.
+        # Team mode is entered with /team on, so /preset only lists visible presets.
+        visible_ids = [spec.id for spec in presets.visible()]
+        assert "default" in visible_ids
+        assert TEAM_PRESET_ID not in visible_ids
         assert presets.resolve("team").mode == AGENT_MODE_TEAM
         assert [spec.id for spec in presets.all()][-1] == TEAM_PRESET_ID
     finally:

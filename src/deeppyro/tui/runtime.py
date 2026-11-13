@@ -25,11 +25,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from deeppyro.api import PluginDependencyError
+from deeppyro.api import (
+    AGENT_MODE_DEFAULT,
+    AGENT_MODE_TEAM,
+    DEFAULT_PRESET_ID,
+    TEAM_PRESET_ID,
+    PluginDependencyError,
+)
 from deeppyro.config import Config, load_config, save_agent_selection
 from deeppyro.core.errors import ConfigError, DeeppyroError
 from deeppyro.schedule import DeliveryReceipt, NewOnceTarget, NewTarget, SessionTarget
 from deeppyro.schedule.timeutil import format_instant
+from deeppyro.team.types import LIVE_PHASES
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +114,9 @@ class TuiRuntime:
     schedule: Any = None
     schedule_notice: Callable[[str], None] | None = None
     llm: Any = None
-    agent_preset: str = "default"
+    agent_preset: str = DEFAULT_PRESET_ID
     preset_revision: int | None = None
+    team_previous_preset: str = DEFAULT_PRESET_ID
     session: Any = None
     agent: Any = None
     last_persist_error: str | None = None
@@ -374,10 +382,18 @@ class TuiRuntime:
                     )
                 except Exception:  # noqa: BLE001, S110 - resume must not brick the UI
                     pass
-        preset = str(getattr(session.header, "agentPreset", "") or "").strip()
-        if preset:
-            self.agent_preset = preset
-        self.preset_revision = _recorded_preset_revision(session)
+        header_preset = str(getattr(session.header, "agentPreset", "") or "").strip() or DEFAULT_PRESET_ID
+        recorded = _recorded_preset(session)
+        preset = recorded[0] if recorded is not None and recorded[0] else header_preset
+        revision = recorded[1] if recorded is not None else None
+        previous = recorded[2] if recorded is not None else None
+        self.agent_preset = preset or header_preset
+        self.preset_revision = revision
+        if self.agent_preset == TEAM_PRESET_ID:
+            fallback = header_preset if header_preset != TEAM_PRESET_ID else DEFAULT_PRESET_ID
+            self.team_previous_preset = previous or fallback
+        else:
+            self.team_previous_preset = DEFAULT_PRESET_ID
         await self._ensure_preset(self.agent_preset, self.preset_revision)
         try:
             await self._attach(session)
@@ -590,29 +606,131 @@ class TuiRuntime:
         if service is None:
             return []
         try:
-            return list(service.all())
+            visible = getattr(service, "visible", None)
+            if callable(visible):
+                specs = list(visible())
+            else:
+                specs = list(service.all())
         except Exception:  # noqa: BLE001 - the picker must keep working
             return []
+        return [spec for spec in specs if not getattr(spec, "hidden", False)]
 
     async def set_agent_preset(self, preset: str) -> str:
-        """Switch the preset used by subsequent agents on this runtime."""
+        """Switch the preset used by subsequent agents on this runtime.
+
+        Hidden presets are reserved for their dedicated command: team mode is
+        entered with /team on, so /preset team is rejected with a hint instead
+        of silently switching.
+        """
         service = self._service("presets")
         if service is None:
             raise DeeppyroError("agent presets are not available in this bundle")
         wanted = (preset or "").strip()
-        try:
-            spec = service.resolve(wanted or None)
-        except Exception as exc:  # surface the service message
-            raise DeeppyroError(str(exc)) from exc
-        if spec.id == self.agent_preset:
+        spec = self._resolve_preset(service, wanted)
+        mode = str(getattr(spec, "mode", AGENT_MODE_DEFAULT) or AGENT_MODE_DEFAULT)
+        if mode == AGENT_MODE_TEAM or spec.id == TEAM_PRESET_ID or getattr(spec, "hidden", False):
+            raise DeeppyroError("team mode is enabled with /team on, not /preset")
+        if self.busy:
+            raise DeeppyroError("cannot switch agent preset while a turn is running")
+        if spec.id == self.agent_preset and self.preset_revision is None:
             return spec.id
-        await self._ensure_preset(spec.id, None)
-        self.agent_preset = spec.id
-        self.preset_revision = None
-        if self.session is not None:
-            await self._attach(self.session)
+        await self._switch_preset(spec.id, None)
         self._record_preset()
         return spec.id
+
+    async def set_team_mode(self, enabled: bool) -> str:
+        """Enter or leave explicit team mode on the current session.
+
+        Returns the preset now active. Entering remembers the preset that was
+        active before team mode so /team off can restore it; leaving refuses
+        while any team member is still live.
+        """
+        service = self._service("presets")
+        if service is None:
+            raise DeeppyroError("agent presets are not available in this bundle")
+        if enabled:
+            if self.agent_mode == AGENT_MODE_TEAM:
+                return TEAM_PRESET_ID
+            if self.busy:
+                raise DeeppyroError("cannot enter team mode while a turn is running")
+            previous = self.agent_preset
+            if previous == TEAM_PRESET_ID or self.agent_mode == AGENT_MODE_TEAM:
+                previous = DEFAULT_PRESET_ID
+            self._resolve_preset(service, TEAM_PRESET_ID)
+            await self._switch_preset(TEAM_PRESET_ID, None)
+            self.team_previous_preset = previous
+            self._record_preset()
+            return TEAM_PRESET_ID
+        if self.agent_mode != AGENT_MODE_TEAM:
+            raise DeeppyroError("agent team mode is not active")
+        if self.busy:
+            raise DeeppyroError("cannot leave team mode while a turn is running")
+        live = self._live_team_members()
+        if live:
+            labels = ", ".join(
+                f"{getattr(member, 'name', '') or getattr(member, 'id', 'member')} "
+                f"({getattr(member, 'phase', 'unknown')})"
+                for member in live
+            )
+            raise DeeppyroError(f"cannot leave team mode while {len(live)} member(s) are active: {labels}")
+        previous = self.team_previous_preset or DEFAULT_PRESET_ID
+        try:
+            self._resolve_preset(service, previous)
+        except DeeppyroError:
+            previous = DEFAULT_PRESET_ID
+        await self._switch_preset(previous, None)
+        self.team_previous_preset = DEFAULT_PRESET_ID
+        self._record_preset()
+        return previous
+
+    def _resolve_preset(self, service: Any, preset: str) -> Any:
+        """Resolve a preset id, translating a service error for the UI."""
+        try:
+            return service.resolve(preset or None)
+        except Exception as exc:  # surface the service message
+            raise DeeppyroError(str(exc)) from exc
+
+    async def _switch_preset(self, preset_id: str, revision: int | None) -> None:
+        """Switch preset/agent atomically; restore the old pair on failure."""
+        service = self._service("presets")
+        if service is None:
+            raise DeeppyroError("agent presets are not available in this bundle")
+        spec = self._resolve_preset(service, preset_id)
+        old_preset = self.agent_preset
+        old_revision = self.preset_revision
+        old_agent = self.agent
+        await self._ensure_preset(spec.id, revision)
+        self.agent_preset = spec.id
+        self.preset_revision = revision
+        if self.session is None:
+            return
+        try:
+            await self._attach(self.session)
+        except Exception:
+            self.agent_preset = old_preset
+            self.preset_revision = old_revision
+            if self.agent is not old_agent:
+                # _attach got far enough to replace (and close) the old agent;
+                # rebuild it so the UI keeps a working agent after a rollback.
+                try:
+                    await self._attach(self.session)
+                except Exception:
+                    logger.exception("failed to restore the agent after a preset switch failure")
+            raise
+
+    def _live_team_members(self) -> list[Any]:
+        """Team members that are still spawning, running or idle."""
+        service = self.team
+        if service is None:
+            service = self._service("team")
+        getter = getattr(service, "members", None)
+        if not callable(getter):
+            return []
+        try:
+            members = list(getter())
+        except Exception:  # noqa: BLE001 - the switch guard must not crash on a store error
+            return []
+        return [member for member in members if str(getattr(member, "phase", "")) in LIVE_PHASES]
 
     @property
     def commands(self) -> Any | None:
@@ -946,9 +1064,12 @@ class TuiRuntime:
 
     def _record_preset(self) -> None:
         """Persist the pinned preset revision so a resume reproduces it."""
-        data: dict[str, Any] = {"preset": self.agent_preset}
+        mode = self.agent_mode
+        data: dict[str, Any] = {"preset": self.agent_preset, "mode": mode}
         if self.preset_revision is not None:
             data["revision"] = self.preset_revision
+        if mode == AGENT_MODE_TEAM:
+            data["previous"] = self.team_previous_preset
         self._record("agent-preset/selected", data)
 
     def _record_model_selection(self) -> None:
@@ -1170,18 +1291,27 @@ class _TuiScheduleHost:
         )
 
 
-def _recorded_preset_revision(session: Any) -> int | None:
-    """Last agent-preset/selected revision written to the session, if any."""
+def _recorded_preset(session: Any) -> tuple[str, int | None, str | None] | None:
+    """Last agent-preset/selected record: (preset, revision, previous).
+
+    The header only carries the preset a session was created with, so the
+    record is what makes a later switch (including /team on) survive resume.
+    """
     records = getattr(session, "records", None) or []
     for record in reversed(list(records)):
         if getattr(record, "type", "") != "agent-preset/selected":
             continue
         data = getattr(record, "data", None)
-        if isinstance(data, dict):
-            revision = data.get("revision")
-            if isinstance(revision, int):
-                return revision
-        return None
+        if not isinstance(data, dict):
+            return None
+        preset = data.get("preset")
+        revision = data.get("revision")
+        previous = data.get("previous")
+        return (
+            preset if isinstance(preset, str) else "",
+            revision if isinstance(revision, int) else None,
+            previous if isinstance(previous, str) and previous else None,
+        )
     return None
 
 

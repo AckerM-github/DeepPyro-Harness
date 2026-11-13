@@ -94,6 +94,9 @@ class PresetSpec:
     #: Agent mode selected by this preset. default exposes single-agent tools
     #: (including delegation); team swaps in the agent-team toolset.
     mode: str = "default"
+    #: Hidden presets are reachable only through a dedicated command (the
+    #: built-in team preset is entered with /team, not /preset).
+    hidden: bool = False
     #: Base directory used to resolve relative '.py' plugin targets.
     base: Path | None = None
 

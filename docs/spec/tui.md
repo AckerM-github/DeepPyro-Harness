@@ -30,7 +30,7 @@
 | widgets/activity_bar.py | 对话区上方活动栏：plan / jobs / agents 三段 | ui-dev |
 | screens/plan.py | 待办计划模态（/plan、点击 plan 段） | ui-dev |
 | screens/jobs.py | 后台任务面板（/jobs、点击 jobs 段） | tui-dev |
-| screens/team.py | 团队面板与任务板（/team、/team board、点击 agents 段） | ui-dev |
+| screens/team.py | 团队面板与任务板（/team、/team board、/team on/off、点击 agents 段） | ui-dev |
 | screens/thinking.py | 全屏思考查看器（/thinking、点击折叠行） | tui-dev |
 | history.py | 从会话日志按 turn 重建 ReasoningStep/TurnReasoning/TurnProcess（思考 + 工具有序过程） | Lead |
 | widgets/status_bar.py | 底部状态栏（session/model/tokens/ctx/policy/phase） | ui-dev |
@@ -93,14 +93,14 @@
 | /resume [id 或序号] | 恢复最近会话；无参打开选择器 |
 | /provider [name] | 查看/切换 LLM provider；无参打开选择器（缺失 API key 会标注）；切换后重建 provider 与 AgentSession，写 model/selection 并持久化到 config [agent] |
 | /model [id] | 切换模型；支持跨 provider 的 provider/model 形式；无参打开选择器（多 provider 时值为 provider/model）；写 model/selection 并持久化 |
-| /preset [id] | 切换 agent preset（按会话组合工具/提示词与 agent mode）；无参打开选择器。`/preset team` 进入 Team 模式（Lead 获得 `team_*`、收起 `subagent`），`/preset default` 回到默认单 Agent + `subagent` |
+| /preset [id] | 切换 agent preset（按会话组合工具/提示词与 agent mode）；无参打开选择器。选择器与参数只列出可见 preset；`/preset team` 会被拒绝并提示用 `/team on`。切换只在空闲时允许 |
 | /policy [preset] | 查看/切换权限预设（read-only / workspace-write / danger-full-access）；无参打开选择器；写 permission/preset 记录 |
 | /approval [policy] | 查看/切换审批策略（ask / never / always）；无参打开选择器；写 approval/policy 记录 |
 | /cwd [path] | 查看/切换工作目录；无参打开选择器（当前 + 最近会话目录 + 自定义路径模态）；写 working-directory/change 记录 |
 | /status | 当前 provider（含 key 状态）与可用 providers、model、preset、policy、cwd、session、tokens、上下文 |
 | /plan | 打开当前 todo 计划（PlanScreen，按 in_progress / pending / completed 分组） |
 | /jobs | 打开后台任务面板（JobsPanelScreen：id/kind/status/label/started/finished） |
-| /team [board] | 打开团队面板（成员 + 任务）；`/team board` 打开完整任务板 |
+| /team [on|off|board] | 在当前会话进入/退出 Team 模式；`/team board` 打开完整任务板；无参打开团队面板（成员 + 任务） |
 | /thinking [turns] | 打开全屏思考查看器：默认当前 turn，`all` 全部，数字指定最近 N 个 turn |
 | /compact | 手动压缩（要求无运行中 turn；Compactor.compact） |
 | /clear | 清空对话视图（不删除会话日志） |
@@ -134,16 +134,19 @@
 - 插件状态栏项：状态栏上方另有一行 PluginStatusBar，插件通过 slots.add_status_item 注册的渲染器按 (order,id) 排序渲染；每次 refresh_status 重新求值，渲染异常显示为 dim 错误标记而不影响主状态栏。
 - 活动栏：Header 与对话区之间一行 ActivityBar，数据来自 activity 服务对 todo/write、job/registered|settled、team/member、subagent/descriptor|catalog、plan/mode 的投影；空段隐藏，点击段打开 PlanScreen / JobsPanelScreen / TeamPanelScreen。
 - 后台任务：JobsPanelScreen 只读展示 jobs 服务快照（超长输出由 job_output 工具按 head/tail 预览）；/jobs 与活动栏 jobs 段等价。
-- 团队：TeamPanelScreen 展示成员与任务，TaskBoardScreen 按 pending → in_progress → completed 排序；/team 无参打开团队面板，/team board 打开任务板；活动栏 agents 段打开团队面板。default 模式且无成员/任务时 /team 提示用 /preset team 显式开启 Team 模式。
-- agent mode：内置 preset `default`（mode default）与 `team`（mode team）。default 模式注入 host-wide `subagent` 工具（一次性子会话委派）；team 模式只给 Lead 注入 `team_*` 工具并隐藏 `subagent`；Team 成员子会话两者都没有（防嵌套）。欢迎页与 /status 显示 `agent preset X (mode Y)`，状态栏标题在 team 模式追加 ` · team`。
+- 团队：TeamPanelScreen 展示成员与任务，TaskBoardScreen 按 pending → in_progress → completed 排序；/team 无参打开团队面板，/team board 打开任务板；活动栏 agents 段打开团队面板。/team on 在当前会话进入 Team 模式（Lead 获得 `team_*`、收起 `subagent`），/team off 回到进入前的 preset；有 live 成员（spawning/running/idle）时拒绝离开并列出成员。default 模式且无成员/任务时 /team 提示用 /team on 显式开启 Team 模式。
+- agent mode：内置 preset `default`（mode default、可见）与 `team`（mode team、hidden，仅由 /team on 进入）。default 模式注入 host-wide `subagent` 工具（一次性子会话委派）；team 模式只给 Lead 注入 `team_*` 工具并隐藏 `subagent`；Team 成员子会话两者都没有（防嵌套）。欢迎页与 /status 显示 `agent preset X (mode Y)`，状态栏标题在 team 模式追加 ` · team`。
 - 插件对话行：handle_event 在 status 事件后调用 apply_conversation_slots，插件按 predicate 匹配事件并追加自定义行（只追加、宿主不重放历史）。
 - 插件面板：/panel 从 slots 的 PANEL 槽位取工厂，打开 PluginPanelScreen（表格/自定义 widget 二选一）。
-- agent preset：会话创建时把 preset id 写进 session header 的 agentPreset，并把最新 revision 写进
-  agent-preset/selected 记录；/resume 先按该记录固定 revision 重建 agent（revision 已不存在时回退
-  最新并重新记录），/preset 切换物化最新 revision 并重建当前会话的 agent（当前会话 header 不重写，
-  只影响后续新建会话）。prompt 段与工具贡献按 preset scope + revision 过滤，preset 内声明的子插件
-  在独立 realm 中物化。preset 的 `mode` 还决定委派工具集（见上条 agent mode）；AgentsService.create
-  会按 mode 做防御性过滤，即使显式传入 registry 也不会让 team 模式看到 `subagent`。
+- agent preset：会话创建时把 preset id 写进 session header 的 agentPreset；之后每次创建/切换都向
+  agent-preset/selected 记录写 `{preset, mode, revision?, previous?}`（revision 未固定时省略，team 模式
+  额外记录进入前的 preset）。/resume 以最后一条记录为准（header 只作兜底），按记录固定 preset/revision
+  重建 agent；team 记录还会恢复 previous，使之后 /team off 回到正确 preset。revision 已不存在时回退
+  最新并重新记录。/preset 与 /team on/off 都物化目标 revision 并重建当前会话的 agent（当前会话 header
+  不重写，只影响后续新建会话），且只在空闲时允许；切换失败会回滚 preset 字段与旧 agent。
+  prompt 段与工具贡献按 preset scope + revision 过滤，preset 内声明的子插件在独立 realm 中物化。
+  preset 的 `mode` 还决定委派工具集（见上条 agent mode）；AgentsService.create 会按 mode 做防御性
+  过滤，即使显式传入 registry 也不会让 team 模式看到 `subagent`。
 
 ## 9. 开发与验证
 
@@ -155,7 +158,7 @@
 - 回归红线：不得再次出现 widget 方法名为 _render（Textual 私有名，会把 Widget._render 顶掉导致 render_strips 崩溃）。
 - 所有 widget 刷新只允许在 Textual 事件循环线程内；后台线程只允许 put_message/post_message。
 - 插件槽位测试：tests/tui/test_slots.py（注册表排序/去重/dispose、theme/locale）与 test_plugin_slots.py（状态栏、对话行、面板宿主）、test_ui_package.py（ui.toml 声明式包、坏 entry 隔离）；跨层集成在 tests/integration/test_plugin_services.py。
-- preset revision 接线测试：tests/tui/test_runtime_presets.py（new_session 记录 revision、resume 固定 revision、revision 失效回退、/preset 物化最新 revision）。
+- preset/team 切换测试：tests/tui/test_runtime_presets.py（记录与 resume、team previous 恢复、原子切换与回滚、busy/隐藏 preset/live 成员守卫、revision 失效回退）、tests/tui/test_app.py（/preset team 拒绝、/team on/off）。
 - provider/model 接线测试：tests/tui/test_runtime_models.py（set_provider/set_model、model/selection 记录、resume 恢复、_resolve_model 不跨 provider 泄漏、持久化失败兜底、team attach/shutdown）与 tests/test_config.py（save_agent_selection 注释保留/原子写/校验）。
 - 活动/过程/任务/团队 UI 测试：tests/tui/test_activity_bar.py、test_plan_screen.py、test_agent_process.py、test_thinking_screen.py、test_jobs_screen.py、test_team_screen.py；对话过程接线在 tests/tui/test_conversation.py 与 test_app.py；history 重建在 tests/tui/test_history.py，activity 投影在 tests/builtin/test_activity.py。
 

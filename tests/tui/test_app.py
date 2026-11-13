@@ -149,6 +149,8 @@ class FakeRuntime:
         self.closed = False
         self.opened_sessions: list[str] = []
         self.agent_preset = "default"
+        self.agent_mode = "default"
+        self.team_previous_preset = "default"
         self.jobs = FakeJobs()
         self.team = FakeTeam()
 
@@ -192,8 +194,31 @@ class FakeRuntime:
         return [FakePreset("default", "Default"), FakePreset("reviewer", "Reviewer", "review only")]
 
     async def set_agent_preset(self, preset: str) -> str:
+        if preset == "team":
+            raise RuntimeError("team mode is enabled with /team on, not /preset")
         self.agent_preset = preset
         return preset
+
+    async def set_team_mode(self, enabled: bool) -> str:
+        if enabled:
+            if self.agent_mode == "team":
+                return "team"
+            self.team_previous_preset = self.agent_preset
+            self.agent_mode = "team"
+            self.agent_preset = "team"
+            return "team"
+        if self.agent_mode != "team":
+            raise RuntimeError("agent team mode is not active")
+        live = [
+            member
+            for member in self.team.members()
+            if str(member.get("phase", "")) in {"spawning", "running", "idle"}
+        ]
+        if live:
+            raise RuntimeError(f"cannot leave team mode while {len(live)} member(s) are active")
+        self.agent_mode = "default"
+        self.agent_preset = self.team_previous_preset
+        return self.agent_preset
 
     def known_workspaces(self, limit: int = 12) -> list[str]:
         workspaces = [str(Path("D:/work")), str(Path("D:/other"))]
@@ -694,6 +719,39 @@ async def test_team_command_board_opens_the_task_board() -> None:
         assert app.screen.ordered_tasks[0].subject == "wire the team panel"
         await pilot.press("escape")
         await pilot.pause(0.2)
+
+
+async def test_preset_command_rejects_the_hidden_team_preset() -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(110, 32)) as pilot:
+        await pilot.pause()
+        await app.preset_command("team")
+        assert app.runtime.agent_preset == "default"
+        assert app.runtime.agent_mode == "default"
+
+
+async def test_team_on_and_off_toggle_the_current_session_mode() -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(110, 32)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one(PromptArea)
+        prompt.text = "/team on"
+        await pilot.press("enter")
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if app.runtime.agent_mode == "team":
+                break
+        assert app.runtime.agent_mode == "team"
+        assert app.runtime.agent_preset == "team"
+
+        # The fake team keeps one running member, so leaving is refused.
+        await app.team_command("off")
+        assert app.runtime.agent_mode == "team"
+
+        app.runtime.team.members = list  # type: ignore[method-assign]
+        await app.team_command("off")
+        assert app.runtime.agent_mode == "default"
+        assert app.runtime.agent_preset == "default"
 
 
 async def test_scheduled_message_renders_and_clears_busy_state() -> None:

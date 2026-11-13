@@ -54,8 +54,9 @@
   退出时 `aclose()` 取消在途子会话；默认模式下 `subagent` 工具可用（子会话审批一律拒绝）。
 - 团队：team 服务同样 `configure`/`bind_session`，退出时 `aclose()` 关闭所有成员子会话；
   `team_*` 工具只在 session 的 agentPreset 为 `team` 时可见；headless 不自动切换 preset。
-- 默认 vs Team：默认单 Agent + `subagent` 委派；Team 是显式模式（TUI 用 `/preset team`，
-  headless 需预先选择 team preset）。两者记录都按 DSH 的 `subagent/*`、`team/*` 形状落盘。
+- 默认 vs Team：默认单 Agent + `subagent` 委派；Team 是显式模式（TUI 用 `/team on`，
+  headless 需预先以 team preset 创建/恢复会话，不支持会话内切换）。两者记录都按 DSH 的
+  `subagent/*`、`team/*` 形状落盘。
 
 ## 6. 审批
 
