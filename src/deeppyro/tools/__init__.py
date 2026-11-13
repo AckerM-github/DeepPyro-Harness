@@ -18,11 +18,12 @@ from deeppyro.tools.builtin import (
     builtin_tools,
 )
 from deeppyro.tools.pipeline import ToolCallRequest, ToolOutcome, run_tool_batch
-from deeppyro.tools.registry import ToolRegistry
+from deeppyro.tools.registry import RESERVED_TOOL_NAMES, ToolRegistry
 from deeppyro.tools.spill import DEFAULT_MAX_OUTPUT_CHARS, truncate_text
 
 __all__ = [
     "DEFAULT_MAX_OUTPUT_CHARS",
+    "RESERVED_TOOL_NAMES",
     "BaseTool",
     "BashTool",
     "EditTool",

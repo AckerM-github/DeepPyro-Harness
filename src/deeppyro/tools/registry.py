@@ -7,6 +7,9 @@ from collections.abc import Iterable
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import Tool, ToolSchema
 
+#: Names owned by a presentation transport rather than by a regular tool.
+RESERVED_TOOL_NAMES = frozenset({"run_code"})
+
 
 class ToolRegistry:
     """Ordered collection of tools.
@@ -27,6 +30,11 @@ class ToolRegistry:
         name = getattr(tool, "name", None)
         if not isinstance(name, str) or not name:
             raise ToolError("tool must declare a non-empty name")
+        if name in RESERVED_TOOL_NAMES and not getattr(tool, "reserved_tool", False):
+            raise ToolError(
+                f'tool name "{name}" is reserved for the PTC mode presentation transport '
+                "and cannot be registered or shadowed"
+            )
         if name in self._tools:
             raise ToolError(f"tool {name!r} is already registered")
         self._tools[name] = tool

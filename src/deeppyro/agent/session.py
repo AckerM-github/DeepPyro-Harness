@@ -237,6 +237,9 @@ class AgentSession:
         # ToolContext.services always exposes the live session so tools that need
         # durable session access (for example compress) never have to reopen it.
         self._services.setdefault("session", session)
+        # PTC and future transports dispatch nested tools through the agent's
+        # composed registry, narrowed to this agent's preset.
+        self._services.setdefault("tool_registry", registry)
         self._prompt_builder = prompt_builder or build_system_prompt
         hooks = self._services.get("hooks")
         self._hooks: Any | None = hooks if hooks is not None else None

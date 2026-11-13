@@ -33,12 +33,30 @@ def test_registry_preserves_registration_order() -> None:
     assert list(registry) == [first, second]
 
 
+class _ReservedEcho(_Echo):
+    name = "run_code"
+    reserved_tool = True
+
+
+class _ShadowEcho(_Echo):
+    name = "run_code"
+
+
 def test_registry_get_and_duplicate_name() -> None:
     registry = ToolRegistry([_Echo()])
     assert registry.get("echo") is not None
     assert registry.get("nope") is None
     with pytest.raises(ToolError, match="already registered"):
         registry.register(_Echo())
+
+
+def test_registry_rejects_unmarked_reserved_tool() -> None:
+    registry = ToolRegistry()
+    with pytest.raises(ToolError, match="reserved for the PTC mode presentation transport"):
+        registry.register(_ShadowEcho())
+    # The transport itself is the only legitimate registration channel.
+    registry.register(_ReservedEcho())
+    assert registry.names() == ["run_code"]
 
 
 def _named_tool(name: str) -> _Echo:

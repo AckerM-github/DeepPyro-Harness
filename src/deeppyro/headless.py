@@ -512,6 +512,7 @@ class HeadlessRuntime:
             "attachments",
             "schedule",
             "memory",
+            "ptc",
         ):
             try:
                 value = kernel_app.service(name)

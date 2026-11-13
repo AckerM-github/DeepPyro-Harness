@@ -553,6 +553,7 @@ class TuiRuntime:
             "attachments",
             "schedule",
             "memory",
+            "ptc",
         ):
             service = self._service(name)
             if service is not None:

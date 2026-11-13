@@ -23,6 +23,7 @@ EXPECTED_ORDER = [
     "sandbox",
     "tools",
     "tools-builtin",
+    "ptc",
     "compress",
     "schedule",
     "working-directory",
@@ -108,6 +109,7 @@ config = { start = 5 }
         "sandbox",
         "tools",
         "tools-builtin",
+        "ptc",
         "compress",
         "schedule",
         "working-directory",
@@ -155,6 +157,7 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
             "llm",
             "session-query",
             "tools-builtin",
+            "ptc",
             "compress",
             "schedule",
             "working-directory",
@@ -183,6 +186,7 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
         # plugin-tools inject the tools service, so they wait too.
         assert app.started["session-query"] == "PENDING"
         assert app.started["tools-builtin"] == "PENDING"
+        assert app.started["ptc"] == "PENDING"
         assert app.started["compress"] == "PENDING"
         assert app.started["schedule"] == "PENDING"
         assert app.started["working-directory"] == "PENDING"

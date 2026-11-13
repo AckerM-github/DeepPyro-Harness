@@ -26,7 +26,7 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   按 id 覆盖 config（整体替换）、`before/after` 插入、`disabled/critical/isolate/intercept`；
   还支持 group 行（`group = true` + 子行）、`include` 外部行文件、`[bundle].requires`
   依赖拓扑排序，以及 active/failed/disabled/overridden/restart-required 活状态。
-  core bundle 只有 31 行（kernel 运行时 + LLM、会话、沙箱、工具、提示词、命令、agent、
+  core bundle 只有 32 行（kernel 运行时 + LLM、会话、沙箱、工具、提示词、命令、agent、
   activity 活动栏、jobs 后台任务、subagent 委派、team 团队、插件管理、设置、inspect、TUI 槽位，
   以及 P1 的 session-query、compress、schedule、working-directory、user-questions、attachments、
   memory、skills、projections），其余能力都由插件贡献。插件可注册工具、提示词段、
@@ -47,7 +47,9 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   提示词目录段）、runtime memory（`mnemon_runtime_memory` 工具，USER.md/MEMORY.md 投影，
   容量硬上限）、图片附件（Pillow 校验/归一化 + inline 预算 + `image/offload` 投影）、
   per-session 投影注册表与 checkpoint sidecar、Anthropic Messages provider 与模型目录发现
-  （`/model` 候选合并配置模型与远端目录，contextWindow 自动回退）。
+  （`/model` 候选合并配置模型与远端目录，contextWindow 自动回退）、PTC `run_code`
+  （默认关闭的 Python 程序化工具调用：程序内 `await` 当前 session 的工具，内层调用只写
+  `tool/ptc-dispatch*` 日志、不进模型可见 surface）。
 - **运行时自扩展**：`/plugins` 界面与 `plugin_manager` / `plugin_inspect` /
   `settings_read` / `settings_write` / `plugin_create` 五个工具让 agent 自己安装/脚手架
   外部 bundle、启停插件、读改插件配置、查看 live 组合（安装/脚手架会执行或生成第三方代码，
@@ -72,7 +74,7 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
       builtin/  core 插件行（llm/sessions/session_query/sandbox/tools/prompt/commands/agents/
                 activity/jobs/subagent/team/presets/plugin_manager/settings/inspect，以及
                 compress/schedule/working_directory/user_questions/attachments/memory/skills/projections）
-      bundles/core/bundle.toml  core bundle 的 31 个插件行（首行 kernel 运行时）
+      bundles/core/bundle.toml  core bundle 的 32 个插件行（首行 kernel 运行时）
       jobs/     后台任务服务（JobHandle/JobResult、job/registered|settled）
       subagent/ 一次性子智能体委派（默认模式的 subagent 工具、子会话、subagent/* 记录）
       team/     子智能体团队与共享任务板（成员、消息、子会话、team/* 记录）
@@ -88,6 +90,7 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
       session/  session.v4 日志：模型、append 校验、derive、fork、store
       llm/      provider 适配层（OpenAI-compatible SSE、Anthropic Messages）、模型目录、图片预算、重试
       tools/    工具注册表、执行流水线、内置工具
+      ptc/      最小 Python PTC transport（run_code 保留工具、worker 协议、内层 dispatch，默认关闭）
       sandbox/  权限预设 / 策略闸门
       prompt/   系统提示词与运行时上下文装配
       agent/    turn/step 循环、inbox、事件流
@@ -99,7 +102,7 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
     docs/spec/  契约与逆向出的 DSH 语义（INTERFACES / tui / headless / session / llm / tools / loop /
                 plugins / agent-presets / subagent / activity / hooks / skills / schedule / memory /
                 session-query / compact-blocks / attachments / image-budget / image-offload /
-                image-request / projection）
+                image-request / projection / ptc）
     tests/      单测 + 黄金对照测试
     tools/      fixture 生成器（Node，只读 ~/.dsh）
 
@@ -149,7 +152,7 @@ TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /pres
 
 ### 插件与组合
 
-- core bundle：`src/deeppyro/bundles/core/bundle.toml`（31 行，首行 `kernel` 运行时服务，`critical = true`）。
+- core bundle：`src/deeppyro/bundles/core/bundle.toml`（32 行，首行 `kernel` 运行时服务，`critical = true`）。
 - 外部 bundle：`~/.dpro/bundles/<id>/bundle.toml` + Python 文件；`/plugins` 或
   `plugin_manager` 工具可安装/启停/卸载（安装只做结构校验，下次 boot 执行第三方代码）。
 - 其他插件来源：entry point 组 `deeppyro.plugins`、`~/.dpro/plugins/<id>/plugin.toml`、
