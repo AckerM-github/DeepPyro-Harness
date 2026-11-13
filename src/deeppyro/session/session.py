@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import pathlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from deeppyro.core.errors import SessionError
@@ -49,6 +50,7 @@ class Session:
         self.zstd = zstd
         self._closed = False
         self._surface: list[LogRecord] | None = None
+        self._append_observers: list[Callable[[Session, LogRecord], None]] = []
 
     @property
     def session_id(self) -> str:
@@ -82,6 +84,7 @@ class Session:
         plan = plan_surface_transition(nodes, record, strict=not self.trimmed, records_by_seq=records_by_seq)
         writer.append_events(self.path, [writer.event_to_dict(record)], zstd=self.zstd)
         self.records.append(record)
+        self._notify_append(record)
         kind, start, end = plan
         if kind == APPEND:
             nodes.append(record)
@@ -89,6 +92,32 @@ class Session:
             assert start is not None and end is not None
             nodes[start : end + 1] = [record]
         return seq
+
+    def add_append_observer(self, observer: Callable[[Session, LogRecord], None]) -> Callable[[], None]:
+        """Call observer(session, record) after each successful append.
+
+        Observers are advisory: a raised exception is logged and swallowed so a
+        broken projection (or UI listener) can never break durability. The
+        returned disposer is idempotent.
+        """
+        self._append_observers.append(observer)
+
+        def dispose() -> None:
+            try:
+                self._append_observers.remove(observer)
+            except ValueError:
+                pass
+
+        return dispose
+
+    def _notify_append(self, record: LogRecord) -> None:
+        for observer in list(self._append_observers):
+            try:
+                observer(self, record)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "session append observer failed for %r", record.type, exc_info=True
+                )
 
     def derive_messages(self, *, strict: bool | None = None) -> list[Message]:
         """Messages as the model should see them, after the canonical surface fold."""

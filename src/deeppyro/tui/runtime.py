@@ -16,15 +16,22 @@ deeppyro.headless.boot_runtime.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from deeppyro.api import PluginDependencyError
 from deeppyro.config import Config, load_config, save_agent_selection
 from deeppyro.core.errors import ConfigError, DeeppyroError
+from deeppyro.schedule import DeliveryReceipt, NewOnceTarget, NewTarget, SessionTarget
+from deeppyro.schedule.timeutil import format_instant
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONTEXT_WINDOW = 32768
 
@@ -46,6 +53,23 @@ def _context_window(provider_cfg: Any, model_id: str) -> int:
             return int(entry.contextWindow)
     if models and getattr(models[0], "contextWindow", 0):
         return int(models[0].contextWindow)
+    return DEFAULT_CONTEXT_WINDOW
+
+
+def _context_window_for(provider_cfg: Any, model_id: str, info: Any = None) -> int:
+    """Context window for a model, honoring a catalog entry for discovered ids.
+
+    Configured models keep the configuration answer exactly as before; only a
+    model that config does not declare falls back to the catalog window and
+    finally to DEFAULT_CONTEXT_WINDOW (no borrowed provider default, matching
+    the headless resolver).
+    """
+    configured = [str(getattr(entry, "id", "")) for entry in list(getattr(provider_cfg, "models", []) or [])]
+    if model_id in configured:
+        return _context_window(provider_cfg, model_id)
+    window = getattr(info, "context_window", None) if info is not None else None
+    if window is not None and int(window) > 0:
+        return int(window)
     return DEFAULT_CONTEXT_WINDOW
 
 
@@ -77,11 +101,21 @@ class TuiRuntime:
     jobs: Any = None
     team: Any = None
     subagent: Any = None
+    working_directory: Any = None
+    user_questions: Any = None
+    projections: Any = None
+    schedule: Any = None
+    schedule_notice: Callable[[str], None] | None = None
+    llm: Any = None
     agent_preset: str = "default"
     preset_revision: int | None = None
     session: Any = None
     agent: Any = None
     last_persist_error: str | None = None
+    last_catalog_error: str | None = None
+    _catalog: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
+    _schedule_tasks: set[asyncio.Task[Any]] = field(default_factory=set, repr=False)
+    _schedule_once: dict[str, str] = field(default_factory=dict, repr=False)
     _closed: bool = field(default=False, repr=False)
 
     # -- construction ---------------------------------------------------
@@ -137,6 +171,26 @@ class TuiRuntime:
             subagent = kernel_app.service("subagent")
         except LookupError:
             pass
+        working_directory = None
+        try:
+            working_directory = kernel_app.service("working_directory")
+        except LookupError:
+            pass
+        user_questions = None
+        try:
+            user_questions = kernel_app.service("user_questions")
+        except LookupError:
+            pass
+        projections = None
+        try:
+            projections = kernel_app.service("projections")
+        except LookupError:
+            pass
+        schedule = None
+        try:
+            schedule = kernel_app.service("schedule")
+        except LookupError:
+            pass
         runtime = cls(
             cfg=cfg,
             cwd=workspace,
@@ -155,6 +209,11 @@ class TuiRuntime:
             jobs=jobs,
             team=team,
             subagent=subagent,
+            working_directory=working_directory,
+            user_questions=user_questions,
+            projections=projections,
+            schedule=schedule,
+            llm=services["llm"],
         )
         await runtime.ensure_presets()
         runtime._configure_team(None)
@@ -162,9 +221,136 @@ class TuiRuntime:
         await runtime.new_session()
         return runtime
 
+    def configure_user_questions(self, handler: Any | None = None) -> None:
+        """Route ask_user_question requests to a handler.
+
+        No-op when the bundle did not load the user_questions service or when
+        the service object has no configure hook, so older bundles keep working.
+        """
+        service = self.user_questions
+        if service is None:
+            return
+        configure = getattr(service, "configure", None)
+        if callable(configure):
+            configure(handler)
+
+    def configure_schedule_notice(self, handler: Callable[[str], None] | None = None) -> None:
+        """Route scheduled-message notices to the UI."""
+        self.schedule_notice = handler
+
+    async def start_schedule(self) -> None:
+        """Attach the TUI schedule host and start the timer (best effort)."""
+        service = self.schedule
+        if service is None:
+            return
+        configure_host = getattr(service, "configure_host", None)
+        if callable(configure_host):
+            try:
+                configure_host(_TuiScheduleHost(self))
+            except Exception:  # noqa: BLE001, S110 - an optional service must not break the UI
+                pass
+        start = getattr(service, "start", None)
+        if callable(start):
+            try:
+                await await_maybe(start())
+            except Exception:  # noqa: BLE001, S110 - an optional service must not break the UI
+                pass
+
+    async def stop_schedule(self) -> None:
+        """Stop the schedule timer and any background agent it spawned."""
+        service = self.schedule
+        if service is not None:
+            stop = getattr(service, "stop", None)
+            if callable(stop):
+                try:
+                    await await_maybe(stop())
+                except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
+                    pass
+        tasks = list(self._schedule_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
+                pass
+        self._schedule_tasks.clear()
+
+    async def open_schedule_session(self, session_id: str) -> Any:
+        """Open a persisted session for a schedule delivery."""
+        return self.store.open(session_id)
+
+    async def create_schedule_session(self, spec: Any, preset: str) -> Any:
+        """Create a fresh session for a schedule delivery."""
+        directory = str(getattr(spec, "cwd", "") or "")
+        cwd = self.cwd
+        if directory:
+            candidate = Path(directory).expanduser()
+            try:
+                candidate = candidate.resolve()
+            except OSError:
+                candidate = self.cwd
+            if candidate.is_dir():
+                cwd = candidate
+        return self.store.create(str(cwd), agent_preset=preset)
+
+    async def create_schedule_agent(self, session: Any, *, preset: str) -> Any:
+        """Build a silent agent for a scheduled turn."""
+        await self._ensure_preset(preset, None)
+        options = self.agents.options(model=self.model, context_window=self.context_window)
+        return self.agents.create(
+            session=session,
+            provider=self.provider,
+            registry=self._registry_for_preset(preset),
+            options=options,
+            sink=_ScheduleSink(),
+            permission=self.permission,
+            cwd=str(self.cwd),
+            services=self._plugin_services(),
+            preset=preset,
+        )
+
+    def track_schedule_agent(self, session: Any, agent: Any) -> None:
+        """Close a background agent once its scheduled turn is idle."""
+        task = asyncio.create_task(self._finish_schedule_agent(session, agent))
+        self._schedule_tasks.add(task)
+        task.add_done_callback(self._schedule_tasks.discard)
+
+    async def _finish_schedule_agent(self, session: Any, agent: Any) -> None:
+        try:
+            wait = getattr(session, "wait_for_idle", None)
+            if callable(wait):
+                await await_maybe(wait())
+        except Exception:  # noqa: BLE001, S110 - background cleanup is best effort
+            pass
+        finally:
+            close = getattr(agent, "aclose", None)
+            if callable(close):
+                try:
+                    await await_maybe(close())
+                except Exception:  # noqa: BLE001, S110 - background cleanup is best effort
+                    pass
+
+    def _registry_for_preset(self, preset: str) -> Any:
+        """Tool registry narrowed to one agent preset."""
+        service = self._service("tools")
+        registry_for = getattr(service, "registry_for", None)
+        if callable(registry_for):
+            try:
+                return registry_for(Path(self.cwd), scope=preset)
+            except TypeError:
+                try:
+                    return registry_for(Path(self.cwd))
+                except Exception:  # noqa: BLE001 - fall back to the base registry
+                    return self.registry
+            except Exception:  # noqa: BLE001 - fall back to the base registry
+                return self.registry
+        return self.registry
+
     # -- sessions -------------------------------------------------------
     async def new_session(self) -> Any:
         """Create a fresh durable session and rebuild the agent."""
+        self._save_projections()
         self.preset_revision = None
         session = self.store.create(str(self.cwd), agent_preset=self.agent_preset)
         await self._attach(session)
@@ -174,13 +360,18 @@ class TuiRuntime:
 
     async def open_session(self, session_id: str) -> Any:
         """Open an existing session and rebuild the agent around it."""
+        self._save_projections()
         session = self.store.open(session_id)
         selection = _recorded_model_selection(session)
         if selection is not None:
             provider_name, model_id = selection
             if provider_name in self.cfg.providers:
                 try:
-                    self._activate_provider(provider_name, model_id)
+                    self._activate_provider(
+                        provider_name,
+                        model_id,
+                        info=self._cached_model(provider_name, model_id),
+                    )
                 except Exception:  # noqa: BLE001, S110 - resume must not brick the UI
                     pass
         preset = str(getattr(session.header, "agentPreset", "") or "").strip()
@@ -225,6 +416,60 @@ class TuiRuntime:
         self.preset_revision = getattr(agent, "preset_revision", None)
         self._configure_team(session)
         self._configure_subagent(session)
+        self._configure_working_directory(session)
+        self._restore_projections(session)
+
+    def _save_projections(self) -> None:
+        """Write the live session's projection sidecar and stop observing it."""
+        service = self.projections
+        session = self.session
+        if service is None or session is None:
+            return
+        save = getattr(service, "save", None)
+        detach = getattr(service, "detach", None)
+        try:
+            if save is not None:
+                save(session)
+        except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
+            pass
+        try:
+            if detach is not None:
+                detach(session)
+        except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
+            pass
+
+    def _restore_projections(self, session: Any) -> None:
+        """Restore the session's projection sidecar and start observing appends."""
+        service = self.projections
+        if service is None or session is None:
+            return
+        attach = getattr(service, "attach", None)
+        if attach is None:
+            return
+        try:
+            attach(session)
+        except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
+            pass
+
+    def _configure_working_directory(self, session: Any) -> None:
+        """Bind the live session so cd records and notices reach its log."""
+        service = self.working_directory
+        if service is None or session is None:
+            return
+        bind = getattr(service, "bind", None)
+        if bind is None:
+            return
+        header = getattr(session, "header", None)
+        session_cwd = getattr(header, "cwd", None) or self.cwd
+        try:
+            bind(
+                session,
+                cwd=session_cwd,
+                record=session.append,
+                inject_notice=lambda text: session.inject(text, source={"kind": "working-directory"}),
+            )
+        except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
+            pass
 
     def _configure_team(self, session: Any) -> None:
         """Keep the team service pointed at the live lead session context."""
@@ -303,6 +548,11 @@ class TuiRuntime:
             "jobs",
             "team",
             "subagent",
+            "working_directory",
+            "user_questions",
+            "attachments",
+            "schedule",
+            "memory",
         ):
             service = self._service(name)
             if service is not None:
@@ -385,8 +635,117 @@ class TuiRuntime:
         return [str(entry.id) for entry in list(provider_cfg.models or [])]
 
     def model_choices(self) -> list[tuple[str, str]]:
-        """Every (provider, model) pair the configuration offers."""
-        return [(name, model_id) for name in self.providers() for model_id in self.models(name)]
+        """Every (provider, model) pair: configured first, then discovered."""
+        choices: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for name in self.providers():
+            for model_id in self.models(name):
+                pair = (name, model_id)
+                if pair not in seen:
+                    seen.add(pair)
+                    choices.append(pair)
+        for name in self.providers():
+            for info in self.cached_catalog(name):
+                model_id = str(getattr(info, "id", "") or "")
+                pair = (name, model_id)
+                if model_id and pair not in seen:
+                    seen.add(pair)
+                    choices.append(pair)
+        return choices
+
+    # -- model catalog ----------------------------------------------------
+    def _llm_service(self) -> Any | None:
+        """The kernel llm service, when the bundle loaded one."""
+        service = self.llm
+        if service is not None:
+            return service
+        app = self.kernel_app
+        if app is None:
+            return None
+        try:
+            return app.service("llm")
+        except (AttributeError, LookupError):
+            return None
+
+    def cached_catalog(self, provider: str) -> list[Any]:
+        """Catalog entries remembered for one provider (no I/O)."""
+        return list(self._catalog.get(provider, {}).values())
+
+    def _cached_model(self, provider: str, model_id: str) -> Any | None:
+        """One remembered catalog entry, or None."""
+        return self._catalog.get(provider, {}).get(model_id)
+
+    def _remember_catalog(self, provider: str, entries: Any) -> int:
+        """Merge catalog entries into the local cache; returns the stored count."""
+        bucket = self._catalog.setdefault(provider, {})
+        stored = 0
+        for entry in entries or []:
+            model_id = str(getattr(entry, "id", "") or "")
+            if not model_id:
+                continue
+            bucket[model_id] = entry
+            stored += 1
+        return stored
+
+    @staticmethod
+    def _catalog_error(llm: Any) -> str | None:
+        """Last discovery failure reported by the llm service registry, if any."""
+        registry = getattr(llm, "registry", None)
+        error = getattr(registry, "last_catalog_error", None)
+        if error is None:
+            return None
+        return str(error) or error.__class__.__name__
+
+    async def refresh_models(self, providers: list[str] | None = None, *, refresh: bool = False) -> int:
+        """Refresh the remembered catalog for the given providers (best effort).
+
+        The synchronous snapshot is merged first, then the provider listing is
+        refreshed. Discovery errors are recorded on last_catalog_error and never
+        propagate, so the configured catalog stays usable offline.
+        """
+        llm = self._llm_service()
+        if llm is None:
+            return 0
+        names = list(providers) if providers is not None else self.providers()
+        stored = 0
+        error: str | None = None
+        for name in names:
+            snapshot = getattr(llm, "catalog_snapshot", None)
+            if callable(snapshot):
+                try:
+                    stored += self._remember_catalog(name, list(snapshot(name) or []))
+                except Exception as exc:  # noqa: BLE001 - fall back to the listing
+                    error = str(exc) or exc.__class__.__name__
+            lister = getattr(llm, "list_models", None)
+            if not callable(lister):
+                continue
+            try:
+                entries = await await_maybe(lister(name, refresh=refresh))
+            except Exception as exc:  # noqa: BLE001 - catalog discovery is optional
+                error = str(exc) or exc.__class__.__name__
+                continue
+            stored += self._remember_catalog(name, entries)
+            error = None
+        self.last_catalog_error = error if error is not None else self._catalog_error(llm)
+        return stored
+
+    async def model_catalog_info(self, provider: str, model_id: str) -> Any | None:
+        """One catalog entry, querying the llm service only when not cached."""
+        cached = self._cached_model(provider, model_id)
+        if cached is not None:
+            return cached
+        llm = self._llm_service()
+        lookup = getattr(llm, "model_info", None)
+        if not callable(lookup):
+            return None
+        try:
+            info = await await_maybe(lookup(provider, model_id))
+        except Exception as exc:  # noqa: BLE001 - discovery must not crash the UI
+            self.last_catalog_error = str(exc) or exc.__class__.__name__
+            return None
+        if info is not None:
+            self._remember_catalog(provider, [info])
+        return info
 
     def has_api_key(self, provider: str) -> bool:
         """Whether the provider can resolve an API key right now."""
@@ -413,10 +772,10 @@ class TuiRuntime:
         model_id = (model or "").strip()
         if not model_id:
             model_id = _resolve_model(self.cfg, provider_name, model=None)
-        self._validate_model(provider_name, model_id)
+        info = await self._discovered_model(provider_name, model_id)
         if provider_name == self.provider_name and model_id == self.model:
             return self.provider_name, self.model
-        await self._apply_selection(provider_name, model_id, persist=persist)
+        await self._apply_selection(provider_name, model_id, persist=persist, info=info)
         return self.provider_name, self.model
 
     async def set_model(self, model_id: str, *, persist: bool = True) -> str:
@@ -424,12 +783,12 @@ class TuiRuntime:
         model_id = (model_id or "").strip()
         if not model_id:
             raise ConfigError("model id is required")
-        self._validate_model(self.provider_name, model_id)
+        info = await self._discovered_model(self.provider_name, model_id)
         if model_id == self.model:
             if persist:
                 self._persist_selection()
             return self.model
-        await self._apply_selection(self.provider_name, model_id, persist=persist)
+        await self._apply_selection(self.provider_name, model_id, persist=persist, info=info)
         return self.model
 
     def _provider_config(self, name: str) -> Any:
@@ -440,11 +799,36 @@ class TuiRuntime:
         return provider_cfg
 
     def _validate_model(self, provider_name: str, model_id: str) -> None:
+        """Reject models the config does not know and the catalog has not seen."""
         available = self.models(provider_name)
-        if available and model_id not in available:
+        if not available or model_id in available:
+            return
+        if self._cached_model(provider_name, model_id) is not None:
+            return
+        raise ConfigError(
+            f"unknown model: {model_id} (provider {provider_name} offers {', '.join(available)})"
+        )
+
+    async def _discovered_model(self, provider_name: str, model_id: str) -> Any | None:
+        """Catalog entry for a model the config does not declare (None if configured).
+
+        Raises ConfigError only for a definitive miss: the provider has configured
+        models and neither the cache nor the llm service lists the model.
+        """
+        if not model_id:
+            return None
+        available = self.models(provider_name)
+        if model_id in available:
+            return None
+        info = self._cached_model(provider_name, model_id)
+        if info is not None:
+            return info
+        info = await self.model_catalog_info(provider_name, model_id)
+        if info is None and available:
             raise ConfigError(
                 f"unknown model: {model_id} (provider {provider_name} offers {', '.join(available)})"
             )
+        return info
 
     def _build_provider(self, provider_name: str) -> Any:
         app = self.kernel_app
@@ -459,17 +843,24 @@ class TuiRuntime:
         except KeyError as exc:
             raise ConfigError(f"unknown provider: {provider_name}") from exc
 
-    def _activate_provider(self, provider_name: str, model_id: str) -> None:
+    def _activate_provider(self, provider_name: str, model_id: str, *, info: Any = None) -> None:
         """Swap the provider client and model without touching the session."""
         provider_cfg = self._provider_config(provider_name)
         provider = self._build_provider(provider_name)
         self.provider = provider
         self.provider_name = provider_name
         self.model = model_id
-        self.context_window = _context_window(provider_cfg, model_id)
+        self.context_window = _context_window_for(provider_cfg, model_id, info)
 
-    async def _apply_selection(self, provider_name: str, model_id: str, *, persist: bool) -> None:
-        self._activate_provider(provider_name, model_id)
+    async def _apply_selection(
+        self,
+        provider_name: str,
+        model_id: str,
+        *,
+        persist: bool,
+        info: Any = None,
+    ) -> None:
+        self._activate_provider(provider_name, model_id, info=info)
         if self.session is not None:
             await self._attach(self.session)
         self._record_model_selection()
@@ -619,6 +1010,8 @@ class TuiRuntime:
         if self._closed:
             return
         self._closed = True
+        await self.stop_schedule()
+        self._save_projections()
         jobs = self.jobs
         cancel_all = getattr(jobs, "cancel_all", None)
         if cancel_all is not None:
@@ -646,6 +1039,134 @@ class TuiRuntime:
                 await await_maybe(kernel_app.stop())
             except Exception:  # noqa: BLE001, S110 - shutdown must never mask an exception
                 pass
+
+
+class _ScheduleSink:
+    """EventSink that discards events from background scheduled turns."""
+
+    def begin_turn(self) -> None:
+        return None
+
+    def end_turn(self) -> None:
+        return None
+
+    def emit(self, event: dict[str, Any]) -> None:
+        return None
+
+
+def _now_rfc3339() -> str:
+    return format_instant(datetime.now(UTC))
+
+
+class _TuiScheduleHost:
+    """ScheduleHost that delivers occurrences into TUI sessions."""
+
+    def __init__(self, runtime: TuiRuntime) -> None:
+        self._runtime = runtime
+
+    async def session_exists(self, session_id: str) -> bool:
+        runtime = self._runtime
+        if not session_id:
+            return False
+        if session_id == runtime.session_id:
+            return True
+        try:
+            runtime.store.open(session_id)
+        except Exception:  # noqa: BLE001 - an unreadable session cannot receive messages
+            return False
+        return True
+
+    async def delegation_depth(self, session_id: str) -> int:
+        return 0
+
+    async def deliver(self, task: Any, message: str) -> DeliveryReceipt | None:
+        target = task.target
+        source = {"kind": "schedule", "taskId": task.id, "occurrence": task.scheduled_at}
+        if isinstance(target, SessionTarget):
+            return await self._deliver_to_session(target.session_id, task, message, source)
+        if isinstance(target, (NewOnceTarget, NewTarget)):
+            return await self._deliver_to_new(target, task, message, source)
+        raise DeeppyroError(f"unsupported schedule target: {target!r}")
+
+    async def _deliver_to_session(
+        self,
+        session_id: str,
+        task: Any,
+        message: str,
+        source: dict[str, Any],
+    ) -> DeliveryReceipt:
+        runtime = self._runtime
+        if session_id == runtime.session_id and runtime.session is not None:
+            notice = runtime.schedule_notice
+            if notice is not None:
+                try:
+                    notice(message)
+                except Exception:
+                    logger.debug("schedule notice failed", exc_info=True)
+            runtime.session.followup(message, source=source)
+            return DeliveryReceipt(
+                scheduled_at="",
+                delivered_at=_now_rfc3339(),
+                target_session_id=session_id,
+            )
+        session = await runtime.open_schedule_session(session_id)
+        agent = await runtime.create_schedule_agent(session, preset=runtime.agent_preset)
+        try:
+            session.followup(message, source=source)
+        except Exception:
+            close = getattr(agent, "aclose", None)
+            if callable(close):
+                try:
+                    await await_maybe(close())
+                except Exception:  # noqa: BLE001, S110 - cleanup is best effort
+                    pass
+            raise
+        runtime.track_schedule_agent(session, agent)
+        return DeliveryReceipt(
+            scheduled_at="",
+            delivered_at=_now_rfc3339(),
+            target_session_id=session_id,
+        )
+
+    async def _deliver_to_new(
+        self,
+        target: Any,
+        task: Any,
+        message: str,
+        source: dict[str, Any],
+    ) -> DeliveryReceipt:
+        runtime = self._runtime
+        spec = target.create
+        preset = str(getattr(spec, "agent_preset", "") or runtime.agent_preset)
+        session = None
+        if isinstance(target, NewOnceTarget):
+            session_id = str(target.session_id or runtime._schedule_once.get(task.id, ""))
+            if session_id:
+                try:
+                    session = await runtime.open_schedule_session(session_id)
+                except Exception:  # noqa: BLE001 - recreate a missing once-target session
+                    session = None
+        if session is None:
+            session = await runtime.create_schedule_session(spec, preset)
+            if isinstance(target, NewOnceTarget):
+                runtime._schedule_once[task.id] = str(getattr(session, "session_id", "") or "")
+        agent = await runtime.create_schedule_agent(session, preset=preset)
+        try:
+            session.followup(message, source=source)
+        except Exception:
+            close = getattr(agent, "aclose", None)
+            if callable(close):
+                try:
+                    await await_maybe(close())
+                except Exception:  # noqa: BLE001, S110 - cleanup is best effort
+                    pass
+            raise
+        runtime.track_schedule_agent(session, agent)
+        return DeliveryReceipt(
+            scheduled_at="",
+            delivered_at=_now_rfc3339(),
+            target_session_id=str(getattr(session, "session_id", "") or ""),
+        )
 
 
 def _recorded_preset_revision(session: Any) -> int | None:

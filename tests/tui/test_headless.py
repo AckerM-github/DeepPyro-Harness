@@ -11,7 +11,10 @@ import pytest
 from rich.console import Console
 
 from deeppyro import headless
-from deeppyro.core.errors import DeeppyroError
+from deeppyro.config import AgentConfig, Config, ModelConfig, ProviderConfig
+from deeppyro.core.errors import ConfigError, DeeppyroError
+from deeppyro.llm import LlmRequestError, ModelInfo
+from deeppyro.llm.errors import CODE_TRANSPORT
 
 
 class FakeSession:
@@ -347,3 +350,209 @@ def test_resolve_workspace_rejects_missing_directory(tmp_path: Path) -> None:
     with pytest.raises(headless.ConfigError):
         headless.resolve_workspace(tmp_path / "missing")
     assert headless.resolve_workspace(tmp_path) == tmp_path.resolve()
+
+
+# --------------------------------------------------------------------------
+# boot_runtime: model catalog discovery (P1 A3a)
+# --------------------------------------------------------------------------
+
+
+class FakeCatalogRegistry:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.last_catalog_error = error
+
+
+class FakeLlmService:
+    """Minimal stand-in for builtin.llm.LlmPlugin."""
+
+    def __init__(
+        self,
+        *,
+        infos: list[ModelInfo] | None = None,
+        error: Exception | None = None,
+        catalog_error: Exception | None = None,
+    ) -> None:
+        self.infos = {info.id: info for info in infos or []}
+        self.error = error
+        self.calls: list[tuple[str, str]] = []
+        self.registry = FakeCatalogRegistry(catalog_error)
+
+    def provider(self, name: str) -> object:
+        self.provider_name = name
+        return object()
+
+    async def model_info(self, provider: str, model_id: str) -> ModelInfo | None:
+        self.calls.append((provider, model_id))
+        if self.error is not None:
+            raise self.error
+        return self.infos.get(model_id)
+
+
+class NoDiscoveryLlmService(FakeLlmService):
+    model_info = None  # type: ignore[assignment] - providers without list_models
+
+
+class FakeSandbox:
+    def gate(self, workspace: Path, *, ask: Any) -> object:
+        self.ask = ask
+        return object()
+
+
+class FakeToolService:
+    def registry_for(self, workspace: Path) -> object:
+        return object()
+
+
+class FakeKernelApp:
+    def __init__(self, services: dict[str, Any]) -> None:
+        self._services = services
+        self.stopped = False
+
+    def service(self, name: str) -> Any:
+        try:
+            return self._services[name]
+        except KeyError:
+            raise LookupError(name) from None
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+def make_config(*, models: list[ModelConfig] | None = None, agent_model: str = "declared-1") -> Config:
+    entries = models or [ModelConfig(id="declared-1", contextWindow=32768)]
+    return Config(
+        providers={
+            "local": ProviderConfig(baseURL="http://127.0.0.1:8000/v1", models=entries),
+        },
+        agent=AgentConfig(provider="local", model=agent_model),
+    )
+
+
+def make_kernel_app(llm: FakeLlmService) -> FakeKernelApp:
+    return FakeKernelApp(
+        {
+            "llm": llm,
+            "sessions": type("Sessions", (), {"store": object()})(),
+            "sandbox": FakeSandbox(),
+            "tools": FakeToolService(),
+            "agents": RecordingAgents(),
+        }
+    )
+
+
+def patch_kernel_boot(monkeypatch: pytest.MonkeyPatch, kernel_app: FakeKernelApp) -> None:
+    import deeppyro.kernel
+
+    async def fake_boot(cfg: Config) -> Any:
+        return kernel_app
+
+    monkeypatch.setattr(deeppyro.kernel, "boot", fake_boot)
+
+
+async def test_boot_runtime_uses_discovered_model_context_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    llm = FakeLlmService(infos=[ModelInfo(provider="local", id="discovered-1", context_window=200_000)])
+    kernel_app = make_kernel_app(llm)
+    patch_kernel_boot(monkeypatch, kernel_app)
+    runtime = await headless.boot_runtime(config=make_config(), cwd=tmp_path, model="discovered-1")
+    try:
+        assert runtime.model == "discovered-1"
+        assert runtime.context_window == 200_000
+        assert llm.calls == [("local", "discovered-1")]
+    finally:
+        await runtime.aclose()
+    assert kernel_app.stopped is True
+
+
+async def test_boot_runtime_falls_back_when_discovery_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    llm = FakeLlmService(error=TimeoutError("catalog endpoint timed out"))
+    kernel_app = make_kernel_app(llm)
+    patch_kernel_boot(monkeypatch, kernel_app)
+    runtime = await headless.boot_runtime(config=make_config(), cwd=tmp_path, model="catalog-only")
+    try:
+        assert runtime.model == "catalog-only"
+        assert runtime.context_window == headless.DEFAULT_CONTEXT_WINDOW
+    finally:
+        await runtime.aclose()
+
+
+async def test_boot_runtime_falls_back_when_discovery_is_inconclusive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    failure = LlmRequestError("local: offline", provider="local", code=CODE_TRANSPORT, retryable=True)
+    llm = FakeLlmService(catalog_error=failure)
+    kernel_app = make_kernel_app(llm)
+    patch_kernel_boot(monkeypatch, kernel_app)
+    runtime = await headless.boot_runtime(config=make_config(), cwd=tmp_path, model="unlisted")
+    try:
+        assert runtime.model == "unlisted"
+        assert runtime.context_window == headless.DEFAULT_CONTEXT_WINDOW
+    finally:
+        await runtime.aclose()
+
+
+async def test_boot_runtime_rejects_model_missing_from_a_definitive_listing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    llm = FakeLlmService(infos=[ModelInfo(provider="local", id="declared-1", context_window=32768)])
+    kernel_app = make_kernel_app(llm)
+    patch_kernel_boot(monkeypatch, kernel_app)
+    with pytest.raises(ConfigError, match="unknown model: ghost"):
+        await headless.boot_runtime(config=make_config(), cwd=tmp_path, model="ghost")
+    assert kernel_app.stopped is True
+
+
+async def test_boot_runtime_rejects_unknown_model_without_discovery(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    kernel_app = make_kernel_app(NoDiscoveryLlmService())
+    patch_kernel_boot(monkeypatch, kernel_app)
+    with pytest.raises(ConfigError, match="unknown model: ghost"):
+        await headless.boot_runtime(config=make_config(), cwd=tmp_path, model="ghost")
+    assert kernel_app.stopped is True
+
+
+async def test_boot_runtime_defaults_window_when_catalog_entry_has_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    llm = FakeLlmService(infos=[ModelInfo(provider="local", id="windowless-1")])
+    kernel_app = make_kernel_app(llm)
+    patch_kernel_boot(monkeypatch, kernel_app)
+    runtime = await headless.boot_runtime(config=make_config(), cwd=tmp_path, model="windowless-1")
+    try:
+        assert runtime.context_window == headless.DEFAULT_CONTEXT_WINDOW
+    finally:
+        await runtime.aclose()
+
+
+async def test_boot_runtime_uses_configured_window_without_discovery(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    llm = FakeLlmService()
+    kernel_app = make_kernel_app(llm)
+    patch_kernel_boot(monkeypatch, kernel_app)
+    config = make_config(models=[ModelConfig(id="declared-1", contextWindow=65536)])
+    runtime = await headless.boot_runtime(config=config, cwd=tmp_path, model="declared-1")
+    try:
+        assert runtime.context_window == 65536
+        assert llm.calls == []
+    finally:
+        await runtime.aclose()
+
+
+async def test_boot_runtime_default_model_never_queries_the_catalog(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    llm = FakeLlmService()
+    kernel_app = make_kernel_app(llm)
+    patch_kernel_boot(monkeypatch, kernel_app)
+    runtime = await headless.boot_runtime(config=make_config(), cwd=tmp_path)
+    try:
+        assert runtime.model == "declared-1"
+        assert runtime.context_window == 32768
+        assert llm.calls == []
+    finally:
+        await runtime.aclose()

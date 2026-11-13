@@ -20,10 +20,8 @@ Design highlights (full rationale in docs/spec/llm.md):
 
 from __future__ import annotations
 
-import email.utils
 import json
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -41,11 +39,12 @@ from deeppyro.core.protocols import (
     ToolCallStart,
     Usage,
 )
+from deeppyro.llm.catalog import ModelInfo, parse_model_listing
+from deeppyro.llm.discovery import fetch_listing, openai_listing_url
 from deeppyro.llm.errors import (
     CODE_AUTH,
     CODE_BAD_REQUEST,
     CODE_EMPTY_RESPONSE,
-    CODE_NOT_FOUND,
     CODE_PROTOCOL,
     CODE_RATE_LIMIT,
     CODE_SERVER,
@@ -54,9 +53,11 @@ from deeppyro.llm.errors import (
     LlmHttpError,
     LlmRequestError,
     failure_dict,
+    http_error,
+    shorten,
 )
 from deeppyro.llm.messages import build_chat_payload
-from deeppyro.llm.retry import RETRYABLE_CODES, RETRYABLE_HTTP_STATUSES, RetryPolicy
+from deeppyro.llm.retry import RETRYABLE_CODES, RetryPolicy
 from deeppyro.llm.sse import iter_sse
 
 _CONTENT_EVENTS = (TextDelta, ReasoningDelta, ToolCallStart, ToolCallArgsDelta)
@@ -147,6 +148,31 @@ class OpenAICompatProvider:
             await client.aclose()
 
     # -- public API ---------------------------------------------------------
+    async def list_models(self) -> list[ModelInfo]:
+        """Discover the models this endpoint advertises (GET <base>/models).
+
+        Discovery is advisory metadata: the registry merges it over the configured
+        catalog and falls back to the config on failure. A 404/405 means the server has
+        no listing endpoint, which is not an error, so it maps to an empty list.
+
+        Unlike the streaming path the request is also sent without an api key: a local
+        llama-server exposes /v1/models unauthenticated and local discovery is the main
+        use case. Remote gateways without a key simply answer 401, which the registry
+        turns into a configured-catalog fallback.
+        """
+        client = self._ensure_client()
+        headers = {"accept": "application/json"}
+        if self.api_key:
+            headers["authorization"] = f"Bearer {self.api_key}"
+        url = openai_listing_url(self.base_url)
+        try:
+            payload = await fetch_listing(client, url, headers=headers, provider=self.name)
+        except LlmHttpError as exc:
+            if exc.status in (404, 405):
+                return []
+            raise
+        return parse_model_listing(self.name, payload, source=f"listing from {url}")
+
     async def stream(self, req: LlmRequest) -> AsyncIterator[StreamEvent]:
         """Stream one completion as core.protocols.StreamEvent values."""
         payload = build_chat_payload(req, model_ctx=self.model_ctx)
@@ -188,12 +214,17 @@ class OpenAICompatProvider:
             ) as response:
                 if response.status_code >= 400:
                     body = await _read_body(response)
-                    raise self._http_error(response, body)
+                    raise http_error(
+                        self.name,
+                        response.status_code,
+                        headers=response.headers,
+                        body=body,
+                    )
                 content_type = (response.headers.get("content-type") or "").lower()
                 if content_type and "event-stream" not in content_type:
                     body = await _read_body(response)
                     raise LlmRequestError(
-                        f"{self.name}: expected an event stream, got {content_type!r}: {_shorten(body)}",
+                        f"{self.name}: expected an event stream, got {content_type!r}: {shorten(body)}",
                         provider=self.name,
                         code=CODE_PROTOCOL,
                     )
@@ -221,21 +252,6 @@ class OpenAICompatProvider:
             if not finished:
                 yield Finish(kind="error", failure=error.failure())
 
-    def _http_error(self, response: httpx.Response, body: str) -> LlmHttpError:
-        status = response.status_code
-        retryable = status in RETRYABLE_HTTP_STATUSES or 500 <= status < 600
-        detail = _extract_error_message(body)
-        message = f"{self.name}: HTTP {status}" + (f": {detail}" if detail else "")
-        return LlmHttpError(
-            message,
-            provider=self.name,
-            status=status,
-            retryable=retryable,
-            code=_status_code(status),
-            retry_after=_parse_retry_after(response.headers.get("retry-after")),
-            body=body,
-        )
-
     # -- SSE consumption ----------------------------------------------------
     async def _consume(self, response: httpx.Response) -> AsyncIterator[StreamEvent]:
         produced = False
@@ -253,7 +269,7 @@ class OpenAICompatProvider:
                 chunk = json.loads(data)
             except json.JSONDecodeError as exc:
                 raise LlmRequestError(
-                    f"{self.name}: invalid JSON in SSE data: {_shorten(data)}",
+                    f"{self.name}: invalid JSON in SSE data: {shorten(data)}",
                     provider=self.name,
                     code=CODE_PROTOCOL,
                 ) from exc
@@ -383,22 +399,6 @@ def _usage_event(raw: dict[str, Any]) -> Usage:
     )
 
 
-def _status_code(status: int) -> str:
-    if status == 429:
-        return CODE_RATE_LIMIT
-    if status == 408:
-        return CODE_TIMEOUT
-    if status in (401, 403):
-        return CODE_AUTH
-    if status == 404:
-        return CODE_NOT_FOUND
-    if 500 <= status < 600:
-        return CODE_SERVER
-    if 400 <= status < 500:
-        return CODE_BAD_REQUEST
-    return f"HTTP_{status}"
-
-
 def _normalize_error_code(raw: str) -> str:
     value = raw.strip().lower()
     if "rate" in value and "limit" in value:
@@ -442,51 +442,6 @@ async def _read_body(response: httpx.Response) -> str:
     except httpx.HTTPError:
         return ""
     return raw.decode("utf-8", "replace")
-
-
-def _shorten(text: str, limit: int = 400) -> str:
-    text = text.strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "..."
-
-
-def _extract_error_message(body: str) -> str:
-    if not body.strip():
-        return ""
-    try:
-        parsed = json.loads(body)
-    except json.JSONDecodeError:
-        return _shorten(body)
-    if isinstance(parsed, dict):
-        error = parsed.get("error")
-        if isinstance(error, dict):
-            message = error.get("message") or error.get("detail")
-            if isinstance(message, str) and message:
-                return message
-        for key in ("message", "detail", "error"):
-            value = parsed.get(key)
-            if isinstance(value, str) and value:
-                return value
-    return _shorten(body)
-
-
-def _parse_retry_after(value: str | None) -> float | None:
-    """Parse Retry-After: delta-seconds or an HTTP date."""
-    if not value:
-        return None
-    candidate = value.strip()
-    try:
-        return max(0.0, float(candidate))
-    except ValueError:
-        pass
-    try:
-        parsed = email.utils.parsedate_to_datetime(candidate)
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return max(0.0, (parsed - datetime.now(UTC)).total_seconds())
 
 
 __all__ = ["OpenAICompatProvider"]

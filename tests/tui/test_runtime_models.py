@@ -8,11 +8,17 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from textual.widgets import OptionList
 
 from deeppyro.config import Config
 from deeppyro.core.errors import ConfigError
+from deeppyro.llm import ModelInfo
 from deeppyro.tui import runtime as runtime_module
+from deeppyro.tui.app import DeepPyroApp
 from deeppyro.tui.runtime import TuiRuntime, _recorded_model_selection, _resolve_model
+from deeppyro.tui.screens.picker import PickerScreen
+from deeppyro.tui.widgets.prompt_area import PromptArea
+from tests.tui.test_app import FakeRuntime
 
 
 def make_config() -> Config:
@@ -78,13 +84,46 @@ class FakeAgents:
 
 
 class FakeLlm:
+    def __init__(
+        self,
+        *,
+        catalog: dict[str, list[ModelInfo]] | None = None,
+        snapshot: dict[str, list[ModelInfo]] | None = None,
+        list_error: Exception | None = None,
+        info_error: Exception | None = None,
+    ) -> None:
+        self.catalog = catalog or {}
+        self.snapshot = snapshot or {}
+        self.list_error = list_error
+        self.info_error = info_error
+        self.list_calls: list[tuple[str, bool]] = []
+        self.info_calls: list[tuple[str, str]] = []
+
     def provider(self, name: str) -> str:
         return f"provider:{name}"
 
+    def catalog_snapshot(self, provider: str) -> list[ModelInfo]:
+        return list(self.snapshot.get(provider, []))
+
+    async def list_models(self, provider: str, *, refresh: bool = False) -> list[ModelInfo]:
+        self.list_calls.append((provider, refresh))
+        if self.list_error is not None:
+            raise self.list_error
+        return list(self.catalog.get(provider, []))
+
+    async def model_info(self, provider: str, model_id: str) -> ModelInfo | None:
+        self.info_calls.append((provider, model_id))
+        if self.info_error is not None:
+            raise self.info_error
+        for info in self.catalog.get(provider, []):
+            if info.id == model_id:
+                return info
+        return None
+
 
 class FakeKernel:
-    def __init__(self) -> None:
-        self.services = {"llm": FakeLlm()}
+    def __init__(self, llm: FakeLlm | None = None) -> None:
+        self.services = {"llm": llm or FakeLlm()}
 
     def service(self, name: str) -> Any:
         if name not in self.services:
@@ -111,13 +150,17 @@ class FakePermission:
     approval = "ask"
 
 
-def make_runtime(*, session: FakeSession | None = None) -> tuple[TuiRuntime, FakeAgents, FakeStore]:
+def make_runtime(
+    *,
+    session: FakeSession | None = None,
+    llm: FakeLlm | None = None,
+) -> tuple[TuiRuntime, FakeAgents, FakeStore]:
     store = FakeStore(session)
     agents = FakeAgents()
     runtime = TuiRuntime(
         cfg=make_config(),
         cwd=Path("D:/work"),
-        kernel_app=FakeKernel(),
+        kernel_app=FakeKernel(llm),
         provider_name="local",
         model="local-model",
         context_window=32768,
@@ -337,3 +380,178 @@ def test_agent_mode_reads_the_active_preset() -> None:
 def test_agent_mode_defaults_when_presets_are_missing() -> None:
     runtime, _, _ = make_runtime()
     assert runtime.agent_mode == "default"
+
+
+# -- model catalog (P1 A3) ----------------------------------------------
+
+
+def discovered(model_id: str, window: int | None = None, provider: str = "local") -> ModelInfo:
+    return ModelInfo(provider=provider, id=model_id, context_window=window)
+
+
+async def test_model_choices_merges_discovered_catalog_after_config() -> None:
+    llm = FakeLlm(
+        catalog={
+            "local": [
+                discovered("local-model", 32768),
+                discovered("discovered-big", 200000),
+                discovered("local-small", 8192),
+            ]
+        }
+    )
+    runtime, _, _ = make_runtime(llm=llm)
+    assert runtime.model_choices() == [
+        ("local", "local-model"),
+        ("local", "local-small"),
+        ("deepseek", "deepseek-chat"),
+    ]
+    assert await runtime.refresh_models() == 3
+    assert llm.list_calls == [("local", False), ("deepseek", False), ("keyless", False)]
+    assert runtime.model_choices() == [
+        ("local", "local-model"),
+        ("local", "local-small"),
+        ("deepseek", "deepseek-chat"),
+        ("local", "discovered-big"),
+    ]
+    assert runtime.last_catalog_error is None
+
+
+async def test_refresh_models_seeds_the_snapshot_and_survives_failure() -> None:
+    llm = FakeLlm(
+        snapshot={"local": [discovered("offline-known", 1000)]},
+        list_error=TimeoutError("catalog offline"),
+    )
+    runtime, _, _ = make_runtime(llm=llm)
+    assert await runtime.refresh_models() == 1
+    assert runtime.last_catalog_error is not None
+    assert "catalog offline" in runtime.last_catalog_error
+    choices = runtime.model_choices()
+    assert choices[:3] == [
+        ("local", "local-model"),
+        ("local", "local-small"),
+        ("deepseek", "deepseek-chat"),
+    ]
+    assert ("local", "offline-known") in choices
+
+
+async def test_refresh_models_is_a_noop_without_an_llm_service() -> None:
+    runtime, _, _ = make_runtime()
+    runtime.kernel_app.services.pop("llm")
+    assert await runtime.refresh_models() == 0
+    assert runtime.last_catalog_error is None
+    assert runtime.model_choices() == [
+        ("local", "local-model"),
+        ("local", "local-small"),
+        ("deepseek", "deepseek-chat"),
+    ]
+
+
+async def test_set_model_accepts_a_cached_discovered_model() -> None:
+    llm = FakeLlm(catalog={"local": [discovered("discovered-big", 200000)]})
+    runtime, agents, _ = make_runtime(llm=llm)
+    await runtime.refresh_models(["local"])
+    assert await runtime.set_model("discovered-big", persist=False) == "discovered-big"
+    assert llm.info_calls == []
+    assert runtime.model == "discovered-big"
+    assert runtime.context_window == 200000
+    assert agents.created[-1]["options"] == {"model": "discovered-big", "context_window": 200000}
+    assert runtime.session.records[-1].data == {"provider": "local", "model": "discovered-big"}
+
+
+async def test_set_model_queries_model_info_for_an_uncached_discovered_model() -> None:
+    llm = FakeLlm(catalog={"local": [discovered("discovered-tiny", 64000)]})
+    runtime, agents, _ = make_runtime(llm=llm)
+    assert await runtime.set_model("discovered-tiny", persist=False) == "discovered-tiny"
+    assert llm.info_calls == [("local", "discovered-tiny")]
+    assert runtime.context_window == 64000
+    assert runtime._cached_model("local", "discovered-tiny") is not None
+    assert agents.created[-1]["options"]["context_window"] == 64000
+
+
+async def test_discovered_model_without_a_window_uses_the_default() -> None:
+    llm = FakeLlm(catalog={"local": [discovered("no-window")]})
+    runtime, _, _ = make_runtime(llm=llm)
+    assert await runtime.set_model("no-window", persist=False) == "no-window"
+    assert runtime.context_window == runtime_module.DEFAULT_CONTEXT_WINDOW
+
+
+async def test_set_model_rejects_a_model_the_catalog_does_not_list() -> None:
+    llm = FakeLlm(catalog={"local": []})
+    runtime, _, _ = make_runtime(llm=llm)
+    with pytest.raises(ConfigError, match="unknown model: ghost"):
+        await runtime.set_model("ghost", persist=False)
+    assert runtime.model == "local-model"
+    assert runtime.context_window == 32768
+
+
+async def test_set_model_records_catalog_failures_and_rejects_the_model() -> None:
+    llm = FakeLlm(info_error=TimeoutError("lookup timed out"))
+    runtime, _, _ = make_runtime(llm=llm)
+    with pytest.raises(ConfigError, match="unknown model: phantom"):
+        await runtime.set_model("phantom", persist=False)
+    assert runtime.last_catalog_error is not None
+    assert "lookup timed out" in runtime.last_catalog_error
+
+
+async def test_set_provider_accepts_a_cached_discovered_model() -> None:
+    llm = FakeLlm(catalog={"local": [discovered("discovered-pro", 48000)]})
+    runtime, agents, _ = make_runtime(llm=llm)
+    await runtime.refresh_models(["local"])
+    provider_name, model_id = await runtime.set_provider("local", model="discovered-pro", persist=False)
+    assert (provider_name, model_id) == ("local", "discovered-pro")
+    assert runtime.context_window == 48000
+    assert agents.created[-1]["options"]["context_window"] == 48000
+
+
+async def test_open_session_restores_a_discovered_model_from_the_cached_catalog() -> None:
+    session = FakeSession()
+    session.records.append(FakeRecord("model/selection", {"provider": "local", "model": "discovered-resume"}))
+    llm = FakeLlm(catalog={"local": [discovered("discovered-resume", 96000)]})
+    runtime, agents, _ = make_runtime(session=session, llm=llm)
+    await runtime.refresh_models(["local"])
+    await runtime.open_session("session-discovered")
+    assert runtime.model == "discovered-resume"
+    assert runtime.context_window == 96000
+    assert agents.created[-1]["options"]["context_window"] == 96000
+
+
+class CatalogRuntime(FakeRuntime):
+    """FakeRuntime whose /model refresh exposes one discovered model."""
+
+    def __init__(self, app: DeepPyroApp) -> None:
+        super().__init__(app)
+        self.refresh_calls = 0
+
+    async def refresh_models(self) -> int:
+        self.refresh_calls += 1
+        return 1
+
+    def model_choices(self) -> list[tuple[str, str]]:
+        return [*super().model_choices(), ("fake", "fake-discovery")]
+
+
+async def test_model_command_refreshes_the_catalog_before_the_picker() -> None:
+    holder: dict[str, CatalogRuntime] = {}
+
+    async def factory(app: DeepPyroApp) -> CatalogRuntime:
+        runtime = CatalogRuntime(app)
+        holder["runtime"] = runtime
+        return runtime
+
+    app = DeepPyroApp(runtime_factory=factory, splash=False)
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one(PromptArea)
+        prompt.text = "/model"
+        await pilot.press("enter")
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if isinstance(app.screen, PickerScreen):
+                break
+        assert isinstance(app.screen, PickerScreen)
+        assert holder["runtime"].refresh_calls == 1
+        option_list = app.screen.query_one("#picker-list", OptionList)
+        labels = [getattr(option.prompt, "plain", str(option.prompt)) for option in option_list.options]
+        assert "fake/fake-discovery" in labels
+        await pilot.press("escape")
+        await pilot.pause(0.2)

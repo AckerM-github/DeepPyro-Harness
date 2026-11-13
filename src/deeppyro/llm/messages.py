@@ -19,8 +19,10 @@ reorder keys/whitespace and break prompt-cache replays); invalid JSON is a reque
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 from deeppyro.core.protocols import LlmRequest, ToolSchema
@@ -89,18 +91,34 @@ def normalize_arguments(raw: str | None) -> str:
     return raw
 
 
-def image_part_url(part: ImagePart | dict[str, Any]) -> str | None:
+def image_part_url(part: ImagePart | dict[str, Any], *, attachments: Any = None) -> str | None:
     """Resolve an ImagePart to a URL the API accepts.
 
-    Supported shapes: a ready data:/http(s) URL string, or a dict with url, or a dict with
-    base64 data plus mimeType/mediaType.  A bare attachment id cannot be resolved at this
-    layer, so such parts are skipped (documented in docs/spec/llm.md).
+    Supported shapes:
+
+    * a ready data:/http(s) URL string (forwarded unchanged);
+    * a dict with url, or a dict with base64 data plus mimeType/mediaType;
+    * a bare attachment reference (string id or reference dict) resolved through the
+      optional *attachments* resolver.
+
+    The resolver is duck-typed after the attachment store service (see
+    docs/spec/attachments.md): it only needs `read_image_bytes(ref) -> bytes` or
+    `image_host_path(ref) -> Path`; an optional `lookup(attachment_id)` maps a bare id
+    to its reference dict.  Resolved bytes become an inline data URL in memory -- the
+    durable session log never stores base64.
+
+    The old one-argument call keeps working: without a resolver a bare id is skipped and
+    the part is dropped, exactly as before.  Resolver failures degrade to None so a
+    broken attachment can never surface as a provider exception.
     """
     attachment: Any = part.get("attachment") if isinstance(part, dict) else part.attachment
     if isinstance(attachment, str):
         if attachment.startswith(("data:", "http://", "https://")):
             return attachment
-        return None
+        if attachments is None:
+            return None
+        ref = _lookup_attachment(attachments, attachment)
+        return _resolved_data_url(attachments, ref if ref is not None else attachment)
     if isinstance(attachment, dict):
         url = attachment.get("url")
         if isinstance(url, str) and url:
@@ -109,7 +127,56 @@ def image_part_url(part: ImagePart | dict[str, Any]) -> str | None:
         mime = attachment.get("mimeType") or attachment.get("mediaType") or "image/png"
         if isinstance(data, str) and data:
             return f"data:{mime};base64,{data}"
+        if attachments is not None:
+            return _resolved_data_url(attachments, attachment)
     return None
+
+
+def _lookup_attachment(attachments: Any, attachment_id: str) -> Any | None:
+    """Map a bare attachment id to its reference; None when the resolver cannot."""
+    lookup = getattr(attachments, "lookup", None)
+    if not callable(lookup):
+        return None
+    try:
+        return lookup(attachment_id)
+    except Exception:  # noqa: BLE001 - an unresolvable attachment is simply skipped
+        return None
+
+
+def _resolved_data_url(attachments: Any, ref: Any) -> str | None:
+    """Read one resolved reference as bytes and encode it as an inline data URL."""
+    try:
+        raw = _read_attachment_bytes(attachments, ref)
+    except Exception:  # noqa: BLE001 - provider conversion must never fail on a bad ref
+        return None
+    if not raw:
+        return None
+    mime = _ref_media_type(ref) or "image/png"
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+def _read_attachment_bytes(attachments: Any, ref: Any) -> bytes | None:
+    reader = getattr(attachments, "read_image_bytes", None)
+    if callable(reader):
+        data = reader(ref)
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            return bytes(data)
+        return None
+    host_path = getattr(attachments, "image_host_path", None)
+    if callable(host_path):
+        path = host_path(ref)
+        if path is None:
+            return None
+        return Path(path).read_bytes()
+    return None
+
+
+def _ref_media_type(ref: Any) -> str | None:
+    if isinstance(ref, dict):
+        value = ref.get("mediaType") or ref.get("mimeType")
+    else:
+        value = getattr(ref, "mediaType", None)
+    return value if isinstance(value, str) and value else None
 
 
 def tool_to_json(tool: ToolSchema) -> dict[str, Any]:

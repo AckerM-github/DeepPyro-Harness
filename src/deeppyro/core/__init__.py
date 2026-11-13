@@ -14,6 +14,8 @@ from deeppyro.core.errors import (
 )
 from deeppyro.core.ids import new_call_id, new_message_id, new_session_id, now_ms
 from deeppyro.core.protocols import (
+    BlockEnd,
+    BlockStart,
     EventSink,
     Finish,
     FinishKind,
@@ -55,6 +57,8 @@ __all__ = [
     "RECORD_TYPES",
     "SURFACE_EVENT_TYPES",
     "AbortedError",
+    "BlockEnd",
+    "BlockStart",
     "ConfigError",
     "ContentPart",
     "DeeppyroError",

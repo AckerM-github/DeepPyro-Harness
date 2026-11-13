@@ -163,17 +163,21 @@ TEAM_TOOL_NAMES: tuple[str, ...] = (
 #: Tools contributed by the built-in subagent plugin.
 SUBAGENT_TOOL_NAMES: tuple[str, ...] = ("subagent",)
 
+#: Tools contributed by the built-in schedule plugin.
+SCHEDULE_TOOL_NAMES: tuple[str, ...] = ("schedule",)
+
 #: Delegation tools hidden from the lead agent while in team mode.
 TEAM_MODE_DISABLED_TOOLS: tuple[str, ...] = SUBAGENT_TOOL_NAMES
 
 #: Tools hidden from spawned children so they cannot nest orchestration.
-CHILD_DISABLED_TOOLS: tuple[str, ...] = TEAM_TOOL_NAMES + SUBAGENT_TOOL_NAMES
+CHILD_DISABLED_TOOLS: tuple[str, ...] = TEAM_TOOL_NAMES + SUBAGENT_TOOL_NAMES + SCHEDULE_TOOL_NAMES
 
 __all__ = [
     "AGENT_MODE_DEFAULT",
     "AGENT_MODE_TEAM",
     "CHILD_DISABLED_TOOLS",
     "DEFAULT_PRESET_ID",
+    "SCHEDULE_TOOL_NAMES",
     "SUBAGENT_TOOL_NAMES",
     "TEAM_MODE_DISABLED_TOOLS",
     "TEAM_PRESET_ID",

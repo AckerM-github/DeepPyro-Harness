@@ -430,6 +430,7 @@ class InspectPlugin(Service):
                 {
                     "name": name,
                     "description": descriptions.get(name, ""),
+                    "models": _catalog_rows(llm, name),
                 }
             )
         return rows
@@ -502,6 +503,17 @@ class InspectPlugin(Service):
             "apply": described["apply"],
             "volatile_fields": list(described.get("volatile_fields", ())),
         }
+
+
+def _catalog_rows(llm: Any, provider: str) -> list[dict[str, Any]]:
+    """Model catalog snapshot for one provider (discovery is best-effort metadata)."""
+    snapshot = getattr(llm, "catalog_snapshot", None)
+    if not callable(snapshot):
+        return []
+    try:
+        return [info.to_dict() for info in snapshot(provider)]
+    except Exception:  # noqa: BLE001 - optional metadata, inspection never crashes
+        return []
 
 
 __all__ = ["InspectPlugin"]

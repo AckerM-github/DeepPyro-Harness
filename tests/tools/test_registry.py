@@ -83,6 +83,8 @@ def test_builtin_tools_exposes_the_expected_set(tmp_path) -> None:  # type: igno
         "web_fetch",
         "todo_write",
         "present",
+        "working_directory",
+        "ask_user_question",
     ]
     registry = ToolRegistry(tools)
     assert [schema.name for schema in registry.schemas()] == names

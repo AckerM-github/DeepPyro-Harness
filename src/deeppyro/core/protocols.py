@@ -48,25 +48,48 @@ class LlmRequest(WireModel):
 
 
 @dataclass(slots=True)
+class BlockStart:
+    """Open a content block; deltas that follow carry the same index."""
+
+    index: int
+    block_type: str
+
+
+@dataclass(slots=True)
+class BlockEnd:
+    """Close a content block; block is its wire representation."""
+
+    index: int
+    block: dict[str, Any]
+
+
+@dataclass(slots=True)
 class TextDelta:
     text: str
+    index: int = 0
 
 
 @dataclass(slots=True)
 class ReasoningDelta:
     text: str
+    index: int = 0
 
 
 @dataclass(slots=True)
 class ToolCallStart:
     call_id: str
     name: str
+    index: int = 0
 
 
 @dataclass(slots=True)
 class ToolCallArgsDelta:
     call_id: str
     delta: str
+    # name is a delta field in the reference protocol: it is only present when
+    # the provider repeats the name, so consumers must remember the last value.
+    name: str | None = None
+    index: int = 0
 
 
 @dataclass(slots=True)
@@ -75,15 +98,20 @@ class Usage:
     output_tokens: int = 0
     total_tokens: int = 0
     cached_input_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    reasoning_tokens: int | None = None
 
 
 @dataclass(slots=True)
 class Finish:
     kind: FinishKind
     failure: dict[str, Any] | None = None
+    replay_state: dict[str, Any] | None = None
 
 
-StreamEvent = TextDelta | ReasoningDelta | ToolCallStart | ToolCallArgsDelta | Usage | Finish
+StreamEvent = (
+    BlockStart | BlockEnd | TextDelta | ReasoningDelta | ToolCallStart | ToolCallArgsDelta | Usage | Finish
+)
 
 
 @runtime_checkable

@@ -14,7 +14,14 @@ from typing import Any
 from deeppyro.agent import AgentOptions, AgentSession
 from deeppyro.agent.stream import expand_stream
 from deeppyro.core.errors import LlmError
-from deeppyro.core.protocols import Finish, TextDelta
+from deeppyro.core.protocols import (
+    BlockEnd,
+    BlockStart,
+    Finish,
+    ReasoningDelta,
+    TextDelta,
+    Usage,
+)
 from deeppyro.hooks import HookService
 from deeppyro.hooks.types import AGENT_PRE_STEP, AGENT_REQUEST_ERROR
 
@@ -385,6 +392,57 @@ async def test_assistant_message_persists_the_timed_stream(tmp_path: Path) -> No
     timed = expand_stream(stream)
     text = "".join(entry["chunk"]["text"] for entry in timed if entry["chunk"]["type"] == "text-delta")
     assert text == "Hello world"
+
+
+async def test_stream_persists_block_boundaries_and_indexes(tmp_path: Path) -> None:
+    """Additive P1 stream events keep their block index and replay metadata."""
+    script = [
+        ScriptedTurn(
+            events=[
+                BlockStart(index=0, block_type="text"),
+                TextDelta("Hello", index=0),
+                BlockEnd(index=0, block={"type": "text"}),
+                BlockStart(index=1, block_type="reasoning"),
+                ReasoningDelta("thought", index=1),
+                BlockEnd(index=1, block={"type": "reasoning"}),
+                Usage(
+                    input_tokens=1,
+                    output_tokens=2,
+                    total_tokens=3,
+                    cached_input_tokens=4,
+                    cache_write_tokens=5,
+                    reasoning_tokens=6,
+                ),
+                Finish(kind="stop", replay_state={"signature": "sig"}),
+            ]
+        )
+    ]
+    session, _provider, _sink, agent = make_agent(tmp_path, script)
+
+    assert await agent.send("hi") == "Hello"
+
+    data = session.records_of("assistant/message")[0].data
+    chunks = [record["chunk"] for record in data["stream"] if record["type"] == "chunk"]
+    starts = [chunk for chunk in chunks if chunk["type"] == "block-start"]
+    ends = [chunk for chunk in chunks if chunk["type"] == "block-end"]
+    assert starts == [
+        {"type": "block-start", "index": 0, "blockType": "text"},
+        {"type": "block-start", "index": 1, "blockType": "reasoning"},
+    ]
+    assert ends == [
+        {"type": "block-end", "index": 0, "block": {"type": "text"}},
+        {"type": "block-end", "index": 1, "block": {"type": "reasoning"}},
+    ]
+    text_chunks = next(record for record in data["stream"] if record["type"] == "text-chunks")
+    reasoning_chunks = next(record for record in data["stream"] if record["type"] == "reasoning-chunks")
+    assert text_chunks["index"] == 0
+    assert text_chunks["texts"] == ["Hello"]
+    assert reasoning_chunks["index"] == 1
+    assert reasoning_chunks["texts"] == ["thought"]
+    assert data["usage"]["cacheWriteTokens"] == 5
+    assert data["usage"]["reasoningTokens"] == 6
+    finish_chunk = next(chunk for chunk in chunks if chunk["type"] == "finish")
+    assert finish_chunk["reason"] == {"kind": "stop", "replayState": {"signature": "sig"}}
 
 
 async def test_interrupt_marks_the_partial_assistant_message(tmp_path: Path) -> None:

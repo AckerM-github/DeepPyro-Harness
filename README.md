@@ -4,7 +4,9 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
 
 - 纯 Python，运行时不依赖 Node/Electron。
 - 会话日志**逐字段兼容** DSH `session.v4.jsonl`（读取 / 追加 / 派生 / fork）。
-- 内置工具对齐 DSH 语义：read/write/edit/glob/grep/pwsh/bash/web_search/web_fetch/todo_write/present。
+- 内置工具对齐 DSH 语义：read/write/edit/glob/grep/pwsh/bash/web_search/web_fetch/todo_write/present，
+  以及 P1 的 working_directory/skill/schedule/mnemon_runtime_memory/ask_user_question、
+  compress/search_context/decompress 和 subagent/team_*/job_* 工具。
 - 产品形态：**只有一套终端前端** —— Textual 全屏 TUI（`dpyro`，唯一交互形态）+
   headless 一次性模式（`dpyro --headless "prompt"`，支持 `--json` NDJSON，供脚本/CI）。
   不做 Web UI。
@@ -24,9 +26,10 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   按 id 覆盖 config（整体替换）、`before/after` 插入、`disabled/critical/isolate/intercept`；
   还支持 group 行（`group = true` + 子行）、`include` 外部行文件、`[bundle].requires`
   依赖拓扑排序，以及 active/failed/disabled/overridden/restart-required 活状态。
-  core bundle 只有 21 行（kernel 运行时 + LLM、会话、沙箱、工具、提示词、命令、agent、
-  activity 活动栏、jobs 后台任务、subagent 委派、team 团队、插件管理、设置、inspect、TUI 槽位），
-  其余能力都由插件贡献。插件可注册工具、提示词段、
+  core bundle 只有 31 行（kernel 运行时 + LLM、会话、沙箱、工具、提示词、命令、agent、
+  activity 活动栏、jobs 后台任务、subagent 委派、team 团队、插件管理、设置、inspect、TUI 槽位，
+  以及 P1 的 session-query、compress、schedule、working-directory、user-questions、attachments、
+  memory、skills、projections），其余能力都由插件贡献。插件可注册工具、提示词段、
   slash 命令、LLM provider、agent preset（带 revision 与 per-preset realm 子插件），以及
   TUI 状态栏项 / 对话行 / 面板 / 设置页。
 - **活动栏与多任务**：对话区上方一行活动栏（plan / jobs / agents，空段隐藏）；待办计划来自
@@ -38,6 +41,13 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   一次性子会话（结果回传，不进入 Team 协作层）；`/preset team` 切到内置 team preset 后，Lead 获得
   `team_*` 工具（spawn / 任务板 / 消息）并收起 `subagent`，Team 成员子会话两者都没有，避免嵌套。
   两种模式的子会话都按 DSH 形状写 `subagent/*`、`team/*` 记录，`/preset default` 可切回单 Agent。
+- **P1 运行时能力**：会话查询（`session_query` 服务：摘要/事件窗口/trace）、模型自压缩
+  （`compress` / `search_context` / `decompress`，block 侧车文件按 session 寻址）、定时任务
+  （`schedule` 工具 + TUI timer + `~/.dpro/schedules.json`）、只读 skills 目录（`skill` 工具 +
+  提示词目录段）、runtime memory（`mnemon_runtime_memory` 工具，USER.md/MEMORY.md 投影，
+  容量硬上限）、图片附件（Pillow 校验/归一化 + inline 预算 + `image/offload` 投影）、
+  per-session 投影注册表与 checkpoint sidecar、Anthropic Messages provider 与模型目录发现
+  （`/model` 候选合并配置模型与远端目录，contextWindow 自动回退）。
 - **运行时自扩展**：`/plugins` 界面与 `plugin_manager` / `plugin_inspect` /
   `settings_read` / `settings_write` / `plugin_create` 五个工具让 agent 自己安装/脚手架
   外部 bundle、启停插件、读改插件配置、查看 live 组合（安装/脚手架会执行或生成第三方代码，
@@ -59,26 +69,37 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
       _vendor/cordis_port/  vendored cordis Python 内核（MIT，不改动）
       kernel/   cordis 服务图、composition/bundle/patch、boot（唯一装配层）
       api/      插件契约（Plugin/Service/PluginContext/注册表/preset spec）
-      builtin/  core 插件行（llm/sessions/sandbox/tools/prompt/commands/agents/activity/
-                jobs/subagent/team/presets/plugin_manager/settings/inspect）
-      bundles/core/bundle.toml  core bundle 的 21 个插件行（首行 kernel 运行时）
+      builtin/  core 插件行（llm/sessions/session_query/sandbox/tools/prompt/commands/agents/
+                activity/jobs/subagent/team/presets/plugin_manager/settings/inspect，以及
+                compress/schedule/working_directory/user_questions/attachments/memory/skills/projections）
+      bundles/core/bundle.toml  core bundle 的 31 个插件行（首行 kernel 运行时）
       jobs/     后台任务服务（JobHandle/JobResult、job/registered|settled）
       subagent/ 一次性子智能体委派（默认模式的 subagent 工具、子会话、subagent/* 记录）
       team/     子智能体团队与共享任务板（成员、消息、子会话、team/* 记录）
+      attachments/  图片附件校验/归一化/限额与 manifest
+      memory/   运行时记忆存储与 USER.md/MEMORY.md 投影
+      projection/ per-session 投影注册表与 checkpoint sidecar
+      schedule/ 定时任务存储、rrule/cron 解析与 timer manager
+      session_query/ 只读会话摘要/事件窗口/trace
+      skills/   skills 目录发现、frontmatter 与目录渲染
+      user_questions/ ask_user_question 服务与 handler 串行化
+      working_directory/ 会话级工作目录服务与 working_directory 工具
       core/     冻结的 wire 模型 + 运行时协议（共享契约）
       session/  session.v4 日志：模型、append 校验、derive、fork、store
-      llm/      provider 适配层（OpenAI-compatible SSE）、重试
+      llm/      provider 适配层（OpenAI-compatible SSE、Anthropic Messages）、模型目录、图片预算、重试
       tools/    工具注册表、执行流水线、内置工具
       sandbox/  权限预设 / 策略闸门
       prompt/   系统提示词与运行时上下文装配
       agent/    turn/step 循环、inbox、事件流
-      compact/  上下文压缩
+      compact/  上下文压缩、compress block/ref sidecar 与检索工具
       tui/      Textual 全屏 TUI（唯一前端：app/widgets/screens/slots/commands/sink/runtime）
       plugins/  外部插件发现与管理（entry point / 插件目录 / 用户清单 / bundle 安装与设置）
       headless.py  一次性 headless（run_once / NDJSON+rich sink，自包含）
       paths.py  用户目录解析（~/.dpro、DEEPPYRO_HOME）与旧数据迁移
     docs/spec/  契约与逆向出的 DSH 语义（INTERFACES / tui / headless / session / llm / tools / loop /
-                plugins / agent-presets / subagent / activity）
+                plugins / agent-presets / subagent / activity / hooks / skills / schedule / memory /
+                session-query / compact-blocks / attachments / image-budget / image-offload /
+                image-request / projection）
     tests/      单测 + 黄金对照测试
     tools/      fixture 生成器（Node，只读 ~/.dsh）
 
@@ -108,7 +129,10 @@ TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /pres
 | 路径 | 内容 |
 |---|---|
 | `config.toml` | provider / model / agent 配置（首次运行自动生成） |
-| `sessions/` | `session.v4.jsonl` 会话日志 |
+| `sessions/` | `session.v4.jsonl` 会话日志；`sessions/blocks/` 为 compress block/ref 侧车文件 |
+| `schedules.json` | 定时任务（version 1 原子写；timer 只在 TUI 进程运行） |
+| `memory/` | runtime memory 的 `memories.json` 与 `USER.md`/`MEMORY.md` 投影 |
+| `attachments/` | 图片附件 PNG 与 `manifest.jsonl` |
 | `plugins.toml` | 用户插件清单 |
 | `plugins/` | 外部插件目录 |
 | `history.jsonl` | TUI 输入历史 |
@@ -125,7 +149,7 @@ TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /pres
 
 ### 插件与组合
 
-- core bundle：`src/deeppyro/bundles/core/bundle.toml`（21 行，首行 `kernel` 运行时服务，`critical = true`）。
+- core bundle：`src/deeppyro/bundles/core/bundle.toml`（31 行，首行 `kernel` 运行时服务，`critical = true`）。
 - 外部 bundle：`~/.dpro/bundles/<id>/bundle.toml` + Python 文件；`/plugins` 或
   `plugin_manager` 工具可安装/启停/卸载（安装只做结构校验，下次 boot 执行第三方代码）。
 - 其他插件来源：entry point 组 `deeppyro.plugins`、`~/.dpro/plugins/<id>/plugin.toml`、

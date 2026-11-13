@@ -26,6 +26,7 @@ from deeppyro.core.protocols import (
     Usage,
 )
 from deeppyro.llm import OpenAICompatProvider
+from deeppyro.llm.errors import CODE_AUTH, CODE_PROTOCOL, LlmHttpError
 from deeppyro.llm.retry import RetryPolicy
 from tests.llm.helpers import (
     SSE_HEADERS,
@@ -506,3 +507,80 @@ async def test_cancellation_propagates_mid_stream() -> None:
     finally:
         await stream.aclose()
         await provider.aclose()
+
+
+# --------------------------------------------------------------------------
+# model discovery (GET <base>/models)
+# --------------------------------------------------------------------------
+
+LISTING_URL = "http://127.0.0.1:8000/v1/models"
+
+
+@respx.mock
+async def test_list_models_parses_openai_listing() -> None:
+    route = respx.get(LISTING_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [
+                    {"id": "deepseek-chat", "context_length": 65536, "name": "DeepSeek Chat"},
+                    {"id": "local-9b"},
+                ],
+            },
+        )
+    )
+    provider, _ = make_provider()
+    models = await provider.list_models()
+    assert [(model.provider, model.id) for model in models] == [
+        ("local", "deepseek-chat"),
+        ("local", "local-9b"),
+    ]
+    assert models[0].name == "DeepSeek Chat"
+    assert models[0].context_window == 65536
+    request = route.calls[0].request
+    assert request.headers["authorization"] == "Bearer test-key"
+    assert request.headers["accept"] == "application/json"
+    await provider.aclose()
+
+
+@respx.mock
+async def test_list_models_405_means_no_listing_endpoint() -> None:
+    respx.get(LISTING_URL).mock(return_value=httpx.Response(405, text="method not allowed"))
+    provider, _ = make_provider()
+    assert await provider.list_models() == []
+    await provider.aclose()
+
+
+@respx.mock
+async def test_list_models_is_sent_without_api_key() -> None:
+    route = respx.get(LISTING_URL).mock(return_value=httpx.Response(200, json={"data": [{"id": "m"}]}))
+    provider, _ = make_provider(api_key=None)
+    models = await provider.list_models()
+    assert [model.id for model in models] == ["m"]
+    assert "authorization" not in route.calls[0].request.headers
+    await provider.aclose()
+
+
+@respx.mock
+async def test_list_models_surfaces_auth_errors() -> None:
+    respx.get(LISTING_URL).mock(
+        return_value=httpx.Response(401, json={"error": {"message": "invalid api key"}})
+    )
+    provider, _ = make_provider()
+    with pytest.raises(LlmHttpError) as excinfo:
+        await provider.list_models()
+    assert excinfo.value.code == CODE_AUTH
+    assert excinfo.value.retryable is False
+    assert "invalid api key" in str(excinfo.value)
+    await provider.aclose()
+
+
+@respx.mock
+async def test_list_models_rejects_html_payload() -> None:
+    respx.get(LISTING_URL).mock(return_value=httpx.Response(200, text="<html>login</html>"))
+    provider, _ = make_provider()
+    with pytest.raises(LlmError) as excinfo:
+        await provider.list_models()
+    assert getattr(excinfo.value, "code", None) == CODE_PROTOCOL
+    await provider.aclose()

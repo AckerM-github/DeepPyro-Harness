@@ -25,6 +25,7 @@ Modules:
 
 ```python
 from deeppyro.agent import AgentOptions, AgentSession
+from deeppyro.agent.images import ImageRequestPlan, plan_request_images
 from deeppyro.prompt import PromptContext, build_system_prompt, collect_instructions
 from deeppyro.compact import Compactor
 
@@ -38,9 +39,9 @@ AgentSession(
 )
 
 await agent.send(text) -> str        # queue next-turn text, drive until idle, return final text
-agent.followup(text) -> None         # queue next-turn text and wake an idle driver
-agent.steer(text) -> None            # queue next-step text and wake the driver
-agent.inject(text) -> None           # queue next-step text without waking the driver
+agent.followup(text, *, source=None) -> None   # queue next-turn text and wake an idle driver
+agent.steer(text, *, source=None) -> None      # queue next-step text and wake the driver
+agent.inject(text, *, source=None) -> None     # queue next-step text without waking the driver
 await agent.wait_for_idle() -> None  # wait for every turn the driver was woken for
 await agent.interrupt(*, clear_inbox=True) -> None
 agent.busy, agent.model, agent.turn, agent.step, agent.inbox
@@ -157,13 +158,36 @@ By default the runtime therefore produces no `llm/retry` records at the agent le
 | `llm/retry`, `llm/retry-started` | retry record pair from `decide_retry` | — |
 | `compaction/start`, `compaction/summary`, checkpoint `user/message`, `compaction/end` | section 9 | checkpoint replace envelope |
 | `agent/inbox/spliced` | inbox mutation from `Inbox` | — |
+| `image/offload` | `{targets: [{seq, imageIndexes}]}` — durable request-image offload decision (not a surface event; consumed by `derive_messages`) | — |
 
 `usage` on `assistant/message` is camelCase like the fixtures:
-`{"inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens"}`.
+`{"inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens"}`;
+`reasoningTokens` is added only when the provider reports reasoning token usage.
 
 The envelope is passed only when the session's `append` accepts `**kwargs`; the loop probes
 this once with `inspect.signature`. A minimal `SessionLogLike` without envelope support still
 works, it just records events without surface information.
+
+### 4.1 Request-side image planning
+
+The durable log only ever stores attachment references, never image bytes. Before building a
+provider request, each step runs `deeppyro.agent.images.plan_request_images` over the current
+records:
+
+1. fold the surface into `(record seq, Message)` pairs and apply the existing
+   `image/offload` projection (so already-omitted occurrences are placeholder text);
+2. resolve the remaining attachment references to inline `data:` URLs **in memory** through the
+   `attachments` service; unresolvable refs stay as refs;
+3. measure every occurrence (base64 length for inline data URLs) against the route
+   `ImageBudget`; when the request exceeds it, select the oldest occurrences and return both the
+   updated messages and the targets of a new `image/offload` record.
+
+When `record_data()` is non-empty the loop appends exactly one `image/offload` record (before
+`assistant/message`, after the step preamble) and then builds the request from the planned
+messages, so the durable log and the wire request agree. Without an `attachments` service the
+planner degrades to the pre-offload behaviour: derived messages unchanged, nothing written.
+See `docs/spec/image-request.md` for the pipeline and `docs/spec/image-offload.md` for the
+placeholder text.
 
 ## 5. Prompt and runtime context projections
 
@@ -188,10 +212,15 @@ resolved path, reads `AGENTS.md` from root-most to deepest, and truncates each f
 
 `AssistantStreamAccumulator` merges provider deltas into the DSH-shaped `stream` array stored
 on `assistant/message` / `assistant/attempt`: text and reasoning chunks, tool-call chunks with
-`index/id/name/argumentsDelta`, usage and finish chunks, each with `time`/`dt`. Adjacent
-fragments of the same kind merge while their gap is at most `MAX_MERGE_GAP_MS = 60000`;
-`expand_stream` is the inverse used by tests and tooling. On a failed attempt the snapshot is
-written to `assistant/attempt` before `agent/request-error` runs.
+`index/id/name/argumentsDelta`, block boundaries (`{"type":"block-start","index","blockType"}`
+and `{"type":"block-end","index","block"}`), usage and finish chunks, each with `time`/`dt`.
+Deltas carry their provider block `index` (text/reasoning no longer assume index 0), so a future
+Anthropic-style adapter can interleave blocks without changing the record format. Usage chunks
+may include `cacheWriteTokens` and `reasoningTokens`; a finish chunk carries
+`reason.replayState` when the provider returned replay state. Adjacent fragments of the same
+kind merge while their gap is at most `MAX_MERGE_GAP_MS = 60000`; `expand_stream` is the
+inverse used by tests and tooling. On a failed attempt the snapshot is written to
+`assistant/attempt` before `agent/request-error` runs.
 
 `decide_retry` is pure: given the sanitized failure, `retryPolicy`, previous retry, provider,
 turn, and step it returns a `RetryDecision` with `retry`/`retryId`/`delay_ms`/`mode`/
@@ -394,12 +423,16 @@ Other failure paths:
     additions beyond INTERFACES §7; all have defaults, so the frozen constructor holds.
 11. **Prompt content is DeepPyro-specific** (not DSH's runtime prompt), and it never embeds
     host memory protocols.
+12. **Image offload is proactive only.** The loop budgets before the request and writes
+    `image/offload`; it does not implement DSH's `IMAGE_OFFLOAD_REQUIRED` error/retry path.
+    P1 sends inline base64 only (no files route, no normalized-path placeholder variant), and
+    `http(s)` image URLs are forwarded while counting zero represented bytes.
 
 ## 12. Test coverage
 
 `uv run pytest -o addopts= -q tests/agent tests/hooks tests/prompt tests/tools/test_pipeline_hooks.py`
-covers the loop, inbox, stream, retry, projection, hooks, and pipeline integration. The full
-suite at the P0 close was 1339 passed.
+covers the loop, inbox, stream, retry, projection, hooks, image planning, and pipeline
+integration. The full suite at the P1 close was 2224 passed.
 
 * `tests/agent/fakes.py` — `FakeSessionLog` (real `LogRecord` + strict canonical surface fold),
   `ScriptedProvider`, `FakeTool`/`FakeRegistry`, `RecordingSink`, `FakePermission`.
@@ -416,5 +449,9 @@ suite at the P0 close was 1339 passed.
 * projection: append/replace rules, retained runtime-context snapshot, cleared text.
 * hooks: waterfall/serial/emit semantics, unknown names, disposal, plugin row.
 * compaction: unchanged from the pre-P0 suite plus `sourceCommandId` on all four records.
+* images: `tests/agent/test_images.py` covers surface-seq pairing, existing-offload projection,
+  attachment expansion (copy-on-write, dedup, bare ids, unresolvable refs), budget-triggered
+  oldest-prefix selection and placeholder merging; `tests/agent/test_agent_images.py` covers
+  the loop wiring (one `image/offload` per step before the request, refs-only durable log).
 
 Lint: `uv run ruff check src tests` and `uv run ruff format --check src tests` are clean.

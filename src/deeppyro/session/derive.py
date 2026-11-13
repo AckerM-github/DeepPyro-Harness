@@ -21,6 +21,7 @@ from deeppyro.session.events import (
     SURFACE_EVENTS,
     assert_source_event_references,
 )
+from deeppyro.session.image_projection import apply_image_offloads, project_image_offloads
 
 #: Plan kinds returned by plan_surface_transition.
 APPEND = "append"
@@ -68,8 +69,8 @@ def plan_surface_transition(
         return SKIP, None, None
     _assert_developer_header(record, records_by_seq, strict=strict)
     if record.type in PROJECTION_EVENTS:
-        # v1 has no projection interpreter (image/offload). The durable log keeps
-        # the record; it never becomes a surface node.
+        # Projection-only records never become surface nodes; derive_messages
+        # applies the pure image/offload interpreter on top of the fold.
         return SKIP, None, None
     if record.type not in SURFACE_EVENTS:
         return SKIP, None, None
@@ -211,13 +212,25 @@ def _deep_equal_json(left: object, right: object) -> bool:
 
 
 def derive_messages(records: Sequence[LogRecord], *, strict: bool = True) -> list[Message]:
-    """Derive the model-visible message history from a session log."""
+    """Derive the model-visible message history from a session log.
+
+    The durable projection records (currently image/offload) are interpreted
+    after the surface fold: each node's message keeps its image blocks except
+    where an offload record targets that node's seq.  Targets whose seq is no
+    longer on the surface are ignored, so a trimmed or compacted log still
+    derives cleanly.
+    """
     nodes = fold_surface(records, strict=strict)
+    offloads = project_image_offloads(records, strict=strict)
     messages: list[Message] = []
     for node in nodes:
         message = event_message(node)
-        if message is not None:
-            messages.append(message)
+        if message is None:
+            continue
+        indexes = offloads.get(node.seq)
+        if indexes:
+            message = apply_image_offloads(message, indexes)
+        messages.append(message)
     return messages
 
 

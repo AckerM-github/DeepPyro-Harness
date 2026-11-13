@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from deeppyro.agent.images import plan_request_images
 from deeppyro.agent.inbox import TARGET_NEXT_STEP, TARGET_NEXT_TURN, Inbox
 from deeppyro.agent.options import AgentOptions
 from deeppyro.agent.request import (
@@ -59,6 +60,8 @@ from deeppyro.compact.compactor import Compactor
 from deeppyro.core.errors import AbortedError, LlmError, SessionError
 from deeppyro.core.ids import new_message_id, now_ms
 from deeppyro.core.protocols import (
+    BlockEnd,
+    BlockStart,
     EventSink,
     Finish,
     LlmProvider,
@@ -87,6 +90,7 @@ from deeppyro.prompt.projection import (
     SystemPromptProjection,
 )
 from deeppyro.prompt.runtime_context import render_runtime_context, runtime_context_sections
+from deeppyro.session.image_projection import IMAGE_OFFLOAD_EVENT
 
 logger = logging.getLogger(__name__)
 
@@ -158,13 +162,16 @@ class _BatchOutcome:
 
 
 def _usage_dict(usage: Usage) -> dict[str, int]:
-    return {
+    payload: dict[str, int] = {
         "inputTokens": usage.input_tokens,
         "outputTokens": usage.output_tokens,
         "cacheReadTokens": usage.cached_input_tokens or 0,
-        "cacheWriteTokens": 0,
+        "cacheWriteTokens": usage.cache_write_tokens or 0,
         "totalTokens": usage.total_tokens,
     }
+    if usage.reasoning_tokens is not None:
+        payload["reasoningTokens"] = usage.reasoning_tokens
+    return payload
 
 
 def _truncation_message(max_tokens: int | None, dropped_calls: int) -> str:
@@ -180,6 +187,8 @@ def _finish_reason(finish: Finish) -> dict[str, Any]:
     reason: dict[str, Any] = {"kind": finish.kind}
     if finish.failure is not None:
         reason["failure"] = dict(finish.failure)
+    if finish.replay_state is not None:
+        reason["replayState"] = dict(finish.replay_state)
     return reason
 
 
@@ -195,8 +204,9 @@ def _coerce_message(value: Any) -> Message:
     raise SessionError(f"agent/pre-step message must be a Message, got {type(value).__name__}")
 
 
-def _new_user_message(text: str) -> Message:
-    return Message(role="user", content=[TextPart(text=text)], id=new_message_id(), source={"kind": "user"})
+def _new_user_message(text: str, *, source: Mapping[str, Any] | None = None) -> Message:
+    payload = dict(source) if source is not None else {"kind": "user"}
+    return Message(role="user", content=[TextPart(text=text)], id=new_message_id(), source=payload)
 
 
 class AgentSession:
@@ -224,6 +234,9 @@ class AgentSession:
         self._permission = permission
         self._cwd = Path(cwd)
         self._services = dict(services or {})
+        # ToolContext.services always exposes the live session so tools that need
+        # durable session access (for example compress) never have to reopen it.
+        self._services.setdefault("session", session)
         self._prompt_builder = prompt_builder or build_system_prompt
         hooks = self._services.get("hooks")
         self._hooks: Any | None = hooks if hooks is not None else None
@@ -294,17 +307,17 @@ class AgentSession:
             return ""
         return await self._drive()
 
-    def followup(self, text: str) -> None:
+    def followup(self, text: str, *, source: Mapping[str, Any] | None = None) -> None:
         """Queue a user message for the next turn and wake the driver if idle."""
-        self._enqueue(TARGET_NEXT_TURN, text, wake=True)
+        self._enqueue(TARGET_NEXT_TURN, text, wake=True, source=source)
 
-    def steer(self, text: str) -> None:
+    def steer(self, text: str, *, source: Mapping[str, Any] | None = None) -> None:
         """Queue a user message for the next step boundary and wake the driver."""
-        self._enqueue(TARGET_NEXT_STEP, text, wake=True)
+        self._enqueue(TARGET_NEXT_STEP, text, wake=True, source=source)
 
-    def inject(self, text: str) -> None:
+    def inject(self, text: str, *, source: Mapping[str, Any] | None = None) -> None:
         """Queue a user message for the next step boundary without waking the driver."""
-        self._enqueue(TARGET_NEXT_STEP, text, wake=False)
+        self._enqueue(TARGET_NEXT_STEP, text, wake=False, source=source)
 
     async def wait_for_idle(self) -> None:
         """Wait until the driver finished every turn it was woken for."""
@@ -331,8 +344,15 @@ class AgentSession:
                 pass
 
     # -- driver ------------------------------------------------------------
-    def _enqueue(self, target: str, text: str, *, wake: bool) -> None:
-        self._inbox.push(target, _new_user_message(text))
+    def _enqueue(
+        self,
+        target: str,
+        text: str,
+        *,
+        wake: bool,
+        source: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._inbox.push(target, _new_user_message(text, source=source))
         if wake:
             self._wake()
 
@@ -473,7 +493,7 @@ class AgentSession:
             self._write_request_records(turn, step, starts_series=starts_series and first)
             self._emit_status("thinking")
             await self._maybe_compact()
-            request = self._build_request(self._derive_messages())
+            request = self._build_request(self._plan_request_images())
             request = await self._request_hook(request, turn, step)
             accumulator, finish = await self._stream_step(request, turn, step)
             last_text = accumulator.text_value() or last_text
@@ -645,6 +665,33 @@ class AgentSession:
             return
         await hooks.emit(AGENT_ASSISTANT_STREAM, {"frame": frame})
 
+    # -- images ------------------------------------------------------------
+    def _image_budget(self) -> Any:
+        """Return the route image budget: injectable service first, then provider."""
+        budget = self._services.get("image_budget")
+        if budget is not None:
+            return budget
+        return getattr(self._provider, "image_budget", None)
+
+    def _plan_request_images(self) -> list[Message]:
+        """Expand attachment references and persist one image/offload if needed.
+
+        The returned messages are exactly what the provider sees for this step:
+        references are resolved to inline data URLs in memory, and occurrences
+        selected by the route budget already carry the offload placeholder.  The
+        durable log only receives the targets -- appended once, before the
+        request is built, so the record is visible to later derivations.
+        """
+        plan = plan_request_images(
+            self._records(),
+            attachments=self._services.get("attachments"),
+            budget=self._image_budget(),
+        )
+        data = plan.record_data()
+        if data:
+            self._append(IMAGE_OFFLOAD_EVENT, data)
+        return plan.messages
+
     # -- streaming ---------------------------------------------------------
     def _build_request(self, messages: list[Message]) -> LlmRequest:
         return LlmRequest(
@@ -741,23 +788,29 @@ class AgentSession:
         tool_indexes: dict[str, int] = {}
         tool_names: dict[str, str] = {}
         async for event in self._provider.stream(request):
-            if isinstance(event, TextDelta):
+            if isinstance(event, BlockStart):
+                if stream is not None:
+                    stream.push({"type": "block-start", "index": event.index, "blockType": event.block_type})
+            elif isinstance(event, BlockEnd):
+                if stream is not None:
+                    stream.push({"type": "block-end", "index": event.index, "block": dict(event.block)})
+            elif isinstance(event, TextDelta):
                 accumulator.text.append(event.text)
                 if stream is not None:
-                    stream.push({"type": "text-delta", "index": 0, "text": event.text})
+                    stream.push({"type": "text-delta", "index": event.index, "text": event.text})
                 sink_event = {"type": "text", "text": event.text}
                 self._emit(sink_event)
                 await self._stream_frame({"type": "chunk", "event": sink_event})
             elif isinstance(event, ReasoningDelta):
                 accumulator.reasoning.append(event.text)
                 if stream is not None:
-                    stream.push({"type": "reasoning-delta", "index": 0, "text": event.text})
+                    stream.push({"type": "reasoning-delta", "index": event.index, "text": event.text})
                 sink_event = {"type": "thinking", "text": event.text}
                 self._emit(sink_event)
                 await self._stream_frame({"type": "chunk", "event": sink_event})
             elif isinstance(event, ToolCallStart):
                 accumulator.start_call(event.call_id, event.name)
-                index = len(tool_indexes)
+                index = event.index
                 tool_indexes[event.call_id] = index
                 tool_names[event.call_id] = event.name
                 if stream is not None:
@@ -775,7 +828,7 @@ class AgentSession:
                 if stream is not None:
                     chunk: dict[str, Any] = {
                         "type": "tool-call-delta",
-                        "index": tool_indexes.get(event.call_id, 0),
+                        "index": tool_indexes.get(event.call_id, event.index),
                         "id": event.call_id,
                         "argumentsDelta": event.delta,
                     }
@@ -836,9 +889,22 @@ class AgentSession:
             groups.append(current)
         return groups
 
+    def _current_cwd(self) -> Path:
+        service = self._services.get("working_directory")
+        getter = getattr(service, "get", None)
+        if callable(getter):
+            try:
+                current = getter(self._session)
+            except Exception:
+                logger.warning("failed to read the working directory service", exc_info=True)
+            else:
+                if current is not None:
+                    return Path(current)
+        return self._cwd
+
     def _tool_context(self, call_id: str, turn: int, step: int) -> ToolContext:
         return ToolContext(
-            cwd=self._cwd,
+            cwd=self._current_cwd(),
             session_id=self._session.session_id,
             turn=turn,
             step=step,
@@ -1008,7 +1074,7 @@ class AgentSession:
         if not isinstance(started_at, int) or isinstance(started_at, bool):
             started_at = now_ms()
         return PromptContext(
-            cwd=self._cwd,
+            cwd=self._current_cwd(),
             platform=sys.platform,
             session_id=self._session.session_id,
             started_at=started_at,

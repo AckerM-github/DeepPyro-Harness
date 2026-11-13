@@ -47,7 +47,7 @@
 ## 3. core（冻结，Lead 维护）
 
 `deeppyro.core` 已导出：`Message/TextPart/ReasoningPart/ToolCallPart/ImagePart/ToolAdditionPart/ToolRemovalPart/UnknownPart/SessionHeader/LogRecord/WireModel`、
-`LlmRequest/ToolSchema/TextDelta/ReasoningDelta/ToolCallStart/ToolCallArgsDelta/Usage/Finish/StreamEvent`、
+`LlmRequest/ToolSchema/BlockStart/BlockEnd/TextDelta/ReasoningDelta/ToolCallStart/ToolCallArgsDelta/Usage/Finish/StreamEvent`、
 `Tool/ToolResult/ToolContext/SessionLogLike/EventSink`、`errors`、`ids`。
 
 要点：
@@ -118,9 +118,11 @@ class OpenAICompatProvider:  # 实现 LlmProvider
 
 流式契约（**必须**遵守）：
 1. `stream()` 是 async generator；正常路径**最后一个事件必为 `Finish`**。
-2. 文本 → `TextDelta`；reasoning/思考 → `ReasoningDelta`（DeepSeek 的 `reasoning_content` 也走这里）。
-3. 工具调用：先 `ToolCallStart(call_id, name)`，再若干 `ToolCallArgsDelta(call_id, delta)`；参数碎片原样转发，**拼接**由消费方做。
-4. usage 在 `Finish` 之前若有则从 `Usage` 事件发出。
+2. 文本 → `TextDelta(text, index=0)`；reasoning/思考 → `ReasoningDelta(text, index=0)`（DeepSeek 的 `reasoning_content` 也走这里）。`index` 是该 delta 所属的内容块序号，不支持块的 provider 用默认 0。
+3. 工具调用：先 `ToolCallStart(call_id, name, index=0)`，再若干 `ToolCallArgsDelta(call_id, delta, name=None, index=0)`；参数碎片原样转发，**拼接**由消费方做；`name` 只在 provider 重复给出时附带，消费方需记住最后一次值。
+4. usage 在 `Finish` 之前若有则从 `Usage` 事件发出；除 input/output/total/cached 外可带 `cache_write_tokens` 与 `reasoning_tokens`。
+4b. 块边界（可选）：`BlockStart(index, block_type)` / `BlockEnd(index, block)`。DSH 原生 provider 不发块边界，agent 只在收到时把它们原样写进 assistant stream chunks，不改变消息内容。
+4c. `Finish(kind, failure=None, replay_state=None)`；`replay_state` 由 provider 透传，agent 写入 finish chunk 的 `reason.replayState`。
 5. 传输/协议错误：首个 token 之前 → 抛 `LlmError(retryable=...) `；已有内容之后 → 发 `Finish(kind="error", failure={...})` 并结束。
 6. 取消（`asyncio.CancelledError`）原样传播，不吞。
 7. 请求体：`{model, messages, tools, stream:true, stream_options:{include_usage:true}}`；`system` 作为 role=system 消息放在最前（若 messages 已有 system 则不重复）。
@@ -359,28 +361,37 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 - 活状态：`App.row_states()` 返回 active/failed/disabled/overridden/restart-required/pending，
   以及 runtime_state/config/children/parent/group；`App.mark_restart_required(id)` 用于 live apply 后标记。
 
-### 11.4 服务图（core bundle 22 行，按加载顺序）
+### 11.4 服务图（core bundle 31 行，按加载顺序）
 
 | 行 id | 模块 | 服务名 / 关键方法 |
 |---|---|---|
 | `kernel` | `kernel.runtime` | `kernel`：`.mounted_plugins()`、`.apply_plugin_config(plugin_id, config)` |
-| `llm` | `builtin.llm` | `llm`：`.provider(name)`、`.add_provider` |
+| `llm` | `builtin.llm` | `llm`：`.provider(name)`、`.add_provider`、`.list_models/.model_info/.catalog_snapshot` |
 | `sessions` | `builtin.sessions` | `sessions`：`.store`（SessionStore） |
+| `session-query` | `builtin.session_query` | `session_query`：`.list_summaries/.get/.read_session/.read_surface/.list_events/.read_event/.filter_events/.trace_session/.trace_event` |
 | `sandbox` | `builtin.sandbox` | `sandbox`：`.gate(workspace, ask=None)` |
 | `tools` | `builtin.tools` | `tools`：`.add(factory, scope=..., revision=...)`、`.registry_for(workspace, scope=None, revision=None)` |
-| `tools-builtin` | `builtin.tools` | 11 个内置工具 |
+| `tools-builtin` | `builtin.tools` | 内置工具（read/write/edit/glob/grep/pwsh|bash/web_search/web_fetch/todo_write/present 等） |
+| `compress` | `builtin.compress` | 无服务；注册 `compress`、`search_context`、`decompress` 三个工具（BlockStore/RefStore 侧车文件） |
+| `schedule` | `builtin.schedule` | `schedule`（critical=false）：`.configure_host/.start/.stop/.create/.list/.view/.update/.delete/.tick`；`schedule` 工具 + 提示词段 |
+| `working-directory` | `builtin.working_directory` | `working_directory`：`.bind/.unbind/.get/.ensure/.set/.context_text`；`working_directory` 工具 |
+| `user-questions` | `builtin.user_questions` | `user_questions`：`.configure(handler)`、`.ask(questions, call_id=...)`；`ask_user_question` 工具 |
+| `attachments` | `builtin.attachments` | `attachments`：`.save_image(...)`、`.image_host_path/.read_image_bytes/.lookup/.validate_image_batch` |
 | `hooks` | `builtin.hooks` | `hooks`：`HookService.on/has/listeners/waterfall/serial/emit`；9 个固定 hook 名（见 `docs/spec/hooks.md`），不注册工具/命令/提示词 |
 | `jobs` | `builtin.jobs` | `jobs`：`.start(...)`、`.get/.list/.output/.wait/.kill/.cancel_owner/.cancel_all`；`job_output/job_kill/job_list` 工具 |
 | `plugin-tools` | `tools.builtin.plugin_tools` | 5 个 `plugin_*` 工具（manager/inspect/settings/create_bundle 等） |
 | `presets` | `builtin.presets` | `presets`：`.add`、`.resolve(id)`、`.resolve_revision(id, revision)`、`.ensure(..., revision=...)`、`.ensure_all()`、`.revisions()`、`.all()`、`.ids()`；内置 `default`（mode default）与 `team`（mode team）不占 host revision |
 | `prompt` | `builtin.prompt_service` | `prompt`：`.add_section(..., scope=None, revision=...)`、`.sections(...)`、`.build(tools, prompt_context, scope=None, revision=...)` |
 | `prompt-core` | `builtin.prompt_core` | 5 个核心提示词段（order 10/20/30/40/50） |
+| `memory` | `builtin.memory` | `memory`（critical=false）：`.entries/.snapshot/.remember/.replace/.forget/.status`；`mnemon_runtime_memory` 工具（tools 缺失时降级为仅提示词段）；提示词段 `memory-runtime` order 12 |
+| `skills` | `builtin.skills` | `skills`（critical=false）：`.registry`（list/get/snapshot/render_catalog）；`skill` 工具；提示词段 `skills` order 35 |
 | `commands` | `builtin.commands` | `commands`：`.add`、`.all()`、`.resolve()`、`.invoke()` |
 | `commands-builtin` | `builtin.commands_builtin` | 19 个内置 slash 命令（含 `/provider`、`/model`、`/preset`、`/policy`、`/approval`、`/cwd`、`/plan`、`/jobs`、`/team`、`/thinking`、`/panel`） |
 | `agents` | `builtin.agents` | `agents`：`.create(..., preset=None, preset_revision=None, registry=None)`、`.options(**overrides)` |
 | `team` | `builtin.team` | `team`：`.configure(...)`、`.bind_session`、`.spawn/.send/.wait/.cancel`、任务板 `.create_task/.update_task`；9 个 `team_*` 工具（scope=`team`） |
 | `subagent` | `builtin.subagent` | `subagent`：`.configure(...)`、`.bind_session`、`.run(prompt, ...)->SubagentResult`；1 个 host-wide `subagent` 工具（team preset 下由 AgentsService 过滤） |
 | `activity` | `builtin.activity` | `activity`：`.state`、`.refresh(session)`、`.subscribe(listener)`；投影 todo/job/team/subagent/plan 记录 |
+| `projections` | `builtin.projections` | `projections`：`.attach(session)/.detach/.save/.path_for/.snapshot/.checkpoint/.notify`；activity/todos/jobs/agents/plan_mode 生产定义 + sidecar |
 | `slots` | `tui.slots` | `slots`：TUI 插件槽位注册表（状态栏项/对话行/面板/设置页、theme/locale） |
 | `plugin-manager` | `builtin.plugin_manager` | `plugin_manager`：外部插件与 bundle（`.manager`，含 `.create_bundle`） |
 | `settings` | `builtin.settings` | `settings`：插件配置读写 + revision CAS + volatile live apply（`.store`） |
@@ -416,4 +427,14 @@ await app.stop()                           # 逆序 dispose
 - `tests/jobs/`、`tests/tools/test_shell_jobs.py`：jobs 服务生命周期、job 记录形状、后台 shell、job 工具。
 - `tests/team/`：spawn/send/wait/cancel、任务板迁移、team/subagent 记录、9 个工具。
 - `tests/builtin/test_activity.py`、`tests/tui/test_activity_bar.py`、`test_plan_screen.py`、`test_jobs_screen.py`、`test_team_screen.py`：活动投影与 M1/M2/M3 界面。
+- `tests/session_query/`：会话摘要/读取/事件窗口/过滤/trace，只读不落盘。
+- `tests/compact/`：compress 工具解析/事务性 block 写入、refs 固化、`search_context`/`decompress` 工具。
+- `tests/working_directory/`：服务 bind/set/ensure 与 `working_directory` 工具。
+- `tests/user_questions/`：问题解析/校验、`ask_user_question` 工具输出与 handler 串行。
+- `tests/attachments/`：图片校验/归一化/限额/错误码、manifest 与 `attachments` 服务。
+- `tests/agent/test_images.py`、`tests/agent/test_agent_images.py`：请求侧图片规划（surface seq 配对、附件展开、预算触发的 oldest-prefix `image/offload`、日志只存 refs）。
+- `tests/llm/test_image_budget.py`、`tests/llm/test_messages.py`：inline/files 预算算法、`image_part_url` 的 attachments resolver 与 data URL 编码。
+- `tests/memory/`：`memories.json` 原子写、容量上限、USER.md/MEMORY.md 投影与工具。
+- `tests/skills/`：根目录排序、frontmatter 解析、目录渲染与 `skill` 工具。
+- `tests/schedule/`：七种 timing、持久化、timer、工具动作与 `ScheduleHost` 交付协议；`tests/tui/test_schedule_host.py` 覆盖 TUI host 的 session/new/new_once 投递与 start/stop。
 

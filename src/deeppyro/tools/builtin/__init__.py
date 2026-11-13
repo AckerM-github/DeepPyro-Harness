@@ -6,12 +6,14 @@ from pathlib import Path
 from typing import Any
 
 from deeppyro.core.protocols import Tool
+from deeppyro.tools.builtin.ask_user import AskUserQuestionTool
 from deeppyro.tools.builtin.fs import EditTool, ReadTool, WriteTool
 from deeppyro.tools.builtin.present import PresentTool
 from deeppyro.tools.builtin.search import GlobTool, GrepTool
 from deeppyro.tools.builtin.shell import BashTool, PwshTool
 from deeppyro.tools.builtin.todo import TodoWriteTool
 from deeppyro.tools.builtin.web import WebFetchTool, WebSearchTool
+from deeppyro.tools.builtin.working_directory import WorkingDirectoryTool
 
 
 def _cfg_value(cfg: Any, key: str, default: Any) -> Any:
@@ -50,10 +52,13 @@ def builtin_tools(cfg: Any, workspace: Path) -> list[Tool]:
         WebFetchTool(max_output_chars=int(_cfg_value(cfg, "webFetchMaxChars", 200_000))),
         TodoWriteTool(),
         PresentTool(max_files=int(_cfg_value(cfg, "presentMaxFiles", 8))),
+        WorkingDirectoryTool(),
+        AskUserQuestionTool(),
     ]
 
 
 __all__ = [
+    "AskUserQuestionTool",
     "BashTool",
     "EditTool",
     "GlobTool",
@@ -64,6 +69,7 @@ __all__ = [
     "TodoWriteTool",
     "WebFetchTool",
     "WebSearchTool",
+    "WorkingDirectoryTool",
     "WriteTool",
     "builtin_tools",
 ]

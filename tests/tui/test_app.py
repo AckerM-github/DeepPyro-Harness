@@ -694,3 +694,27 @@ async def test_team_command_board_opens_the_task_board() -> None:
         assert app.screen.ordered_tasks[0].subject == "wire the team panel"
         await pilot.press("escape")
         await pilot.pause(0.2)
+
+
+async def test_scheduled_message_renders_and_clears_busy_state() -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        agent = app.runtime.agent
+        waits: list[int] = []
+
+        async def wait_for_idle() -> None:
+            waits.append(1)
+
+        agent.wait_for_idle = wait_for_idle  # type: ignore[attr-defined]
+        conversation = app.query_one(ConversationView)
+        before = len(conversation.children)
+        app._on_schedule_message("Scheduled task: standup")
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if not app._working:
+                break
+        assert len(conversation.children) > before
+        assert waits == [1]
+        assert app._working is False
+        assert app._phase == "idle"

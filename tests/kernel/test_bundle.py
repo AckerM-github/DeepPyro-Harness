@@ -19,21 +19,30 @@ EXPECTED_ORDER = [
     "kernel",
     "llm",
     "sessions",
+    "session-query",
     "sandbox",
     "tools",
     "tools-builtin",
+    "compress",
+    "schedule",
+    "working-directory",
+    "user-questions",
+    "attachments",
     "hooks",
     "jobs",
     "plugin-tools",
     "presets",
     "prompt",
     "prompt-core",
+    "memory",
+    "skills",
     "commands",
     "commands-builtin",
     "agents",
     "team",
     "subagent",
     "activity",
+    "projections",
     "slots",
     "plugin-manager",
     "settings",
@@ -95,21 +104,30 @@ config = { start = 5 }
         "llm",
         "echo",
         "sessions",
+        "session-query",
         "sandbox",
         "tools",
         "tools-builtin",
+        "compress",
+        "schedule",
+        "working-directory",
+        "user-questions",
+        "attachments",
         "hooks",
         "jobs",
         "plugin-tools",
         "presets",
         "prompt",
         "prompt-core",
+        "memory",
+        "skills",
         "commands",
         "commands-builtin",
         "agents",
         "team",
         "subagent",
         "activity",
+        "projections",
         "slots",
         "plugin-manager",
         "settings",
@@ -135,28 +153,45 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
         assert list(app.started) == [
             "kernel",
             "llm",
+            "session-query",
             "tools-builtin",
+            "compress",
+            "schedule",
+            "working-directory",
+            "user-questions",
+            "attachments",
             "hooks",
             "jobs",
             "plugin-tools",
             "presets",
             "prompt",
             "prompt-core",
+            "memory",
+            "skills",
             "commands",
             "commands-builtin",
             "team",
             "subagent",
             "activity",
+            "projections",
             "slots",
             "plugin-manager",
             "settings",
             "inspect",
         ]
-        # tools-builtin, jobs and plugin-tools inject the tools service, so they wait.
+        # session-query waits for sessions; tools-builtin, working-directory, jobs and
+        # plugin-tools inject the tools service, so they wait too.
+        assert app.started["session-query"] == "PENDING"
         assert app.started["tools-builtin"] == "PENDING"
+        assert app.started["compress"] == "PENDING"
+        assert app.started["schedule"] == "PENDING"
+        assert app.started["working-directory"] == "PENDING"
         assert app.started["jobs"] == "PENDING"
         assert app.started["plugin-tools"] == "PENDING"
         assert app.started["team"] == "PENDING"
+        assert app.started["attachments"] == "ACTIVE"
+        assert app.started["memory"] == "ACTIVE"
+        assert app.started["projections"] == "ACTIVE"
         assert app.started["llm"] == "ACTIVE"
         assert app.started["hooks"] == "ACTIVE"
         assert app.started["presets"] == "ACTIVE"

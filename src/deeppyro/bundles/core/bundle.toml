@@ -26,6 +26,10 @@ id = "sessions"
 plugin = "deeppyro.builtin.sessions:SessionsPlugin"
 
 [[plugins]]
+id = "session-query"
+plugin = "deeppyro.builtin.session_query:SessionQueryPlugin"
+
+[[plugins]]
 id = "sandbox"
 plugin = "deeppyro.builtin.sandbox:SandboxPlugin"
 
@@ -36,6 +40,27 @@ plugin = "deeppyro.builtin.tools:ToolsPlugin"
 [[plugins]]
 id = "tools-builtin"
 plugin = "deeppyro.builtin.tools:BuiltinToolsPlugin"
+
+[[plugins]]
+id = "compress"
+plugin = "deeppyro.builtin.compress:CompressPlugin"
+
+[[plugins]]
+id = "schedule"
+plugin = "deeppyro.builtin.schedule:SchedulePlugin"
+critical = false
+
+[[plugins]]
+id = "working-directory"
+plugin = "deeppyro.builtin.working_directory:WorkingDirectoryPlugin"
+
+[[plugins]]
+id = "user-questions"
+plugin = "deeppyro.builtin.user_questions:UserQuestionsPlugin"
+
+[[plugins]]
+id = "attachments"
+plugin = "deeppyro.builtin.attachments:AttachmentsPlugin"
 
 [[plugins]]
 id = "hooks"
@@ -62,6 +87,16 @@ id = "prompt-core"
 plugin = "deeppyro.builtin.prompt_core:PromptCorePlugin"
 
 [[plugins]]
+id = "memory"
+plugin = "deeppyro.builtin.memory:MemoryPlugin"
+critical = false
+
+[[plugins]]
+id = "skills"
+plugin = "deeppyro.builtin.skills:SkillsPlugin"
+critical = false
+
+[[plugins]]
 id = "commands"
 plugin = "deeppyro.builtin.commands:CommandsPlugin"
 
@@ -84,6 +119,10 @@ plugin = "deeppyro.builtin.subagent:SubagentPlugin"
 [[plugins]]
 id = "activity"
 plugin = "deeppyro.builtin.activity:ActivityPlugin"
+
+[[plugins]]
+id = "projections"
+plugin = "deeppyro.builtin.projections:ProjectionsPlugin"
 
 [[plugins]]
 id = "slots"

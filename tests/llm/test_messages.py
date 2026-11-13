@@ -203,3 +203,136 @@ def test_convert_messages_drops_empty_messages() -> None:
     history = [Message(role="user", content=[]), user_message("kept")]
     converted = convert_messages(history)
     assert converted == [{"role": "user", "content": "kept"}]
+
+
+# ---------------------------------------------------------------------------
+# attachment resolver (image_part_url, optional attachments= service)
+# ---------------------------------------------------------------------------
+
+
+def _ref() -> dict[str, object]:
+    return {"attachmentId": "att-1", "mediaType": "image/png", "bytes": 3}
+
+
+class _Store:
+    """Resolver double exposing lookup + read_image_bytes (duck-typed service)."""
+
+    def __init__(self, refs: dict[str, dict[str, object]] | None = None, data: bytes = b"XYZ") -> None:
+        self.refs = refs or {}
+        self.data = data
+        self.read_calls: list[object] = []
+
+    def lookup(self, attachment_id: str) -> dict[str, object]:
+        return self.refs[attachment_id]
+
+    def read_image_bytes(self, ref: object) -> bytes:
+        self.read_calls.append(ref)
+        return self.data
+
+
+class _PathStore:
+    """Resolver double that only knows host paths."""
+
+    def __init__(self, path: object) -> None:
+        self.path = path
+        self.calls: list[object] = []
+
+    def image_host_path(self, ref: object) -> object:
+        self.calls.append(ref)
+        return self.path
+
+
+class _BrokenStore:
+    def __init__(self, *, lookup_error: bool = False) -> None:
+        self.lookup_error = lookup_error
+
+    def lookup(self, attachment_id: str) -> dict[str, object]:
+        if self.lookup_error:
+            raise KeyError(attachment_id)
+        return {"attachmentId": attachment_id, "mediaType": "image/png"}
+
+    def read_image_bytes(self, ref: object) -> bytes:
+        raise OSError("cannot read attachment")
+
+
+def test_resolver_resolves_reference_dict_to_data_url() -> None:
+    store = _Store(data=b"XYZ")
+    part = ImagePart(attachment=_ref())
+    assert image_part_url(part, attachments=store) == "data:image/png;base64,WFla"
+    assert store.read_calls == [_ref()]
+
+
+def test_resolver_resolves_bare_id_through_lookup() -> None:
+    store = _Store(refs={"att-1": _ref()}, data=b"XYZ")
+    assert image_part_url(ImagePart(attachment="att-1"), attachments=store) == ("data:image/png;base64,WFla")
+    assert store.read_calls == [_ref()]
+
+
+def test_resolver_uses_bare_id_directly_without_lookup() -> None:
+    class _Direct:
+        def __init__(self) -> None:
+            self.refs: list[object] = []
+
+        def read_image_bytes(self, ref: object) -> bytes:
+            self.refs.append(ref)
+            return b"XYZ"
+
+    store = _Direct()
+    assert image_part_url(ImagePart(attachment="att-1"), attachments=store) == ("data:image/png;base64,WFla")
+    assert store.refs == ["att-1"]
+
+
+def test_resolver_reads_host_path_and_keeps_declared_mime(tmp_path: object) -> None:
+    path = tmp_path / "image.png"  # type: ignore[operator]
+    path.write_bytes(b"HELLO")
+    store = _PathStore(path)
+    ref = {"attachmentId": "att-1", "mediaType": "image/jpeg", "bytes": 5}
+    assert image_part_url(ImagePart(attachment=ref), attachments=store) == ("data:image/jpeg;base64,SEVMTE8=")
+    # image_host_path is only consulted when read_image_bytes is absent.
+    assert store.calls == [ref]
+
+
+def test_resolver_bare_id_host_path_uses_default_mime(tmp_path: object) -> None:
+    path = tmp_path / "image.png"  # type: ignore[operator]
+    path.write_bytes(b"XYZ")
+    store = _PathStore(path)
+    assert image_part_url(ImagePart(attachment="att-1"), attachments=store) == ("data:image/png;base64,WFla")
+    assert store.calls == ["att-1"]
+
+
+def test_resolver_accepts_plain_dict_part() -> None:
+    store = _Store(data=b"XYZ")
+    part = {"type": "image", "attachment": _ref()}
+    assert image_part_url(part, attachments=store) == "data:image/png;base64,WFla"
+
+
+def test_resolver_lookup_failure_degrades_to_none() -> None:
+    store = _BrokenStore(lookup_error=True)
+    assert image_part_url(ImagePart(attachment="att-1"), attachments=store) is None
+
+
+def test_resolver_read_failure_degrades_to_none() -> None:
+    assert image_part_url(ImagePart(attachment=_ref()), attachments=_BrokenStore()) is None
+
+
+def test_resolver_missing_host_file_degrades_to_none(tmp_path: object) -> None:
+    store = _PathStore(tmp_path / "missing.png")  # type: ignore[operator]
+    assert image_part_url(ImagePart(attachment=_ref()), attachments=store) is None
+
+
+def test_resolver_without_supported_methods_degrades_to_none() -> None:
+    assert image_part_url(ImagePart(attachment=_ref()), attachments=object()) is None
+
+
+def test_resolver_empty_bytes_degrade_to_none() -> None:
+    assert image_part_url(ImagePart(attachment=_ref()), attachments=_Store(data=b"")) is None
+
+
+def test_inline_data_wins_over_resolver() -> None:
+    part = ImagePart(attachment={"data": "BBBB", "mimeType": "image/jpeg"})
+    assert image_part_url(part, attachments=_BrokenStore()) == "data:image/jpeg;base64,BBBB"
+
+
+def test_ready_urls_are_forwarded_without_resolver_call() -> None:
+    for url in ("data:image/png;base64,AAAA", "https://example.test/a.png"):
+        assert image_part_url(ImagePart(attachment=url), attachments=_BrokenStore()) == url

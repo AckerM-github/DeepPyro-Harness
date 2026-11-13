@@ -11,6 +11,8 @@ Textual: DeepPyroApp is the only place where both worlds meet.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -32,6 +34,7 @@ from deeppyro.tui.screens.path_prompt import PathPromptScreen
 from deeppyro.tui.screens.picker import PickerScreen
 from deeppyro.tui.screens.plan import PlanScreen, plan_summary
 from deeppyro.tui.screens.plugin_panel import open_plugin_panel
+from deeppyro.tui.screens.question import QuestionScreen
 from deeppyro.tui.screens.splash import SplashScreen
 from deeppyro.tui.screens.team import TaskBoardScreen, TeamPanelScreen
 from deeppyro.tui.screens.thinking import ThinkingScreen
@@ -48,6 +51,7 @@ from deeppyro.tui.widgets.conversation import ConversationView
 from deeppyro.tui.widgets.plugin_slots import PluginStatusBar
 from deeppyro.tui.widgets.prompt_area import PromptArea
 from deeppyro.tui.widgets.status_bar import StatusBar
+from deeppyro.user_questions.types import Answer, AskRequest
 
 RuntimeFactory = Callable[["DeepPyroApp"], Awaitable[Any]]
 
@@ -136,12 +140,62 @@ class DeepPyroApp(App[None]):
             self._dismiss_splash()
             self.refresh_status()
             return
+        self._configure_user_questions()
+        self._configure_schedule()
+        await self._start_schedule()
         self._bind_slots()
         self._update_splash()
         self._render_welcome()
         self._refresh_activity()
         self.set_interval(1.0, self._refresh_activity)
         self.refresh_status()
+
+    def _configure_user_questions(self) -> None:
+        """Route ask_user_question requests to the TUI modal handler."""
+        configure = getattr(self.runtime, "configure_user_questions", None)
+        if callable(configure):
+            configure(self.ask_question)
+
+    def _configure_schedule(self) -> None:
+        """Route scheduled-message notices into the conversation."""
+        configure = getattr(self.runtime, "configure_schedule_notice", None)
+        if callable(configure):
+            configure(self._on_schedule_message)
+
+    async def _start_schedule(self) -> None:
+        """Start the schedule timer when the runtime loaded the service."""
+        start = getattr(self.runtime, "start_schedule", None)
+        if not callable(start):
+            return
+        try:
+            result = start()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001, S110 - scheduling is best effort
+            pass
+
+    def _on_schedule_message(self, text: str) -> None:
+        """Show a scheduled user message and keep the busy indicator honest."""
+        self.conversation.add_user(text)
+        if self._working:
+            return
+        self._working = True
+        self._phase = "thinking"
+        self.refresh_status()
+        self.run_worker(self._await_schedule_turn(), group="schedule")
+
+    async def _await_schedule_turn(self) -> None:
+        agent = getattr(self.runtime, "agent", None)
+        wait = getattr(agent, "wait_for_idle", None)
+        if callable(wait):
+            try:
+                await wait()
+            except Exception:  # noqa: BLE001, S110 - the turn already reports errors
+                pass
+        if not getattr(self.runtime, "busy", False):
+            self._working = False
+            self._phase = "idle"
+            self.refresh_status()
 
     def _bind_slots(self) -> None:
         """Attach the optional `slots` service to the plugin chrome."""
@@ -263,9 +317,12 @@ class DeepPyroApp(App[None]):
         except Exception as exc:  # noqa: BLE001 - turn errors belong in the log
             self.conversation.add_error(f"{type(exc).__name__}: {exc}")
         finally:
-            self._working = False
-            self._phase = "idle"
-            self.refresh_status()
+            if getattr(self.runtime, "busy", False):
+                self.run_worker(self._await_schedule_turn(), group="schedule")
+            else:
+                self._working = False
+                self._phase = "idle"
+                self.refresh_status()
 
     async def _run_command(self, line: str) -> None:
         try:
@@ -326,6 +383,49 @@ class DeepPyroApp(App[None]):
             self.notify("approval policy: always")
             self.refresh_status()
         return decision in (ALLOW_ALWAYS, "once")
+
+    # -- questions -------------------------------------------------------
+    async def ask_question(self, request: AskRequest) -> list[Answer]:
+        """Serve one ask_user_question request with a modal per question.
+
+        Escape/Cancel in a modal stops the request: answers already collected
+        are returned and the remaining questions are not shown, which the
+        user_questions service normalises into skipped answers. A failing or
+        closed modal never raises into the agent turn: the answers collected
+        so far (possibly none) are returned instead.
+        """
+        questions = tuple(getattr(request, "questions", ()) or ())
+        answers: list[Answer] = []
+        if not questions:
+            return answers
+        total = len(questions)
+        for index, question in enumerate(questions):
+            try:
+                answer = await self.push_screen_wait(QuestionScreen(question, index=index, total=total))
+            except asyncio.CancelledError:
+                # An interrupted turn cancels the wait: drop the orphaned modal
+                # so the next turn does not start behind a stale screen.
+                self._dismiss_question_screen()
+                return answers
+            except Exception:  # noqa: BLE001 - UI failure must not hang the agent
+                return answers
+            if answer is None:
+                break
+            answers.append(answer)
+        return answers
+
+    def _dismiss_question_screen(self) -> None:
+        """Pop the question modal if a cancelled wait left it on top."""
+        try:
+            screen = self.screen
+        except Exception:  # noqa: BLE001 - the screen stack may already be tearing down
+            return
+        if not isinstance(screen, QuestionScreen):
+            return
+        try:
+            self.pop_screen()
+        except Exception:  # noqa: BLE001 - a modal already gone must not raise
+            return
 
     # -- status ----------------------------------------------------------
     def refresh_status(self) -> None:
@@ -727,6 +827,20 @@ class DeepPyroApp(App[None]):
         if message:
             self.conversation.add_info(f"could not save the default provider/model: {message}")
 
+    async def _refresh_model_catalog(self) -> None:
+        """Refresh the llm catalog before showing model choices (best effort).
+
+        Discovered models are a convenience: when the refresh fails the picker
+        simply keeps showing the configured models.
+        """
+        refresher = getattr(self.runtime, "refresh_models", None)
+        if not callable(refresher):
+            return
+        try:
+            await refresher()
+        except Exception:  # noqa: BLE001 - the configured catalog stays usable
+            return
+
     async def provider_command(self, argument: str) -> None:
         """Show or switch the active LLM provider (/provider)."""
         if self._working:
@@ -777,6 +891,7 @@ class DeepPyroApp(App[None]):
             self.notify("cannot switch model during a running turn", severity="warning")
             return
         runtime = self.runtime
+        await self._refresh_model_catalog()
         providers = self._provider_names()
         choices = self._model_choices()
         current = (

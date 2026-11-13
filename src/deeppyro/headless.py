@@ -105,12 +105,23 @@ def _context_window(provider_cfg: Any, model_id: str) -> int:
     return DEFAULT_CONTEXT_WINDOW
 
 
-def _resolve_model(cfg: Config, provider_name: str, *, model: str | None) -> str:
-    """Resolve the model without leaking [agent].model onto another provider."""
+def _resolve_model(
+    cfg: Config,
+    provider_name: str,
+    *,
+    model: str | None,
+    allow_unknown: bool = False,
+) -> str:
+    """Resolve the model without leaking [agent].model onto another provider.
+
+    With `allow_unknown` an explicit model that is not declared in config is
+    returned as-is so boot_runtime can look it up in the provider's discovered
+    catalog (an unknown model is only an error after that lookup).
+    """
     provider_cfg = cfg.providers[provider_name]
     available = [str(entry.id) for entry in list(provider_cfg.models or [])]
     if model:
-        if available and model not in available:
+        if available and model not in available and not allow_unknown:
             raise ConfigError(
                 f"unknown model: {model} (provider {provider_name} offers {', '.join(available)})"
             )
@@ -126,6 +137,70 @@ def _resolve_model(cfg: Config, provider_name: str, *, model: str | None) -> str
             raise ConfigError(f"unknown provider: {exc.args[0]}") from exc
         return resolved
     return ""
+
+
+def _configured_model(provider_cfg: Any, model_id: str) -> bool:
+    """Whether config.toml declares this model for the provider."""
+    return any(
+        str(getattr(entry, "id", "")) == model_id for entry in list(getattr(provider_cfg, "models", []) or [])
+    )
+
+
+def _unknown_model_error(provider_name: str, model_id: str, provider_cfg: Any) -> ConfigError:
+    """The established unknown-model error (kept identical to pre-catalog mode)."""
+    available = [str(entry.id) for entry in list(getattr(provider_cfg, "models", []) or [])]
+    return ConfigError(f"unknown model: {model_id} (provider {provider_name} offers {', '.join(available)})")
+
+
+def _catalog_error(llm_service: Any) -> BaseException | None:
+    """Most recent discovery failure recorded by the llm service, if exposed."""
+    registry = getattr(llm_service, "registry", None)
+    if registry is None:
+        return None
+    return getattr(registry, "last_catalog_error", None)
+
+
+async def _runtime_context_window(
+    llm_service: Any,
+    provider_cfg: Any,
+    provider_name: str,
+    model_id: str,
+    *,
+    discover: bool,
+) -> int:
+    """Pick the context window for a resolved model, discovering catalog-only ids.
+
+    Models declared in config.toml never touch the network: their configured
+    (or first configured) window is authoritative. An explicit `--model` that is
+    not declared is resolved through the post-boot llm catalog (models discovered
+    from the provider's listing endpoint). The rules are:
+
+    * catalog says the model exists -> use its `context_window`;
+    * catalog definitively does not list it -> ConfigError (existing semantics);
+    * discovery itself failed (network/timeout) or the service cannot discover ->
+      fall back to DEFAULT_CONTEXT_WINDOW rather than failing the whole run.
+    """
+    if not discover or _configured_model(provider_cfg, model_id):
+        return _context_window(provider_cfg, model_id)
+    lookup = getattr(llm_service, "model_info", None)
+    if lookup is None:
+        raise _unknown_model_error(provider_name, model_id, provider_cfg)
+    try:
+        info = await await_maybe(lookup(provider_name, model_id))
+    except Exception:  # noqa: BLE001 - catalog discovery must not block startup
+        return DEFAULT_CONTEXT_WINDOW
+    if info is not None:
+        window = getattr(info, "context_window", None)
+        if window is not None and int(window) > 0:
+            return int(window)
+        # The model exists but the listing carries no window: stay conservative
+        # instead of borrowing an unrelated configured model's window.
+        return DEFAULT_CONTEXT_WINDOW
+    if _catalog_error(llm_service) is not None:
+        # The lookup was inconclusive (the listing failed), so we cannot claim the
+        # model is unknown; prefer booting with a conservative window over exit 2.
+        return DEFAULT_CONTEXT_WINDOW
+    raise _unknown_model_error(provider_name, model_id, provider_cfg)
 
 
 async def _denying_ask(request: Any) -> bool:
@@ -346,6 +421,9 @@ class HeadlessRuntime:
     jobs: Any = None
     team: Any = None
     subagent: Any = None
+    working_directory: Any = None
+    user_questions: Any = None
+    projections: Any = None
     _closed: bool = field(default=False, repr=False)
 
     def create_agent(self, session: Any, sink: Any, *, max_steps: int | None = None) -> Any:
@@ -367,6 +445,53 @@ class HeadlessRuntime:
             services=self._plugin_services(),
         )
 
+    def bind_session(self, session: Any) -> None:
+        """Bind per-session callbacks for services that record into the log."""
+        if session is None:
+            return
+        service = self.working_directory
+        bind = getattr(service, "bind", None)
+        if bind is not None:
+            try:
+                bind(
+                    session,
+                    cwd=self.cwd,
+                    record=session.append,
+                    inject_notice=lambda text: session.inject(text, source={"kind": "working-directory"}),
+                )
+            except Exception:  # noqa: BLE001, S110 - optional service must not break headless
+                pass
+        self._restore_projections(session)
+
+    def _restore_projections(self, session: Any) -> None:
+        """Restore the projection sidecar and observe appends for this session."""
+        service = self.projections
+        attach = getattr(service, "attach", None)
+        if attach is None:
+            return
+        try:
+            attach(session)
+        except Exception:  # noqa: BLE001, S110 - optional service must not break headless
+            pass
+
+    def save_projections(self, session: Any) -> None:
+        """Write the projection sidecar and stop observing the session."""
+        service = self.projections
+        if service is None or session is None:
+            return
+        save = getattr(service, "save", None)
+        detach = getattr(service, "detach", None)
+        if save is not None:
+            try:
+                save(session)
+            except Exception:  # noqa: BLE001, S110 - optional service must not break headless
+                pass
+        if detach is not None:
+            try:
+                detach(session)
+            except Exception:  # noqa: BLE001, S110 - optional service must not break headless
+                pass
+
     def _plugin_services(self) -> dict[str, Any]:
         """Plugin services the agent tools read from ToolContext.services."""
         services: dict[str, Any] = {}
@@ -382,6 +507,11 @@ class HeadlessRuntime:
             "jobs",
             "team",
             "subagent",
+            "working_directory",
+            "user_questions",
+            "attachments",
+            "schedule",
+            "memory",
         ):
             try:
                 value = kernel_app.service(name)
@@ -433,12 +563,20 @@ async def boot_runtime(
     if provider_name not in cfg.providers:
         raise ConfigError(f"unknown provider: {provider_name}")
     provider_cfg = cfg.providers[provider_name]
-    model_id = _resolve_model(cfg, provider_name, model=model)
+    explicit_model = bool(model)
+    model_id = _resolve_model(cfg, provider_name, model=model, allow_unknown=explicit_model)
     kernel_app = await boot(cfg)
     try:
         names = ("llm", "sessions", "sandbox", "tools", "agents")
         services = {name: kernel_app.service(name) for name in names}
         llm_provider = services["llm"].provider(provider_name)
+        context_window = await _runtime_context_window(
+            services["llm"],
+            provider_cfg,
+            provider_name,
+            model_id,
+            discover=explicit_model,
+        )
         registry = services["tools"].registry_for(workspace)
         permission = services["sandbox"].gate(workspace, ask=ask or _denying_ask)
     except BaseException:
@@ -459,13 +597,28 @@ async def boot_runtime(
         subagent = kernel_app.service("subagent")
     except LookupError:
         pass
+    working_directory = None
+    try:
+        working_directory = kernel_app.service("working_directory")
+    except LookupError:
+        pass
+    user_questions = None
+    try:
+        user_questions = kernel_app.service("user_questions")
+    except LookupError:
+        pass
+    projections = None
+    try:
+        projections = kernel_app.service("projections")
+    except LookupError:
+        pass
     runtime = HeadlessRuntime(
         cfg=cfg,
         cwd=workspace,
         kernel_app=kernel_app,
         provider_name=provider_name,
         model=model_id,
-        context_window=_context_window(provider_cfg, model_id),
+        context_window=context_window,
         store=services["sessions"].store,
         provider=llm_provider,
         registry=registry,
@@ -474,6 +627,9 @@ async def boot_runtime(
         jobs=jobs,
         team=team,
         subagent=subagent,
+        working_directory=working_directory,
+        user_questions=user_questions,
+        projections=projections,
     )
     configure_team = getattr(team, "configure", None)
     if configure_team is not None:
@@ -604,6 +760,9 @@ async def _run_async(
         bind_subagent = getattr(subagent, "bind_session", None)
         if bind_subagent is not None:
             bind_subagent(session)
+        bind_working_directory = getattr(runtime, "bind_session", None)
+        if bind_working_directory is not None:
+            bind_working_directory(session)
         agent = runtime.create_agent(session, sink, max_steps=max_steps)
         sink.begin_turn()
         try:
@@ -624,6 +783,9 @@ async def _run_async(
             close_agent = getattr(agent, "aclose", None)
             if close_agent is not None:
                 await await_maybe(close_agent())
+            save_projections = getattr(runtime, "save_projections", None)
+            if save_projections is not None:
+                save_projections(session)
             await _cancel_jobs(runtime, session_id)
         sink.end_turn()
         if not json_output:
