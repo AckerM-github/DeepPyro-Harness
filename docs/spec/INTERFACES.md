@@ -148,10 +148,15 @@ class ToolCallRequest:
 @dataclasses.dataclass
 class ToolOutcome:
     call_id: str; name: str; result: ToolResult; duration_ms: int
+    call_seq: int | None = None   # seq of the tool/call record, when logged
 
 async def run_tool_batch(requests: list[ToolCallRequest], *, registry: ToolRegistry,
                          ctx_factory: Callable[[ToolCallRequest], ToolContext],
-                         max_concurrency: int = 8) -> list[ToolOutcome]
+                         max_concurrency: int = 8,
+                         hooks: Any | None = None,        # HookService, optional
+                         turn: int | None = None, step: int | None = None,
+                         log: Callable[..., int] | None = None,
+                         dispatch: Callable[..., Any] | None = None) -> list[ToolOutcome]
 ```
 
 流水线语义：
@@ -159,6 +164,7 @@ async def run_tool_batch(requests: list[ToolCallRequest], *, registry: ToolRegis
 - 结果按**调用顺序**返回（不是完成顺序）。
 - 未知工具、参数 JSON 解析失败、`PermissionDenied`、`ToolError` 都转换为 `ToolResult(is_error=True, text=...)`，绝不抛出（除非 `CancelledError`）。
 - 输出截断：单结果 `max_output_chars=30000`（超出保留头尾，中间写 `... [truncated N chars] ...`，并把完整输出落盘到 `services["spill_dir"]`，路径写进 meta.spillPath）。
+- 可选 `hooks` 会触发 `tools/pre-execute` / `tools/execute` / `tools/post-execute`（契约见 `docs/spec/hooks.md`）；`log` 在 pre-execute 之前按请求顺序为每个调用写 `tool/call` 并返回 seq，seq 通过 `ToolOutcome.call_seq` 暴露给 `tool/result.sourceEventSeqs`。
 
 内置工具清单（语义对齐 DSH，用 fixtures 里真实 tool/call 参数与 tool/result 文本校准）：
 `read`（offset/limit，行号输出）、`write`、`edit`（old/new 字面替换，唯一匹配）、`glob`、`grep`（ripgrep 不可用则纯 Python 回退）、`pwsh`（Windows）/ `bash`、`web_search`、`web_fetch`、`todo_write`、`present`。
@@ -212,32 +218,55 @@ class AgentOptions:
     temperature: float | None = None
     compact_threshold: float = 0.85
     context_window: int = 32768
+    # additive, all optional
+    model: str = ""
+    permission_preset: str | None = None
+    approval_policy: str | None = None
+    instructions: list[str] = field(default_factory=list)
 
 class AgentSession:
     def __init__(self, *, session: SessionLogLike, provider: LlmProvider,
                  registry: ToolRegistry, options: AgentOptions, sink: EventSink,
-                 permission: PermissionGate, cwd: Path) -> None
-    async def send(self, text: str) -> str          # 跑完一个 turn，返回最终文本
-    async def interrupt(self) -> None               # 协作式取消；保留已落盘前缀
+                 cwd: Path, permission: PermissionGate | None = None,
+                 services: dict[str, Any] | None = None,   # hooks / retryPolicy / tool services
+                 compactor: Compactor | None = None,
+                 prompt_builder: Callable | None = None) -> None
+    async def send(self, text: str) -> str          # 入队并在空闲时驱动；返回最后一个 turn 的文本
+    def followup(self, text: str) -> None           # 入队 next-turn 并唤醒 driver
+    def steer(self, text: str) -> None              # 入队 next-step 并唤醒 driver
+    def inject(self, text: str) -> None             # 入队 next-step，不唤醒
+    async def wait_for_idle(self) -> None
+    async def interrupt(self, *, clear_inbox: bool = True) -> None
     @property
     def busy(self) -> bool
+    @property
+    def inbox(self) -> Inbox
 ```
 
 事件（`EventSink.emit(dict)`，字段名与 `dsh-headless --json` 对齐）：
-`{"type":"session","sessionId":..}`、`{"type":"status","phase":"thinking|tool|done"}`、
+`{"type":"session","sessionId":..}`、`{"type":"step","turn":..,"step":..}`、
+`{"type":"status","phase":"thinking|tool|done"}`、
 `{"type":"text","text":..}`、`{"type":"thinking","text":..}`、
 `{"type":"tool_call","callId":..,"name":..,"arguments":..}`、`{"type":"tool_result","callId":..,"isError":..,"text":..}`、
 `{"type":"usage","input":..,"output":..,"cached":..}`、`{"type":"final","text":..}`、`{"type":"error","message":..}`。
 
 落盘顺序（硬要求，测试会断言）：`turn/start` → 每步 `step/start` → `request/header`（首步）→ `assistant/message`（含 text/reasoning/tool-call parts）→ 每个调用 `tool/call` → 执行 → `tool/result` → `step/end` → … → `turn/end`。**事件在 append 之后发**。
 
+P0 追加的 loop 契约（细节见 `docs/spec/loop.md`）：
+- **inbox**：所有输入先入 `deeppyro.agent.inbox.Inbox`（next-turn / next-step 两队列，`claim`、`push/followup/steer/inject`、`clear/splice/remove/replace`、`agent/inbox/spliced` 持久重放）；`send` 在 driver 忙时入队并返回 `""`，不再抛 busy。
+- **投影**：`deeppyro.prompt.projection` 的 `SystemPromptProjection` / `RuntimeContextProjection` 在每个 step 生成 `system/message` / `user/message` 的 append 或 replace 更新；replace 用 `surfaceOp={"op":"replace","startSeq","endSeq"}` + `sourceEventSeqs`。
+- **hooks**：`services["hooks"]`（`deeppyro.hooks.HookService`）驱动 `agent/pre-step`、`agent/request`、`agent/request-error`、`agent/turn-stopping`、`agent/assistant-stream`、`agent/status`；payload/返回契约见 `docs/spec/hooks.md`。
+- **stream/retry**：`assistant/message.stream` / `assistant/attempt.stream` 保存合并后的 DSH 形状 chunk（`AssistantStreamAccumulator`、`expand_stream`）；`agent/request-error` 返回 `{"kind":"retry"}` 时由 `decide_retry` 计算并写 `llm/retry` / `llm/retry-started`。
+
 compact：
 ```python
 class Compactor:
     def __init__(self, *, provider: LlmProvider, model: str, keep_recent_tokens: int = 8000,
-                 context_window: int = 32768, threshold: float = 0.85) -> None
+                 context_window: int = 32768, threshold: float = 0.85,
+                 max_tokens: int | None = None) -> None
     def should_compact(self, messages: list[Message]) -> bool
-    async def compact(self, session: SessionLogLike, messages: list[Message]) -> bool
+    async def compact(self, session: SessionLogLike, messages: list[Message] | None = None,
+                      *, source_command_id: str | None = None) -> bool
 ```
 - token 估算：`len(text)/3.5 + 4/消息`（可替换为 provider usage）。
 - 压缩是 region transaction。**落盘格式以 DSH 源码为准（不是 `session/compact*`），顺序固定**：
@@ -330,7 +359,7 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 - 活状态：`App.row_states()` 返回 active/failed/disabled/overridden/restart-required/pending，
   以及 runtime_state/config/children/parent/group；`App.mark_restart_required(id)` 用于 live apply 后标记。
 
-### 11.4 服务图（core bundle 20 行，按加载顺序）
+### 11.4 服务图（core bundle 22 行，按加载顺序）
 
 | 行 id | 模块 | 服务名 / 关键方法 |
 |---|---|---|
@@ -340,16 +369,18 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 | `sandbox` | `builtin.sandbox` | `sandbox`：`.gate(workspace, ask=None)` |
 | `tools` | `builtin.tools` | `tools`：`.add(factory, scope=..., revision=...)`、`.registry_for(workspace, scope=None, revision=None)` |
 | `tools-builtin` | `builtin.tools` | 11 个内置工具 |
+| `hooks` | `builtin.hooks` | `hooks`：`HookService.on/has/listeners/waterfall/serial/emit`；9 个固定 hook 名（见 `docs/spec/hooks.md`），不注册工具/命令/提示词 |
+| `jobs` | `builtin.jobs` | `jobs`：`.start(...)`、`.get/.list/.output/.wait/.kill/.cancel_owner/.cancel_all`；`job_output/job_kill/job_list` 工具 |
+| `plugin-tools` | `tools.builtin.plugin_tools` | 5 个 `plugin_*` 工具（manager/inspect/settings/create_bundle 等） |
 | `presets` | `builtin.presets` | `presets`：`.add`、`.resolve(id)`、`.resolve_revision(id, revision)`、`.ensure(..., revision=...)`、`.ensure_all()`、`.revisions()`、`.all()`、`.ids()`；内置 `default`（mode default）与 `team`（mode team）不占 host revision |
 | `prompt` | `builtin.prompt_service` | `prompt`：`.add_section(..., scope=None, revision=...)`、`.sections(...)`、`.build(tools, prompt_context, scope=None, revision=...)` |
 | `prompt-core` | `builtin.prompt_core` | 5 个核心提示词段（order 10/20/30/40/50） |
 | `commands` | `builtin.commands` | `commands`：`.add`、`.all()`、`.resolve()`、`.invoke()` |
 | `commands-builtin` | `builtin.commands_builtin` | 19 个内置 slash 命令（含 `/provider`、`/model`、`/preset`、`/policy`、`/approval`、`/cwd`、`/plan`、`/jobs`、`/team`、`/thinking`、`/panel`） |
 | `agents` | `builtin.agents` | `agents`：`.create(..., preset=None, preset_revision=None, registry=None)`、`.options(**overrides)` |
-| `activity` | `builtin.activity` | `activity`：`.state`、`.refresh(session)`、`.subscribe(listener)`；投影 todo/job/team/subagent/plan 记录 |
-| `subagent` | `builtin.subagent` | `subagent`：`.configure(...)`、`.bind_session`、`.run(prompt, ...)->SubagentResult`；1 个 host-wide `subagent` 工具（team preset 下由 AgentsService 过滤） |
 | `team` | `builtin.team` | `team`：`.configure(...)`、`.bind_session`、`.spawn/.send/.wait/.cancel`、任务板 `.create_task/.update_task`；9 个 `team_*` 工具（scope=`team`） |
-| `jobs` | `builtin.jobs` | `jobs`：`.start(...)`、`.get/.list/.output/.wait/.kill/.cancel_owner/.cancel_all`；`job_output/job_kill/job_list` 工具 |
+| `subagent` | `builtin.subagent` | `subagent`：`.configure(...)`、`.bind_session`、`.run(prompt, ...)->SubagentResult`；1 个 host-wide `subagent` 工具（team preset 下由 AgentsService 过滤） |
+| `activity` | `builtin.activity` | `activity`：`.state`、`.refresh(session)`、`.subscribe(listener)`；投影 todo/job/team/subagent/plan 记录 |
 | `slots` | `tui.slots` | `slots`：TUI 插件槽位注册表（状态栏项/对话行/面板/设置页、theme/locale） |
 | `plugin-manager` | `builtin.plugin_manager` | `plugin_manager`：外部插件与 bundle（`.manager`，含 `.create_bundle`） |
 | `settings` | `builtin.settings` | `settings`：插件配置读写 + revision CAS + volatile live apply（`.store`） |

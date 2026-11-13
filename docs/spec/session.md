@@ -181,7 +181,7 @@ The projection helper is event_message(record); it returns None for non-surface 
 
 No fixture contains a compaction/* record, so compaction behavior was derived from the DSH source rather than observed data. The mechanism is the surface fold itself:
 
-* a compaction checkpoint is a user/message whose surfaceOp is {"op":"replace","startSeq":..,"endSeq":..} spanning the summarized range, with sourceEventSeqs covering every shadowed node; compaction/start, compaction/summary, compaction/end are log-only bookkeeping around it;
+* a compaction checkpoint is a user/message whose surfaceOp is {"op":"replace","startSeq":..,"endSeq":..} spanning the summarized range, with sourceEventSeqs covering every shadowed node; compaction/start, compaction/summary, compaction/end are log-only bookkeeping around it; when a manual command triggers compaction, its id is carried as an optional `sourceCommandId` on all three bookkeeping records and on the checkpoint message source;
 * compaction/prune rewrites history without a checkpoint;
 * after folding, the model sees exactly the checkpoint/summary message in the old range's position, not the summarized messages.
 

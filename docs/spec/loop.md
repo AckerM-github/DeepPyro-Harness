@@ -1,4 +1,4 @@
-# Agent loop, prompt, and compaction (`deeppyro.agent`, `deeppyro.prompt`, `deeppyro.compact`)
+# Agent loop, prompt, hooks, and compaction (`deeppyro.agent`, `deeppyro.prompt`, `deeppyro.compact`)
 
 Status: implemented (owner: loop-dev). Consumes only `core.protocols` / `core.errors` /
 `core.wire`; writes durable records through `SessionLogLike.append` and emits UI events
@@ -11,36 +11,45 @@ Modules:
 | --- | --- |
 | `src/deeppyro/agent/options.py` | `AgentOptions` |
 | `src/deeppyro/agent/session.py` | `AgentSession`, `StreamAccumulator`, `ToolCallDraft` |
+| `src/deeppyro/agent/inbox.py` | `Inbox` (durable next-turn / next-step queues) |
+| `src/deeppyro/agent/request.py` | header planning, tool-change messages, runtime context payloads |
+| `src/deeppyro/agent/stream.py` | `AssistantStreamAccumulator` (merged stream snapshots) |
+| `src/deeppyro/agent/retry.py` | `decide_retry` (pure retry decision + record payloads) |
 | `src/deeppyro/prompt/prompt.py` | `PromptContext`, `build_system_prompt`, `collect_instructions` |
-| `src/deeppyro/compact/tokens.py` | heuristic token accounting |
-| `src/deeppyro/compact/prompts.py` | DSH-compatible checkpoint framing + summarization instruction |
-| `src/deeppyro/compact/surface.py` | surface fold, tool pairing, region selection |
-| `src/deeppyro/compact/compactor.py` | `Compactor` (4-record compaction transaction) |
+| `src/deeppyro/prompt/projection.py` | system prompt + runtime-context projection |
+| `src/deeppyro/prompt/runtime_context.py` | runtime-context sections/rendering |
+| `src/deeppyro/hooks/` | `HookService`, hook names/modes (see `docs/spec/hooks.md`) |
+| `src/deeppyro/compact/` | token accounting, prompts, surface fold, `Compactor` |
 
 ## 1. Public API
 
 ```python
 from deeppyro.agent import AgentOptions, AgentSession
-from deeppyro.headless import JsonLinesSink, RichSink   # frontend layer (INTERFACES section 7)
 from deeppyro.prompt import PromptContext, build_system_prompt, collect_instructions
 from deeppyro.compact import Compactor
 
 AgentSession(
     *, session: SessionLogLike, provider: LlmProvider, registry: ToolRegistry,
     options: AgentOptions, sink: EventSink, cwd: Path,
-    permission: PermissionGate | None = None,          # additive, optional
-    services: dict[str, Any] | None = None,            # additive, passed to ToolContext
-    compactor: Compactor | None = None,                # additive, mainly for tests
+    permission: PermissionGate | None = None,   # additive, optional
+    services: dict[str, Any] | None = None,     # hooks / retryPolicy / tool services
+    compactor: Compactor | None = None,         # additive, mainly for tests
+    prompt_builder: Callable | None = None,     # additive, tests/custom prompts
 )
-await agent.send(text) -> str     # final assistant text of the turn ("" when none)
-await agent.interrupt() -> None   # cancel the running turn, record a user abort
-agent.busy, agent.model, agent.turn, agent.step
-agent.last_compaction_error        # last tolerated auto-compaction failure
+
+await agent.send(text) -> str        # queue next-turn text, drive until idle, return final text
+agent.followup(text) -> None         # queue next-turn text and wake an idle driver
+agent.steer(text) -> None            # queue next-step text and wake the driver
+agent.inject(text) -> None           # queue next-step text without waking the driver
+await agent.wait_for_idle() -> None  # wait for every turn the driver was woken for
+await agent.interrupt(*, clear_inbox=True) -> None
+agent.busy, agent.model, agent.turn, agent.step, agent.inbox
+agent.last_compaction_error          # last tolerated auto-compaction failure
 
 Compactor(*, provider, model, keep_recent_tokens=8000, context_window=32768,
           threshold=0.85, max_tokens: int | None = None)
 compactor.should_compact(messages) -> bool
-await compactor.compact(session, messages=None) -> bool   # False = no safe range
+await compactor.compact(session, messages=None, *, source_command_id=None) -> bool
 ```
 
 `AgentOptions` (`@dataclass(slots=True)`) — frozen fields first, then additive ones:
@@ -57,71 +66,97 @@ approval_policy: str | None = None    # additive: override for the system prompt
 instructions: list[str] = field(default_factory=list)  # additive: extra instruction blocks
 ```
 
-## 2. Turn/step state machine
+## 2. Driver, inbox, and turn/step state machine
 
-`send` runs exactly one turn:
+One `AgentSession` owns one durable inbox. All user input is queued there; the driver
+claims it turn by turn:
 
-1. raise `SessionError("agent is busy with another turn")` when `busy` is already set;
+* `send(text)` pushes a next-turn message. If the driver is idle it runs every pending
+  turn and returns the last assistant text; if a driver is already running, `send` returns
+  `""` immediately and the message is consumed by the running driver. It never raises
+  `SessionError("busy")` anymore.
+* `followup` queues a next-turn message and wakes an idle driver.
+* `steer` queues a next-step message and wakes the driver; `inject` queues a next-step
+  message without waking an idle driver.
+* The driver loop is `while not interrupted and inbox.has_pending: turn = _run_turn()`.
+  `_drive` always publishes `running` then `idle` through the `agent/status` emit hook.
+
+Each turn:
+
+1. claim every pending **next-turn** message (`Inbox.claim`) — the turn runs even when the
+   claim became empty, and then closes as `completed` with no request;
 2. append `turn/start {"turn": n}` where `n = #turn/start records + 1`;
-3. run the step loop;
-4. always clear `busy` and resolve the interrupt wait event.
+3. run the `agent/pre-step` waterfall; a `{"kind": "reject"}` result writes
+   `turn/end {"kind":"blocked","reason":{"kind":"pre-step",...}}` without a step, and an
+   `{"kind": "enter", "messages": [...]}` result may replace the admitted user messages and
+   set `startsRequestSeries`;
+4. run steps until the turn closes.
 
 One step:
 
-1. if a user interrupt was requested, abort the turn (section 7);
-2. if `step >= options.max_steps`, close the turn with `{"kind": "max-steps"}` and return the
-   last assistant text (the overflow step is never started);
-3. append `step/start {"turn", "step"}` with `step = 1, 2, ...`;
-4. first step of every turn only:
-   - `system/message` when the session has no `system/message` record yet (once per session);
-   - `user/message` for the prompt text;
-   - `request/header` with the tool catalog;
-   - `request/context` when the provider/model/context window differs from the last one;
-5. emit `{"type": "status", "phase": "thinking"}`;
-6. auto-compaction when `Compactor.should_compact(derived_messages)` is true (section 8);
-7. derive messages and stream `LlmRequest(provider=provider.name, model=options.model or
-   provider.model or "unknown", messages=derived, system=None, tools=registry.schemas(),
-   max_tokens, temperature, context_window, session_id)` — the system prompt is a recorded
-   `system/message`, never a request-level field;
-8. finalize the assistant turn (assistant message, tool calls, closing records).
+1. abort on a pending interrupt;
+2. close with `max-steps` when `step >= options.max_steps`;
+3. append `step/start` and emit the UI-only `step` event;
+4. claim next-step inbox messages (except step 1, which uses the turn claim);
+5. commit the system prompt projection and `user/message` records for the claimed messages;
+6. commit the runtime-context projection (only when its rendered text changes);
+7. write `request/header` when needed, a `developer/message` tool-change diff when the tool
+   catalog changed, and `request/context` only when provider/model/context window changed;
+8. emit `status thinking`, run auto-compaction, build and derive the request;
+9. run the `agent/request` waterfall (controls or `LlmRequest`; provider/model may not change);
+10. stream, append `assistant/message` and run tools, then close the step.
 
-Turn end reasons (record `turn/end {"turn", "reason"}`):
+Turn end reasons (`turn/end {"turn", "reason"}`):
 
 | reason | when |
 | --- | --- |
-| `{"kind": "completed"}` | model answered without tool calls |
+| `{"kind": "completed"}` | model answered without tool calls, or no admitted messages |
 | `{"kind": "max-steps"}` | `max_steps` exhausted |
-| `{"kind": "max-tokens"}` | provider `Finish(kind="length")` |
+| `{"kind": "max-tokens"}` | provider `Finish(kind="length")`; unexecuted tool calls are dropped |
+| `{"kind": "blocked", "reason": {"kind": "pre-step", ...}}` | pre-step rejected the turn |
 | `{"kind": "aborted", "reason": {"kind": "user"}}` | `interrupt()` |
 | `{"kind": "aborted", "reason": {"kind": "provider"}}` | provider `Finish(kind="aborted")` |
 | `{"kind": "aborted", "reason": {"kind": "disposed"}}` | external task cancellation |
 | `{"kind": "error", "error": {"message", "code"?}}` | provider failure / unexpected exception |
 
-`request/header.reason`:
+## 3. Hooks at the loop boundary
 
-* `initial` — the session has no earlier `request/header`;
-* `series` — the most recent `turn/end` was `completed` (or there is none);
-* `resume` — the most recent turn ended any other way (error/aborted/max-*).
+The loop reads `services["hooks"]` (a `HookService`); without the service every hook is a
+no-op. The nine names are fixed and documented in `docs/spec/hooks.md`. Loop call sites:
 
-`request/context` is written only when provider, model, or `context_window` changed relative
-to the previous `request/context` record.
+| hook | where | payload / result |
+| --- | --- | --- |
+| `agent/pre-step` | once per turn, before step 1 | `{messages, turn, step, signal, modelSelection, tools, agent}`; waterfall returns `{"kind":"enter","messages"}` or `{"kind":"reject","reason"}` (fallback `{"kind":"enter","messages":claimed}`) |
+| `agent/request` | after the request is built | `{request, turn, step, signal, agent}`; waterfall fallback is the controls dict (`provider/model/reasoningEffort/maxTokens/temperature/contextWindow`); returns `LlmRequest` or controls, provider/model/reasoningEffort are immutable |
+| `agent/request-error` | after a failed stream attempt | `{turn, step, provider, failure, retryPolicy, signal, agent}`; returning `{"kind":"retry"}` enables `decide_retry` and `llm/retry` / `llm/retry-started` records, otherwise the failure propagates as `LlmError` |
+| `agent/turn-stopping` | serial, before closing a completed turn | `{turn, signal, agent}`; a listener may steer the loop |
+| `agent/assistant-stream` | emit, for each transient stream frame | `{frame}` (`start`, `chunk`, `end`) |
+| `agent/status` | emit, on phase changes | `{"status": "running"|"idle"}` |
+| `tools/pre-execute`, `tools/execute`, `tools/post-execute` | inside `run_tool_batch` | see `docs/spec/hooks.md` §5 |
 
-## 3. Records written by the loop
+The provider keeps its own low-level `RetryPolicy` wrapper; the loop-level retry only runs
+when a plugin registers an `agent/request-error` listener that answers `{"kind":"retry"}`.
+By default the runtime therefore produces no `llm/retry` records at the agent level.
+
+## 4. Records written by the loop
 
 | record | `data` | envelope |
 | --- | --- | --- |
 | `turn/start` | `{turn}` | — |
 | `turn/end` | `{turn, reason}` | — |
 | `step/start` / `step/end` | `{turn, step}` | — |
-| `system/message` | `{turn, step, message}` (source `{"kind": "system-prompt"}`) | `surfaceOp="append"` |
-| `user/message` | the wire `Message` directly (`role`, `content`, `id`, `source`) | `surfaceOp="append"` |
+| `system/message` | `{turn, step, message}` (source `{"kind":"system-prompt"}`) | `surfaceOp="append"` or a replace projection |
+| `user/message` | the wire `Message` directly (`role, content, id, source`) | `surfaceOp="append"` or a replace projection (runtime-context) |
+| `developer/message` | tool-change message from `tool_change_data` | `surfaceOp="append"` |
 | `request/header` | `{turn, step, header: {config, adapterDefaults, tools}, reason}` | — |
 | `request/context` | `{turn, step, provider, model, contextWindow}` | — |
-| `assistant/message` | `{turn, step, message, usage?, stream: []}` | `surfaceOp="append"` |
-| `assistant/attempt` | `{turn, step, stream: [usage chunk?, finish-error chunk]}` | — |
+| `assistant/message` | `{turn, step, message, usage?, stream: [], interrupted?}` | `surfaceOp="append"` |
+| `assistant/attempt` | `{turn, step, stream: [merged chunks]}` | — |
 | `tool/call` | `{turn, step, callId, name, arguments}` (`arguments` is a JSON string) | — |
-| `tool/result` | `{turn, step, message, meta?}` (`message.role="tool"`, `source.kind="tool"`) | `surfaceOp="append"`, `sourceEventSeqs=[assistant/message seq]` |
-| `compaction/start`, `compaction/summary`, checkpoint `user/message`, `compaction/end` | section 8 | checkpoint: `surfaceOp={"op": "replace", "startSeq", "endSeq"}`, `sourceEventSeqs` |
+| `tool/result` | `{turn, step, message, meta?}` (`message.role="tool"`, `source.kind="tool"`) | `surfaceOp="append"`, `sourceEventSeqs=[tool/call seq]` when known |
+| `llm/retry`, `llm/retry-started` | retry record pair from `decide_retry` | — |
+| `compaction/start`, `compaction/summary`, checkpoint `user/message`, `compaction/end` | section 9 | checkpoint replace envelope |
+| `agent/inbox/spliced` | inbox mutation from `Inbox` | — |
 
 `usage` on `assistant/message` is camelCase like the fixtures:
 `{"inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens"}`.
@@ -130,7 +165,42 @@ The envelope is passed only when the session's `append` accepts `**kwargs`; the 
 this once with `inspect.signature`. A minimal `SessionLogLike` without envelope support still
 works, it just records events without surface information.
 
-## 4. Events and ordering guarantees
+## 5. Prompt and runtime context projections
+
+The system prompt is a recorded `system/message`, never a request-level field. At every step
+the loop renders `build_system_prompt(registry.schemas(), prompt_context)` and feeds it to
+`SystemPromptProjection.project(rendered, in_history=True, starts_series=...)`:
+
+* append a new head system node when there is none;
+* replace the current head system node when the rendered text changed at a series start;
+* otherwise leave the existing node untouched (a later step reuses the same prompt).
+
+The runtime context is a second, append/replace stream of `user/message` records with
+`source.kind="runtime-context"`. `RuntimeContextProjection` retains the newest snapshot and
+projects the newly rendered text; when it changes, it replaces the retained snapshot so old
+runtime-context records disappear from the derived history. `PromptContext` carries cwd,
+platform, session id, start time, permission preset, approval policy, model, and instructions;
+`collect_instructions(cwd)` walks `cwd` and its parents to the filesystem root, dedupes by
+resolved path, reads `AGENTS.md` from root-most to deepest, and truncates each file at
+`DEFAULT_MAX_INSTRUCTION_CHARS = 20000`.
+
+## 6. Assistant stream snapshots and retries
+
+`AssistantStreamAccumulator` merges provider deltas into the DSH-shaped `stream` array stored
+on `assistant/message` / `assistant/attempt`: text and reasoning chunks, tool-call chunks with
+`index/id/name/argumentsDelta`, usage and finish chunks, each with `time`/`dt`. Adjacent
+fragments of the same kind merge while their gap is at most `MAX_MERGE_GAP_MS = 60000`;
+`expand_stream` is the inverse used by tests and tooling. On a failed attempt the snapshot is
+written to `assistant/attempt` before `agent/request-error` runs.
+
+`decide_retry` is pure: given the sanitized failure, `retryPolicy`, previous retry, provider,
+turn, and step it returns a `RetryDecision` with `retry`/`retryId`/`delay_ms`/`mode`/
+`policy_key` plus the two durable payloads. Normal mode retries only known retryable codes
+within `maxRetries`; `always` ignores the budget; `providerRetryAfterMs` wins over local
+backoff when the policy allows it; the retry id is reused per provider+policy chain. The loop
+appends `llm/retry`, waits `delayMs`, appends `llm/retry-started`, and re-runs the step.
+
+## 7. Events and ordering guarantees
 
 Event shapes are the frozen ones from INTERFACES §7:
 
@@ -153,7 +223,7 @@ Ordering rules implemented here:
   model stream; the durable `step/start` record remains the only step bookkeeping.
 * `session` is a frontend event: the headless runner emits it once before the first
   `turn/start`; `AgentSession` never emits it, so JSON consumers see it exactly once.
-* `status thinking` is emitted after the first-step preamble records and before compaction /
+* `status thinking` is emitted after the step preamble records and before compaction /
   the provider request; `status tool` after the assistant record and before the first
   `tool/call`.
 * `text` / `thinking` deltas are emitted **while the provider stream is running**, i.e. before
@@ -164,98 +234,39 @@ Ordering rules implemented here:
 * `final` is emitted only for successful turn ends (completed, max-tokens, max-steps) and
   never for errors/aborts.
 * `status done` is emitted at the end of every turn, after `turn/end`.
-* Concrete sinks are a frontend concern and live in `deeppyro/headless.py` (INTERFACES
-  section 7): `JsonLinesSink` writes one compact JSON object per line (`ensure_ascii=False`)
-  and flushes after each event so a consumer can read a running turn; `RichSink` renders the
-  same events for a terminal. The agent package only defines the `EventSink` protocol usage.
+* Concrete sinks live in `deeppyro/headless.py` and `deeppyro/tui/sink.py`; the agent package
+  only defines the `EventSink` protocol usage.
 
-## 5. System prompt
-
-`build_system_prompt(tools, ctx)` is deterministic and uses only its arguments:
-
-1. identity — "You are DeepPyro, a coding agent running in a terminal." + one paragraph on
-   the job;
-2. `## Environment` — cwd, platform, model, session id, UTC start time, permission preset,
-   approval policy, and at most 50 sorted `env` entries;
-3. `## Project instructions` — numbered `### Instruction block N` sections, or an explicit
-   "none found" line;
-4. `## Tools` — one `### <name>` block per schema with the description and compact sorted
-   JSON parameters; when there are no tools it says so;
-5. `## Operating rules` — nine rules (inspect before change, targeted edits, shell usage,
-   verify, never fabricate, follow project instructions, ask only when blocked, concise
-   replies, adapt after tool failure) plus the "answer directly" closing line.
-
-`collect_instructions(cwd)` walks `cwd` and its parents to the filesystem root, dedupes by
-resolved path, reads `AGENTS.md` from root-most to deepest (deeper = later = refinement),
-skips unreadable/empty files, truncates each file at `DEFAULT_MAX_INSTRUCTION_CHARS = 20000`
-characters with `[instruction file truncated]`, and prefixes every block with
-`Instructions from <absolute path>:`. `build_system_prompt` itself never touches the
-filesystem.
-
-`AgentSession` builds its `PromptContext` from the session header `createdAt` (fallback:
-`now_ms()`), `sys.platform`, `collect_instructions(cwd)` plus
-`AgentOptions.instructions`, and permission / approval from the options first, then the
-gate attributes (`preset`, `approval`), then defaults `workspace-write` / `ask`.
-
-## 6. Tool execution
+## 8. Tool execution
 
 Calls returned by one stream are grouped in provider order: consecutive `parallel_safe`
-tools form one concurrent group (an unknown tool is treated as parallel-safe, matching the
-tool pipeline's "unknown tool becomes an error result" contract), and every barrier tool
-gets its own group. Per group the loop:
+tools form one concurrent group (an unknown tool is treated as parallel-safe), and every
+barrier tool gets its own group. Per group the loop:
 
-1. appends all `tool/call` records (then emits `tool_call` events) in call order;
-2. executes the group through `deeppyro.tools.run_tool_batch(..., registry, ctx_factory)`
-   (lazy import; a self-contained fallback with `Semaphore(8)` exists only for workstream
-   isolation), with `ToolContext(cwd, session_id, turn, step, call_id, cancel=async Event,
-   log=session.append, permission, services)`;
-3. appends one `tool/result` record per call in request order (then emits `tool_result`),
-   carrying `ToolResult.meta` when present.
+1. lets `run_tool_batch` append all `tool/call` records through its `log` callback before any
+   pre-execute hook runs;
+2. executes through `deeppyro.tools.run_tool_batch(..., registry, ctx_factory, hooks=...,
+   turn=..., step=..., log=...)`, with `ToolContext(cwd, session_id, turn, step, call_id,
+   cancel=async Event, log=session.append, permission, services)`;
+3. appends one `tool/result` per call in request order (then emits `tool_result`), carrying
+   `ToolResult.meta` and `ToolOutcome.call_seq` as `sourceEventSeqs`.
 
 So parallel groups log `call, call, result, result` while barrier tools log
-`call, result, call, result` — the same shape as the fixtures. Unknown tools, malformed JSON
-arguments, `PermissionDenied`, `ToolError`, and unexpected tool exceptions become
+`call, result, call, result`. Unknown tools, malformed JSON arguments, `PermissionDenied`,
+`ToolError`, hook failures, and unexpected tool exceptions become
 `ToolResult(is_error=True, text="Error: ...")`; only `CancelledError` propagates. The
-assistant message is always appended before any `tool/call` record, so a `tool/result`
-replacement/fold always has its origin on the surface.
+assistant message is always appended before any `tool/call` record.
 
-## 7. Cancellation and failures
+## 9. Compaction
 
-`interrupt()` sets the interrupt flag and the `ToolContext.cancel` event, cancels the task
-running `send` (the turn runs in the caller's task), and waits up to 5 s for the turn to
-record its abort. The resulting records are: a partial `assistant/message` when any
-reasoning/text/tool-call content arrived, synthetic
-`tool/result` records with `text="Error: interrupted"` for calls that were announced but not
-finished, `step/end`, and `turn/end {"kind": "aborted", "reason": {"kind": "user"}}`.
-`send` returns the partial assistant text; no `final`/error event is emitted; no exception
-is raised.
-
-Other failure paths:
-
-* provider `Finish(kind="aborted")` → same as above but reason `provider`;
-* provider `Finish(kind="error")` or a stream that ends without `Finish` → append a partial
-  `assistant/message` when content exists, otherwise `assistant/attempt` with the failure
-  chunk; emit `error`, `step/end`, `turn/end error`; re-raise `LlmError`;
-* `Finish(kind="length")` → partial assistant message, `step/end`,
-  `turn/end {"kind": "max-tokens"}`, `final` with the partial text;
-* an unexpected exception follows the provider-error path (attempt/error/turn-end error) and
-  is re-raised;
-* external `CancelledError` (`send` cancelled from outside) records
-  `{"kind": "aborted", "reason": {"kind": "disposed"}}` and re-raises.
-
-`busy = True` for the whole turn including tool execution, and concurrent `send` calls raise
-`SessionError`.
-
-## 8. Compaction
-
-### 8.1 Token accounting
+### 9.1 Token accounting
 
 `estimate_message_tokens` = `(len(text) + len(reasoning) + len(tool-call name) +
 len(tool-call arguments)) / 3.5 + 4`; `CHARS_PER_TOKEN = 3.5`, `MESSAGE_OVERHEAD = 4.0`.
 `should_compact(messages)` is `estimate_messages_tokens(messages) > threshold *
 context_window` (`context_window <= 0` disables it).
 
-### 8.2 Surface fold
+### 9.2 Surface fold
 
 The durable log is append-only; visible context is a *surface* of system/developer/user/
 assistant messages and tool results. Each such record carries `surfaceOp`:
@@ -266,27 +277,25 @@ assistant messages and tool results. Each such record carries `surfaceOp`:
 `fold_surface` validates replacements exactly like the session writer: `startSeq/endSeq`
 must be present on the surface and earlier than the event seq, `sourceEventSeqs` must be
 non-empty, unique, all earlier, and include every shadowed node, a `system/message` head may
-only be replaced by that same single system node (compaction never shadows node 0), and a
-negative tool-call balance is rejected. Derivation: `user/message` yields `data` itself,
-`tool/result` yields `data.message`, `system/message` / `developer/message` /
-`assistant/message` yield `data.message` unless the content list is empty (then the node
-exists but yields no message).
+only be replaced by that same single system node, and a negative tool-call balance is
+rejected. The fold accepts both pydantic `ReplaceOp` objects and plain dicts, so folding a
+real `Session` twice cannot fail on its own record type.
 
-### 8.3 Region selection
+### 9.3 Region selection
 
 `select_region(records, retain_tokens)` folds the surface, never shadows a head system
 message, accumulates node token estimates from the tail until `retain_tokens` is reached,
 moves the cut older while the cut would split an assistant tool-call from its result, and
 returns the contiguous region `[first_index, keep_from-1]` with its shadowed seqs and
-estimated tokens. It returns `None` when nothing safe can be shadowed (small conversation,
-every span unbalanced) — `compact` then returns `False` without writing anything.
+estimated tokens. It returns `None` when nothing safe can be shadowed; `compact` then
+returns `False` without writing anything.
 
 `entry_state(records)` recovers the open turn (`turn/start` without `turn/end`), the latest
 `session/end-seed` seq, and an unmatched `compaction/start` (same `compactionId` with no
 `compaction/end`). An unmatched start older than the latest end-seed is ignored; otherwise
 it means another compaction is running and `compact` raises `SessionError`.
 
-### 8.4 Summarization call
+### 9.4 Summarization call
 
 `compact` replays the surface *before* the region (`[system/message?, ...region messages]`)
 and appends one final user message with the DSH `COMPACTION_INSTRUCTION` (structured Markdown
@@ -295,34 +304,34 @@ advertised by the latest `request/header`, `max_tokens` from the compactor, and 
 id. The stream is consumed for `TextDelta`; `Finish(kind="error")` → `LlmError`,
 `aborted` → `AbortedError`, `length` → `LlmError("summarization truncated at the token cap
 (incomplete checkpoint)")`, `content-filter` → `LlmError`, empty text → `LlmError`.
-The checkpoint message is `role="user"` with the preamble + `<compacted-summary>` framing,
+The checkpoint is `role="user"` with the preamble + `<compacted-summary>` framing,
 `source={"kind": "compact-checkpoint", "compactionId": ...}`, and a fresh message id.
 Before committing, the framed checkpoint must estimate strictly smaller than the shadowed
 region; otherwise `LlmError("summary is not smaller than the shadowed content ...")`.
 
-### 8.5 The four-record transaction
+### 9.5 The four-record transaction
 
 A successful compaction appends, in order, with no yields between the commitments:
 
-1. `compaction/start {"compactionId", "turn"?}` — `turn` only when a turn is open (auto
-   compaction); it is the durable lock.
-2. `compaction/summary {"compactionId", "summary": [text block], "rawOutput": [text block],
-   "llmStreamCall": true, "shadowedRange": {"start", "end"}, "shadowedSeqs": [...],
-   "shadowedTokenCount", "provider", "model", "maxTokens"?, "usage"?}`.
+1. `compaction/start {"compactionId", "sourceCommandId"?, "turn"?}` — `turn` only when a turn
+   is open (auto compaction); it is the durable lock;
+2. `compaction/summary {"compactionId", "sourceCommandId"?, "summary": [text block],
+   "rawOutput": [text block], "llmStreamCall": true, "shadowedRange": {"start","end"},
+   "shadowedSeqs": [...], "shadowedTokenCount", "provider", "model", "maxTokens"?, "usage"?}`;
 3. checkpoint `user/message` whose `data` is the checkpoint `Message`, envelope
-   `surfaceOp={"op": "replace", "startSeq", "endSeq"}` and
-   `sourceEventSeqs=[start seq, summary seq, ...shadowedSeqs]` — this is what removes the old
-   span from the surface.
-4. `compaction/end {"compactionId", "turn"?}`.
+   `surfaceOp={"op":"replace","startSeq","endSeq"}` and
+   `sourceEventSeqs=[start seq, summary seq, ...shadowedSeqs]` — this removes the old span;
+4. `compaction/end {"compactionId", "sourceCommandId"?, "turn"?}`.
 
+`sourceCommandId` is copied from the `source_command_id` keyword and omitted when absent.
 The surface must still contain the selected start/end after summarization (stability check).
 After the transaction the compactor calls `session.derive_messages()` and verifies the
 checkpoint id is present, raising `SessionError` otherwise. Any failure after the start
 record is answered with a single `compaction/end` carrying
-`error={message, name, code?}`, and the original exception is re-raised (the record write
+`error={message, name, code?}`, and the original exception is re-raised (the record-write
 failure itself is logged, never masking the original error).
 
-### 8.6 Integration with the loop
+### 9.6 Integration with the loop
 
 Auto-compaction runs inside the open turn, once per step, after `status thinking` and before
 deriving the request messages. Failures other than `CancelledError` are logged and stored on
@@ -332,62 +341,80 @@ deriving the request messages. Failures other than `CancelledError` are logged a
 `compact(session, messages)` ignores `messages` (kept for the frozen signature) and selects
 the region from `session.records`, so seqs remain authoritative.
 
-## 9. Known deviations / risks
+## 10. Cancellation and failures
+
+`interrupt()` sets the interrupt flag and `ToolContext.cancel`, clears the inbox by default,
+cancels the driver task when called from another task, and waits up to 5 s for the turn to
+record its abort. The resulting records are: a partial `assistant/message` when any
+reasoning/text/tool-call content arrived (tool-call parts are dropped because they never ran),
+synthetic `tool/result` records with `text="Error: interrupted"` for calls that were announced
+but not finished, `step/end`, and `turn/end {"kind":"aborted","reason":{"kind":"user"}}`.
+`send` returns the partial assistant text; no `final`/error event is emitted.
+
+Other failure paths:
+
+* provider `Finish(kind="aborted")` → same shape but reason `provider`;
+* provider `Finish(kind="error")` or a stream that ends without `Finish` → append a partial
+  `assistant/message` when content exists, otherwise `assistant/attempt`; emit `error`,
+  `step/end`, `turn/end error`; re-raise `LlmError`;
+* `Finish(kind="length")` → partial assistant message without tool calls, `step/end`,
+  `turn/end {"kind":"max-tokens"}`, `error` event naming the dropped tool calls;
+* an unexpected exception follows the provider-error path and is re-raised;
+* external `CancelledError` records `{"kind":"aborted","reason":{"kind":"disposed"}}` and
+  re-raises.
+
+## 11. Known deviations / risks
 
 1. **Streaming event order.** `text`/`thinking` deltas necessarily precede the
    `assistant/message` append. All record-mirroring events follow their record.
-2. **No replay chunks.** Fixtures store the provider `stream` chunks on `assistant/message`;
-   the loop records `stream: []` and only synthesizes chunks for `assistant/attempt` on a
-   pre-content failure. Replay/debugging fidelity is therefore lower than DSH.
-3. **No retry records.** `llm/retry` / `llm/retry-started` are produced by the retry
-   wrapper in `deeppyro.llm`, not by the loop.
-4. **Header reason heuristic.** The loop cannot see RPC resume semantics, so it infers
-   `initial` / `series` / `resume` from the previous `turn/end`.
-5. **request/context.** Written on the first step of a turn only when provider, model, or
-   context window changed; DSH logs it in a narrower set of cases.
+2. **Interrupt tool results lack `sourceEventSeqs`.** Synthetic `Error: interrupted` results
+   are appended without the original `tool/call` seq (the abort path does not retain it).
+   Fold validation tolerates this; a later improvement should carry the seq.
+3. **Idle `inject` is consumed at step 2.** A next-step message injected while idle is not
+   claimed by step 1 of the next turn (step 1 consumes the turn claim); it lands at the next
+   step boundary. This is intentional queue semantics but differs from a fully synchronous
+   "inject before step 1" reading.
+4. **Loop-level retry needs a listener.** `agent/request-error` retry records appear only when
+   a plugin registers a listener returning `{"kind":"retry"}`; the provider's own
+   `RetryPolicy` retries transparently before that point.
+5. **Header reason heuristic.** The loop infers `initial` / `series` / `resume` from the
+   previous `turn/end`; it does not see RPC resume semantics.
 6. **Heuristic token estimate.** `len/3.5 + 4` per message is frozen by INTERFACES and is
    used both for pressure and for region sizing.
 7. **Checkpoint shape.** The summary is stored as one text block (`rawOutput` mirrors it);
    DSH may retain multiple output blocks. `errorChain` is simplified to
    `{message, name, code?}`.
-8. **No `sourceCommandId`.** Command/job integration (and therefore source-command ids on
-   compaction records) is not part of this module; callers can extend the lifecycle dict
-   later without breaking the format.
+8. **No loop-level `sourceCommandId`.** `Compactor.compact` accepts and writes it, but the
+   agent loop does not pass one yet (there is no command/job id in the turn context).
 9. **Session dependency.** Envelopes require the real `Session.append(type, data, **envelope)`.
    The loop probes this; a reduced `SessionLogLike` cannot record surface ops and thus cannot
    support compaction. `Compactor` requires `session.records`.
-10. **Additive options/kwargs.** `AgentOptions.model`, `permission_preset`,
-    `approval_policy`, `instructions`, and `AgentSession.permission=None`,
-    `services`, `compactor` are additions beyond INTERFACES §7; all have defaults, so the
-    frozen constructor contract still holds.
+10. **Additive options/kwargs.** `model`, `permission_preset`, `approval_policy`,
+    `instructions`, `permission=None`, `services`, `compactor`, and `prompt_builder` are
+    additions beyond INTERFACES §7; all have defaults, so the frozen constructor holds.
 11. **Prompt content is DeepPyro-specific** (not DSH's runtime prompt), and it never embeds
     host memory protocols.
-12. **Tools fallback.** `_execute_calls_fallback` duplicates the tool pipeline contract for
-    workstream isolation; it is only used when `deeppyro.tools.pipeline` is unavailable.
 
-## 10. Test coverage (`uv run pytest tests/agent -q`)
+## 12. Test coverage
 
-38 tests, all green: prompt 7, loop 15, compaction 11, plus sink-free loop assumptions.
-(Sink behavior itself is covered by `tests/tui/test_headless.py`.)
+`uv run pytest -o addopts= -q tests/agent tests/hooks tests/prompt tests/tools/test_pipeline_hooks.py`
+covers the loop, inbox, stream, retry, projection, hooks, and pipeline integration. The full
+suite at the P0 close was 1339 passed.
 
-* `tests/agent/fakes.py` — `FakeSessionLog` (append with seq + envelope, surface-fold
-  `derive_messages`, `records_of`/`seq_for`), `ScriptedProvider` (scripted stream turns,
-  pause events for interrupt tests, recorded requests), `FakeTool`/`FakeRegistry`,
-  `RecordingSink` (records `len(session.records)` at emit time to prove append-before-emit),
-  `FakePermission`. The fake session implements the same fold/validation rules as
-  `compact.surface`, so compaction tests cannot pass by accident.
-* prompt: environment/model/tool/instruction rendering, determinism, AGENTS.md root-first
-  order, truncation, unreadable/empty files skipped.
-* loop: exact simple-turn record and event sequences; header reasons; no duplicated system
-  message / request context on later turns; parallel and barrier tool ordering; error and
-  unknown tools; interrupt mid-stream; busy guard; max-steps; provider error →
-  `assistant/attempt` + `turn/end error`; reasoning parts; length finish; auto-compaction
-  inside the open turn; tolerated auto-compaction failure.
-* compaction: token estimator math and threshold; the full 4-record transaction and its data
-  shapes; checkpoint envelope/sourceEventSeqs/derived fold; tool-schema replay in the
-  summarization request; no-safe-range no-op; second compaction shadowing the prior
-  checkpoint; failure closing with error; unmatched-start lock; oversized/empty/truncated
-  summaries; missing `records` → `SessionError`.
+* `tests/agent/fakes.py` — `FakeSessionLog` (real `LogRecord` + strict canonical surface fold),
+  `ScriptedProvider`, `FakeTool`/`FakeRegistry`, `RecordingSink`, `FakePermission`.
+* loop: exact record/event sequences; header reasons; system + runtime-context projections;
+  parallel and barrier tool ordering; tool hooks; error/unknown tools; interrupt mid-stream;
+  queued sends/followup/steer/inject; busy driver semantics; max-steps; length finish with
+  dropped tool calls; provider error → `assistant/attempt` + `turn/end error`;
+  auto-compaction inside the turn; tolerated compaction failure; failed attempt then retry.
+* inbox: replay of `agent/inbox/spliced`, claim order, clear, splice/remove/replace, id
+  uniqueness, no-op mutations.
+* stream: merge gaps, snapshot deep copy, `expand_stream` inverse, tool-call deltas.
+* retry: normal/always modes, retryable codes, provider Retry-After, jitter bounds, retry-id
+  reuse, record key order.
+* projection: append/replace rules, retained runtime-context snapshot, cleared text.
+* hooks: waterfall/serial/emit semantics, unknown names, disposal, plugin row.
+* compaction: unchanged from the pre-P0 suite plus `sourceCommandId` on all four records.
 
-Lint: `uv run ruff check src/deeppyro/agent src/deeppyro/prompt src/deeppyro/compact tests/agent`
-and `uv run ruff format --check ...` are clean (line-length 110).
+Lint: `uv run ruff check src tests` and `uv run ruff format --check src tests` are clean.

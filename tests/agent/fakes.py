@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from deeppyro.compact.surface import derive_node_message, fold_surface
 from deeppyro.core.ids import new_session_id, now_ms
 from deeppyro.core.protocols import (
     Finish,
@@ -25,19 +24,12 @@ from deeppyro.core.protocols import (
     ToolResult,
     ToolSchema,
 )
-from deeppyro.core.wire import Message, SessionHeader
+from deeppyro.core.wire import LogRecord, Message, SessionHeader
+from deeppyro.session.derive import derive_messages as derive_session_messages
+from deeppyro.session.events import SURFACE_EVENTS
 
-
-@dataclass
-class FakeRecord:
-    """One durable record with the envelope fields the surface fold reads."""
-
-    type: str
-    seq: int
-    data: dict[str, Any]
-    time: int = 0
-    surfaceOp: Any = None
-    sourceEventSeqs: list[int] | None = None
+# Historical alias: the fake log now stores real LogRecord envelopes.
+FakeRecord = LogRecord
 
 
 class FakeSessionLog:
@@ -56,33 +48,34 @@ class FakeSessionLog:
             createdAt=created_at if created_at is not None else now_ms(),
             cwd=str(cwd),
         )
-        self.records: list[FakeRecord] = []
+        self.records: list[LogRecord] = []
         self.closed = False
         self.appends = 0
 
     # -- SessionLogLike ----------------------------------------------------
     def append(self, type: str, data: dict[str, Any], **envelope: Any) -> int:
         seq = len(self.records) + 1
+        surface_op = envelope.get("surfaceOp")
+        if surface_op is None and type in SURFACE_EVENTS:
+            surface_op = "append"
         self.records.append(
-            FakeRecord(
+            LogRecord(
                 type=type,
                 seq=seq,
                 data=data,
                 time=now_ms(),
-                surfaceOp=envelope.get("surfaceOp"),
+                surfaceOp=surface_op,
                 sourceEventSeqs=envelope.get("sourceEventSeqs"),
+                ignorable=envelope.get("ignorable"),
             )
         )
         self.appends += 1
         return seq
 
     def derive_messages(self) -> list[Message]:
-        messages: list[Message] = []
-        for node in fold_surface(self.records):
-            message = derive_node_message(node)
-            if message is not None:
-                messages.append(message)
-        return messages
+        # Mirror the production Session: the canonical surface fold validates
+        # envelopes and drops empty system/developer/assistant messages.
+        return derive_session_messages(self.records)
 
     def close(self) -> None:
         self.closed = True
@@ -91,10 +84,10 @@ class FakeSessionLog:
     def types(self) -> list[str]:
         return [record.type for record in self.records]
 
-    def records_of(self, record_type: str) -> list[FakeRecord]:
+    def records_of(self, record_type: str) -> list[LogRecord]:
         return [record for record in self.records if record.type == record_type]
 
-    def seq_of(self, record: FakeRecord) -> int:
+    def seq_of(self, record: LogRecord) -> int:
         return record.seq
 
     def seq_for(self, record_type: str, *, index: int = 0) -> int:

@@ -102,10 +102,18 @@ def fold_surface(records: Sequence[Any]) -> list[SurfaceNode]:
         if op is None or op == SURFACE_OP_APPEND:
             nodes.append(SurfaceNode(seq=seq, type=record_type, data=data))
             continue
-        if not isinstance(op, dict) or op.get("op") != "replace":
+        # Session records carry a pydantic ReplaceOp after validation, while
+        # raw/log records carry the equivalent dict; accept both shapes.
+        if isinstance(op, dict):
+            op_kind = op.get("op")
+            start_seq = op.get("startSeq")
+            end_seq = op.get("endSeq")
+        else:
+            op_kind = getattr(op, "op", None)
+            start_seq = getattr(op, "startSeq", None)
+            end_seq = getattr(op, "endSeq", None)
+        if op_kind != "replace":
             raise SessionError(f"invalid surfaceOp at seq {seq}: {op!r}")
-        start_seq = op.get("startSeq")
-        end_seq = op.get("endSeq")
         if not isinstance(start_seq, int) or not isinstance(end_seq, int):
             raise SessionError(f"replacement at seq {seq} needs integer startSeq/endSeq")
         if start_seq >= seq or end_seq >= seq:

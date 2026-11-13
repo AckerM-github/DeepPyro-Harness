@@ -373,7 +373,16 @@ class HeadlessRuntime:
         kernel_app = self.kernel_app
         if kernel_app is None:
             return services
-        for name in ("llm", "plugin_manager", "inspect", "settings", "jobs", "team", "subagent"):
+        for name in (
+            "llm",
+            "hooks",
+            "plugin_manager",
+            "inspect",
+            "settings",
+            "jobs",
+            "team",
+            "subagent",
+        ):
             try:
                 value = kernel_app.service(name)
             except LookupError:

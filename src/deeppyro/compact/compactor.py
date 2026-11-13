@@ -91,14 +91,21 @@ class Compactor:
         return estimate_messages_tokens(messages) > self.threshold * self.context_window
 
     # -- main entry point --------------------------------------------------
-    async def compact(self, session: Any, messages: list[Message] | None = None) -> bool:
+    async def compact(
+        self,
+        session: Any,
+        messages: list[Message] | None = None,
+        *,
+        source_command_id: str | None = None,
+    ) -> bool:
         """Compact the oldest safe region; return True when a checkpoint was written.
 
         messages is optional and only used for interface compatibility; the
         actual region is always selected from the session surface so seqs stay
-        authoritative.  Returns False when there is no safe range (the
-        conversation is still small, or every span would split a
-        tool-call/result pair).
+        authoritative.  source_command_id correlates a manual /compact command
+        with the durable records, matching the reference harness.  Returns
+        False when there is no safe range (the conversation is still small, or
+        every span would split a tool-call/result pair).
         """
         del messages
         records = getattr(session, "records", None)
@@ -115,6 +122,8 @@ class Compactor:
         open_turn = state.open_turn
         compaction_id = str(uuid.uuid4())
         lifecycle: dict[str, Any] = {"compactionId": compaction_id}
+        if source_command_id is not None:
+            lifecycle["sourceCommandId"] = source_command_id
         if open_turn is not None:
             lifecycle["turn"] = open_turn
         start_seq = _append(session, "compaction/start", lifecycle)
@@ -131,7 +140,7 @@ class Compactor:
                 raise SessionError("surface changed while summarizing; compaction aborted") from exc
             if start_index > end_index:
                 raise SessionError("surface changed while summarizing; compaction aborted")
-            checkpoint = self._checkpoint_message(compaction_id, summary)
+            checkpoint = self._checkpoint_message(compaction_id, summary, source_command_id)
             framed_tokens = estimate_message_tokens(checkpoint)
             if framed_tokens >= region.shadowed_tokens:
                 raise LlmError(
@@ -141,6 +150,7 @@ class Compactor:
                 )
             summary_data: dict[str, Any] = {
                 "compactionId": compaction_id,
+                "sourceCommandId": source_command_id,
                 "summary": [{"type": "text", "text": summary}],
                 "rawOutput": [{"type": "text", "text": summary}],
                 "llmStreamCall": True,
@@ -150,6 +160,8 @@ class Compactor:
                 "provider": self.provider.name,
                 "model": self.model,
             }
+            if source_command_id is None:
+                summary_data.pop("sourceCommandId", None)
             if self.max_tokens is not None:
                 summary_data["maxTokens"] = self.max_tokens
             if usage is not None:
@@ -242,12 +254,17 @@ class Compactor:
         return summary, usage
 
     # -- checkpoint --------------------------------------------------------
-    def _checkpoint_message(self, compaction_id: str, summary: str) -> Message:
+    def _checkpoint_message(
+        self, compaction_id: str, summary: str, source_command_id: str | None = None
+    ) -> Message:
+        source: dict[str, Any] = {"kind": "compact-checkpoint", "compactionId": compaction_id}
+        if source_command_id is not None:
+            source["sourceCommandId"] = source_command_id
         return Message(
             role="user",
             content=[TextPart.model_validate(part) for part in frame_summary(summary)],
             id=new_message_id(),
-            source={"kind": "compact-checkpoint", "compactionId": compaction_id},
+            source=source,
         )
 
     def _verify_checkpoint(self, session: Any, checkpoint_id: str) -> None:

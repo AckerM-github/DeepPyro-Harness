@@ -153,7 +153,9 @@ async def test_compact_writes_four_records_and_folds_checkpoint() -> None:
     assert summary.data["usage"]["inputTokens"] == 40
     assert summary.data["shadowedTokenCount"] > 0
 
-    assert checkpoint.surfaceOp == {
+    # LogRecord coerces the envelope dict into a typed ReplaceOp.
+    assert checkpoint.surfaceOp is not None
+    assert checkpoint.surfaceOp.model_dump() == {
         "op": "replace",
         "startSeq": summary.data["shadowedRange"]["start"],
         "endSeq": summary.data["shadowedRange"]["end"],
@@ -185,6 +187,43 @@ async def test_compact_writes_four_records_and_folds_checkpoint() -> None:
 
     state = entry_state(session.records)
     assert state.unmatched_start_seq is None
+
+
+async def test_compact_threads_source_command_id_through_every_record() -> None:
+    session = FakeSessionLog()
+    build_conversation(session)
+    before = len(session.records)
+    compactor, _ = make_compactor([ScriptedTurn(events=[TextDelta(SUMMARY), finish("stop")])], max_tokens=512)
+
+    assert (
+        await compactor.compact(session, session.derive_messages(), source_command_id="cmd-compact-1") is True
+    )
+
+    added = session.records[before:]
+    assert [record.type for record in added] == [
+        "compaction/start",
+        "compaction/summary",
+        "user/message",
+        "compaction/end",
+    ]
+    start, summary, checkpoint, end = added
+    assert start.data["sourceCommandId"] == "cmd-compact-1"
+    assert summary.data["sourceCommandId"] == "cmd-compact-1"
+    assert end.data["sourceCommandId"] == "cmd-compact-1"
+    assert checkpoint.data["source"] == {
+        "kind": "compact-checkpoint",
+        "compactionId": start.data["compactionId"],
+        "sourceCommandId": "cmd-compact-1",
+    }
+
+    # Without a manual command the key stays absent, matching the reference shape.
+    session2 = FakeSessionLog()
+    build_conversation(session2)
+    compactor2, _ = make_compactor([ScriptedTurn(events=[TextDelta(SUMMARY), finish("stop")])])
+    assert await compactor2.compact(session2) is True
+    for record in session2.records[-4:]:
+        assert "sourceCommandId" not in record.data
+    assert "sourceCommandId" not in session2.records[-2].data["source"]
 
 
 async def test_compact_returns_false_without_a_safe_range() -> None:

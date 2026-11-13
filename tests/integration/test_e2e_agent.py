@@ -88,9 +88,14 @@ async def test_two_step_turn_with_tool_call(tmp_path):
     # -- the turn's durable record grammar ---------------------------------
     assert result == "done"
     assert [record.type for record in session.records] == [
+        # the RPC turn is enqueued on the inbox and claimed before the first step
+        "agent/inbox/spliced",
         "turn/start",
+        "agent/inbox/spliced",
         "step/start",
         "system/message",
+        "user/message",
+        # the runtime-context snapshot rides with the first request
         "user/message",
         "request/header",
         "request/context",
@@ -119,13 +124,21 @@ async def test_two_step_turn_with_tool_call(tmp_path):
 
     # -- derived messages follow the surface fold --------------------------
     messages = session.derive_messages()
-    assert [message.role for message in messages] == ["system", "user", "assistant", "tool", "assistant"]
+    assert [message.role for message in messages] == [
+        "system",
+        "user",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
     assert messages[1].text() == "please echo hi"
-    assert messages[2].text() == "checking"
-    assert messages[2].tool_calls()[0].name == "echo"
-    assert messages[3].isError is False
-    assert messages[3].toolCallId == "call-1"
-    assert messages[4].text() == "done"
+    assert messages[2].text().startswith("Current runtime context.")
+    assert messages[3].text() == "checking"
+    assert messages[3].tool_calls()[0].name == "echo"
+    assert messages[4].isError is False
+    assert messages[4].toolCallId == "call-1"
+    assert messages[5].text() == "done"
 
     # -- tool/call records carry the raw JSON arguments --------------------
     call_records = [record for record in session.records if record.type == "tool/call"]
@@ -137,8 +150,11 @@ async def test_two_step_turn_with_tool_call(tmp_path):
     event_types = [event["type"] for event in sink.events]
     # The CLI emits the single `session` event; a bare AgentSession does not.
     assert "session" not in event_types
-    # A UI-only step hint is emitted right after each durable step/start record.
-    assert event_types[0] == "step"
+    # Inbox splices come first, then a UI-only step hint after each step/start.
+    assert event_types[:2] == ["agent/inbox/inserted", "agent/inbox/claimed"]
+    step_events = [event for event in sink.events if event["type"] == "step"]
+    assert [event["step"] for event in step_events] == [1, 2]
+    assert "step" not in event_types[:2]
     assert "status" in event_types
     assert event_types.index("tool_call") < event_types.index("tool_result")
     assert event_types[-2:] == ["final", "status"]
@@ -156,6 +172,7 @@ async def test_two_step_turn_with_tool_call(tmp_path):
     assert [record.type for record in reopened.records] == [record.type for record in session.records]
     assert [message.role for message in reopened.derive_messages()] == [
         "system",
+        "user",
         "user",
         "assistant",
         "tool",

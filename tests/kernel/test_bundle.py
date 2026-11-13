@@ -22,6 +22,7 @@ EXPECTED_ORDER = [
     "sandbox",
     "tools",
     "tools-builtin",
+    "hooks",
     "jobs",
     "plugin-tools",
     "presets",
@@ -97,6 +98,7 @@ config = { start = 5 }
         "sandbox",
         "tools",
         "tools-builtin",
+        "hooks",
         "jobs",
         "plugin-tools",
         "presets",
@@ -134,6 +136,7 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
             "kernel",
             "llm",
             "tools-builtin",
+            "hooks",
             "jobs",
             "plugin-tools",
             "presets",
@@ -155,6 +158,7 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
         assert app.started["plugin-tools"] == "PENDING"
         assert app.started["team"] == "PENDING"
         assert app.started["llm"] == "ACTIVE"
+        assert app.started["hooks"] == "ACTIVE"
         assert app.started["presets"] == "ACTIVE"
         assert app.started["prompt"] == "ACTIVE"
         assert app.started["prompt-core"] == "ACTIVE"

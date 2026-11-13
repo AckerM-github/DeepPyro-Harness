@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from deeppyro.agent import AgentOptions, AgentSession
-from deeppyro.core.errors import LlmError, SessionError
+from deeppyro.core.errors import LlmError
 from deeppyro.core.protocols import Finish, ReasoningDelta, TextDelta, ToolCallArgsDelta, ToolCallStart
 
 from .fakes import (
@@ -53,10 +53,16 @@ async def test_simple_turn_records_and_events(tmp_path: Path) -> None:
     text = await agent.send("hi")
 
     assert text == "Hello world"
+    # The inbox splice (push) precedes turn/start; the claim splice follows it.
+    # The first step also appends the runtime-context user message so the
+    # projection checkpoint is part of the visible history.
     assert session.types() == [
+        "agent/inbox/spliced",
         "turn/start",
+        "agent/inbox/spliced",
         "step/start",
         "system/message",
+        "user/message",
         "user/message",
         "request/header",
         "request/context",
@@ -76,7 +82,17 @@ async def test_simple_turn_records_and_events(tmp_path: Path) -> None:
     assert session.records_of("assistant/message")[0].surfaceOp == "append"
     assert session.records_of("user/message")[0].surfaceOp == "append"
 
-    assert sink.types() == ["step", "status", "text", "text", "usage", "final", "status"]
+    assert sink.types() == [
+        "agent/inbox/inserted",
+        "agent/inbox/claimed",
+        "step",
+        "status",
+        "text",
+        "text",
+        "usage",
+        "final",
+        "status",
+    ]
     assert [event["phase"] for event in sink.of_type("status")] == ["thinking", "done"]
     assert sink.of_type("final")[0]["text"] == "Hello world"
     assert sink.of_type("usage")[0] == {"type": "usage", "input": 10, "output": 5, "cached": 0}
@@ -89,7 +105,9 @@ async def test_simple_turn_records_and_events(tmp_path: Path) -> None:
     final_index = sink.types().index("final")
     assert sink.record_counts[final_index] >= turn_end_seq
 
-    assert [m.role for m in session.derive_messages()] == ["system", "user", "assistant"]
+    assert [m.role for m in session.derive_messages()] == ["system", "user", "user", "assistant"]
+    assert session.derive_messages()[1].text() == "hi"
+    assert "Current runtime context" in session.derive_messages()[2].text()
     assert session.derive_messages()[-1].text() == "Hello world"
     assert provider.requests[0].model == "test-model"
     assert provider.requests[0].session_id == session.session_id
@@ -156,7 +174,14 @@ async def test_second_turn_reuses_system_prompt_and_header_is_series(tmp_path: P
     assert len(session.records_of("request/header")) == 2
     assert session.records_of("request/header")[1].data["reason"] == "series"
     assert len(session.records_of("request/context")) == 1
-    assert [m.role for m in session.derive_messages()] == ["system", "user", "assistant", "user", "assistant"]
+    assert [m.role for m in session.derive_messages()] == [
+        "system",
+        "user",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
     # `session` is a frontend event; AgentSession never emits it (CLI does).
     assert sink.of_type("session") == []
 
@@ -183,9 +208,12 @@ async def test_tool_calls_run_and_are_recorded_before_results(tmp_path: Path) ->
 
     types = session.types()
     assert types == [
+        "agent/inbox/spliced",
         "turn/start",
+        "agent/inbox/spliced",
         "step/start",
         "system/message",
+        "user/message",
         "user/message",
         "request/header",
         "request/context",
@@ -206,13 +234,16 @@ async def test_tool_calls_run_and_are_recorded_before_results(tmp_path: Path) ->
     results = session.records_of("tool/result")
     assert [result.data["message"]["toolCallId"] for result in results] == ["call_1", "call_2"]
     assert results[0].data["message"]["content"][0]["text"] == "echo:a"
-    assistant_seq = session.records_of("assistant/message")[0].seq
-    assert results[0].sourceEventSeqs == [assistant_seq]
+    # Each tool result references the call record it answers, not the
+    # assistant message that proposed the call.
+    assert results[0].sourceEventSeqs == [calls[0].seq]
+    assert results[1].sourceEventSeqs == [calls[1].seq]
     assert results[0].surfaceOp == "append"
 
     # Second step sees both tool results in order.
     assert [m.role for m in session.derive_messages()] == [
         "system",
+        "user",
         "user",
         "assistant",
         "tool",
@@ -358,17 +389,38 @@ async def test_interrupt_preserves_partial_output_and_records_user_abort(tmp_pat
     assert session.derive_messages()[-1].role == "assistant"
 
 
-async def test_send_while_busy_raises_session_error(tmp_path: Path) -> None:
+async def test_send_while_busy_enqueues_a_follow_up_turn(tmp_path: Path) -> None:
+    """A busy agent queues the message and keeps driving in the same task."""
     pause = asyncio.Event()
-    script = [ScriptedTurn(events=[TextDelta("x"), Finish(kind="stop")], pause=pause, pause_after=0)]
-    _session, provider, _, agent = make_session(tmp_path, FakeRegistry(), script)
+    script = [
+        ScriptedTurn(events=[TextDelta("x"), Finish(kind="stop")], pause=pause, pause_after=1),
+        ScriptedTurn(events=[TextDelta("y"), Finish(kind="stop")]),
+    ]
+    session, provider, _, agent = make_session(tmp_path, FakeRegistry(), script)
 
     task = asyncio.create_task(agent.send("first"))
     await provider.started.wait()
-    with pytest.raises(SessionError):
-        await agent.send("second")
-    await agent.interrupt()
-    await task
+    for _ in range(200):
+        if session.records_of("step/start"):
+            break
+        await asyncio.sleep(0.01)
+    # Busy: the message is accepted into the inbox and returns immediately.
+    assert await agent.send("second") == ""
+    assert len(session.records_of("turn/start")) == 1
+
+    pause.set()
+    # The driving send drains the inbox, so it returns the last turn's text.
+    assert await task == "y"
+    await agent.wait_for_idle()
+
+    assert len(session.records_of("turn/start")) == 2
+    assert session.records_of("turn/end")[-1].data["reason"] == {"kind": "completed"}
+    assert [
+        m.text() for m in session.derive_messages() if m.role == "user" and "runtime" not in m.text()
+    ] == [
+        "first",
+        "second",
+    ]
 
 
 async def test_max_steps_stops_the_turn(tmp_path: Path) -> None:
@@ -451,7 +503,12 @@ async def test_length_finish_drops_tool_calls_that_never_ran(tmp_path: Path) -> 
     assert [part["type"] for part in parts] == ["reasoning", "text"]
     error = sink.of_type("error")[0]["message"]
     assert "1 tool call(s) were not executed" in error
-    assert [message.role for message in session.derive_messages()] == ["system", "user", "assistant"]
+    assert [message.role for message in session.derive_messages()] == [
+        "system",
+        "user",
+        "user",
+        "assistant",
+    ]
 
 
 async def test_auto_compaction_runs_inside_the_open_turn(tmp_path: Path) -> None:

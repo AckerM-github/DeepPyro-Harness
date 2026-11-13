@@ -294,7 +294,16 @@ class TuiRuntime:
     def _plugin_services(self) -> dict[str, Any]:
         """Plugin services the agent tools read from ToolContext.services."""
         services: dict[str, Any] = {}
-        for name in ("llm", "plugin_manager", "inspect", "settings", "jobs", "team", "subagent"):
+        for name in (
+            "llm",
+            "hooks",
+            "plugin_manager",
+            "inspect",
+            "settings",
+            "jobs",
+            "team",
+            "subagent",
+        ):
             service = self._service(name)
             if service is not None:
                 services[name] = service

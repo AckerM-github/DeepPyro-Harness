@@ -38,6 +38,10 @@ id = "tools-builtin"
 plugin = "deeppyro.builtin.tools:BuiltinToolsPlugin"
 
 [[plugins]]
+id = "hooks"
+plugin = "deeppyro.builtin.hooks:HooksPlugin"
+
+[[plugins]]
 id = "jobs"
 plugin = "deeppyro.builtin.jobs:JobsPlugin"
 
