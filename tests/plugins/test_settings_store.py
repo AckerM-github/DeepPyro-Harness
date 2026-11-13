@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -17,6 +18,7 @@ from deeppyro.plugins import (
     manifest_revision,
     mask_secrets,
     plugin_config_schema,
+    plugin_volatile_fields,
     read_manifest,
     save_user_manifest,
     validate_config,
@@ -69,7 +71,7 @@ def test_describe_schema_and_masked_values(manifest: Path) -> None:
     assert {"apiKey", "model", "maxTokens", "temperature", "token", "nested"} <= set(properties)
     # maxTokens is masked too: its name contains the "token" fragment.
     assert described["values"] == {"apiKey": MASKED_VALUE, "maxTokens": MASKED_VALUE}
-    assert described["volatile_fields"] == ["apiKey", "maxTokens"]
+    assert described["volatile_fields"] == ["temperature"]
     assert len(described["revision"]) == 16
 
 
@@ -90,6 +92,8 @@ def test_write_merges_patch_and_preserves_secrets(manifest: Path) -> None:
     written = store.write("demo-plugin", {"temperature": 0.7}, before["revision"])
 
     assert written["changed"] == ["temperature"]
+    assert written["volatile_fields"] == ["temperature"]
+    assert written["volatile_changed"] == ["temperature"]
     assert written["values"]["temperature"] == 0.7
     assert written["values"]["apiKey"] == MASKED_VALUE
     assert written["restart_required"] is True
@@ -100,6 +104,40 @@ def test_write_merges_patch_and_preserves_secrets(manifest: Path) -> None:
     assert specs[0].id == "demo-plugin"
     assert specs[0].name == TARGET
     assert specs[0].config == {"apiKey": "hunter2", "maxTokens": 1234, "temperature": 0.7}
+
+
+def test_write_reports_non_volatile_changes(manifest: Path) -> None:
+    store = SettingsStore(manifest_path=manifest)
+    revision = store.read("demo-plugin")["revision"]
+
+    written = store.write("demo-plugin", {"model": "m2"}, revision)
+
+    assert written["volatile_fields"] == ["temperature"]
+    assert written["volatile_changed"] == []
+
+
+def test_effective_config_is_unmasked(manifest: Path) -> None:
+    store = SettingsStore(manifest_path=manifest)
+    config = store.effective_config("demo-plugin")
+    assert config["apiKey"] == "hunter2"
+    assert config["maxTokens"] == 1234
+    assert store.effective_config("llm") == {}
+
+
+def test_plugin_volatile_fields_normalizes_declarations() -> None:
+    class NoVolatile:
+        pass
+
+    class Single:
+        volatile = "greeting"
+
+    class Many:
+        volatile: ClassVar[list[object]] = ["a", "b", 3]
+
+    assert plugin_volatile_fields(None) == ()
+    assert plugin_volatile_fields(NoVolatile) == ()
+    assert plugin_volatile_fields(Single) == ("greeting",)
+    assert plugin_volatile_fields(Many) == ("a", "b")
 
 
 def test_write_rejects_stale_revision(manifest: Path) -> None:

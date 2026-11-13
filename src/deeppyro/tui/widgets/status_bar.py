@@ -1,7 +1,8 @@
-"""One-line status bar: session, model, tokens, context, and phase.
+"""One-line status bar: session, model, tokens, context, policy, and phase.
 
-Workspace and permission policy live in the ControlBar above the conversation;
-the status line keeps the per-turn counters that change on every event.
+The permission preset and approval policy are shown here because they are
+switched with the /policy and /approval slash commands; the workspace path is
+shown by /status and /cwd.
 """
 
 from __future__ import annotations
@@ -32,6 +33,8 @@ class StatusBar(Static):
         cached_tokens: int,
         context_window: int,
         phase: str,
+        preset: str = "",
+        approval: str = "",
     ) -> None:
         line = Text()
         line.append("session ", style="dim")
@@ -48,6 +51,9 @@ class StatusBar(Static):
         pct = context_percent(input_tokens, context_window)
         line.append(" · ctx ", style="dim")
         line.append(f"{pct}%", style="#e0af68" if pct >= 75 else "dim")
+        if preset or approval:
+            line.append(" · ", style="dim")
+            line.append(f"{preset}/{approval}", style="#bb9af7")
         line.append(" · ", style="dim")
         line.append(phase, style="#7aa2f7" if phase != "idle" else "dim")
         self.update(line)

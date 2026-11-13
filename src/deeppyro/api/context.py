@@ -18,12 +18,29 @@ class PluginContext:
     is torn down when the plugin fiber unloads.
     """
 
-    __slots__ = ("_logger", "_raw", "config", "plugin_id")
+    __slots__ = (
+        "_logger",
+        "_raw",
+        "config",
+        "default_revision",
+        "default_scope",
+        "plugin_id",
+    )
 
-    def __init__(self, raw: Any, *, plugin_id: str = "", config: Any = None) -> None:
+    def __init__(
+        self,
+        raw: Any,
+        *,
+        plugin_id: str = "",
+        config: Any = None,
+        default_scope: str | None = None,
+        default_revision: int | None = None,
+    ) -> None:
         object.__setattr__(self, "_raw", raw)
         object.__setattr__(self, "plugin_id", plugin_id)
         object.__setattr__(self, "config", config)
+        object.__setattr__(self, "default_scope", default_scope)
+        object.__setattr__(self, "default_revision", default_revision)
         object.__setattr__(self, "_logger", None)
 
     def __getattr__(self, name: str) -> Any:
@@ -103,25 +120,63 @@ class PluginContext:
 
     def isolate(self, name: str, label: Any = None) -> PluginContext:
         raw = self._raw.isolate(name, label)
-        return PluginContext(raw, plugin_id=self.plugin_id, config=self.config)
+        return self._child(raw)
 
     def intercept(self, name: str, config: Any) -> PluginContext:
         raw = self._raw.intercept(name, config)
-        return PluginContext(raw, plugin_id=self.plugin_id, config=self.config)
+        return self._child(raw)
+
+    def _child(self, raw: Any) -> PluginContext:
+        """Wrap a derived raw context, keeping the registration defaults."""
+        return PluginContext(
+            raw,
+            plugin_id=self.plugin_id,
+            config=self.config,
+            default_scope=self.default_scope,
+            default_revision=self.default_revision,
+        )
 
     # -- typed registration ----------------------------------------------
     def _own(self, dispose: Callable[[], Any], label: str) -> Callable[[], Any]:
         self.effect(lambda: dispose, label=label)
         return dispose
 
+    def contribution_scope(self, scope: str | None) -> tuple[str | None, int | None]:
+        """Resolve the (scope, revision) tag for a contribution from this context.
+
+        Inside a preset realm the host passes default_scope/default_revision so
+        contributions are pinned to the revision that was materialized and an
+        unscoped registration cannot leak into other presets. Contributions that
+        explicitly target another scope are tagged with no revision.
+        """
+        if scope is None:
+            return self.default_scope, self.default_revision
+        if scope == self.default_scope:
+            return scope, self.default_revision
+        return scope, None
+
     def register_tool(self, factory: Any, *, scope: str | None = None) -> Callable[[], Any]:
-        dispose = self.tools.add(factory, scope=scope, plugin_id=self.plugin_id)
+        resolved_scope, revision = self.contribution_scope(scope)
+        dispose = self.tools.add(
+            factory,
+            scope=resolved_scope,
+            revision=revision,
+            plugin_id=self.plugin_id,
+        )
         return self._own(dispose, label="tool")
 
     def register_prompt_section(
         self, name: str, order: int, renderer: Any, *, scope: str | None = None
     ) -> Callable[[], Any]:
-        dispose = self.prompt.add_section(name, order, renderer, plugin_id=self.plugin_id, scope=scope)
+        resolved_scope, revision = self.contribution_scope(scope)
+        dispose = self.prompt.add_section(
+            name,
+            order,
+            renderer,
+            plugin_id=self.plugin_id,
+            scope=resolved_scope,
+            revision=revision,
+        )
         return self._own(dispose, label=f"prompt-section:{name}")
 
     def register_preset(self, preset: Any) -> Callable[[], Any]:

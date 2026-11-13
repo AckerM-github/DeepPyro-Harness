@@ -284,3 +284,22 @@ def test_manifest_rows_source_and_origin(tmp_path) -> None:
     assert row.source == SOURCE_MANIFEST
     assert row.origin == str(tmp_path / "plugins.toml")
     assert row.enabled is True
+
+
+def test_create_bundle_facade_writes_scaffold(tmp_path) -> None:
+    manager = _manager(tmp_path)
+    target = tmp_path / "bundles" / "facade-bundle"
+
+    created = manager.create_bundle(target, "facade-bundle", "Facade Bundle")
+
+    assert created == target
+    assert (target / "bundle.toml").is_file()
+    assert (target / "plugin.py").is_file()
+    assert (target / "README.md").is_file()
+
+
+def test_bundle_template_facade_returns_files(tmp_path) -> None:
+    files = _manager(tmp_path).bundle_template("facade-bundle", "Facade Bundle")
+
+    assert set(files) == {"bundle.toml", "plugin.py", "README.md"}
+    assert "facade-bundle" in files["bundle.toml"]

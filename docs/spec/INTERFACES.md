@@ -8,7 +8,7 @@
 
 1. **纯 Python**，运行时不依赖 Node/Electron；仅 `tools/gen_fixtures.mjs` 用 Node 只读生成测试数据。
 2. **日志兼容**：读写 DSH `session.v4.jsonl`，字段名逐字一致（camelCase），未知字段保留不丢。
-3. **终端 only**：一次性 CLI + 交互式 TUI。不做 Web/Electron。
+3. **终端 only**：交互式 TUI 是唯一产品形态，另保留 headless 一次性模式（--headless/--json）。不做 Web/Electron。
 4. **日志是唯一事实源**（durable log first）：先 `append` 落盘，再发 UI 事件。
 5. 一步（step）= 派生历史 + 工具 schema → 模型流式 → 工具流水线 → 结果落盘 → 下一步。
 6. 取消是协作式的：保留已交付前缀，记录 `interrupt` 语义，不产生半条消息。
@@ -24,7 +24,10 @@
 | `src/deeppyro/llm/**` | llm-dev | OpenAI 兼容 provider、SSE、重试 |
 | `src/deeppyro/tools/**`、`src/deeppyro/sandbox/**` | tools-dev | 工具注册表/流水线/内置工具/权限闸门 |
 | `src/deeppyro/agent/**`、`src/deeppyro/prompt/**`、`src/deeppyro/compact/**` | loop-dev | turn/step 循环、事件、提示词、压缩 |
-| `src/deeppyro/tui/**` | ui-dev/tui-dev | Textual 全屏 TUI（唯一前端）：widgets、命令、选择器、审批 |
+| `src/deeppyro/tui/**` | ui-dev/tui-dev/Lead | Textual 全屏 TUI（唯一前端）：widgets、命令、选择器、审批、插件槽位 |
+| `src/deeppyro/api/**`、`src/deeppyro/builtin/**`、`src/deeppyro/bundles/**` | **Lead** | 插件契约、内置插件行、core bundle |
+| `src/deeppyro/kernel/**` | loader-dev/**Lead** | 组合内核：bundle/row/patch、group/include/requires、KernelRuntime、App |
+| `src/deeppyro/plugins/**` | plugin-dev | 外部插件发现/管理、bundle 模板、settings 存储 |
 | `src/deeppyro/headless.py` | **Lead** | 一次性 headless 运行（`--headless` / `--json`），自包含 |
 | `docs/spec/*.md` | 各自 | 除本文件外，按模块各写一份 |
 | `tests/<area>/**` | 各自 | 单测；跨模块集成测试归 Lead |
@@ -300,11 +303,13 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 ### 11.2 插件契约（`deeppyro.api`）
 
 - `Plugin`：`plugin_id`/`version`/`api_version`/`inject`/`Config`(pydantic)/`setup(ctx, config)`；
-  可选 `async stop()` 清理。
+  可选 `async stop()` 清理，可选 `volatile: ClassVar[tuple[str, ...]]` 声明可 live apply 的字段。
+- `on_config(config)`：配置热更新回调（仅 volatile 字段变更且经 `kernel.apply_plugin_config` 时同步调用）。
 - `Service(Plugin, cordis Service)`：类属性 `provide`，构造即注册服务。
 - `PluginContext`：`service/get/has`、`tools/prompt/commands/llm` 快捷属性、
   `effect/on/once/emit/plugin/inject/isolate/intercept`，以及
-  `register_tool/register_prompt_section/register_command/register_provider`（注册随 fiber 自动注销）。
+  `register_tool/register_prompt_section/register_command/register_provider/register_preset`
+  （注册随 fiber 自动注销；preset realm 内的贡献自动带上 `(preset_id, revision)` scope）。
 - 插件类型判定：`issubclass(cls, deeppyro.api.Plugin)` 走新适配器（pydantic Config 校验 +
   PluginContext + setup + stop disposer）；旧式 cordis 类直接 `ctx.plugin(cls, config)` 兼容。
 
@@ -312,34 +317,40 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 
 - bundle = 含 `bundle.toml` 的目录：`[bundle]` 元数据 + 有序 `[[plugins]]` 行；
   `plugin` 支持 `module:Class` 或相对 bundle 目录的 `file.py:Class`。
-- 行字段：`id/plugin/config/disabled/before/after/critical/name/isolate/intercept`。
+- 行字段：`id/plugin/config/disabled/before/after/critical/name/isolate/intercept`，
+  以及 loader 扩展：`group`(true)、`rows`(子行列表)、`include`(外部 JSON/TOML 行文件，递归深度上限 32)。
+- bundle 元数据可声明 `[bundle].requires`（表或 `"id>=0.1"` 字符串），按点分数字版本约束做依赖优先拓扑排序。
 - 合并语义：同 id → `config` **整体替换**（绝不深合并）、`disabled/critical` 覆盖、`isolate/intercept` 合并、
-  插件类不可更换；新 id → 按 `before/after` 插入否则追加。
+  插件类不可更换；新 id → 按 `before/after` 插入否则追加；被 patch 覆盖的行标记 `overridden`。
+- group 行不挂插件，只给子行建独立 cordis context（isolate/intercept 链继承）；group 子行不能单独被 patch。
 - 层顺序：core bundle → `~/.dpro/bundles/*/bundle.toml`（按 order,id）→ 显式 bundle 路径 → 用户 manifest
   （`~/.dpro/plugins.toml`）。
 - core 行 `critical=true`：失败抛 `KernelBootError` 并 dispose 已启动 fiber；外部行默认非 critical：
   失败记录进 `App.failures`，boot 继续。
+- 活状态：`App.row_states()` 返回 active/failed/disabled/overridden/restart-required/pending，
+  以及 runtime_state/config/children/parent/group；`App.mark_restart_required(id)` 用于 live apply 后标记。
 
 ### 11.4 服务图（core bundle 行）
 
 | 行 id | 模块 | 服务名 / 关键方法 |
 |---|---|---|
+| `kernel` | `kernel.runtime` | `kernel`：`.mounted_plugins()`、`.apply_plugin_config(plugin_id, config)` |
 | `llm` | `builtin.llm` | `llm`：`.provider(name)`、`.add_provider` |
 | `sessions` | `builtin.sessions` | `sessions`：`.store`（SessionStore） |
 | `sandbox` | `builtin.sandbox` | `sandbox`：`.gate(workspace, ask=None)` |
-| `tools` | `builtin.tools` | `tools`：`.add(factory, scope=...)`、`.registry_for(workspace, scope=None)` |
+| `tools` | `builtin.tools` | `tools`：`.add(factory, scope=..., revision=...)`、`.registry_for(workspace, scope=None, revision=None)` |
 | `tools-builtin` | `builtin.tools` | 11 个内置工具 |
-| `presets` | `builtin.presets` | `presets`：`.add`、`.resolve(id)`、`.all()`、`.ids()` |
-| `prompt` | `builtin.prompt_service` | `prompt`：`.add_section(..., scope=None)`、`.build(tools, prompt_context, scope=None)` |
+| `presets` | `builtin.presets` | `presets`：`.add`、`.resolve(id)`、`.resolve_revision(id, revision)`、`.ensure(..., revision=...)`、`.ensure_all()`、`.revisions()`、`.all()`、`.ids()` |
+| `prompt` | `builtin.prompt_service` | `prompt`：`.add_section(..., scope=None, revision=...)`、`.sections(...)`、`.build(tools, prompt_context, scope=None, revision=...)` |
 | `prompt-core` | `builtin.prompt_core` | 5 个核心提示词段（order 10/20/30/40/50） |
 | `commands` | `builtin.commands` | `commands`：`.add`、`.all()`、`.resolve()`、`.invoke()` |
-| `commands-builtin` | `builtin.commands_builtin` | 11 个内置 slash 命令（含 `/preset`、`/panel`） |
-| `agents` | `builtin.agents` | `agents`：`.create(..., preset=None)`、`.options(**overrides)` |
-| `plugin-tools` | `tools.builtin.plugin_tools` | 4 个 agent 工具：`plugin_manager`/`plugin_inspect`/`settings_read`/`settings_write` |
-| `slots` | `tui.slots` | `slots`：TUI 插件槽位注册表（状态栏项/对话行/面板/设置页） |
-| `plugin-manager` | `builtin.plugin_manager` | `plugin_manager`：外部插件与 bundle（`.manager`） |
-| `settings` | `builtin.settings` | `settings`：插件配置读写 + revision CAS（`.store`） |
-| `inspect` | `builtin.inspect` | `inspect`：live services/plugins/tools/prompts/commands/providers/config schema |
+| `commands-builtin` | `builtin.commands_builtin` | 14 个内置 slash 命令（含 `/preset`、`/policy`、`/approval`、`/cwd`、`/panel`） |
+| `agents` | `builtin.agents` | `agents`：`.create(..., preset=None, preset_revision=None, registry=None)`、`.options(**overrides)` |
+| `plugin-tools` | `tools.builtin.plugin_tools` | 5 个 agent 工具：`plugin_manager`/`plugin_create`/`plugin_inspect`/`settings_read`/`settings_write` |
+| `slots` | `tui.slots` | `slots`：TUI 插件槽位注册表（状态栏项/对话行/面板/设置页、theme/locale） |
+| `plugin-manager` | `builtin.plugin_manager` | `plugin_manager`：外部插件与 bundle（`.manager`，含 `.create_bundle`） |
+| `settings` | `builtin.settings` | `settings`：插件配置读写 + revision CAS + volatile live apply（`.store`） |
+| `inspect` | `builtin.inspect` | `inspect`：services/plugins/tools/prompt_sections/commands/providers/config_schema/events/slots/theme/guide |
 
 ### 11.5 API
 
@@ -352,14 +363,20 @@ app = await create_app(cfg, extra_plugins=[PluginSpec(...)])  # 测试/嵌入
 app.service("tools")                       # 不存在/未激活 -> LookupError
 app.started                                # {row_id: fiber state name}
 app.failures                               # 非 critical 行的失败状态
+app.row_states()                           # {row_id: active/failed/disabled/overridden/restart-required/pending}
+app.mount_record(row_id)                   # MountRecord 树（config/children/parent/group/state）
+app.mark_restart_required(row_id)          # live apply 后标记需要重启
 await app.stop()                           # 逆序 dispose
 ```
 
 ### 11.6 测试
 
-- `tests/kernel/`：假插件 boot、patch 顺序、critical 失败、`tests/kernel/plugins_dummy.py`。
+- `tests/kernel/`：假插件 boot、patch 顺序、critical 失败、group/include/requires（test_composition_groups.py / test_composition_requires.py）、KernelRuntime live apply 与 row 状态（test_runtime.py）、`tests/kernel/plugins_dummy.py`。
 - `tests/integration/test_plugin_composition.py`：临时目录外部 bundle 贡献工具/提示词/命令/provider。
 - `tests/tui/test_commands.py`：插件贡献的 slash 命令进入 TUI 实时命令表并被执行。
 - `tests/integration/test_plugin_services.py`：D 层四个工具经 `ToolContext.services` 取内核服务并真实执行；外部 bundle 注册 TUI 槽位后在 `slots` 服务可见。
-- `tests/tui/test_slots.py`/`test_plugin_slots.py`：槽位注册、排序、去重、状态栏渲染与面板打开。
+- `tests/tui/test_slots.py`/`test_plugin_slots.py`/`test_ui_package.py`：槽位注册、排序、去重、状态栏渲染、面板打开、ui.toml 声明式 UI 包。
+- `tests/builtin/test_preset_revisions.py`：preset revision 不可变注册、realm 物化、按 revision 过滤工具/提示词。
+- `tests/tui/test_runtime_presets.py`：TUI new_session/resume/preset 切换的 revision 固定与回退。
+- `tests/plugins/test_template.py`：`plugin_create` 模板脚手架与 `PluginManager.create_bundle`。
 

@@ -6,7 +6,7 @@ import path; nothing here is imported by the product code.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,7 @@ class DemoPlugin(Plugin):
     version = "0.2.0"
     description = "config demo plugin"
     Config = DemoConfig
+    volatile: ClassVar[tuple[str, ...]] = ("temperature",)
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)

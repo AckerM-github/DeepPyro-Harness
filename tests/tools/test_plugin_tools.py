@@ -10,6 +10,7 @@ import pytest
 
 from deeppyro.plugins import BundleInfo, PluginInfo
 from deeppyro.tools.builtin.plugin_tools import (
+    PluginCreateTool,
     PluginInspectTool,
     PluginManagerTool,
     PluginToolsPlugin,
@@ -44,9 +45,14 @@ PLUGIN = PluginInfo(
 
 
 class FakeManager:
-    def __init__(self) -> None:
+    def __init__(self, root: Path | None = None) -> None:
         self.calls: list[tuple[str, Any]] = []
         self.fail: Exception | None = None
+        self._root = root
+
+    @property
+    def bundles_root(self) -> Path | None:
+        return self._root
 
     def list_bundles(self) -> list[BundleInfo]:
         self.calls.append(("list_bundles", None))
@@ -69,6 +75,16 @@ class FakeManager:
     def remove_bundle(self, bundle_id: str) -> BundleInfo:
         self.calls.append(("remove_bundle", bundle_id))
         return BUNDLE
+
+    def create_bundle(self, dest: Any, bundle_id: str, name: str = "") -> Path:
+        self.calls.append(("create_bundle", (str(dest), bundle_id, name)))
+        if self.fail is not None:
+            raise self.fail
+        path = Path(dest)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "bundle.toml").write_text("", encoding="utf-8")
+        (path / "plugin.py").write_text("", encoding="utf-8")
+        return path
 
 
 class FakeInspect:
@@ -99,6 +115,18 @@ class FakeInspect:
 
     def providers(self) -> list[dict[str, Any]]:
         return self._record("providers", None)
+
+    def events(self) -> list[dict[str, Any]]:
+        return self._record("events", None)
+
+    def slots(self) -> list[dict[str, Any]]:
+        return self._record("slots", None)
+
+    def theme(self) -> dict[str, Any]:
+        return self._record("theme", None)
+
+    def guide(self) -> list[dict[str, Any]]:
+        return self._record("guide", None)
 
 
 class FakeSettings:
@@ -192,9 +220,67 @@ async def test_manager_reports_service_failures(tmp_path: Path) -> None:
     assert "plugin_manager failed: boom" in result.text
 
 
+async def test_plugin_create_writes_to_explicit_dest(tmp_path: Path) -> None:
+    manager = FakeManager()
+    dest = tmp_path / "scaffold"
+    result = await PluginCreateTool().run(
+        {"bundle_id": "demo-bundle", "name": "Demo", "dest": str(dest)},
+        context(tmp_path, plugin_manager=manager),
+    )
+
+    assert not result.is_error
+    payload = json.loads(result.text)
+    assert payload["bundle_id"] == "demo-bundle"
+    assert payload["dest"] == str(dest)
+    assert payload["files"] == ["bundle.toml", "plugin.py"]
+    assert "plugin_manager action=install" in payload["next"]
+    assert manager.calls == [("create_bundle", (str(dest), "demo-bundle", "Demo"))]
+
+
+async def test_plugin_create_defaults_to_bundles_root(tmp_path: Path) -> None:
+    root = tmp_path / "bundles"
+    manager = FakeManager(root=root)
+    result = await PluginCreateTool().run(
+        {"bundle_id": "demo-bundle"},
+        context(tmp_path, plugin_manager=manager),
+    )
+
+    assert not result.is_error
+    payload = json.loads(result.text)
+    assert payload["dest"] == str(root / "demo-bundle")
+    assert manager.calls == [("create_bundle", (str(root / "demo-bundle"), "demo-bundle", ""))]
+
+
+async def test_plugin_create_requires_bundle_id(tmp_path: Path) -> None:
+    result = await PluginCreateTool().run({}, context(tmp_path, plugin_manager=FakeManager()))
+    assert result.is_error
+    assert "bundle_id" in result.text
+
+
+async def test_plugin_create_requires_dest_without_bundles_root(tmp_path: Path) -> None:
+    result = await PluginCreateTool().run(
+        {"bundle_id": "demo-bundle"},
+        context(tmp_path, plugin_manager=FakeManager(root=None)),
+    )
+    assert result.is_error
+    assert "pass dest explicitly" in result.text
+
+
+async def test_plugin_create_reports_failures(tmp_path: Path) -> None:
+    manager = FakeManager(root=tmp_path / "bundles")
+    manager.fail = RuntimeError("cannot write")
+    result = await PluginCreateTool().run(
+        {"bundle_id": "demo-bundle"},
+        context(tmp_path, plugin_manager=manager),
+    )
+    assert result.is_error
+    assert "plugin_create failed: cannot write" in result.text
+
+
 async def test_missing_services_are_reported(tmp_path: Path) -> None:
     for tool, args in (
         (PluginManagerTool(), {"action": "list"}),
+        (PluginCreateTool(), {"bundle_id": "demo-bundle"}),
         (PluginInspectTool(), {"what": "services"}),
         (SettingsReadTool(), {"plugin_id": "llm"}),
         (SettingsWriteTool(), {"plugin_id": "llm", "patch": {}, "expected_revision": "x"}),
@@ -213,6 +299,10 @@ async def test_missing_services_are_reported(tmp_path: Path) -> None:
         ("prompts", "prompt_sections"),
         ("commands", "commands"),
         ("providers", "providers"),
+        ("events", "events"),
+        ("slots", "slots"),
+        ("theme", "theme"),
+        ("guide", "guide"),
     ],
 )
 async def test_inspect_dispatches_what(tmp_path: Path, what: str, method: str) -> None:
@@ -295,12 +385,14 @@ def test_tool_set_metadata() -> None:
     tools = plugin_tools()
     assert [tool.name for tool in tools] == [
         "plugin_manager",
+        "plugin_create",
         "plugin_inspect",
         "settings_read",
         "settings_write",
     ]
     assert all(tool.parallel_safe is False for tool in tools)
     assert "human approval" in tools[0].description
+    assert "human approval" in tools[1].description
 
 
 def test_plugin_tools_plugin_registers_factory() -> None:
@@ -317,6 +409,7 @@ def test_plugin_tools_plugin_registers_factory() -> None:
     tools = registered[0](None, None)
     assert [tool.name for tool in tools] == [
         "plugin_manager",
+        "plugin_create",
         "plugin_inspect",
         "settings_read",
         "settings_write",

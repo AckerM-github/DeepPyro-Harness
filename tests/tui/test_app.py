@@ -7,10 +7,9 @@ from typing import Any
 
 from textual.widgets import Static
 
-from deeppyro.tui.app import DeepPyroApp
+from deeppyro.tui.app import CUSTOM_WORKSPACE, DeepPyroApp
 from deeppyro.tui.screens.plugin_panel import PluginPanelScreen
 from deeppyro.tui.slots import SlotRegistry
-from deeppyro.tui.widgets.control_bar import CUSTOM_WORKSPACE, ControlBar
 from deeppyro.tui.widgets.conversation import ConversationView
 from deeppyro.tui.widgets.plugin_slots import PluginStatusBar
 from deeppyro.tui.widgets.prompt_area import PromptArea
@@ -345,94 +344,95 @@ async def test_splash_screen_shows_until_any_key() -> None:
         assert app._prompt.has_focus
 
 
-async def test_control_bar_reflects_runtime_state() -> None:
+async def _submit(app: Any, pilot: Any, text: str) -> None:
+    prompt = app.query_one(PromptArea)
+    prompt.text = text
+    await pilot.press("enter")
+    await pilot.pause(0.05)
+
+
+async def test_policy_and_approval_commands_switch_session_settings() -> None:
     app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
-        bar = app.query_one(ControlBar)
-        assert bar.preset_select.value == "workspace-write"
-        assert bar.approval_select.value == "ask"
-        assert bar.cwd_select.value == str(Path("D:/work"))
-        assert str(Path("D:/work")) in bar.cwd_values
-        assert str(Path("D:/other")) in bar.cwd_values
-        assert CUSTOM_WORKSPACE in bar.cwd_values
-
-
-async def test_control_bar_switches_preset_and_approval() -> None:
-    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
-    async with app.run_test(size=(120, 30)) as pilot:
-        await pilot.pause()
-        bar = app.query_one(ControlBar)
-        bar.preset_select.value = "read-only"
+        await _submit(app, pilot, "/policy read-only")
         for _ in range(40):
             await pilot.pause(0.05)
             if app.runtime.permission.preset == "read-only":
                 break
         assert app.runtime.permission.preset == "read-only"
-        assert bar.preset_select.value == "read-only"
-        bar.approval_select.value = "never"
+        await _submit(app, pilot, "/approval never")
         for _ in range(40):
             await pilot.pause(0.05)
             if app.runtime.permission.approval == "never":
                 break
         assert app.runtime.permission.approval == "never"
-        assert bar.approval_select.value == "never"
 
 
-async def test_control_bar_switches_workspace() -> None:
+async def test_policy_command_without_argument_uses_picker(monkeypatch: Any) -> None:
+    picked: list[tuple[str, list[tuple[str, str, str]]]] = []
+
+    async def fake_pick(title: str, items: list[tuple[str, str, str]]) -> str:
+        picked.append((title, items))
+        return "read-only"
+
     app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
-        bar = app.query_one(ControlBar)
-        target = str(Path("D:/other"))
-        bar.cwd_select.value = target
+        monkeypatch.setattr(app, "_pick", fake_pick)
+        await _submit(app, pilot, "/policy")
         for _ in range(40):
             await pilot.pause(0.05)
-            if str(app.runtime.cwd) == target:
+            if app.runtime.permission.preset == "read-only":
                 break
-        assert str(app.runtime.cwd) == target
-        assert bar.cwd_select.value == str(app.runtime.cwd)
+        assert app.runtime.permission.preset == "read-only"
+    assert picked
+    assert picked[0][0] == "Select permission preset"
+    assert [value for value, _, _ in picked[0][1]] == [
+        "read-only",
+        "workspace-write",
+        "danger-full-access",
+    ]
 
 
-async def test_control_bar_custom_workspace_uses_path_prompt(monkeypatch: Any) -> None:
+async def test_cwd_command_switches_workspace() -> None:
     app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
-        asked: list[str] = []
+        await _submit(app, pilot, "/cwd D:/other")
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if app.runtime.cwd == Path("D:/other"):
+                break
+        assert app.runtime.cwd == Path("D:/other")
 
-        target = str(Path("D:/custom"))
 
-        async def fake_prompt() -> str:
-            asked.append("prompt")
-            return target
+async def test_cwd_command_without_argument_uses_picker_and_path_prompt(monkeypatch: Any) -> None:
+    asked: list[str] = []
+    target = str(Path("D:/custom"))
 
+    async def fake_pick(title: str, items: list[tuple[str, str, str]]) -> str:
+        asked.append(title)
+        assert CUSTOM_WORKSPACE in [value for value, _, _ in items]
+        assert str(Path("D:/other")) in [value for value, _, _ in items]
+        return CUSTOM_WORKSPACE
+
+    async def fake_prompt() -> str:
+        asked.append("prompt")
+        return target
+
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "_pick", fake_pick)
         monkeypatch.setattr(app, "_ask_workspace_path", fake_prompt)
-        bar = app.query_one(ControlBar)
-        bar.cwd_select.value = CUSTOM_WORKSPACE
+        await _submit(app, pilot, "/cwd")
         for _ in range(40):
             await pilot.pause(0.05)
             if str(app.runtime.cwd) == target:
                 break
-        assert asked == ["prompt"]
+        assert asked == ["Select workspace", "prompt"]
         assert str(app.runtime.cwd) == target
-
-
-async def test_control_bar_is_disabled_during_a_turn() -> None:
-    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
-    async with app.run_test(size=(120, 30)) as pilot:
-        await pilot.pause()
-        bar = app.query_one(ControlBar)
-        assert bar.preset_select.disabled is False
-        app._working = True
-        app.refresh_status()
-        await pilot.pause(0.1)
-        assert bar.preset_select.disabled is True
-        assert bar.approval_select.disabled is True
-        assert bar.cwd_select.disabled is True
-        app._working = False
-        app.refresh_status()
-        await pilot.pause(0.1)
-        assert bar.preset_select.disabled is False
 
 
 async def test_plugin_status_items_render() -> None:

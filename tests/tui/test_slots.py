@@ -144,7 +144,8 @@ class FakeCtx:
         self.provided.append((name, value))
 
 
-def test_slots_plugin_provides_shared_registry() -> None:
+def test_slots_plugin_provides_shared_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEEPPYRO_HOME", str(tmp_path))
     ctx = FakeCtx()
     plugin = SlotsPlugin(ctx, {})
     assert plugin.plugin_id == "slots"
@@ -152,6 +153,87 @@ def test_slots_plugin_provides_shared_registry() -> None:
     plugin.setup(ctx, {})
     assert ctx.provided == [("slots", plugin.registry)]
     assert isinstance(plugin.registry, SlotRegistry)
+    assert plugin.ui_packages == []
+    assert plugin.ui_errors == []
+
+
+def test_registry_theme_tokens_are_copied_and_replaced() -> None:
+    registry = SlotRegistry()
+    assert registry.theme() == {}
+
+    tokens = {"accent": "#7aa2f7"}
+    registry.set_theme(tokens)
+    tokens["accent"] = "mutated"
+    assert registry.theme() == {"accent": "#7aa2f7"}
+
+    returned = registry.theme()
+    returned["accent"] = "mutated-again"
+    assert registry.theme() == {"accent": "#7aa2f7"}
+
+    registry.set_theme({"background": "#000"})
+    assert registry.theme() == {"background": "#000"}
+
+
+def test_registry_locale_merges_and_translates() -> None:
+    registry = SlotRegistry()
+    registry.add_locale({"greeting": "Hello", "bye": "Bye"})
+    registry.add_locale({"greeting": "Hi"})
+    assert registry.locale() == {"greeting": "Hi", "bye": "Bye"}
+    assert registry.translate("greeting") == "Hi"
+    assert registry.translate("missing") == "missing"
+    assert registry.translate("missing", "fallback") == "fallback"
+
+    copy = registry.locale()
+    copy["greeting"] = "mutated"
+    assert registry.translate("greeting") == "Hi"
+
+
+def test_registry_rejects_malformed_theme_and_locale() -> None:
+    registry = SlotRegistry()
+    with pytest.raises(SlotError, match="theme"):
+        registry.set_theme({"accent": 1})  # type: ignore[dict-item]
+    with pytest.raises(SlotError, match="locale"):
+        registry.add_locale({"greeting": object()})  # type: ignore[dict-item]
+    with pytest.raises(SlotError, match="non-empty string"):
+        registry.translate("")
+
+
+def test_registry_clear_removes_theme_and_locale() -> None:
+    registry = SlotRegistry()
+    registry.add_status_item(lambda context: "x", id="x")
+    registry.set_theme({"accent": "#fff"})
+    registry.add_locale({"greeting": "Hello"})
+    registry.clear()
+    assert len(registry) == 0
+    assert registry.theme() == {}
+    assert registry.locale() == {}
+
+
+def test_build_slot_context_exposes_theme_and_translate() -> None:
+    class App:
+        _phase = "done"
+        runtime = None
+        _slots = SlotRegistry()
+
+    App._slots.set_theme({"accent": "#123456"})
+    App._slots.add_locale({"label": "translated"})
+    context = build_slot_context(App())
+    assert context["theme"] == {"accent": "#123456"}
+    assert context["locale"] == {"label": "translated"}
+    assert context["translate"]("label") == "translated"
+    assert context["translate"]("unknown", "fallback") == "fallback"
+
+
+def test_build_slot_context_without_registry_uses_identity_translate() -> None:
+    class App:
+        _phase = "idle"
+        runtime = None
+
+    context = build_slot_context(App())
+    assert context["theme"] == {}
+    assert context["locale"] == {}
+    assert context["translate"]("key") == "key"
+    assert context["translate"]("key", "fallback") == "fallback"
 
 
 class FakeRuntime:

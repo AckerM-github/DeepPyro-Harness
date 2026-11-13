@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -84,19 +85,19 @@ async def test_read_and_write_round_trip(app: App, tmp_path: Path) -> None:
     settings = app.service("settings")
     before = settings.read("demo-plugin")
 
-    written = settings.write("demo-plugin", {"temperature": 0.9}, before["revision"])
+    written = settings.write("demo-plugin", {"model": "other-model"}, before["revision"])
 
-    assert written["changed"] == ["temperature"]
+    assert written["changed"] == ["model"]
     assert written["restart_required"] is True
     assert written["apply"] == "next-boot"
     assert written["revision"] != before["revision"]
     assert written["values"]["apiKey"] == "***"
-    assert written["values"]["temperature"] == 0.9
+    assert written["values"]["model"] == "other-model"
 
     specs = read_manifest(tmp_path / "home" / "plugins.toml")
     demo = next(spec for spec in specs if spec.id == "demo-plugin")
     assert demo.config["apiKey"] == "hunter2"
-    assert demo.config["temperature"] == 0.9
+    assert demo.config["model"] == "other-model"
     assert demo.config["maxTokens"] == 1234
 
 
@@ -131,3 +132,118 @@ async def test_write_masked_secret_keeps_stored_value(app: App) -> None:
 async def test_unknown_plugin_raises(app: App) -> None:
     with pytest.raises(PluginNotFoundError):
         app.service("settings").describe("does-not-exist")
+
+
+class FakeKernel:
+    def __init__(self, result: bool = True, error: Exception | None = None) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def apply_plugin_config(self, plugin_id: str, config: dict[str, Any]) -> bool:
+        self.calls.append((plugin_id, config))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def attach_kernel(monkeypatch: pytest.MonkeyPatch, kernel: FakeKernel) -> None:
+    monkeypatch.setattr(
+        "deeppyro.builtin.settings._kernel_service",
+        lambda ctx: kernel,
+    )
+
+
+async def test_volatile_write_applies_live(app: App, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = app.service("settings")
+    kernel = FakeKernel()
+    attach_kernel(monkeypatch, kernel)
+    before = settings.read("demo-plugin")
+
+    written = settings.write("demo-plugin", {"temperature": 0.8}, before["revision"])
+
+    assert written["applied_live"] is True
+    assert written["restart_required"] is False
+    assert written["apply"] == "live"
+    assert written["volatile_fields"] == ["temperature"]
+    assert written["volatile_changed"] == ["temperature"]
+    assert written["values"]["apiKey"] == "***"
+    assert len(kernel.calls) == 1
+    plugin_id, config = kernel.calls[0]
+    assert plugin_id == "demo-plugin"
+    assert config["temperature"] == 0.8
+    assert config["apiKey"] == "hunter2"
+
+
+async def test_non_volatile_write_still_needs_restart(app: App, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = app.service("settings")
+    kernel = FakeKernel()
+    attach_kernel(monkeypatch, kernel)
+    before = settings.read("demo-plugin")
+
+    written = settings.write("demo-plugin", {"model": "other-model"}, before["revision"])
+
+    assert written["applied_live"] is False
+    assert written["restart_required"] is True
+    assert written["apply"] == "next-boot"
+    assert kernel.calls == []
+
+
+async def test_mixed_write_applies_live_but_keeps_restart(app: App, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = app.service("settings")
+    kernel = FakeKernel()
+    attach_kernel(monkeypatch, kernel)
+    before = settings.read("demo-plugin")
+
+    written = settings.write(
+        "demo-plugin",
+        {"temperature": 0.6, "model": "other-model"},
+        before["revision"],
+    )
+
+    assert written["applied_live"] is True
+    assert written["restart_required"] is True
+    assert written["apply"] == "next-boot"
+    assert len(kernel.calls) == 1
+
+
+async def test_failed_live_apply_falls_back_to_restart(app: App, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = app.service("settings")
+    kernel = FakeKernel(error=RuntimeError("kernel busy"))
+    attach_kernel(monkeypatch, kernel)
+    before = settings.read("demo-plugin")
+
+    written = settings.write("demo-plugin", {"temperature": 0.4}, before["revision"])
+
+    assert written["applied_live"] is False
+    assert written["restart_required"] is True
+    assert written["apply"] == "next-boot"
+    assert written["values"]["temperature"] == 0.4
+    assert settings.read("demo-plugin")["values"]["temperature"] == 0.4
+
+
+async def test_kernel_rejection_falls_back_to_restart(app: App, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = app.service("settings")
+    kernel = FakeKernel(result=False)
+    attach_kernel(monkeypatch, kernel)
+    before = settings.read("demo-plugin")
+
+    written = settings.write("demo-plugin", {"temperature": 0.3}, before["revision"])
+
+    assert written["applied_live"] is False
+    assert written["restart_required"] is True
+
+
+async def test_volatile_write_applies_through_real_kernel(app: App) -> None:
+    settings = app.service("settings")
+    before = settings.read("demo-plugin")
+
+    written = settings.write("demo-plugin", {"temperature": 0.75}, before["revision"])
+
+    assert written["applied_live"] is True
+    assert written["restart_required"] is False
+    assert written["apply"] == "live"
+    record = app.mount_record("demo-plugin")
+    assert record is not None
+    assert record.instance is not None
+    assert record.instance.config.temperature == 0.75

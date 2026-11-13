@@ -12,7 +12,8 @@
 - @manifest_store.py：read_manifest（转调 kernel.manifest.load_manifest）、dump_manifest（手写最小 TOML 序列化）、save_user_manifest（临时文件 + fsync + os.replace 原子写）。
 - @discovery.py：ENTRY_POINT_GROUP、PluginDiscovery，扫描三类外部来源并合并成行。
 - @bundles.py：BundleStore，管理 ~/.dpro/bundles 下的用户 bundle。
-- @settings_store.py：SettingsStore 及 mask_secrets、manifest_revision、plugin_config_schema、validate_config 等辅助函数。
+- @settings_store.py：SettingsStore 及 mask_secrets、manifest_revision、plugin_config_schema、validate_config、plugin_volatile_fields 等辅助函数。
+- @template.py：bundle_template（返回 bundle.toml/plugin.py/README.md 文本）与 create_bundle（生成并校验脚手架 bundle 目录）。
 - @manager.py：PluginManager，外部插件管理与 bundle 门面。
 - @__init__.py：公开 API 重导出。
 
@@ -20,7 +21,7 @@
 - @src/deeppyro/builtin/plugin_manager.py：PluginManagerPlugin，Service，provide = plugin_manager，plugin_id = plugin-manager，包装 PluginManager。
 - @src/deeppyro/builtin/settings.py：SettingsPlugin，Service，provide = settings，plugin_id = settings，包装 SettingsStore。
 - @src/deeppyro/builtin/inspect.py：InspectPlugin，Service，provide = inspect，plugin_id = inspect，只读检视运行中的插件宿主。
-- @src/deeppyro/tools/builtin/plugin_tools.py：四个 BaseTool（plugin_manager、plugin_inspect、settings_read、settings_write）、工厂 plugin_tools() 与注册用的 PluginToolsPlugin（plugin_id = plugin-tools）。
+- @src/deeppyro/tools/builtin/plugin_tools.py：五个 BaseTool（plugin_manager、plugin_create、plugin_inspect、settings_read、settings_write）、工厂 plugin_tools() 与注册用的 PluginToolsPlugin（plugin_id = plugin-tools）。
 
 TUI：@src/deeppyro/tui/screens/plugins.py 提供 PluginScreen（ModalScreen[str | None]）。@src/deeppyro/tui/screens/__init__.py 不导出它，命令注册方直接从模块导入。
 
@@ -93,6 +94,8 @@ PluginInfo（frozen dataclass，slots）：
 
 ValidationResult：id、ok、target、error、provides。validate 永不抛异常（未知 id 除外），失败信息放在 ok=False + error。
 
+插件类契约（@src/deeppyro/api/plugin.py）新增 ClassVar volatile: tuple[str, ...]（默认空）：声明可热更新的配置字段名，由设置服务在运行中 apply。设置语义见 @docs/spec/plugin-settings.md 第 10 节。
+
 BundleInfo（frozen dataclass，slots）：
 
 | 字段 | 类型 | 说明 |
@@ -138,7 +141,9 @@ disable(id)：bundle 保护与已禁用幂等同上；读取清单后把 disable
 
 remove(id)：bundle 保护。entry point 来源抛 PluginRemovalError（提示用 pip uninstall，本工具不做 pip 操作）。目录来源先确认待删目录 resolve 后严格位于 plugins_dir 之内（root 本身与外部路径拒绝），先删除清单条目再 shutil.rmtree；删除失败抛 PluginRemovalError。manifest 来源删除清单条目（必须存在，否则 PluginRemovalError）。最后 refresh。
 
-bundle 门面（委托 BundleStore）：list_bundles()、install_bundle(source, *, force=False)、remove_bundle(bundle_id)、set_bundle(bundle_id, enabled)。
+bundle 生命周期门面：list_bundles()、install_bundle(source, *, force=False)、remove_bundle(bundle_id)、set_bundle(bundle_id, enabled) 委托 BundleStore；create_bundle(dest, bundle_id, name="", *, api_version=1) 与 bundle_template(bundle_id="demo-bundle", name="", *, api_version=1) 委托 @template.py（前者生成脚手架目录并返回 Path，后者只返回文本 dict，不落盘）。
+
+脚手架：bundle id 使用与 BundleStore 相同的规则（公有 validate_bundle_id 可复用：strip 后非空，不能是 . 或 ..，不能含 /、反斜杠、冒号或 NUL）。生成 bundle.toml（version=0.1.0、order=500、critical=false，单行插件 id=bundle_id、plugin="plugin.py:<Pascal>Plugin"）、plugin.py（示例 Config、volatile 字段、inject 与 register_tool 示例工具 sample_greeting）与 README.md。create_bundle 在临时目录写完三个文件后先用 kernel.composition.load_bundle 校验，再复制到目标；目标必须不存在或为空目录，api_version 非法时校验失败且不留下目标。
 
 清单写盘（@manifest_store.py）：dump_manifest 只输出 [[plugins]] 表，字段按 id、name、disabled、config、before、after 顺序，无值字段省略；config 以内联表输出；字符串用 JSON 转义（TOML basic string 子集）；不支持的值类型抛 ManifestWriteError。save_user_manifest 在目标同目录创建命名临时文件，写完 flush + os.fsync 后 os.replace；内容为空时删除清单文件；失败清理临时文件并抛 ManifestWriteError。读取统一走 kernel load_manifest，因此 merge/别名/错误文本与 kernel 一致。
 
@@ -152,7 +157,7 @@ SettingsStore 负责插件配置的描述、读取与带 CAS 的写入；Setting
 
 属性：manifest_path、plugins_dir、revision。revision = sha256(用户清单原始字节).hexdigest() 的前 16 个十六进制字符；清单不存在时按空字节计算，因此首次写入前后的 revision 都能比较。
 
-describe(plugin_id)：返回 dict，字段为 plugin_id、target、origin、config_source（bundle / manifest / default / none）、critical、disabled、schema（插件类 Config 的 model_json_schema，无 pydantic Config 时为 None）、values（掩码后的生效配置）、revision、apply（恒为 next-boot）、volatile_fields（生效配置的顶层键排序，提示需要重启）、error（解析插件类失败时的文本）。
+describe(plugin_id)：返回 dict，字段为 plugin_id、target、origin、config_source（bundle / manifest / default / none）、critical、disabled、schema（插件类 Config 的 model_json_schema，无 pydantic Config 时为 None）、values（掩码后的生效配置）、revision、apply（恒为 next-boot）、volatile_fields（插件类 volatile ClassVar 声明的可热更新字段名，排序去重；不再是配置顶层键）、error（解析插件类失败时的文本）。
 
 read(plugin_id)：返回 plugin_id、target、schema、values、revision、apply、volatile_fields、error。
 
@@ -162,11 +167,13 @@ write(plugin_id, patch, expected_revision)：
 3. 对 patch 做递归深合并（嵌套 dict 逐层合并，其它值整体替换）。patch 里值为字符串 *** 的 secret 字段会被丢弃，因此调用方可以原样回传 read 的结果而不会覆盖真实 secret。
 4. 若插件类声明了 pydantic Config，用 model_validate 校验合并后的完整配置；失败抛 PluginConfigError，只包含 loc 与 msg，不回显输入值。
 5. 读取用户清单，找到该 id 的最后一条 [[plugins]]：把 config 替换为合并后的完整配置；没有条目则追加 PluginSpec(id=plugin_id, name=target, config=合并结果)。写全量配置是必要的，因为同 id 的 manifest patch 对 config 是整体替换而不是深合并。
-6. 原子写回，返回 plugin_id、revision（新值）、values（掩码）、changed（顶层变化键排序）、restart_required=True、apply=next-boot。
+6. 原子写回，返回 plugin_id、revision（新值）、values（掩码）、changed（顶层变化键排序）、volatile_fields（声明值）、volatile_changed（changed 中属于 volatile 的键）、restart_required=True、apply=next-boot。这是 SettingsStore 层面的结果；SettingsPlugin 会按 kernel 能力覆盖 restart_required 与 apply（见第 10 节）。
+
+effective_config(plugin_id)：返回未掩码的完整生效配置，仅供进程内 live apply 等内部调用，绝不能放进 agent 工具输出。APPLY_LIVE = "live" 常量表示完全热更新时 SettingsPlugin.write 的 apply 值。
 
 掩码规则：字段名（大小写不敏感）包含 key、token、secret、password 中任意一个子串即视为 secret，递归处理嵌套 dict/list，非 None 值替换为 ***。注意这是启发式：maxTokens 因包含 token 会被掩码（展示为 ***，写回时保持原值），而叫 credential 的字段不会被掩码。
 
-SettingsPlugin：provide = settings，plugin_id = settings，version = 0.1.0，inject = []。构造时创建 SettingsStore()；属性 revision；方法 describe/read/write 直接委托。
+SettingsPlugin：provide = settings，plugin_id = settings，version = 0.1.0，inject = []。构造时创建 SettingsStore()；属性 revision；方法 describe/read/write 委托 store。write 额外做 volatile live apply：若 changed 含插件类声明的 volatile 字段，取 ctx.get("kernel")（kernel 服务，KernelRuntime）的 apply_plugin_config(plugin_id, effective_config(plugin_id))；成功且没有非 volatile 变更时返回 applied_live=True、restart_required=False、apply="live"；存在非 volatile 变更、kernel 服务缺失、返回 False 或抛异常时回退 applied_live=False、restart_required=True、apply=next-boot，配置仍已落盘且异常不外抛。
 
 ## 7. 检视服务：InspectPlugin
 
@@ -175,29 +182,34 @@ InspectPlugin（provide = inspect，plugin_id = inspect，version = 0.1.0，inje
 | 方法 | 返回 |
 | --- | --- |
 | services() | 按 name 排序的 [{name, state, provider}]；state 为 active / unavailable（Impl.check 返回 False 或抛异常）/ pending（注册服务的 fiber 未激活）；provider 为服务实例的类的 module.qualname |
-| plugins() | composition 行与运行时 registry 合并后的 [{id, plugin, state, critical, origin, error}]；disabled 行 state=disabled；未挂载 state=unmounted；fiber 状态失败时 state=failed 且 error 汇总失败文本；composition 中不存在的 runtime 行以 plugin 空串、origin 空串追加 |
+| plugins() | composition 行与运行时 registry 合并后的 [{id, plugin, state, critical, origin, error, loader_state}]；disabled 行 state=disabled；未挂载 state=unmounted；fiber 状态失败时 state=failed 且 error 汇总失败文本；loader_state 来自 kernel 服务 mounted_plugins()（如 active / failed）；composition 中不存在的 runtime 行以 plugin 空串、origin 空串追加；kernel 已挂载但 composition 里没有的 id 追加为 state=configured 的行 |
 | tools(workspace=None) | [{name, plugin_id, scope, parallel_safe}]；逐个调用 ToolContribution.factory 实例化工具，返回多工具时展开；实例化失败的行带 error 而不是抛异常 |
 | prompt_sections() | [{name, order, plugin_id, scope}]，已按 (order, name) 排序 |
 | commands() | [{name, plugin_id, summary, aliases}] |
 | providers() | [{name}]；合并 llm.provider_names() 与 config.value.providers 的键，避免只列已实例化 provider |
-| config_schema(plugin_id) | 委托 SettingsStore.describe，返回 plugin_id、target、schema、revision、apply |
+| config_schema(plugin_id) | 委托 SettingsStore.describe，返回 plugin_id、target、schema、revision、apply、volatile_fields |
+| events() | wire 记录类型清单 [{type, kind, surface, projection}]；kind 为类型前缀（斜杠前），surface 表示是否进入会话记录，projection 表示是否为投影类型 |
+| slots() | [{kind, id, plugin_id, order, title}]；slots 服务缺失时返回 []，按 kind/order/id 排序 |
+| theme() | {tokens, note}；slots 服务暴露 theme 映射时返回其内容，否则 tokens 为空 dict、note 说明原因 |
+| guide() | Markdown 教学文本：bundle.toml 行格式、Plugin/Config/inject/volatile、register_* 扩展点、plugin_create 与 install/settings 工作流 |
 
 ## 8. Agent 面向工具
 
-@src/deeppyro/tools/builtin/plugin_tools.py 导出四个 BaseTool（parallel_safe 均为 False，因为安装/改配置会改磁盘），以及工厂 plugin_tools() 和 PluginToolsPlugin。
+@src/deeppyro/tools/builtin/plugin_tools.py 导出五个 BaseTool（parallel_safe 均为 False，因为安装/改配置会改磁盘），以及工厂 plugin_tools() 和 PluginToolsPlugin。
 
 | 工具名 | 参数 | 行为 |
 | --- | --- | --- |
 | plugin_manager | action = list / install / set / remove；source、id、enabled、force | list 返回 bundles 与外部插件列表；install 需要 source；set 需要 id 且 enabled 必须是 bool；remove 需要 id；未知 action 或参数类型错误返回 is_error |
-| plugin_inspect | what = services / plugins / tools / prompts / commands / providers；workspace 可选 | 分派到 InspectPlugin 对应方法，结果 JSON 序列化（dataclass 自动转 dict）；未知 what 返回 is_error |
+| plugin_create | bundle_id、name、dest | 生成脚手架 bundle（默认 dest = ~/.dpro/bundles/<bundle_id>），返回 bundle_id、dest、files 与 next 提示；缺 bundle_id 或 dest 且无 bundles_root 时 is_error |
+| plugin_inspect | what = services / plugins / tools / prompts / commands / providers / events / slots / theme / guide；workspace 可选 | 分派到 InspectPlugin 对应方法，结果 JSON 序列化（dataclass 自动转 dict）；未知 what 返回 is_error |
 | settings_read | plugin_id | 调用 settings.read，返回掩码后的 JSON |
-| settings_write | plugin_id、patch（object）、expected_revision | 校验 patch 是 dict、revision 是 str 后调用 settings.write；CAS 冲突与校验错误以 is_error 文本返回 |
+| settings_write | plugin_id、patch（object）、expected_revision | 校验 patch 是 dict、revision 是 str 后调用 settings.write；返回含 applied_live/volatile_changed/restart_required/apply，CAS 冲突与校验错误以 is_error 文本返回 |
 
 服务解析：工具只从 ToolContext.services 里按键取 plugin_manager、inspect、settings 三个服务；缺失时返回固定的 is_error 文本（... service is not available in this session; plugin tools are disabled），不 import 全局单例。工具内部异常统一转成 ToolResult(is_error=True) 并带前缀，不向 agent 抛出 traceback。
 
 安全提示：plugin_manager 的描述明确写出 install 会把第三方 bundle 复制到用户目录并在下一次 boot 执行其代码，因此该调用需要人工批准；工具不提供任何签名校验或沙箱。
 
-PluginToolsPlugin：普通 Plugin（不是 Service），plugin_id = plugin-tools，version = 0.1.0，inject = [tools]；setup 调用 ctx.register_tool(lambda _cfg, _workspace: plugin_tools()) 注册四个工具。它不修改 builtin_tools()，是否暴露给会话由 bundle 行与 runtime 接线决定。
+PluginToolsPlugin：普通 Plugin（不是 Service），plugin_id = plugin-tools，version = 0.1.0，inject = [tools]；setup 调用 ctx.register_tool(lambda _cfg, _workspace: plugin_tools()) 注册五个工具。它不修改 builtin_tools()，是否暴露给会话由 bundle 行与 runtime 接线决定。
 
 ## 9. 内置 bundle 行与集成点
 
@@ -214,6 +226,7 @@ Layer D 的四个内置插件需要作为 core bundle 的 [[plugins]] 行。截�
 - TUI runtime 需要把 plugin_manager、settings、inspect 三个服务实例放进 AgentSession 的 services dict（services 的键就是工具查找用的名字），agents.create 已支持 services 参数。
 - 管理界面：@src/deeppyro/tui/commands.py 的 /plugins 命令由 Lead 改为 push PluginScreen（例如 await app.push_screen(PluginScreen()) 或 push_screen_wait 后忽略 None 结果），本层不修改 app.py/commands.py。
 - 目录来源插件的可导入性：PluginManagerPlugin 构造时创建 PluginManager 并 refresh，会把插件目录插入 sys.path。若希望 boot 期间直接导入目录插件，plugin-manager 行应排在依赖它的外部行之前；外部 bundle 的 order 应大于 core 的 0。
+- 自扩展闭环：agent 可用 plugin_create 生成脚手架（默认目标 ~/.dpro/bundles/<id>，下次 boot 由自动发现加载），或用 plugin_manager install 安装任意 bundle；plugin_inspect 的 guide 给出开发指南；settings_write 对 volatile 字段可在运行中 apply（依赖 kernel 服务）。
 
 ## 10. PluginScreen
 
@@ -241,18 +254,19 @@ manager 省略时延迟构造真实的 PluginManager（读真实用户目录）�
 
 命令：@uv run pytest tests/plugins tests/tools tests/builtin tests/kernel -o addopts= -q；全量 tui 测试 @uv run pytest tests/tui -o addopts= -q。ruff：@uv run ruff check src/deeppyro/plugins src/deeppyro/builtin/plugin_manager.py src/deeppyro/builtin/settings.py src/deeppyro/builtin/inspect.py src/deeppyro/tools/builtin/plugin_tools.py tests/plugins tests/builtin tests/tools/test_plugin_tools.py。
 
-当前结果：tests/plugins + tests/tools + tests/builtin + tests/kernel 共 253 passed（其中 tests/plugins 99、tests/builtin 12、tests/tools 的 plugin tools 25、tests/kernel 18）；tests/tui 156 passed；scoped ruff 无告警。
+当前结果：tests/plugins + tests/tools + tests/builtin + tests/kernel 共 301 passed；scoped ruff check 与 ruff format 均无告警。新增覆盖：template 脚手架生成与校验（16 例）、PluginManager create_bundle/bundle_template 门面（2 例）、inspect events/slots/theme/guide/loader_state 合并（6 例）、settings volatile live apply（6 例，含真实 kernel 端到端）、plugin_create 工具（5 例）。
 
 覆盖要点：三类来源字段与优先级、坏 TOML/坏 value 的行级错误、bundle id 过滤、清单 enabled 语义、原子写 round-trip（含 unicode/转义/嵌套 config/空清单删文件/无 .tmp 残留）、enable/disable 幂等与配置保留、读写失败不覆盖清单、bundle 保护、未知 id、目录删除边界、entry point 不卸载、validate 成功/失败、屏幕渲染/按键/通知/关闭/空列表/默认 manager 注入；bundle 安装/覆盖/force/非法 id/路径穿越/顺序覆盖/共享 row 清理/失败状态；settings schema/掩码/CAS/secret 保留/深合并/pydantic 校验；inspect services/plugins/tools/prompts/commands/providers 与失败行；四个 agent 工具的缺服务/参数校验/异常转 is_error。
 
 ## 12. 与 DSH 差异与已知风险
 
-- 设置改动只落盘，不热更新：describe 的 apply 恒为 next-boot，restart_required=True；运行中的 Service 不会重读配置。
+- 热更新仅限插件类声明在 volatile 里的字段：SettingsPlugin.write 在 kernel 服务可用时调用 apply_plugin_config，成功且无其它变更才返回 applied_live=True / apply=live；否则一切改动仍按 next-boot 处理。未声明 volatile 的插件、非 volatile 变更、kernel 缺失或拒绝时都退化为下次 boot 生效。
 - 只有声明了 pydantic Config 的插件才有 JSON schema；否则 describe 的 schema 为 null，write 只做合并与落盘（无结构校验）。
 - secret 判定是按字段名的启发式，存在误判（maxTokens 被掩码）和漏判（credential 不掩码）；没有独立密钥库或加密存储，掩码只影响 read/describe 的展示。
 - 清单重写会丢失注释、未知顶层键和原始排版，只保留 [[plugins]] 的语义内容（id/name/config/disabled/before/after）。这是最小 TOML 序列化的刻意取舍，避免引入 TOML 写库依赖。
 - settings/inspect 通过 default composition 读取生效视图；通过 extra_plugins 挂载、且不在用户清单/composition 里的插件，config_schema 走 PluginManager 兜底解析 target，但没有生效 config 行。
-- 用户 bundle 安装只做结构校验，不签名、不沙箱；下一次 boot 会执行其中代码，因此 install 属于需要人工批准的高风险操作。
+- 用户 bundle 安装只做结构校验，不签名、不沙箱；下一次 boot 会执行其中代码，因此 install 属于需要人工批准的高风险操作。plugin_create 只生成代码不执行，但生成的 bundle 一旦安装就会在下次 boot 运行。
+- 脚手架示例工具名 sample_greeting 是固定值，多个由模板生成的 bundle 同时启用时可能与其他 bundle 的工具重名；示例 volatile 字段 greeting 也会在改配置时触发 live apply，仅作演示。
 - inspect 读取失败 fiber 的错误文本用到了 vendor cordis 的私有属性（fiber._error），vendor 升级时可能失效。
 - 删除 bundle 或目录插件不会停止当前进程里已加载的插件；需要重启。
 - 清单写入没有跨进程锁，假定单 TUI 进程独占用户清单。

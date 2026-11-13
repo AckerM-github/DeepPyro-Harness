@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -37,7 +38,9 @@ class PromptSection:
     """A named, ordered chunk of the system prompt.
 
     A non-None scope reserves the section for one agent preset; None means the
-    section is visible to every agent.
+    section is visible to every agent. A non-None revision narrows a scoped
+    section to one immutable preset revision: sections contributed by a preset
+    realm plugin are tagged with the revision that was materialized.
     """
 
     name: str
@@ -45,15 +48,36 @@ class PromptSection:
     renderer: Callable[[Any, Any], str]
     plugin_id: str = ""
     scope: str | None = None
+    revision: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PresetPluginRow:
+    """One plugin row carried by a preset revision.
+
+    Rows are mounted inside the preset realm, a child context of the host
+    composition, when the revision is first materialized. The plugin target
+    uses the same syntax as a bundle row: 'module:Class' or a '.py' path
+    relative to :attr:`PresetSpec.base`.
+    """
+
+    id: str
+    plugin: str
+    config: dict[str, Any] | None = None
+    disabled: bool = False
+    #: Service names to isolate inside the realm before mounting this row.
+    isolate: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class PresetSpec:
     """One named agent composition selected per session.
 
-    A preset is a scope label rather than a container: tools and prompt
-    sections registered with scope=<preset id> are only visible to agents
-    created with that preset, on top of the global contributions.
+    A preset is both a scope label and an optional container: tools and prompt
+    sections registered with scope=<preset id> are visible to agents created
+    with that preset, and :attr:`plugins` rows are mounted once per revision in
+    a child context. Every registration is a new immutable revision; live
+    agents keep the revision they were created with.
     """
 
     id: str
@@ -63,6 +87,12 @@ class PresetSpec:
     instructions: tuple[str, ...] = ()
     order: int = 100
     plugin_id: str = ""
+    #: Plugin rows mounted inside the preset realm (DSH per-preset plugins).
+    plugins: tuple[PresetPluginRow, ...] = ()
+    #: Host-filled: the immutable revision of this preset snapshot.
+    revision: int = 0
+    #: Base directory used to resolve relative '.py' plugin targets.
+    base: Path | None = None
 
     def display_name(self) -> str:
         return self.name or self.id
@@ -80,6 +110,7 @@ class ToolContribution:
     factory: Callable[[Any, Any], Any]
     scope: str | None = None
     plugin_id: str = ""
+    revision: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +139,7 @@ class PluginStatus:
 __all__ = [
     "CommandSpec",
     "PluginStatus",
+    "PresetPluginRow",
     "PresetSpec",
     "PromptSection",
     "ProviderContribution",

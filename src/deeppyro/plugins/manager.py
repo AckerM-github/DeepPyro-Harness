@@ -35,6 +35,8 @@ from deeppyro.plugins.model import (
     PluginInfo,
     ValidationResult,
 )
+from deeppyro.plugins.template import bundle_template as build_bundle_template
+from deeppyro.plugins.template import create_bundle as create_bundle_scaffold
 
 
 class PluginManager:
@@ -195,6 +197,27 @@ class PluginManager:
     def list_bundles(self) -> list[BundleInfo]:
         """Installed user bundles with their load and override state."""
         return list(self._bundles.list())
+
+    def bundle_template(
+        self,
+        bundle_id: str = "demo-bundle",
+        name: str = "",
+        *,
+        api_version: int = 1,
+    ) -> dict[str, str]:
+        """Scaffolded bundle files keyed by relative path (no writes)."""
+        return build_bundle_template(bundle_id, name, api_version=api_version)
+
+    def create_bundle(
+        self,
+        dest: str | Path,
+        bundle_id: str,
+        name: str = "",
+        *,
+        api_version: int = 1,
+    ) -> Path:
+        """Write and validate a new bundle scaffold at dest."""
+        return create_bundle_scaffold(dest, bundle_id, name, api_version=api_version)
 
     def install_bundle(self, source: str | Path, *, force: bool = False) -> BundleInfo:
         """Copy a bundle directory into the user bundle store."""

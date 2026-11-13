@@ -28,22 +28,36 @@ class PromptPlugin(Service):
         *,
         plugin_id: str = "",
         scope: str | None = None,
+        revision: int | None = None,
     ) -> Callable[[], None]:
         """Register one section; the returned callable removes it.
 
-        A non-None scope reserves the section for the named agent preset.
+        A non-None scope reserves the section for the named agent preset; a
+        non-None revision pins it to one immutable preset revision. The same
+        name may exist in different compositions (scope, revision), but one
+        composition cannot register a name twice.
         """
         if not name:
             raise PluginDependencyError("prompt section name must not be empty")
-        if any(section.name == name for section in self._sections):
-            owner = next(section.plugin_id for section in self._sections if section.name == name)
-            raise PluginDependencyError(f"prompt section {name!r} is already registered by {owner!r}")
+        duplicate = next(
+            (
+                section
+                for section in self._sections
+                if section.name == name and section.scope == scope and section.revision == revision
+            ),
+            None,
+        )
+        if duplicate is not None:
+            raise PluginDependencyError(
+                f"prompt section {name!r} is already registered by {duplicate.plugin_id!r}"
+            )
         section = PromptSection(
             name=name,
             order=int(order),
             renderer=renderer,
             plugin_id=plugin_id,
             scope=scope,
+            revision=revision,
         )
         self._sections.append(section)
 
@@ -55,14 +69,37 @@ class PromptPlugin(Service):
 
         return remove
 
-    def sections(self, *, scope: str | None = None) -> list[PromptSection]:
+    @staticmethod
+    def _visible(section: PromptSection, scope: str | None, revision: int | None) -> bool:
+        """Whether a section belongs to the composition for scope/revision."""
+        if section.scope is None:
+            return True
+        if section.scope != scope:
+            return False
+        if section.revision is None:
+            return True
+        return revision is not None and section.revision == revision
+
+    def sections(
+        self,
+        *,
+        scope: str | None = None,
+        revision: int | None = None,
+    ) -> list[PromptSection]:
         """Sections visible to an agent: global ones plus those scoped to it."""
-        visible = [section for section in self._sections if section.scope is None or section.scope == scope]
+        visible = [section for section in self._sections if self._visible(section, scope, revision)]
         return sorted(visible, key=lambda section: (section.order, section.name))
 
-    def build(self, tools: list[Any], prompt_context: Any, *, scope: str | None = None) -> str:
+    def build(
+        self,
+        tools: list[Any],
+        prompt_context: Any,
+        *,
+        scope: str | None = None,
+        revision: int | None = None,
+    ) -> str:
         """Render every visible section; fall back to the core prompt."""
-        sections = self.sections(scope=scope)
+        sections = self.sections(scope=scope, revision=revision)
         if not sections:
             from deeppyro.prompt.prompt import build_system_prompt
 

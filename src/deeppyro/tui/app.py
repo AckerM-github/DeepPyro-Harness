@@ -19,9 +19,10 @@ from typing import Any, ClassVar
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Header, Select
+from textual.widgets import Footer, Header
 
 from deeppyro import __version__
+from deeppyro.sandbox.types import APPROVALS, PRESETS
 from deeppyro.tui.commands import dispatch, help_text, live_commands
 from deeppyro.tui.format import compact_text, context_percent, short_session_id
 from deeppyro.tui.screens.approval import ALLOW_ALWAYS, ApprovalScreen
@@ -36,13 +37,16 @@ from deeppyro.tui.slots import (
     build_slot_context,
     resolve_slot_registry,
 )
-from deeppyro.tui.widgets.control_bar import CUSTOM_WORKSPACE, ControlBar
 from deeppyro.tui.widgets.conversation import ConversationView
 from deeppyro.tui.widgets.plugin_slots import PluginStatusBar
 from deeppyro.tui.widgets.prompt_area import PromptArea
 from deeppyro.tui.widgets.status_bar import StatusBar
 
 RuntimeFactory = Callable[["DeepPyroApp"], Awaitable[Any]]
+
+#: Sentinel returned by the /cwd picker when the user wants a free-text path.
+CUSTOM_WORKSPACE = "\x00custom-workspace"
+CUSTOM_WORKSPACE_LABEL = "Enter path..."
 
 
 class DeepPyroApp(App[None]):
@@ -85,7 +89,6 @@ class DeepPyroApp(App[None]):
     # -- composition -----------------------------------------------------
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
-        yield ControlBar()
         yield ConversationView()
         yield StatusBar()
         yield PluginStatusBar()
@@ -329,7 +332,6 @@ class DeepPyroApp(App[None]):
                 context_window=0,
                 phase="starting",
             )
-            self._sync_control_bar()
             return
         usage = runtime.session_usage()
         window = int(getattr(runtime, "context_window", 0) or 0)
@@ -342,9 +344,10 @@ class DeepPyroApp(App[None]):
             cached_tokens=usage["cached"],
             context_window=window,
             phase=self._phase,
+            preset=self._current_preset(),
+            approval=self._current_approval(),
         )
         self.sub_title = f"{runtime.provider_name}/{runtime.model}"
-        self._sync_control_bar()
         # Never steal focus from an overlay (splash, picker, approval modal).
         if self._prompt is not None and len(self.screen_stack) <= 1:
             self._prompt.focus()
@@ -357,47 +360,94 @@ class DeepPyroApp(App[None]):
             return
         bar.refresh_items(build_slot_context(self))
 
-    # -- control bar -----------------------------------------------------
-    def _sync_control_bar(self) -> None:
-        """Push the authoritative runtime policy/workspace into the dropdowns."""
-        try:
-            bar = self.query_one(ControlBar)
-        except Exception:  # noqa: BLE001 - composition not ready yet
-            return
-        runtime = self.runtime
-        if runtime is None:
-            return
-        permission = getattr(runtime, "permission", None)
-        known = getattr(runtime, "known_workspaces", None)
-        workspaces = known() if callable(known) else []
-        bar.sync(
-            preset=str(getattr(permission, "preset", "workspace-write")),
-            approval=str(getattr(permission, "approval", "ask")),
-            cwd=str(runtime.cwd),
-            workspaces=workspaces,
-            enabled=not self._working,
-        )
+    # -- policy / approval / workspace commands --------------------------
+    def _current_preset(self) -> str:
+        permission = getattr(self.runtime, "permission", None)
+        return str(getattr(permission, "preset", "workspace-write"))
 
-    @on(Select.Changed)
-    def _on_control_changed(self, event: Select.Changed) -> None:
-        runtime = self.runtime
-        if runtime is None or event.value is None or event.value is Select.NULL:
+    def _current_approval(self) -> str:
+        permission = getattr(self.runtime, "permission", None)
+        return str(getattr(permission, "approval", "ask"))
+
+    async def policy_command(self, argument: str) -> None:
+        """Show or switch the sandbox permission preset (/policy)."""
+        presets = [str(item) for item in PRESETS]
+        if not argument:
+            if self._working:
+                self.notify("cannot change policy during a running turn", severity="warning")
+                return
+            current = self._current_preset()
+            choice = await self._pick(
+                "Select permission preset",
+                [(item, item, "current" if item == current else "") for item in presets],
+            )
+            if choice is None:
+                self.conversation.add_info(f"current permission preset: {current}")
+                self.conversation.add_info("available: " + ", ".join(presets))
+                self.conversation.add_info("use /policy <preset>")
+                return
+            argument = choice
+        if argument not in presets:
+            self.conversation.add_error(
+                f"unknown permission preset: {argument} (choose from {', '.join(presets)})"
+            )
             return
-        value = str(event.value)
-        select_id = getattr(event.select, "id", "")
-        if select_id == "select-preset":
-            current = str(getattr(getattr(runtime, "permission", None), "preset", ""))
-            if value != current:
-                self.run_worker(self._apply_preset(value), group="control")
-        elif select_id == "select-approval":
-            current = str(getattr(getattr(runtime, "permission", None), "approval", ""))
-            if value != current:
-                self.run_worker(self._apply_approval(value), group="control")
-        elif select_id == "select-cwd":
-            if value == CUSTOM_WORKSPACE:
-                self.run_worker(self._ask_and_switch_workspace(), group="control")
-            elif value != str(runtime.cwd):
-                self.run_worker(self._apply_workspace(value), group="control")
+        await self._apply_preset(argument)
+
+    async def approval_command(self, argument: str) -> None:
+        """Show or switch the approval policy (/approval)."""
+        approvals = [str(item) for item in APPROVALS]
+        if not argument:
+            if self._working:
+                self.notify("cannot change approval during a running turn", severity="warning")
+                return
+            current = self._current_approval()
+            choice = await self._pick(
+                "Select approval policy",
+                [(item, item, "current" if item == current else "") for item in approvals],
+            )
+            if choice is None:
+                self.conversation.add_info(f"current approval policy: {current}")
+                self.conversation.add_info("available: " + ", ".join(approvals))
+                self.conversation.add_info("use /approval <policy>")
+                return
+            argument = choice
+        if argument not in approvals:
+            self.conversation.add_error(
+                f"unknown approval policy: {argument} (choose from {', '.join(approvals)})"
+            )
+            return
+        await self._apply_approval(argument)
+
+    async def cwd_command(self, argument: str) -> None:
+        """Show or switch the workspace directory (/cwd)."""
+        if self._working:
+            self.notify("cannot switch workspace during a running turn", severity="warning")
+            return
+        runtime = self.runtime
+        current = str(getattr(runtime, "cwd", "") or "")
+        if not argument:
+            known = getattr(runtime, "known_workspaces", None)
+            workspaces = list(known() if callable(known) else [])
+            options: list[tuple[str, str, str]] = []
+            for path in [current, *workspaces]:
+                if path and path not in [item[0] for item in options]:
+                    options.append((path, path, "current" if path == current else ""))
+            options.append((CUSTOM_WORKSPACE, CUSTOM_WORKSPACE_LABEL, ""))
+            choice = await self._pick("Select workspace", options)
+            if choice is None:
+                self.conversation.add_info(f"current workspace: {current}")
+                if workspaces:
+                    self.conversation.add_info("recent: " + ", ".join(workspaces))
+                self.conversation.add_info("use /cwd <path>")
+                return
+            argument = choice
+        if argument == CUSTOM_WORKSPACE:
+            path = await self._ask_workspace_path()
+            if not path:
+                return
+            argument = path
+        await self._apply_workspace(argument)
 
     async def _apply_preset(self, preset: str) -> None:
         if self._working:
@@ -407,7 +457,7 @@ class DeepPyroApp(App[None]):
         try:
             await self.runtime.set_preset(preset)
         except Exception as exc:  # noqa: BLE001 - surface, then resync the view
-            self.notify(f"preset switch failed: {exc}", severity="error")
+            self.notify(f"policy switch failed: {exc}", severity="error")
         else:
             self.notify(f"permission preset: {preset}")
         finally:
@@ -443,17 +493,6 @@ class DeepPyroApp(App[None]):
         finally:
             self.refresh_status()
 
-    async def _ask_and_switch_workspace(self) -> None:
-        if self._working:
-            self.notify("cannot switch workspace during a running turn", severity="warning")
-            self.refresh_status()
-            return
-        path = await self._ask_workspace_path()
-        if path:
-            await self._apply_workspace(path)
-        else:
-            self.refresh_status()
-
     async def _ask_workspace_path(self) -> str | None:
         runtime = self.runtime
         current = str(getattr(runtime, "cwd", "") or self._cwd or "")
@@ -468,7 +507,7 @@ class DeepPyroApp(App[None]):
         conversation = self.conversation
         conversation.add_info("DeepPyro Harness — python core, terminal UI")
         conversation.add_info(
-            f"{runtime.provider_name}/{runtime.model}  ·  switch policy, approval and workspace in the bar above"
+            f"{runtime.provider_name}/{runtime.model}  ·  /policy, /approval and /cwd change the session settings"
         )
         conversation.add_info("Type a message. /help lists commands. Ctrl+C interrupts, Ctrl+D quits.")
 

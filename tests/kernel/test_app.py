@@ -74,6 +74,44 @@ async def test_stop_removes_services() -> None:
     assert not app.has_service("counter")
 
 
+async def test_row_states_report_patched_and_disabled_plugins(tmp_path: Path) -> None:
+    manifest = tmp_path / "dpyro.toml"
+    manifest.write_text(
+        """
+[[plugins]]
+id = "counter"
+config = { start = 9 }
+
+[[plugins]]
+id = "consumer"
+disabled = true
+""",
+        encoding="utf-8",
+    )
+    app = await create_app(
+        _config(),
+        plugins=(
+            PluginSpec(id="counter", name="tests.kernel.plugins_dummy:CounterPlugin"),
+            PluginSpec(id="consumer", name="tests.kernel.plugins_dummy:ConsumerPlugin"),
+        ),
+        manifest_paths=(str(manifest),),
+    )
+    try:
+        states = {state["id"]: state for state in app.row_states()}
+        assert [state["id"] for state in app.row_states()] == ["counter", "consumer"]
+        assert states["counter"]["state"] == "overridden"
+        assert states["counter"]["overridden"] is True
+        assert states["counter"]["runtime_state"] == "active"
+        assert states["counter"]["config"] == {"start": 9}
+        assert states["counter"]["plugin"] == "tests.kernel.plugins_dummy:CounterPlugin"
+        assert states["consumer"]["state"] == "disabled"
+        assert states["consumer"]["disabled"] is True
+        assert states["consumer"]["config"] == {}
+        assert app.started == {"counter": "ACTIVE"}
+    finally:
+        await app.stop()
+
+
 async def test_plugin_failure_raises_boot_error() -> None:
     with pytest.raises(KernelBootError):
         await create_app(

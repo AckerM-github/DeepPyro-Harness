@@ -45,16 +45,20 @@ from deeppyro.plugins.model import (
     ValidationResult,
 )
 from deeppyro.plugins.settings_store import (
+    APPLY_LIVE,
     APPLY_NEXT_BOOT,
     MASKED_VALUE,
     SettingsStore,
     manifest_revision,
     mask_secrets,
     plugin_config_schema,
+    plugin_volatile_fields,
     validate_config,
 )
+from deeppyro.plugins.template import bundle_template, create_bundle
 
 __all__ = [
+    "APPLY_LIVE",
     "APPLY_NEXT_BOOT",
     "BUNDLE_STATES",
     "BUNDLE_STATE_DISABLED",
@@ -82,10 +86,13 @@ __all__ = [
     "SettingsConflict",
     "SettingsStore",
     "ValidationResult",
+    "bundle_template",
+    "create_bundle",
     "dump_manifest",
     "manifest_revision",
     "mask_secrets",
     "plugin_config_schema",
+    "plugin_volatile_fields",
     "read_manifest",
     "save_user_manifest",
     "validate_config",

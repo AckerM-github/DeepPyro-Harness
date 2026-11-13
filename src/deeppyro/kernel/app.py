@@ -11,13 +11,24 @@ The kernel is a plugin host. Boot has four stages:
 Rows marked critical (the core bundle) abort boot on failure and unwind the
 plugins that already started. Non-critical rows from external bundles are
 recorded in App.failures and the rest of the app keeps running.
+
+Group rows are containers, not plugin instances: the loader builds a child
+cordis context for the group (applying the group's isolate/intercept layers),
+mounts the nested rows in that context in order, and exposes the whole group as
+one App.rows entry. The live state of a group is the aggregate of its children.
+
+Every mount attempt is captured in a MountRecord, and App.row_states() renders
+the full row tree with one of the live states: active, failed, disabled,
+overridden or restart-required.
 """
 
 from __future__ import annotations
 
+import copy
 import inspect
 import logging
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from typing import Any
 
 from deeppyro._vendor.cordis_port import Context, Fiber
@@ -40,6 +51,31 @@ log = logging.getLogger("deeppyro.kernel")
 
 class KernelBootError(RuntimeError):
     """Raised when a critical plugin fails to load during app bootstrap."""
+
+
+@dataclass
+class MountRecord:
+    """One attempted row mount: the plugin instance, fiber and failure reason."""
+
+    row: PluginRow
+    fiber: Fiber | None = None
+    parent: MountRecord | None = None
+    children: list[MountRecord] = field(default_factory=list)
+    error: str = ""
+    critical: bool = True
+    config: dict[str, Any] = field(default_factory=dict)
+    cls: type | None = None
+    instance: Any = None
+
+    def walk(self) -> Iterable[MountRecord]:
+        """Yield this record and every nested child record, depth first."""
+        yield self
+        for child in self.children:
+            yield from child.walk()
+
+    @property
+    def plugin_id(self) -> str:
+        return self.row.id
 
 
 def _validate_config(cls: type, raw: Any, row: PluginRow) -> Any:
@@ -74,11 +110,14 @@ def _teardown(instance: Any) -> Callable[[], Any] | None:
     return run
 
 
-def _api_adapter(cls: type, row: PluginRow) -> Callable[..., Any]:
+def _api_adapter(cls: type, row: PluginRow, record: MountRecord | None = None) -> Callable[..., Any]:
     async def apply(raw_ctx: Any, raw_config: Any) -> Any:
         config = _validate_config(cls, raw_config, row)
         ctx = PluginContext(raw_ctx, plugin_id=row.id, config=config)
         instance = cls(ctx, config)
+        if record is not None:
+            record.instance = instance
+            record.config = _config_dict(config)
         setup = getattr(instance, "setup", None)
         if callable(setup):
             result = setup(ctx, config)
@@ -98,6 +137,21 @@ def _api_adapter(cls: type, row: PluginRow) -> Callable[..., Any]:
     return apply
 
 
+def _config_dict(value: Any) -> dict[str, Any]:
+    """Render a plugin config (pydantic model or mapping) as a plain dict."""
+    if value is None:
+        return {}
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            return dict(copy.deepcopy(dump(mode="python")))
+        except TypeError:
+            return dict(copy.deepcopy(dump()))
+    if isinstance(value, dict):
+        return copy.deepcopy(value)
+    return {"value": copy.deepcopy(value)}
+
+
 def _check_name(row: PluginRow, cls: type) -> None:
     if not row.name:
         return
@@ -115,9 +169,14 @@ def type_name(cls: type) -> str:
     return f"{getattr(cls, '__module__', '?')}:{getattr(cls, '__name__', '?')}"
 
 
-def _plugin_for(row: PluginRow) -> tuple[Any, dict[str, Any]]:
+def _plugin_for(
+    row: PluginRow,
+    record: MountRecord | None = None,
+) -> tuple[Any, dict[str, Any], type]:
     cls = resolve_row(row)
     _check_name(row, cls)
+    if record is not None:
+        record.cls = cls
     raw_config = dict(row.config or {})
     if inspect.isclass(cls) and issubclass(cls, Plugin):
         api_version = int(getattr(cls, "api_version", API_VERSION) or API_VERSION)
@@ -127,20 +186,115 @@ def _plugin_for(row: PluginRow) -> tuple[Any, dict[str, Any]]:
             )
         plugin: Any = {
             "name": row.id,
-            "apply": _api_adapter(cls, row),
+            "apply": _api_adapter(cls, row, record),
             "inject": list(getattr(cls, "inject", []) or []),
         }
-        return plugin, raw_config
-    return cls, raw_config
+        return plugin, raw_config, cls
+    return cls, raw_config, cls
 
 
-def _mount(ctx: Context, row: PluginRow, plugin: Any, config: dict[str, Any]) -> Fiber:
+def _mount_context(ctx: Context, row: PluginRow) -> Context:
+    """Apply a row's isolate/intercept layers to a context."""
     mount_ctx = ctx
     for name in row.isolate:
         mount_ctx = mount_ctx.isolate(name)
     for name, overrides in row.intercept.items():
         mount_ctx = mount_ctx.intercept(name, overrides)
-    return mount_ctx.plugin(plugin, config)
+    return mount_ctx
+
+
+def _mount(ctx: Context, row: PluginRow, plugin: Any, config: dict[str, Any]) -> Fiber:
+    """Mount a plugin on ctx after applying the row's isolate/intercept layers."""
+    return _mount_context(ctx, row).plugin(plugin, config)
+
+
+def _record_only(row: PluginRow, parent: MountRecord | None, critical: bool) -> MountRecord:
+    """Build records for rows that are not mounted (disabled rows/groups)."""
+    record = MountRecord(row=row, parent=parent, critical=critical, config=copy.deepcopy(row.config or {}))
+    for child in row.children:
+        record.children.append(_record_only(child, record, critical))
+    return record
+
+
+def _effective_critical(row: PluginRow, parent_critical: bool) -> bool:
+    return row.critical if row.critical is not None else parent_critical
+
+
+async def _mount_row(
+    parent_ctx: Context,
+    row: PluginRow,
+    *,
+    parent: MountRecord | None,
+    parent_critical: bool,
+    records: list[MountRecord],
+    fibers: list[Fiber],
+    failures: list[PluginStatus],
+) -> MountRecord:
+    """Mount one row (recursively for groups) and return its mount record."""
+    critical = _effective_critical(row, parent_critical)
+    if row.disabled is True:
+        record = _record_only(row, parent, critical)
+        records.append(record)
+        return record
+    record = MountRecord(row=row, parent=parent, critical=critical, config=copy.deepcopy(row.config or {}))
+    records.append(record)
+    if row.group:
+        try:
+            group_ctx = _mount_context(parent_ctx, row)
+        except Exception as exc:
+            record.error = str(exc)
+            if critical:
+                raise KernelBootError(f"plugin group {row.id!r} failed to mount: {exc}") from exc
+            failures.append(
+                PluginStatus(
+                    id=row.id,
+                    plugin=row.plugin,
+                    state="failed",
+                    critical=False,
+                    origin=row.origin,
+                    error=str(exc),
+                )
+            )
+            log.warning("plugin group %s failed to mount: %s", row.id, exc)
+            return record
+        for child in row.children:
+            child_record = await _mount_row(
+                group_ctx,
+                child,
+                parent=record,
+                parent_critical=critical,
+                records=records,
+                fibers=fibers,
+                failures=failures,
+            )
+            record.children.append(child_record)
+        return record
+    try:
+        plugin, plugin_config, _ = _plugin_for(row, record)
+        fiber = _mount(parent_ctx, row, plugin, plugin_config)
+        fibers.append(fiber)
+        record.fiber = fiber
+        await fiber
+    except Exception as exc:
+        record.error = str(exc)
+        if critical:
+            if isinstance(exc, KernelBootError):
+                raise
+            raise KernelBootError(
+                f"plugin {row.id!r} ({row.plugin or row.name}) failed to load: {exc}"
+            ) from exc
+        failures.append(
+            PluginStatus(
+                id=row.id,
+                plugin=row.plugin,
+                state="failed",
+                critical=False,
+                origin=row.origin,
+                error=str(exc),
+            )
+        )
+        log.warning("plugin %s failed to load: %s", row.id, exc)
+    return record
 
 
 class App:
@@ -152,23 +306,163 @@ class App:
         rows: Iterable[PluginRow],
         fibers: list[Fiber],
         config: Config,
+        *,
+        composition: Composition | None = None,
+        records: list[MountRecord] | None = None,
     ) -> None:
         self.ctx = ctx
         self.config = config
         self._rows = tuple(rows)
         self._fibers = fibers
+        self._composition = composition
+        if records is None:
+            records = [
+                MountRecord(row=row, fiber=fiber, config=copy.deepcopy(row.config or {}))
+                for row, fiber in zip(self._rows, self._fibers)
+            ]
+        self._records = records
+        self._top = [record for record in records if record.parent is None]
         #: Plugin rows that failed to load while non-critical.
         self.failures: list[PluginStatus] = []
+        #: Plugin ids whose config changed but could not be applied live.
+        self._restart_required: set[str] = set()
 
     @property
     def rows(self) -> tuple[PluginRow, ...]:
-        """Every loaded row, in mount order."""
+        """Every loaded top-level row, in mount order (groups include children)."""
         return self._rows
 
     @property
     def specs(self) -> tuple[PluginSpec, ...]:
         """Loaded rows rendered as legacy plugin specs."""
         return tuple(row_to_spec(row) for row in self._rows)
+
+    @property
+    def composition(self) -> Composition | None:
+        return self._composition
+
+    @property
+    def mount_records(self) -> tuple[MountRecord, ...]:
+        """Every mount record (loaded, disabled and failed), in tree order."""
+        return tuple(self._records)
+
+    def mount_record(self, plugin_id: str) -> MountRecord | None:
+        """Return the mount record for plugin_id, searching nested groups."""
+        for record in self._records:
+            if record.row.id == plugin_id:
+                return record
+            for nested in record.walk():
+                if nested.row.id == plugin_id:
+                    return nested
+        return None
+
+    # -- live row states ---------------------------------------------------
+    @property
+    def restart_required(self) -> frozenset[str]:
+        return frozenset(self._restart_required)
+
+    def mark_restart_required(self, plugin_id: str) -> None:
+        """Remember that plugin_id needs a restart to apply a config change."""
+        self._restart_required.add(plugin_id)
+
+    def clear_restart_required(self, plugin_id: str) -> None:
+        self._restart_required.discard(plugin_id)
+
+    def row_states(self) -> list[dict[str, Any]]:
+        """Render every composition row with its live state.
+
+        States are one of active, failed, disabled, overridden or
+        restart-required (plus pending for rows still waiting on injected
+        services). A group row reports the aggregate of its children and the
+        children themselves are listed separately with their group id as
+        parent. Overridden means a later patch layer replaced the row config or
+        disabled flag; the row still runs with the patched values.
+        """
+        rows: list[PluginRow]
+        if self._composition is not None:
+            rows = self._composition.flat()
+        else:
+            rows = [record.row for record in self._walk_records()]
+        by_id = {record.row.id: record for record in self._walk_records()}
+        states: list[dict[str, Any]] = []
+        for row in rows:
+            record = by_id.get(row.id)
+            states.append(self._row_state_entry(row, record))
+        return states
+
+    def _walk_records(self) -> Iterable[MountRecord]:
+        for record in self._records:
+            yield from record.walk()
+
+    def _row_state_entry(self, row: PluginRow, record: MountRecord | None) -> dict[str, Any]:
+        config = record.config if record is not None else copy.deepcopy(row.config or {})
+        return {
+            "id": row.id,
+            "plugin": row.plugin,
+            "name": row.name,
+            "state": self._record_state(record, row),
+            "runtime_state": self._runtime_state(record),
+            "critical": record.critical if record is not None else bool(row.critical),
+            "origin": row.origin,
+            "error": record.error if record is not None else "",
+            "group": row.group,
+            "parent": record.parent.row.id if record is not None and record.parent is not None else None,
+            "overridden": row.overridden,
+            "disabled": row.disabled is True,
+            "config": copy.deepcopy(config),
+            "children": [child.id for child in row.children],
+        }
+
+    def _runtime_state(self, record: MountRecord | None) -> str:
+        if record is None:
+            return "unmounted"
+        if record.row.group:
+            return "group"
+        if record.fiber is None:
+            return "unmounted"
+        try:
+            return record.fiber.get_state().name.lower()
+        except Exception:  # noqa: BLE001 - a broken fiber state must not crash reporting
+            return "unknown"
+
+    def _ancestor_disabled(self, record: MountRecord | None) -> bool:
+        current = record
+        while current is not None:
+            if current.row.disabled is True:
+                return True
+            current = current.parent
+        return False
+
+    def _record_state(self, record: MountRecord | None, row: PluginRow) -> str:
+        if record is None:
+            return "disabled" if row.disabled is True else "pending"
+        if self._ancestor_disabled(record):
+            return "disabled"
+        if row.group:
+            child_states = [self._record_state(child, child.row) for child in record.children]
+            if record.error:
+                return "failed"
+            if any(state == "failed" for state in child_states):
+                return "failed"
+            if row.id in self._restart_required or any(state == "restart-required" for state in child_states):
+                return "restart-required"
+            if row.overridden or any(state == "overridden" for state in child_states):
+                return "overridden"
+            if all(state in ("active", "overridden", "disabled") for state in child_states):
+                return "active"
+            return "pending"
+        runtime_state = self._runtime_state(record)
+        if record.error or runtime_state == "failed":
+            return "failed"
+        if row.id in self._restart_required:
+            return "restart-required"
+        if row.overridden and runtime_state in ("active", "loading"):
+            return "overridden"
+        if runtime_state in ("active", "loading"):
+            return "active"
+        if runtime_state == "unmounted":
+            return "disabled" if row.disabled is True else "pending"
+        return "pending"
 
     # -- service access ----------------------------------------------------
     def service(self, name: str) -> Any:
@@ -188,8 +482,26 @@ class App:
 
     @property
     def started(self) -> dict[str, str]:
-        """id -> fiber state for every loaded plugin."""
-        return {row.id: fiber.get_state().name for row, fiber in zip(self._rows, self._fibers)}
+        """id -> fiber state name for every loaded top-level plugin."""
+        started: dict[str, str] = {}
+        loaded = {row.id for row in self._rows}
+        for record in self._top:
+            if record.row.id not in loaded:
+                continue
+            started[record.row.id] = self._started_name(record)
+        return started
+
+    def _started_name(self, record: MountRecord) -> str:
+        state = self._record_state(record, record.row)
+        mapping = {
+            "active": "ACTIVE",
+            "overridden": "ACTIVE",
+            "restart-required": "ACTIVE",
+            "disabled": "DISABLED",
+            "pending": "PENDING",
+            "failed": "FAILED",
+        }
+        return mapping.get(state, state.upper())
 
     # -- lifecycle ---------------------------------------------------------
     async def stop(self) -> None:
@@ -243,6 +555,21 @@ def _build_composition(
     return composition
 
 
+def _attach_kernel(app: App) -> None:
+    """Give the kernel runtime service a handle on the booted app."""
+    try:
+        service = app.service("kernel")
+    except LookupError:
+        return
+    attach = getattr(service, "attach", None)
+    if not callable(attach):
+        return
+    try:
+        attach(app)
+    except Exception:  # pragma: no cover - a broken runtime must not fail boot
+        log.exception("kernel runtime service failed to attach to the app")
+
+
 async def create_app(
     config: Config | dict[str, Any] | None = None,
     *,
@@ -272,43 +599,31 @@ async def create_app(
     provide_config(ctx, resolved)
 
     fibers: list[Fiber] = []
-    rows: list[PluginRow] = []
+    records: list[MountRecord] = []
     failures: list[PluginStatus] = []
+    rows: list[PluginRow] = []
     try:
-        for row in composition.enabled():
-            try:
-                plugin, plugin_config = _plugin_for(row)
-                fiber = _mount(ctx, row, plugin, plugin_config)
-                await fiber
-            except Exception as exc:
-                critical = row.critical is not False
-                if not critical:
-                    failures.append(
-                        PluginStatus(
-                            id=row.id,
-                            plugin=row.plugin,
-                            state="failed",
-                            critical=False,
-                            origin=row.origin,
-                            error=str(exc),
-                        )
-                    )
-                    log.warning("plugin %s failed to load: %s", row.id, exc)
-                    continue
-                if isinstance(exc, KernelBootError):
-                    raise
-                raise KernelBootError(
-                    f"plugin {row.id!r} ({row.plugin or row.name}) failed to load: {exc}"
-                ) from exc
-            fibers.append(fiber)
+        for row in composition.rows():
+            record = await _mount_row(
+                ctx,
+                row,
+                parent=None,
+                parent_critical=True,
+                records=records,
+                fibers=fibers,
+                failures=failures,
+            )
+            if row.disabled is True or record.error:
+                continue
             rows.append(row)
     except KernelBootError:
         await _dispose_all(fibers)
         raise
 
-    app = App(ctx, rows, fibers, resolved)
+    app = App(ctx, rows, fibers, resolved, composition=composition, records=records)
     app.failures = failures
+    _attach_kernel(app)
     return app
 
 
-__all__ = ["App", "KernelBootError", "create_app"]
+__all__ = ["App", "KernelBootError", "MountRecord", "create_app"]

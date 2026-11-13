@@ -25,6 +25,8 @@ def show(status: StatusBar, **overrides: Any) -> None:
         "cached_tokens": 2048,
         "context_window": 8192,
         "phase": "ready",
+        "preset": "workspace-write",
+        "approval": "ask",
     }
     values.update(overrides)
     status.show(**values)
@@ -51,6 +53,7 @@ async def test_show_renders_all_fields() -> None:
     assert "512" in text
     assert "2.0k" in text
     assert "ctx 50%" in text
+    assert "workspace-write/ask" in text
     assert "ready" in text
 
 
@@ -65,6 +68,18 @@ async def test_show_masks_long_model() -> None:
         text = rendered(status)
     assert "…" in text
     assert long_model not in text
+
+
+async def test_show_omits_policy_when_not_given() -> None:
+    app = StatusHost()
+    async with app.run_test(size=(120, 10)) as pilot:
+        await pilot.pause()
+        status = app.query_one(StatusBar)
+        show(status, preset="", approval="")
+        await pilot.pause()
+        text = rendered(status)
+    assert "workspace-write" not in text
+    assert "ask" not in text
 
 
 async def test_show_warns_when_context_is_nearly_full() -> None:

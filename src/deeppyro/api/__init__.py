@@ -16,6 +16,7 @@ from .plugin import Plugin, Service
 from .types import (
     CommandSpec,
     PluginStatus,
+    PresetPluginRow,
     PresetSpec,
     PromptSection,
     ProviderContribution,
@@ -33,6 +34,7 @@ __all__ = [
     "PluginDependencyError",
     "PluginError",
     "PluginStatus",
+    "PresetPluginRow",
     "PresetSpec",
     "PromptSection",
     "ProviderContribution",

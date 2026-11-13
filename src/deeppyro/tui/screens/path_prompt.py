@@ -1,4 +1,4 @@
-"""Free-text workspace path modal opened from the cwd dropdown."""
+"""Free-text workspace path modal opened by /cwd when a custom path is wanted."""
 
 from __future__ import annotations
 

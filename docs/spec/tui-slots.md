@@ -6,10 +6,11 @@ items, conversation rows, panels and settings pages without editing
 
 | File | Role |
 |---|---|
-| `src/deeppyro/tui/slots.py` | Textual-free registry, `SlotsPlugin` kernel service, conversation-row helper, context builder |
+| `src/deeppyro/tui/slots.py` | Textual-free registry, `SlotsPlugin` kernel service, conversation-row helper, context builder, theme/locale access |
+| `src/deeppyro/tui/ui_package.py` | declarative `ui.toml` loader for installed bundles (lazy `module:function` imports, theme, locale) |
 | `src/deeppyro/tui/widgets/plugin_slots.py` | `PluginStatusBar`, `PluginPanelHost`, `PluginTable`, `open_panel_for` |
 | `src/deeppyro/tui/screens/plugin_panel.py` | `PluginPanelScreen` modal and `open_plugin_panel` helper |
-| `tests/tui/test_slots.py`, `tests/tui/test_plugin_slots.py` | registry/service/helper tests plus tiny Textual host apps |
+| `tests/tui/test_slots.py`, `tests/tui/test_plugin_slots.py`, `tests/tui/test_ui_package.py` | registry/service/helper tests, tiny Textual host apps, and `ui.toml` loader tests |
 | `src/deeppyro/tui/app.py`, `theme.tcss` | **not modified here**; the Lead applies the checklist in section 7 |
 
 `slots.py` imports only `deeppyro.api` and `deeppyro.core.errors`, so it can be
@@ -134,6 +135,25 @@ no-op, and calling dispose twice is safe.
 - `resolve_slot_registry`: a missing service or a missing runtime returns
   `None`; the host runs without slots.
 
+### 2.5 Theme tokens and locale
+
+Two auxiliary maps live on the same registry and are shared by every plugin:
+
+```python
+registry.set_theme({"accent": "#7aa2f7"})   # replaces the whole map
+registry.theme() -> dict[str, str]          # copy
+registry.add_locale({"acme.greeting": "Hello"})  # merge
+registry.locale() -> dict[str, str]         # copy
+registry.translate("acme.greeting", default=None) -> str
+```
+
+- Values must be strings; malformed maps raise `SlotError`.
+- `translate` returns the mapped string, else `default`, else the key. It does
+  **not** interpret `"!key"` indirection or do pluralisation; keep it a flat
+  lookup so both hosts and plugins have one predictable rule.
+- `build_slot_context` exposes `theme`, `locale` and `translate` (section 4).
+- `clear()` clears slots, theme and locale.
+
 ## 3. Kernel service: SlotsPlugin
 
 `SlotsPlugin` is a normal `deeppyro.api.Plugin` that provides the shared
@@ -151,6 +171,7 @@ class SlotsPlugin(Plugin):
 
     def setup(self, ctx, config):
         ctx.provide("slots", self.registry)
+        self.load_ui_packages()   # scans <home>/bundles/*/ui.toml, errors recorded
 ```
 
 `ctx.provide` goes through the vendored cordis `Context.provide`, so the
@@ -212,6 +233,9 @@ panel and settings factories:
 | `context_window` | active model context window |
 | `usage` | `{"input": int, "output": int, "cached": int}` |
 | `busy` | `app.busy` |
+| `theme` | copied theme token map from the host registry (empty without one) |
+| `locale` | copied translation map from the host registry |
+| `translate` | `registry.translate(key, default=None)`, identity fallback without a registry |
 
 The builder is defensive: a broken `runtime.session_usage()` yields zeroes,
 missing attributes become empty strings/zero, and it never raises. Status and
@@ -465,20 +489,24 @@ above is inert but safe (`self._slots` is `None`, bar hidden, helper no-op).
 ## 8. Tests
 
 ```powershell
-uv run pytest tests/tui -o addopts= -q
-# 156 passed (includes 33 new slot tests)
+uv run pytest tests/tui/test_slots.py tests/tui/test_plugin_slots.py tests/tui/test_ui_package.py -o addopts= -q
+# 50 passed
 
-uv run pytest tests/tui/test_slots.py tests/tui/test_plugin_slots.py -o addopts= -q
-# 33 passed
+uv run pytest tests/tui -o addopts= -q
+# full suite; add test_app.py etc. once the Lead's host integration lands
 ```
 
 `test_slots.py` covers ordering/filtering, duplicate detection, idempotent
 dispose, default ids, context factory, `SlotsPlugin` service provision, context
-building, conversation-row mounting and error isolation, and registry
-resolution. `test_plugin_slots.py` uses tiny `App.run_test` hosts for the
-status bar (items, errors, Rich Text, missing context), panel host (widget,
-string, `None`, factory/mount errors), the modal (title, Escape, factory
-error), `open_plugin_panel`, and `PluginTable` selection.
+building, theme/locale access, conversation-row mounting and error isolation,
+and registry resolution. `test_plugin_slots.py` uses tiny `App.run_test` hosts
+for the status bar (items, errors, Rich Text, missing context), panel host
+(widget, string, `None`, factory/mount errors), the modal (title, Escape,
+factory error), `open_plugin_panel`, and `PluginTable` selection.
+`test_ui_package.py` covers all four sections, theme/locale, `module:function`
+lazy imports (real `sys.path` and an injected importer), broken entries,
+malformed TOML, missing packages, installed-bundle scanning and
+`SlotsPlugin` boot diagnostics.
 
 ## 9. Deviations, limits, risks
 
@@ -507,3 +535,311 @@ error), `open_plugin_panel`, and `PluginTable` selection.
   a fake context and was additionally probed against a real `boot()` with an
   external bundle row (service returned `SlotRegistry`, state `ACTIVE`).
   A committed boot test would depend on the Lead's final bundle row id.
+
+
+## 10. Declarative UI packages (`ui.toml`)
+
+The plugin service is the imperative path; a bundle can also declare UI in
+`ui.toml` and never import Textual. This mirrors the DSH client-plugin package
+format: package metadata stays declarative, factories are named by
+`module:function`, and the host owns rendering.
+
+### 10.1 Discovery and bundle layout
+
+```text
+~/.dpro/bundles/acme/          # deeppyro_home() / "bundles"
+    bundle.toml                # [bundle] id = "acme"
+    ui.toml
+    acme_ui.py
+    locale/en.json             # optional
+```
+
+`default_ui_bundles_root()` returns `deeppyro_home() / "bundles"`
+(`DEEPPYRO_HOME` overrides `~/.dpro`). The loader scans only direct child
+directories that contain `ui.toml`, sorted by directory name. A directory
+without `ui.toml` is ignored (a normal bundle with no UI is valid). The bundle
+id comes from the sibling `[bundle].id` in `bundle.toml`; a missing or
+malformed `bundle.toml` is recorded as an error and the directory name is used
+as a fallback so the rest of the package can still load.
+
+`load_ui_package` accepts either the bundle directory or the `ui.toml` file.
+
+### 10.2 Schema
+
+Every section is an array of tables; the only allowed sections are `status`,
+`conversation`, `panels`, `settings`, plus the `[theme]` table and the
+optional `locale/en.json` file.
+
+| Section | Key | Required | Default | Meaning |
+|---|---|---|---|---|
+| `status` | `id` | yes | - | unique id within `status` |
+| | `renderer` | yes | - | `module:function`; `renderer(context) -> str \| Text \| None` |
+| | `order` | no | `100` | lower renders first |
+| `conversation` | `id` | yes | - | unique id within `conversation` |
+| | `factory` | yes | - | `module:function`; `factory(event) -> Widget \| None` |
+| | `predicate` | no | match all | `module:function`; `predicate(event) -> bool` |
+| | `order` | no | `100` | evaluation order |
+| `panels` | `id` | yes | - | unique id within `panels` |
+| | `factory` | yes | - | `factory(context) -> Widget \| str \| Text \| Iterable \| None` |
+| | `title` | no | `id` | modal title / table label |
+| | `order` | no | `100` | list order |
+| `settings` | `id` | yes | - | same contract as `panels`, separate namespace |
+| | `factory` | yes | - | same as panel |
+| | `title` | no | `id` | list label |
+| | `order` | no | `100` | list order |
+
+Validation is per entry: a bad `order`, missing `id`, unknown/missing target,
+non-callable target or duplicate `(kind, id)` records an error and skips only
+that entry. Unknown top-level keys and unknown entry keys are currently
+ignored; they are reserved for future format revisions.
+
+`[theme]` is a flat table of string tokens. `locale/en.json` is a flat JSON
+object of string keys to string values. Neither is interpreted by the loader
+beyond storing it in the registry.
+
+### 10.3 Loader API
+
+```python
+from deeppyro.tui.ui_package import (
+    UIPackageError,
+    UIPackageReport,
+    default_ui_bundles_root,
+    load_installed_ui_packages,
+    load_ui_package,
+    load_ui_package_report,
+)
+```
+
+```python
+def load_ui_package(
+    path: str | Path,
+    registry: SlotRegistry,
+    *,
+    import_module: Callable[[str], ModuleType] | None = None,
+) -> list[str]: ...
+
+def load_ui_package_report(
+    path: str | Path,
+    registry: SlotRegistry,
+    *,
+    import_module: Callable[[str], ModuleType] | None = None,
+) -> UIPackageReport: ...
+
+def load_installed_ui_packages(
+    registry: SlotRegistry,
+    *,
+    root: str | Path | None = None,
+    import_module: Callable[[str], ModuleType] | None = None,
+) -> list[UIPackageReport]: ...
+
+def default_ui_bundles_root() -> Path: ...
+```
+
+`load_ui_package` is the convenience wrapper used by callers that only need
+the registered ids; it returns `report.slot_ids` in declaration order
+(status, then conversation, then panels, then settings). It **never raises for
+a broken package**. `UIPackageError` is reserved for programmer errors such as
+passing a non-`SlotRegistry` registry.
+
+```python
+@dataclass(frozen=True, slots=True)
+class UIPackageReport:
+    id: str                    # bundle id, or directory-name fallback
+    path: Path                 # the ui.toml that was read
+    slot_ids: tuple[str, ...]  # successfully registered ids
+    errors: tuple[str, ...]    # empty means clean load
+
+    @property
+    def ok(self) -> bool: ...
+    def summary(self) -> str: ...   # "acme: 3 slot(s), ok"
+```
+
+`load_installed_ui_packages` returns one report per bundle with a `ui.toml`,
+in directory-name order. A missing or empty root returns `[]`. Any unexpected
+exception while loading one package is converted into a report error; the next
+package is still loaded.
+
+### 10.4 Imports are lazy, factories run later
+
+For every `module:function` spec the loader imports the module while the
+package is being loaded, resolves the attribute, and checks that it is
+callable. The callable itself is **not called**; it runs only when the host
+renders a status line, handles a matching event, or opens a panel. This means a
+typo in a factory name is reported at boot, while a runtime error inside a
+factory is handled by the same failure isolation as an imperative plugin.
+
+The package's base directory is temporarily prepended to `sys.path` for the
+duration of the load (and removed in `finally` cleanly), so a bundle can import
+its own sibling modules:
+
+```text
+ui.toml:  renderer = "acme_ui:clock"
+acme_ui.py: def clock(context): ...
+```
+
+If the caller passes `import_module=`, the loader uses that callable instead
+and never touches `sys.path`. Tests use this seam; embedders can use it to
+load packages from an in-memory/zip source. Both dotted attributes
+(`"acme_ui:widgets.clock"`) and module imports that pull in further siblings
+are supported.
+
+### 10.5 Failure isolation
+
+| Failure | Result |
+|---|---|
+| missing package / `ui.toml` | report error, no slots; never raises |
+| malformed TOML | report error for the file; no slots from that package |
+| missing `bundle.toml` | directory-name id, no error |
+| malformed `bundle.toml` | report error, directory-name id, rest still loads |
+| section not an array | report error, that section skipped |
+| entry not a table / bad `id` / bad `order` | error for that entry, next entry continues |
+| `module:function` syntax invalid | error for that entry |
+| module import fails | error for that entry; other entries still load |
+| target missing or not callable | error for that entry |
+| duplicate `(kind, id)` | registry `SlotError` captured; first registration wins |
+| bad `[theme]` value / bad locale JSON | error recorded; package slots still load |
+
+`SlotsPlugin.setup` calls `load_ui_packages()` after `ctx.provide`. Even a
+scan-level failure is caught and appended to `ui_errors`; boot never fails
+because of a UI package.
+
+```python
+plugin.ui_packages  # list[UIPackageReport]
+plugin.ui_errors    # list[str]: scan errors + every report error
+plugin.ui_summary   # str: "no UI packages" or "id: N slot(s), ok; ..."
+plugin.load_ui_packages(bundles_dir=None)  # manual reload (tests/CLI)
+```
+
+### 10.6 Theme tokens
+
+`[theme]` tokens are merged in scan order:
+`registry.set_theme({**registry.theme(), **tokens})`. Later packages override
+earlier keys; a package cannot remove a token. Values must be strings. The host
+exposes the resulting map as `context["theme"]`; plugin renderers may use it
+for inline Rich styles, but the core Textual widgets still use
+`theme.tcss`. There is no automatic CSS-variable bridge in this layer (writing
+`theme.tcss` is outside the task write scope).
+
+### 10.7 Locale
+
+`locale/en.json` is loaded after the theme and merged with
+`registry.add_locale(...)`. Only `en` is read; other locale files are ignored
+until the host grows a locale selector. Translation is a flat lookup:
+`context["translate"]("acme.greeting")`. The host does **not** auto-translate
+slot titles; packages should call `translate` in their own factories if they
+want localized text. `"!key"` interpolation is intentionally not implemented
+(keep one simple rule; see section 2.5).
+
+### 10.8 Complete example
+
+```text
+~/.dpro/bundles/acme/
+    bundle.toml
+    ui.toml
+    acme_ui.py
+    locale/en.json
+```
+
+`bundle.toml`:
+
+```toml
+[bundle]
+id = "acme"
+name = "Acme UI"
+version = "0.1.0"
+api_version = 1
+```
+
+`ui.toml`:
+
+```toml
+[[status]]
+id = "clock"
+order = 50
+renderer = "acme_ui:clock"
+
+[[conversation]]
+id = "todo-row"
+predicate = "acme_ui:is_todo"
+factory = "acme_ui:todo_row"
+
+[[panels]]
+id = "acme"
+title = "Acme"
+factory = "acme_ui:panel"
+
+[[settings]]
+id = "acme-settings"
+title = "Acme settings"
+factory = "acme_ui:settings"
+
+[theme]
+accent = "#7aa2f7"
+```
+
+`acme_ui.py`:
+
+```python
+from __future__ import annotations
+
+from typing import Any
+
+from textual.widgets import Static
+
+
+def clock(context: dict[str, Any]) -> str:
+    return f"acme: {context.get('phase', 'idle')}"
+
+
+def is_todo(event: dict[str, Any]) -> bool:
+    return event.get("type") == "text" and "todo" in str(event.get("text", "")).lower()
+
+
+def todo_row(event: dict[str, Any]) -> Static:
+    return Static(f"todo detected: {event.get('text', '')}", classes="acme-todo")
+
+
+def panel(context: dict[str, Any]) -> Static:
+    return Static(f"acme panel for {context.get('session_id', '')}")
+
+
+def settings(context: dict[str, Any]) -> Static:
+    return Static("acme settings")
+```
+
+`locale/en.json`:
+
+```json
+{"acme.greeting": "Hello"}
+```
+
+Result: `load_ui_package_report(...).slot_ids` is
+`("clock", "todo-row", "acme", "acme-settings")`; all contributions are owned
+by `"acme"`; `registry.theme()["accent"] == "#7aa2f7"`; and
+`context["translate"]("acme.greeting") == "Hello"`.
+
+### 10.9 Compatibility and limits
+
+- **Backward compatible.** `SlotRegistry`'s existing methods, defaults and
+  duplicate errors are unchanged; theme/locale only add state and accessors.
+  Imperative plugins keep working and may mix with `ui.toml` contributions.
+- **Arbitrary code at boot.** Loading a package imports its modules with the
+  user's privileges. Only install bundles you trust; this is the same trust
+  boundary as `[[plugins]]` in `bundle.toml`.
+- **Process-global import window.** `sys.path` is modified only while one
+  package loads and restored in `finally`. Concurrent loads from two threads
+  could observe each other's path entries; boot is single-threaded, but a
+  future hot-reload worker should serialize package loads.
+- **No hot reload.** Adding/changing `ui.toml` requires a restart (or calling
+  `SlotsPlugin.load_ui_packages()` again, which duplicates ids and therefore
+  reports duplicate errors unless the registry is cleared first).
+- **Locale is English-only.** The file name is fixed; a locale selector is a
+  future host feature.
+- **Id collisions are first-wins.** Directory scan order decides; later
+  packages get a recorded error instead of shadowing an earlier slot.
+- **Theme is last-wins.** Tokens merge globally; there is no per-package
+  namespace, so use prefixed keys (`acme.accent`) for package-private tokens.
+- **Diagnostics are passive.** `ui_errors` is available to the host but this
+  layer does not pop a notification; a Lead integration may surface it in the
+  plugin manager screen.
+

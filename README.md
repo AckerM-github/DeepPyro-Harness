@@ -10,20 +10,25 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   不做 Web UI。
 - 启动页是 FIGlet `ansi_shadow` 像素字标（火色 / 冰蓝渐变、逐行揭示）；思考过程用单行滚动 ticker
   实时展示最新一句，回答一开始就折叠成一行，点击可展开全文。
-- 会话区上方的**控制栏**用三个下拉直接切换权限预设（read-only / workspace-write /
-  danger-full-access）、审批策略（ask / never / always）与工作目录，切换立即作用于当前会话
-  （并写入 `permission/preset`、`approval/policy`、`working-directory/change` 记录）。
+- 会话设置全部走 slash 命令：`/policy` 切权限预设（read-only / workspace-write /
+  danger-full-access）、`/approval` 切审批策略（ask / never / always）、`/cwd` 切工作目录，
+  切换立即作用于当前会话（并写入 `permission/preset`、`approval/policy`、
+  `working-directory/change` 记录）。
 - 内核直接 vendor 了 [cordis](https://github.com/cordiverse/cordis) 的 Python 移植
   （`src/deeppyro/_vendor/cordis_port`，MIT）：服务、依赖注入、事件总线、fiber 生命周期
   都与 DSH 同构；领域模块不 import cordis，只有 `kernel/` 负责装配。
 - **一切皆插件**：DSH 式组合内核——bundle 用 `bundle.toml` 声明插件行，多层 patch 支持
   按 id 覆盖 config（整体替换）、`before/after` 插入、`disabled/critical/isolate/intercept`；
-  core bundle 只有 16 行（LLM、会话、沙箱、工具、提示词、命令、agent、插件管理、设置、
-  inspect、TUI 槽位），其余能力都由插件贡献。插件可注册工具、提示词段、slash 命令、LLM
-  provider、agent preset，以及 TUI 状态栏项 / 对话行 / 面板。
+  还支持 group 行（`group = true` + 子行）、`include` 外部行文件、`[bundle].requires`
+  依赖拓扑排序，以及 active/failed/disabled/overridden/restart-required 活状态。
+  core bundle 只有 17 行（kernel 运行时 + LLM、会话、沙箱、工具、提示词、命令、agent、
+  插件管理、设置、inspect、TUI 槽位），其余能力都由插件贡献。插件可注册工具、提示词段、
+  slash 命令、LLM provider、agent preset（带 revision 与 per-preset realm 子插件），以及
+  TUI 状态栏项 / 对话行 / 面板 / 设置页。
 - **运行时自扩展**：`/plugins` 界面与 `plugin_manager` / `plugin_inspect` /
-  `settings_read` / `settings_write` 四个工具让 agent 自己安装/启停外部 bundle、读改插件配置、
-  查看 live 组合（安装会执行第三方代码，需人工批准；设置 next-boot 生效）。
+  `settings_read` / `settings_write` / `plugin_create` 五个工具让 agent 自己安装/脚手架
+  外部 bundle、启停插件、读改插件配置、查看 live 组合（安装/脚手架会执行或生成第三方代码，
+  需人工批准；声明为 volatile 的字段可经 kernel 服务即时生效，其余 next-boot 生效）。
 
 ## 命名
 
@@ -43,7 +48,7 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
       api/      插件契约（Plugin/Service/PluginContext/注册表/preset spec）
       builtin/  core 插件行（llm/sessions/sandbox/tools/prompt/commands/agents/presets/
                 plugin_manager/settings/inspect）
-      bundles/core/bundle.toml  core bundle 的 16 个插件行
+      bundles/core/bundle.toml  core bundle 的 17 个插件行（首行 kernel 运行时）
       core/     冻结的 wire 模型 + 运行时协议（共享契约）
       session/  session.v4 日志：模型、append 校验、derive、fork、store
       llm/      provider 适配层（OpenAI-compatible SSE）、重试
@@ -71,8 +76,9 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
     uv run dpyro --headless --json "1+1=?"        # NDJSON 事件流
     echo "1+1=?" | uv run dpyro --headless --json # stdin 管道
 
-TUI 里输入 `/help` 查看 slash 命令（`/new /resume /model /preset /status /compact /clear /plugins /panel /exit`）；
-会话区上方控制栏的权限预设 / 审批策略 / 工作目录三个下拉同样立即生效（turn 运行中禁用）；
+TUI 里输入 `/help` 查看 slash 命令（`/new /resume /model /preset /policy /approval /cwd /status
+/compact /clear /plugins /panel /exit`）；`/policy`、`/approval`、`/cwd` 无参时打开选择器，
+带参数的切换立即生效（turn 运行中拒绝）；
 `Ctrl+C` 在 turn 中取消当前 turn，空闲时清空输入，再按退出；`Ctrl+D` 退出。
 
 ### 配置与数据目录
@@ -95,15 +101,20 @@ TUI 里输入 `/help` 查看 slash 命令（`/new /resume /model /preset /status
 
 ### 插件与组合
 
-- core bundle：`src/deeppyro/bundles/core/bundle.toml`（16 行，`critical = true`）。
+- core bundle：`src/deeppyro/bundles/core/bundle.toml`（17 行，首行 `kernel` 运行时服务，`critical = true`）。
 - 外部 bundle：`~/.dpro/bundles/<id>/bundle.toml` + Python 文件；`/plugins` 或
   `plugin_manager` 工具可安装/启停/卸载（安装只做结构校验，下次 boot 执行第三方代码）。
 - 其他插件来源：entry point 组 `deeppyro.plugins`、`~/.dpro/plugins/<id>/plugin.toml`、
   用户清单 `~/.dpro/plugins.toml` 的 `[[plugins]]` 行。
-- 插件可贡献：工具、提示词段（带 preset scope）、slash 命令、LLM provider、agent preset
-  （`/preset` 切换）、TUI 状态栏项 / 对话行 / 面板（`/panel`）/ 设置页。
+- 插件可贡献：工具、提示词段（带 preset scope + revision）、slash 命令、LLM provider、
+  agent preset（`/preset` 切换，带 revision 与 per-preset realm 子插件）、TUI 状态栏项 /
+  对话行 / 面板（`/panel`）/ 设置页；UI 也可以在 `ui.toml` 里用 `module:function`
+  声明式注册（`~/.dpro/bundles/<id>/ui.toml`，支持 theme token 与 locale）。
+- 组合语义：group 行给子行建独立 cordis context；`include` 支持 JSON/TOML；bundle 依赖用
+  `requires` 拓扑排序；`App.row_states()` 暴露 active/failed/disabled/overridden/
+  restart-required 状态；patch 层把被覆盖的行标为 overridden。
 - 配置：`settings` 服务 + `/plugins` 与 `settings_*` 工具；写入带 revision CAS 与 secret
-  掩码，next-boot 生效。
+  掩码；插件类声明 `volatile` 的字段由 `kernel` 服务 live apply（其余 next-boot 生效）。
 - 已知边界：插件进程内运行、加载即信任（无 OS 隔离）；目录来源插件需在 `sys.path` 中或先加载
   plugin-manager 行；外部行失败只降级记录，不中断 boot。
 

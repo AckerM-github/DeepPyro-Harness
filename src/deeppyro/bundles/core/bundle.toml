@@ -8,6 +8,15 @@ critical = true
 # The kernel provides the config service itself. Every capability below is a
 # plugin row: user bundles can override config, disable a row, or insert their
 # own rows before or after any id here.
+
+# The kernel runtime service must mount first: it reports mounted plugin states
+# (kernel.mounted_plugins) and applies volatile config patches
+# (kernel.apply_plugin_config), both used by the plugin manager, settings and
+# inspect rows that follow.
+[[plugins]]
+id = "kernel"
+plugin = "deeppyro.kernel.runtime:KernelRuntime"
+
 [[plugins]]
 id = "llm"
 plugin = "deeppyro.builtin.llm:LlmPlugin"

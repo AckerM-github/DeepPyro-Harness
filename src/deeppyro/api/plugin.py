@@ -41,6 +41,10 @@ class Plugin:
     version: ClassVar[str] = "0.0.0"
     description: ClassVar[str] = ""
     Config: ClassVar[type[BaseModel] | None] = None
+    #: Config field names that can be applied to a mounted plugin without a
+    #: restart. The kernel service applies them through apply_plugin_config;
+    #: settings_write reports applied_live when that succeeds.
+    volatile: ClassVar[tuple[str, ...]] = ()
     inject: ClassVar[list[str]] = []
 
     #: Set by the adapter before setup runs.

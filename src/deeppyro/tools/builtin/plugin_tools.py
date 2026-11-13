@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, is_dataclass
+from pathlib import Path
 from typing import Any, ClassVar
 
 from deeppyro.api import Plugin
@@ -118,6 +119,76 @@ class PluginManagerTool(BaseTool):
         return ToolResult(text=_dump(payload))
 
 
+class PluginCreateTool(BaseTool):
+    """Scaffold and validate a new plugin bundle without installing it."""
+
+    name = "plugin_create"
+    description = (
+        "Create a new DeepPyro plugin bundle scaffold. Writes bundle.toml, plugin.py and "
+        "README.md to dest (defaults to the user bundle store under ~/.dpro/bundles/<bundle_id>), "
+        "validates the result and returns the created files. The scaffold is not installed or "
+        "enabled yet: call plugin_manager action=install with source=<dest>, then action=set "
+        "with enabled=true and restart the app. Creating a bundle writes executable third-party "
+        "code, so it requires explicit human approval."
+    )
+    parallel_safe = False
+    parameters = make_parameters(
+        {
+            "bundle_id": {
+                "type": "string",
+                "description": "unique bundle id, also the bundle directory name",
+            },
+            "name": {
+                "type": "string",
+                "description": "display name (defaults to bundle_id)",
+            },
+            "dest": {
+                "type": "string",
+                "description": "destination directory (defaults to the user bundle store)",
+            },
+        },
+        required=["bundle_id"],
+    )
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        service = (ctx.services or {}).get("plugin_manager")
+        if service is None:
+            return _missing("plugin_manager")
+        bundle_id = args.get("bundle_id")
+        if not isinstance(bundle_id, str) or not bundle_id.strip():
+            return ToolResult(text="plugin_create requires bundle_id", is_error=True)
+        bundle_id = bundle_id.strip()
+        name = args.get("name")
+        display_name = name if isinstance(name, str) else ""
+        dest = args.get("dest")
+        dest_text = dest.strip() if isinstance(dest, str) else ""
+        try:
+            if dest_text:
+                path = Path(dest_text).expanduser()
+            else:
+                root = getattr(service, "bundles_root", None)
+                if root is None:
+                    return ToolResult(
+                        text="plugin_manager has no bundles_root; pass dest explicitly",
+                        is_error=True,
+                    )
+                path = Path(root) / bundle_id
+            created = Path(service.create_bundle(path, bundle_id, display_name))
+            files = sorted(item.name for item in created.iterdir() if item.is_file())
+        except Exception as exc:  # noqa: BLE001 - surface as a tool error result
+            return ToolResult(text="plugin_create failed: " + str(exc), is_error=True)
+        return ToolResult(
+            text=_dump(
+                {
+                    "bundle_id": bundle_id,
+                    "dest": str(created),
+                    "files": files,
+                    "next": "plugin_manager action=install source=" + str(created),
+                }
+            )
+        )
+
+
 class PluginInspectTool(BaseTool):
     """Inspect services, plugins, tools, prompt sections, commands and providers."""
 
@@ -125,15 +196,28 @@ class PluginInspectTool(BaseTool):
     description = (
         "Inspect the running plugin host: what=services lists registered services, "
         "what=plugins lists plugin rows and their live state, what=tools lists contributed "
-        "tools, what=prompts lists system prompt sections, what=commands lists slash commands "
-        "and what=providers lists llm providers."
+        "tools, what=prompts lists system prompt sections, what=commands lists slash commands, "
+        "what=providers lists llm providers, what=events lists wire record types, what=slots "
+        "lists UI slot contributions, what=theme lists theme tokens and what=guide returns the "
+        "plugin authoring guide."
     )
     parallel_safe = False
     parameters = make_parameters(
         {
             "what": {
                 "type": "string",
-                "enum": ["services", "plugins", "tools", "prompts", "commands", "providers"],
+                "enum": [
+                    "services",
+                    "plugins",
+                    "tools",
+                    "prompts",
+                    "commands",
+                    "providers",
+                    "events",
+                    "slots",
+                    "theme",
+                    "guide",
+                ],
                 "description": "inspection target",
             },
             "workspace": {
@@ -150,25 +234,28 @@ class PluginInspectTool(BaseTool):
             return _missing("inspect")
         what = str(args.get("what") or "").strip()
         workspace = args.get("workspace")
+        workspace_path = workspace if isinstance(workspace, str) else None
+        actions: dict[str, Any] = {
+            "services": service.services,
+            "plugins": service.plugins,
+            "tools": lambda: service.tools(workspace_path),
+            "prompts": service.prompt_sections,
+            "commands": service.commands,
+            "providers": service.providers,
+            "events": service.events,
+            "slots": service.slots,
+            "theme": service.theme,
+            "guide": service.guide,
+        }
+        handler = actions.get(what)
+        if handler is None:
+            return ToolResult(
+                text="unknown plugin_inspect target; expected services, plugins, tools, "
+                "prompts, commands, providers, events, slots, theme or guide",
+                is_error=True,
+            )
         try:
-            if what == "services":
-                payload = service.services()
-            elif what == "plugins":
-                payload = service.plugins()
-            elif what == "tools":
-                payload = service.tools(workspace if isinstance(workspace, str) else None)
-            elif what == "prompts":
-                payload = service.prompt_sections()
-            elif what == "commands":
-                payload = service.commands()
-            elif what == "providers":
-                payload = service.providers()
-            else:
-                return ToolResult(
-                    text="unknown plugin_inspect target; expected services, plugins, tools, "
-                    "prompts, commands or providers",
-                    is_error=True,
-                )
+            payload = handler()
         except Exception as exc:  # noqa: BLE001 - surface as a tool error result
             return ToolResult(text=f"plugin_inspect failed: {exc}", is_error=True)
         return ToolResult(text=_dump(payload))
@@ -214,10 +301,11 @@ class SettingsWriteTool(BaseTool):
     name = "settings_write"
     description = (
         "Patch a plugin's configuration. The patch is merged into the current user manifest "
-        "entry, validated against the plugin Config model and persisted atomically; changes "
-        "take effect on the next boot (restart_required is returned). expected_revision must "
-        "match the revision from settings_read or the write fails with a conflict. Omitted "
-        "secret fields keep their stored value."
+        "entry, validated against the plugin Config model and persisted atomically. Fields "
+        "declared volatile on the plugin class are applied live when the kernel service allows "
+        "it (applied_live=true, restart_required=false); other changes take effect on the next "
+        "boot. expected_revision must match the revision from settings_read or the write fails "
+        "with a conflict. Omitted secret fields keep their stored value."
     )
     parallel_safe = False
     parameters = make_parameters(
@@ -262,6 +350,7 @@ def plugin_tools() -> list[BaseTool]:
     """The plugin management tool set, for registration by the tools plugin."""
     return [
         PluginManagerTool(),
+        PluginCreateTool(),
         PluginInspectTool(),
         SettingsReadTool(),
         SettingsWriteTool(),
@@ -281,6 +370,7 @@ class PluginToolsPlugin(Plugin):
 
 
 __all__ = [
+    "PluginCreateTool",
     "PluginInspectTool",
     "PluginManagerTool",
     "PluginToolsPlugin",

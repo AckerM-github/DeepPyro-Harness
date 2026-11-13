@@ -65,7 +65,8 @@ def _last_index(specs: Sequence[PluginSpec], plugin_id: str) -> int | None:
     return None
 
 
-def _validate_bundle_id(bundle_id: str) -> str:
+def validate_bundle_id(bundle_id: str) -> str:
+    """Validate a bundle id used as one directory name under the bundles root."""
     value = bundle_id.strip()
     if not value:
         raise PluginError("bundle id must not be empty")
@@ -135,7 +136,7 @@ class BundleStore:
         source_path = Path(source).expanduser()
         bundle_path = source_path / _BUNDLE_FILE if source_path.is_dir() else source_path
         bundle = self._load(bundle_path)
-        bundle_id = _validate_bundle_id(bundle.id)
+        bundle_id = validate_bundle_id(bundle.id)
         target = self._root / bundle_id
         if target.exists() and not force:
             raise PluginError(
@@ -357,4 +358,4 @@ class BundleStore:
         )
 
 
-__all__ = ["BundleStore"]
+__all__ = ["BundleStore", "validate_bundle_id"]

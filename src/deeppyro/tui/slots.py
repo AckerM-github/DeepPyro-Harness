@@ -22,6 +22,9 @@ service `slots`:
     slots = ctx.service("slots")
     dispose = slots.add_status_item(lambda context: f"items: {len(items)}")
 
+The plugin also loads declarative `ui.toml` packages from installed user
+bundles (`~/.dpro/bundles/*/ui.toml`); see :mod:`deeppyro.tui.ui_package`.
+
 Because a bare registry service cannot see the calling fiber, `plugin_id` is
 inferred from the callable's `__module__` unless passed explicitly. Plugin
 authors adding several items should pass `plugin_id=ctx.plugin_id` and a stable
@@ -35,10 +38,14 @@ import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Final, Literal
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 
 from deeppyro.api import Plugin
 from deeppyro.core.errors import DeeppyroError
+
+if TYPE_CHECKING:
+    from deeppyro.tui.ui_package import UIPackageReport
 
 STATUS: Final = "status"
 CONVERSATION: Final = "conversation"
@@ -90,6 +97,20 @@ def _validate_order(order: int) -> int:
     if not isinstance(order, int) or isinstance(order, bool):
         raise SlotError(f"slot order must be an int, got {type(order).__name__}")
     return order
+
+
+def _validate_string_map(value: Mapping[str, str], name: str) -> dict[str, str]:
+    """Copy a string-to-string mapping, rejecting malformed entries."""
+    if not isinstance(value, Mapping):
+        raise SlotError(f"{name} must be a mapping of strings to strings")
+    result: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key:
+            raise SlotError(f"{name} keys must be non-empty strings")
+        if not isinstance(item, str):
+            raise SlotError(f"{name}[{key!r}] must be a string")
+        result[key] = item
+    return result
 
 
 def _slugify(title: str) -> str:
@@ -156,6 +177,8 @@ class SlotRegistry:
     def __init__(self, *, plugin_id: str = "") -> None:
         self._plugin_id = str(plugin_id or "")
         self._slots: dict[tuple[str, str], SlotContribution] = {}
+        self._theme: dict[str, str] = {}
+        self._locale: dict[str, str] = {}
         self._lock = threading.RLock()
 
     # -- registration ---------------------------------------------------
@@ -331,10 +354,51 @@ class SlotRegistry:
         with self._lock:
             return self._slots.get((kind, slot_id))
 
+    # -- theme and locale ------------------------------------------------
+    def set_theme(self, tokens: Mapping[str, str]) -> None:
+        """Replace the UI theme token map.
+
+        Tokens are opaque key/value strings consumed by plugins and the host
+        (for example ``{"accent": "#7aa2f7"}``). The registry does not
+        interpret them; later packages can merge by calling
+        ``set_theme({**registry.theme(), **tokens})``.
+        """
+        validated = _validate_string_map(tokens, "theme")
+        with self._lock:
+            self._theme = validated
+
+    def theme(self) -> dict[str, str]:
+        """Return a copy of the current theme token map (empty by default)."""
+        with self._lock:
+            return dict(self._theme)
+
+    def add_locale(self, locale: Mapping[str, str]) -> None:
+        """Merge translation strings into the active locale."""
+        validated = _validate_string_map(locale, "locale")
+        with self._lock:
+            self._locale.update(validated)
+
+    def locale(self) -> dict[str, str]:
+        """Return a copy of the merged translation table."""
+        with self._lock:
+            return dict(self._locale)
+
+    def translate(self, key: str, default: str | None = None) -> str:
+        """Translate one key, falling back to *default* (or the key itself)."""
+        if not isinstance(key, str) or not key:
+            raise SlotError("locale key must be a non-empty string")
+        with self._lock:
+            value = self._locale.get(key)
+        if value is not None:
+            return value
+        return default if default is not None else key
+
     def clear(self) -> None:
-        """Forget every contribution (tests and host shutdown)."""
+        """Forget every contribution, theme token and translation."""
         with self._lock:
             self._slots.clear()
+            self._theme.clear()
+            self._locale.clear()
 
     def __len__(self) -> int:
         with self._lock:
@@ -356,6 +420,10 @@ class SlotsPlugin(Plugin):
     The registry is provided through `ctx.provide`, so it disappears with the
     plugin fiber automatically. The TUI does not need to construct a registry
     itself.
+
+    On setup the plugin also scans `~/.dpro/bundles/*/ui.toml` and loads every
+    declarative UI package. Package failures are recorded in
+    :attr:`ui_packages`/:attr:`ui_errors` and never abort boot.
     """
 
     plugin_id = "slots"
@@ -366,10 +434,42 @@ class SlotsPlugin(Plugin):
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
         self.registry = SlotRegistry(plugin_id=self.plugin_id)
+        self.ui_packages: list[UIPackageReport] = []
+        self._ui_scan_errors: list[str] = []
 
     def setup(self, ctx: Any, config: Any) -> None:
-        """Provide the registry as a cordis service."""
+        """Provide the registry as a cordis service and load installed UI packages."""
         ctx.provide("slots", self.registry)
+        try:
+            self.load_ui_packages()
+        except Exception as exc:  # noqa: BLE001 - UI packages are optional extensions
+            self._ui_scan_errors.append(f"cannot scan UI packages: {type(exc).__name__}: {exc}")
+
+    def load_ui_packages(self, bundles_dir: str | Path | None = None) -> list[UIPackageReport]:
+        """Load every `ui.toml` under *bundles_dir* (default: installed bundles).
+
+        Errors are stored per package in the returned report; loading one broken
+        package never prevents the next one from being registered.
+        """
+        from deeppyro.tui.ui_package import load_installed_ui_packages
+
+        self.ui_packages = load_installed_ui_packages(self.registry, root=bundles_dir)
+        return self.ui_packages
+
+    @property
+    def ui_errors(self) -> list[str]:
+        """Flattened scan and package errors, for diagnostics in the TUI."""
+        errors = list(self._ui_scan_errors)
+        for report in self.ui_packages:
+            errors.extend(report.errors)
+        return errors
+
+    @property
+    def ui_summary(self) -> str:
+        """One-line summary of loaded UI packages, for status/troubleshooting."""
+        if not self.ui_packages:
+            return "no UI packages"
+        return "; ".join(report.summary() for report in self.ui_packages)
 
 
 def apply_conversation_slots(
@@ -457,14 +557,29 @@ def resolve_slot_registry(source: Any) -> SlotRegistry | None:
     return registry if isinstance(registry, SlotRegistry) else None
 
 
+def _identity_translate(key: str, default: str | None = None) -> str:
+    return default if default is not None else key
+
+
 def build_slot_context(app: Any) -> dict[str, Any]:
     """Build the mapping passed to status/panel renderers.
 
     Keys are stable and documented in docs/spec/tui-slots.md:
     `app`, `runtime`, `cwd`, `session_id`, `provider`, `model`, `phase`,
     `input_tokens`, `output_tokens`, `cached_tokens`, `context_window`,
-    `usage`, `busy`.
+    `usage`, `busy`, `theme`, `locale`, `translate`.
+
+    Theme and locale are read from the host registry when the app exposes one;
+    without a registry the theme/locale maps are empty and `translate` is the
+    identity fallback. This keeps renderers testable with a plain context dict.
     """
+    registry: SlotRegistry | None = getattr(app, "_slots", None)
+    if not isinstance(registry, SlotRegistry):
+        registry = resolve_slot_registry(app)
+    theme = registry.theme() if registry is not None else {}
+    locale = registry.locale() if registry is not None else {}
+    translate = registry.translate if registry is not None else _identity_translate
+
     runtime = getattr(app, "runtime", None)
     session_usage = getattr(runtime, "session_usage", None)
     raw_usage: dict[str, Any] = {}
@@ -490,6 +605,9 @@ def build_slot_context(app: Any) -> dict[str, Any]:
         "context_window": context_window,
         "usage": usage,
         "busy": bool(getattr(app, "busy", False)),
+        "theme": theme,
+        "locale": locale,
+        "translate": translate,
     }
 
 

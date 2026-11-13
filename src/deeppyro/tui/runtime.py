@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from deeppyro.api import PluginDependencyError
 from deeppyro.config import Config, load_config
 from deeppyro.core.errors import ConfigError, DeeppyroError
 
@@ -73,6 +74,7 @@ class TuiRuntime:
     sink: Any
     ask: Callable[[Any], Awaitable[bool]]
     agent_preset: str = "default"
+    preset_revision: int | None = None
     session: Any = None
     agent: Any = None
     _closed: bool = field(default=False, repr=False)
@@ -125,14 +127,17 @@ class TuiRuntime:
             sink=sink,
             ask=ask,
         )
+        await runtime.ensure_presets()
         await runtime.new_session()
         return runtime
 
     # -- sessions -------------------------------------------------------
     async def new_session(self) -> Any:
         """Create a fresh durable session and rebuild the agent."""
+        self.preset_revision = None
         session = self.store.create(str(self.cwd), agent_preset=self.agent_preset)
         await self._attach(session)
+        self._record_preset()
         return session
 
     async def open_session(self, session_id: str) -> Any:
@@ -141,7 +146,18 @@ class TuiRuntime:
         preset = str(getattr(session.header, "agentPreset", "") or "").strip()
         if preset:
             self.agent_preset = preset
-        await self._attach(session)
+        self.preset_revision = _recorded_preset_revision(session)
+        await self._ensure_preset(self.agent_preset, self.preset_revision)
+        try:
+            await self._attach(session)
+        except PluginDependencyError:
+            if self.preset_revision is None:
+                raise
+            # The recorded revision may have been dropped by a preset edit;
+            # fall back to the newest revision of the same preset id.
+            self.preset_revision = None
+            await self._ensure_preset(self.agent_preset, None)
+            await self._attach(session)
         return session
 
     async def _attach(self, session: Any) -> None:
@@ -159,10 +175,14 @@ class TuiRuntime:
             cwd=str(self.cwd),
             services=self._plugin_services(),
             preset=self.agent_preset,
+            preset_revision=self.preset_revision,
         )
-        await await_maybe(getattr(self.agent, "aclose", None))
+        close_agent = getattr(self.agent, "aclose", None)
+        if close_agent is not None:
+            await await_maybe(close_agent())
         self.session = session
         self.agent = agent
+        self.preset_revision = getattr(agent, "preset_revision", None)
 
     def _plugin_services(self) -> dict[str, Any]:
         """Plugin services the agent tools read from ToolContext.services."""
@@ -219,10 +239,12 @@ class TuiRuntime:
             raise DeeppyroError(str(exc)) from exc
         if spec.id == self.agent_preset:
             return spec.id
+        await self._ensure_preset(spec.id, None)
         self.agent_preset = spec.id
+        self.preset_revision = None
         if self.session is not None:
             await self._attach(self.session)
-        self._record("agent-preset/selected", {"preset": spec.id})
+        self._record_preset()
         return spec.id
 
     @property
@@ -300,6 +322,27 @@ class TuiRuntime:
                 break
         return paths
 
+    async def ensure_presets(self) -> None:
+        """Materialize every preset realm before any agent is created."""
+        service = self._service("presets")
+        ensure_all = getattr(service, "ensure_all", None)
+        if callable(ensure_all):
+            await await_maybe(ensure_all())
+
+    async def _ensure_preset(self, preset_id: str, revision: int | None) -> None:
+        """Materialize one preset revision (no-op without a presets service)."""
+        service = self._service("presets")
+        ensure = getattr(service, "ensure", None)
+        if callable(ensure):
+            await await_maybe(ensure(preset_id, revision=revision))
+
+    def _record_preset(self) -> None:
+        """Persist the pinned preset revision so a resume reproduces it."""
+        data: dict[str, Any] = {"preset": self.agent_preset}
+        if self.preset_revision is not None:
+            data["revision"] = self.preset_revision
+        self._record("agent-preset/selected", data)
+
     def _record(self, record_type: str, data: dict[str, Any]) -> None:
         """Append one non-surface event to the active session (best effort)."""
         append = getattr(self.session, "append", None)
@@ -357,6 +400,21 @@ class TuiRuntime:
                 await await_maybe(kernel_app.stop())
             except Exception:  # noqa: BLE001, S110 - shutdown must never mask an exception
                 pass
+
+
+def _recorded_preset_revision(session: Any) -> int | None:
+    """Last agent-preset/selected revision written to the session, if any."""
+    records = getattr(session, "records", None) or []
+    for record in reversed(list(records)):
+        if getattr(record, "type", "") != "agent-preset/selected":
+            continue
+        data = getattr(record, "data", None)
+        if isinstance(data, dict):
+            revision = data.get("revision")
+            if isinstance(revision, int):
+                return revision
+        return None
+    return None
 
 
 def _resolve_model(cfg: Config, provider_name: str, *, model: str | None) -> str:

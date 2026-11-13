@@ -41,8 +41,11 @@ MASKED_VALUE = "***"
 #: A field is secret when its name contains one of these fragments.
 _SECRET_PARTS = ("key", "token", "secret", "password")
 
-#: The only way plugin configuration changes take effect.
+#: Configuration changes take effect on the next boot by default.
 APPLY_NEXT_BOOT = "next-boot"
+
+#: Volatile fields can be applied to a mounted plugin without a restart.
+APPLY_LIVE = "live"
 
 
 # -- masking and merging -------------------------------------------------
@@ -126,6 +129,18 @@ def _format_validation_error(exc: ValidationError) -> str:
         if len(parts) >= 8:
             break
     return "; ".join(parts) or "invalid configuration"
+
+
+def plugin_volatile_fields(plugin_class: type | None) -> tuple[str, ...]:
+    """Config field names declared as volatile on the plugin class."""
+    if plugin_class is None:
+        return ()
+    declared = getattr(plugin_class, "volatile", ())
+    if isinstance(declared, str):
+        return (declared,) if declared else ()
+    if isinstance(declared, (list, tuple)):
+        return tuple(str(item) for item in declared if isinstance(item, str) and item)
+    return ()
 
 
 def validate_config(plugin_class: type | None, values: Mapping[str, Any]) -> None:
@@ -227,7 +242,7 @@ class SettingsStore:
             "values": mask_secrets(values),
             "revision": self.revision,
             "apply": APPLY_NEXT_BOOT,
-            "volatile_fields": sorted(str(key) for key in values),
+            "volatile_fields": list(plugin_volatile_fields(plugin_class)),
             "error": error,
         }
 
@@ -242,7 +257,7 @@ class SettingsStore:
             "values": mask_secrets(values),
             "revision": self.revision,
             "apply": APPLY_NEXT_BOOT,
-            "volatile_fields": sorted(str(key) for key in values),
+            "volatile_fields": list(plugin_volatile_fields(plugin_class)),
             "error": error,
         }
 
@@ -275,14 +290,26 @@ class SettingsStore:
             specs[index] = replace(specs[index], config=dict(merged))
         self._write_specs(specs)
         changed = sorted(str(key) for key in merged if current.get(key) != merged.get(key))
+        volatile = plugin_volatile_fields(plugin_class)
         return {
             "plugin_id": plugin_id,
             "revision": self.revision,
             "values": mask_secrets(merged),
             "changed": changed,
+            "volatile_fields": list(volatile),
+            "volatile_changed": sorted(key for key in changed if key in volatile),
             "restart_required": True,
             "apply": APPLY_NEXT_BOOT,
         }
+
+    def effective_config(self, plugin_id: str) -> dict[str, Any]:
+        """Unmasked effective config used for live application.
+
+        This must never be returned by agent tools; settings_read and
+        settings_write expose masked values instead.
+        """
+        row, _target, _plugin_class, _error = self._lookup(plugin_id)
+        return dict(row.config or {}) if row is not None else {}
 
     # -- internals ---------------------------------------------------------
 
@@ -339,11 +366,13 @@ class SettingsStore:
 
 
 __all__ = [
+    "APPLY_LIVE",
     "APPLY_NEXT_BOOT",
     "MASKED_VALUE",
     "SettingsStore",
     "manifest_revision",
     "mask_secrets",
     "plugin_config_schema",
+    "plugin_volatile_fields",
     "validate_config",
 ]

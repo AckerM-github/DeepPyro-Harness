@@ -16,6 +16,7 @@ from deeppyro.kernel import (
 )
 
 EXPECTED_ORDER = [
+    "kernel",
     "llm",
     "sessions",
     "sandbox",
@@ -85,6 +86,7 @@ config = { start = 5 }
     assert by_id["llm"].config == {"timeout_s": 42}
     assert by_id["agents"].disabled is True
     assert [spec.id for spec in specs] == [
+        "kernel",
         "llm",
         "echo",
         "sessions",
@@ -121,6 +123,7 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
         assert not app.has_service("tools")
         # Every loaded row is listed in bundle order; disabled rows are absent.
         assert list(app.started) == [
+            "kernel",
             "llm",
             "tools-builtin",
             "plugin-tools",
