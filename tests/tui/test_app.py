@@ -571,8 +571,8 @@ async def test_panel_command_opens_a_plugin_panel() -> None:
         assert isinstance(app.screen, PluginPanelScreen)
 
 
-async def test_step_and_final_events_drive_one_progress_line() -> None:
-    from deeppyro.tui.widgets.turn_progress import TurnProgress
+async def test_step_and_final_events_drive_one_process_block() -> None:
+    from deeppyro.tui.widgets.agent_process import AgentProcess
 
     app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(110, 30)) as pilot:
@@ -581,28 +581,29 @@ async def test_step_and_final_events_drive_one_progress_line() -> None:
         app.handle_event({"type": "thinking", "text": "first thought。second thought。"})
         app.handle_event({"type": "text", "text": "answer"})
         await pilot.pause()
-        progress = app.query_one(TurnProgress)
-        assert progress.finished is False
-        assert "second thought" in progress.line_text
+        process = app.query_one(AgentProcess)
+        assert process.finished is False
+        assert "second thought" in process.header_text
 
         app.handle_event({"type": "final", "text": "answer"})
         await pilot.pause()
-        assert progress.finished is True
-        assert "(click to view)" in progress.line_text
+        assert process.finished is True
+        assert "(click to view)" in process.header_text
 
 
-async def test_clicking_progress_opens_the_thinking_viewer() -> None:
+async def test_clicking_a_process_step_opens_the_thinking_viewer() -> None:
     from deeppyro.tui.screens.thinking import ThinkingScreen
-    from deeppyro.tui.widgets.turn_progress import TurnProgress
+    from deeppyro.tui.widgets.agent_process import AgentProcess
 
     app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(110, 30)) as pilot:
         await pilot.pause()
         app.handle_event({"type": "step", "turn": 1, "step": 1})
         app.handle_event({"type": "thinking", "text": "first thought。second thought。"})
-        app.handle_event({"type": "final", "text": "answer"})
         await pilot.pause()
-        await pilot.click(app.query_one(TurnProgress))
+        process = app.query_one(AgentProcess)
+        step = process.query_one(".process-step", Static)
+        await pilot.click(step)
         for _ in range(40):
             await pilot.pause(0.05)
             if isinstance(app.screen, ThinkingScreen):

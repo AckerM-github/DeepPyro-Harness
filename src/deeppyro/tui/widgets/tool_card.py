@@ -1,9 +1,8 @@
-"""Compact tool cards: one call summary, a short result preview and edit diffs.
+"""Rendering helpers for tool calls inside the agent process block.
 
-The conversation stream renders every tool invocation as one card. The card keeps
-the call and its result together, so multi-step turns stay readable instead of
-producing a wall of JSON. Everything here is presentation only: no files are
-read and no tool is executed.
+AgentProcess renders one line per tool invocation: a one-line argument summary
+plus a short result preview. These helpers only format data; no files are read
+and no tool is executed.
 """
 
 from __future__ import annotations
@@ -12,11 +11,6 @@ import ast
 import json
 import re
 from typing import Any
-
-from rich.text import Text
-from textual.app import ComposeResult
-from textual.containers import Vertical
-from textual.widgets import Static
 
 from deeppyro.tui.format import compact_text
 
@@ -28,8 +22,6 @@ _SHELL_TOOLS = frozenset({"bash", "sh", "shell", "pwsh", "powershell", "cmd", "e
 _DIFF_TOOLS = frozenset({"write", "edit", "multi_edit", "multiedit", "apply_patch", "str_replace"})
 #: Maximum number of diff lines rendered per direction.
 _MAX_DIFF_LINES = 3
-#: Maximum preview lines for a plain tool result.
-_MAX_RESULT_LINES = 3
 #: Maximum characters per diff line before truncating.
 _MAX_DIFF_CHARS = 110
 
@@ -146,17 +138,6 @@ def diff_preview_lines(name: str, arguments: str | dict[str, Any] | None) -> lis
     return lines
 
 
-def _diff_label(lines: list[tuple[str, str]]) -> str:
-    added = sum(1 for sign, _ in lines if sign == "+")
-    removed = sum(1 for sign, _ in lines if sign == "-")
-    parts = []
-    if removed:
-        parts.append(f"-{removed}")
-    if added:
-        parts.append(f"+{added}")
-    return " ".join(parts) or "diff"
-
-
 #: Payload block used by the filesystem tools: <path>..</path> <type>..</type>
 #: <content>..</content> followed by a footer line.
 _CONTENT_BLOCK = re.compile(r"<content>\n?(.*?)</content>", re.DOTALL)
@@ -180,106 +161,7 @@ def clean_result_text(text: str) -> str:
     return cleaned
 
 
-class ToolCallCard(Vertical):
-    """One tool invocation: summary line plus result preview or edit diff."""
-
-    def __init__(self, call_id: str, name: str, arguments: str | dict[str, Any] | None) -> None:
-        super().__init__(classes="tool-card")
-        self.call_id = call_id
-        self.tool_name = (name or "tool").strip() or "tool"
-        self.arguments = arguments
-        self.is_error = False
-        self._result_text = ""
-        self._result_rendered = False
-        self._result_widget: Static | None = None
-
-    @property
-    def summary(self) -> str:
-        """Argument summary shown in the call line (also used by tests)."""
-        return summarize_arguments(self.tool_name, self.arguments)
-
-    def compose(self) -> ComposeResult:
-        yield Static(self._call_text(), classes="tool-call")
-        yield Static("", classes="tool-result-line")
-
-    def on_mount(self) -> None:
-        self._result_widget = self.query_one(".tool-result-line", Static)
-        self._result_widget.display = self._result_rendered
-        if self._result_rendered:
-            self._refresh_result()
-
-    def _call_text(self) -> Text:
-        line = Text("→ ", style="bold cyan")
-        summary = self.summary
-        # The separator belongs to the styled name chunk: leading spaces in a
-        # separate chunk are trimmed by some SVG renderers, which made the
-        # summary look glued to the tool name in screenshots.
-        line.append(self.tool_name + (": " if summary else ""), style="bold cyan")
-        if summary:
-            line.append(summary, style="dim")
-        return line
-
-    def set_result(self, text: str, is_error: bool) -> None:
-        """Attach the tool result to this card and render it in place."""
-        self._result_text = text or ""
-        self.is_error = bool(is_error)
-        self._result_rendered = True
-        if self._result_widget is not None:
-            self._result_widget.display = True
-            self._refresh_result()
-
-    def _refresh_result(self) -> None:
-        if self._result_widget is None:
-            return
-        header, body = self._result_parts()
-        self._result_widget.update(header if body is None else _stack(header, body))
-
-    def _result_parts(self) -> tuple[Text, Text | None]:
-        cleaned = clean_result_text(self._result_text)
-        header = Text()
-        if self.is_error:
-            header.append("✗ ", style="bold red")
-            header.append(self.tool_name + "  ", style="bold red")
-            header.append("failed", style="dim red")
-        else:
-            header.append("✓ ", style="bold green")
-            header.append(self.tool_name, style="bold green")
-        diff = [] if self.is_error else diff_preview_lines(self.tool_name, self.arguments)
-        if diff:
-            header.append("  ", style="bold green")
-            header.append(_diff_label(diff), style="dim")
-            return header, _diff_text(diff)
-        preview = compact_text(cleaned, max_lines=_MAX_RESULT_LINES, max_chars=400)
-        if not preview:
-            return header, None
-        body = Text()
-        lines = preview.splitlines()
-        for index, line in enumerate(lines):
-            if index:
-                body.append("\n")
-            body.append(line, style="red" if self.is_error else "dim")
-        return header, body
-
-
-def _diff_text(lines: list[tuple[str, str]]) -> Text:
-    body = Text()
-    for index, (sign, line) in enumerate(lines):
-        if index:
-            body.append("\n")
-        body.append(sign + " ", style="bold red" if sign == "-" else "bold green")
-        body.append(line, style="red" if sign == "-" else "green")
-    return body
-
-
-def _stack(header: Text, body: Text) -> Text:
-    combined = header.copy()
-    combined.append("\n")
-    combined.append_text(body)
-    return combined
-
-
 __all__ = [
-    "ToolCallCard",
     "clean_result_text",
     "diff_preview_lines",
     "parse_arguments",

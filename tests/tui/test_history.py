@@ -6,8 +6,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from deeppyro.tui.history import (
+    ProcessEntry,
     ReasoningStep,
+    TurnProcess,
     TurnReasoning,
+    TurnTool,
+    process_map,
+    processes_from_session,
     reasoning_from_session,
     reasoning_map,
     reasoning_text,
@@ -98,3 +103,103 @@ def test_turn_reasoning_text_for() -> None:
     assert turn.text_for(3) == ""
     assert turn.has_reasoning is True
     assert TurnReasoning().has_reasoning is False
+
+
+def test_processes_from_session_interleaves_steps_and_tools() -> None:
+    session = FakeSession(
+        [
+            Record("turn/start", {"turn": 1}),
+            assistant(
+                1,
+                1,
+                {"type": "reasoning", "text": "need the file"},
+                {
+                    "type": "tool-call",
+                    "id": "call-1",
+                    "name": "read",
+                    "arguments": '{"path": "README.md"}',
+                },
+            ),
+            Record(
+                "tool/result",
+                {
+                    "turn": 1,
+                    "step": 1,
+                    "message": {
+                        "role": "tool",
+                        "toolCallId": "call-1",
+                        "content": [{"type": "text", "text": "line one"}],
+                        "isError": False,
+                    },
+                },
+            ),
+            assistant(1, 2, {"type": "reasoning", "text": "now answer"}),
+            Record("turn/end", {"turn": 1}),
+        ]
+    )
+    processes = processes_from_session(session, last_turns=None)
+    assert len(processes) == 1
+    process = processes[0]
+    assert process.turn == 1
+    assert process.finished is True
+    assert [entry.kind for entry in process.entries] == ["step", "tool", "step"]
+    assert [entry.step for entry in process.entries] == [1, 1, 2]
+    assert process.entries[0].text == "need the file"
+    tool = process.entries[1].tool
+    assert isinstance(tool, TurnTool)
+    assert tool.call_id == "call-1"
+    assert tool.name == "read"
+    assert tool.result_text == "line one"
+    assert tool.has_result is True
+    assert tool.is_error is False
+    assert [step.step for step in process.reasoning.steps] == [1, 2]
+
+
+def test_processes_from_session_keeps_tool_only_turns_and_limits() -> None:
+    records: list[Record] = []
+    for turn in (1, 2, 3):
+        records.append(Record("turn/start", {"turn": turn}))
+        records.append(
+            assistant(
+                turn,
+                1,
+                {
+                    "type": "tool-call",
+                    "id": f"call-{turn}",
+                    "name": "pwsh",
+                    "arguments": '{"command": "echo hi"}',
+                },
+            )
+        )
+        records.append(
+            Record(
+                "tool/result",
+                {
+                    "turn": turn,
+                    "step": 1,
+                    "message": {
+                        "role": "tool",
+                        "toolCallId": f"call-{turn}",
+                        "content": [{"type": "text", "text": f"out {turn}"}],
+                        "isError": turn == 2,
+                    },
+                },
+            )
+        )
+        records.append(Record("turn/end", {"turn": turn}))
+    session = FakeSession(records)
+    assert [process.turn for process in processes_from_session(session, last_turns=2)] == [2, 3]
+    assert processes_from_session(session, last_turns=0) == []
+    latest = processes_from_session(session, last_turns=1)[0]
+    assert latest.reasoning.has_reasoning is False
+    assert latest.tools[0].result_text == "out 3"
+    mapping = process_map(session)
+    assert mapping[2].tools[0].is_error is True
+    assert mapping[1].entries[0].tool is mapping[1].tools[0]
+
+
+def test_processes_from_session_handles_missing_log() -> None:
+    assert processes_from_session(object()) == []
+    assert process_map(object()) == {}
+    process = TurnProcess(turn=1, entries=[ProcessEntry(kind="tool")])
+    assert process.has_content is False

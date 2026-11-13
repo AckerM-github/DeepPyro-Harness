@@ -89,7 +89,7 @@ class StreamAccumulator:
     def has_content(self) -> bool:
         return bool(self.reasoning or self.text or self.order)
 
-    def parts(self) -> list[Any]:
+    def parts(self, *, include_tool_calls: bool = True) -> list[Any]:
         parts: list[Any] = []
         reasoning = "".join(self.reasoning)
         if reasoning:
@@ -97,9 +97,12 @@ class StreamAccumulator:
         text = "".join(self.text)
         if text:
             parts.append(TextPart(text=text))
-        for call_id in self.order:
-            draft = self.calls[call_id]
-            parts.append(ToolCallPart(id=draft.call_id, name=draft.name, arguments=draft.arguments or "{}"))
+        if include_tool_calls:
+            for call_id in self.order:
+                draft = self.calls[call_id]
+                parts.append(
+                    ToolCallPart(id=draft.call_id, name=draft.name, arguments=draft.arguments or "{}")
+                )
         return parts
 
     def ordered_calls(self) -> list[ToolCallDraft]:
@@ -114,6 +117,15 @@ def _usage_dict(usage: Usage) -> dict[str, int]:
         "cacheWriteTokens": 0,
         "totalTokens": usage.total_tokens,
     }
+
+
+def _truncation_message(max_tokens: int | None, dropped_calls: int) -> str:
+    """Explain a max-tokens stop instead of silently ending the turn."""
+    limit = max_tokens if max_tokens is not None else "the configured limit"
+    message = f"response truncated at maxTokens={limit}"
+    if dropped_calls:
+        message += f"; {dropped_calls} tool call(s) were not executed"
+    return message + "; raise maxTokens or split the work into smaller steps"
 
 
 class AgentSession:
@@ -291,21 +303,35 @@ class AgentSession:
                 )
                 self._failure_turn(exc)
                 raise exc
+            last_text = accumulator.text_value() or last_text
             if finish.kind == "aborted":
                 if accumulator.has_content() and not self._assistant_appended:
-                    self._append_assistant(turn, step, accumulator)
-                last_text = accumulator.text_value() or last_text
+                    # The stream was cut before the tool calls could run, so keep
+                    # only text/reasoning: an orphan tool call would corrupt the
+                    # history derived for the next request.
+                    self._append_assistant(turn, step, accumulator, include_tool_calls=False)
                 self._close_step()
                 self._close_turn({"kind": "aborted", "reason": {"kind": "provider"}}, final_text=None)
                 return last_text
 
+            if finish.kind == "length":
+                truncated_calls = accumulator.ordered_calls()
+                if accumulator.has_content() and not self._assistant_appended:
+                    # These tool calls never ran: persisting them would leave a
+                    # tool-call block without a matching tool/result message.
+                    self._append_assistant(turn, step, accumulator, include_tool_calls=False)
+                self._emit(
+                    {
+                        "type": "error",
+                        "message": _truncation_message(self._options.max_tokens, len(truncated_calls)),
+                    }
+                )
+                self._close_step()
+                self._close_turn({"kind": "max-tokens"}, final_text=None)
+                return last_text
+
             if accumulator.has_content() and not self._assistant_appended:
                 self._append_assistant(turn, step, accumulator)
-            last_text = accumulator.text_value() or last_text
-            if finish.kind == "length":
-                self._close_step()
-                self._close_turn({"kind": "max-tokens"}, final_text=accumulator.text_value())
-                return last_text
 
             calls = accumulator.ordered_calls()
             if calls:
@@ -602,10 +628,17 @@ class AgentSession:
             },
         )
 
-    def _append_assistant(self, turn: int, step: int, accumulator: StreamAccumulator) -> int:
+    def _append_assistant(
+        self,
+        turn: int,
+        step: int,
+        accumulator: StreamAccumulator,
+        *,
+        include_tool_calls: bool = True,
+    ) -> int:
         message = Message(
             role="assistant",
-            content=accumulator.parts(),
+            content=accumulator.parts(include_tool_calls=include_tool_calls),
             id=new_message_id(),
             source={"kind": "model", "provider": self._provider.name, "model": self._model},
         )
@@ -684,7 +717,9 @@ class AgentSession:
         if accumulator is not None:
             text = accumulator.text_value()
             if accumulator.has_content() and not self._assistant_appended:
-                self._append_assistant(self._turn, self._step, accumulator)
+                # Nothing streamed here has run as a tool yet; keep the history
+                # valid by dropping unfinished tool-call parts.
+                self._append_assistant(self._turn, self._step, accumulator, include_tool_calls=False)
         for call in list(self._pending_calls):
             self._append_tool_result(
                 self._turn,

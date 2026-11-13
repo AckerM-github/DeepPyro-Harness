@@ -424,7 +424,34 @@ async def test_length_finish_closes_turn_as_max_tokens(tmp_path: Path) -> None:
 
     assert await agent.send("go") == "cut"
     assert session.records_of("turn/end")[0].data["reason"] == {"kind": "max-tokens"}
-    assert sink.of_type("final")[0]["text"] == "cut"
+    assert sink.of_type("final") == []
+    error = sink.of_type("error")[0]["message"]
+    assert "maxTokens" in error
+    assert "truncated" in error
+
+
+async def test_length_finish_drops_tool_calls_that_never_ran(tmp_path: Path) -> None:
+    """A truncated assistant message must not leave orphan tool calls in history."""
+    script = [
+        ScriptedTurn(
+            events=[
+                ReasoningDelta("plan"),
+                TextDelta("dispatching"),
+                ToolCallStart("call_1", "echo"),
+                ToolCallArgsDelta("call_1", '{"text": "hi"'),
+                finish("length"),
+            ]
+        )
+    ]
+    session, _, sink, agent = make_session(tmp_path, FakeRegistry(), script)
+
+    assert await agent.send("go") == "dispatching"
+    assert "tool/call" not in session.types()
+    parts = session.records_of("assistant/message")[0].data["message"]["content"]
+    assert [part["type"] for part in parts] == ["reasoning", "text"]
+    error = sink.of_type("error")[0]["message"]
+    assert "1 tool call(s) were not executed" in error
+    assert [message.role for message in session.derive_messages()] == ["system", "user", "assistant"]
 
 
 async def test_auto_compaction_runs_inside_the_open_turn(tmp_path: Path) -> None:

@@ -1,10 +1,10 @@
 # DeepPyro TUI 规格（Textual 8.2.8）
 
-状态：TUI 已完整实现（FIGlet 像素字标启动页、每 turn 的思考进度与全屏查看器、对话流、活动栏、
-多行输入与 slash 补全、选择器、审批、插件管理、插件槽位、后台任务面板、团队面板与任务板、状态栏），
-1067 测试与 ruff 全绿；真实模型端到端冒烟通过（启动页 → 任意键 → 工具调用 → 回答；真机用 /policy
-切到 read-only、/approval 切到 never、/cwd 切换工作目录；插件贡献状态栏项/对话行/面板；jobs 与 team
-服务由真实内核装配）。
+状态：TUI 已完整实现（FIGlet 像素字标启动页、每 turn 一个统一 AgentProcess（思考行 + 工具行按时间
+顺序融合、默认收起、点击展开）与全屏思考查看器、对话流、活动栏、多行输入与 slash 补全、选择器、审批、
+插件管理、插件槽位、后台任务面板、团队面板与任务板、状态栏），1073 测试与 ruff 全绿；真实模型端到端
+冒烟通过（启动页 → 任意键 → 思考/工具过程 → 回答；真机用 /policy 切到 read-only、/approval 切到 never、
+/cwd 切换工作目录；插件贡献状态栏项/对话行/面板；jobs 与 team 服务由真实内核装配）。
 
 ## 1. 形态与范围
 
@@ -24,14 +24,15 @@
 | format.py | 纯函数格式化（短 session id、token、上下文百分比、文本截断） | Lead |
 | wordmark.py | FIGlet ansi_shadow 预渲染像素字标 + 逐字符渐变色（宽/窄两套） | Lead |
 | commands.py | slash 命令定义与分发 | tui-dev |
-| widgets/conversation.py | 对话流：user/assistant/tool 块 + 每 turn 的 TurnProgress | Lead |
-| widgets/turn_progress.py / widgets/thinking.py | 单行思考进度、全屏按 step 查看 reasoning | tui-dev |
+| widgets/conversation.py | 对话流：user/assistant/tool 块 + 每 turn 一个 AgentProcess | Lead |
+| widgets/agent_process.py | AgentProcess / ToolProcessLine：思考 step 行与工具行按时间顺序融合、默认收起、展开详情、点击 step 打开查看器 | Lead |
+| screens/thinking.py | 全屏按 step 查看 reasoning | tui-dev |
 | widgets/activity_bar.py | 对话区上方活动栏：plan / jobs / agents 三段 | ui-dev |
 | screens/plan.py | 待办计划模态（/plan、点击 plan 段） | ui-dev |
 | screens/jobs.py | 后台任务面板（/jobs、点击 jobs 段） | tui-dev |
 | screens/team.py | 团队面板与任务板（/team、/team board、点击 agents 段） | ui-dev |
 | screens/thinking.py | 全屏思考查看器（/thinking、点击折叠行） | tui-dev |
-| history.py | 从会话日志按 turn/step 重建 ReasoningStep/TurnReasoning | Lead |
+| history.py | 从会话日志按 turn 重建 ReasoningStep/TurnReasoning/TurnProcess（思考 + 工具有序过程） | Lead |
 | widgets/status_bar.py | 底部状态栏（session/model/tokens/ctx/policy/phase） | ui-dev |
 | slots.py | 插件槽位注册表（STATUS/CONVERSATION/PANEL/SETTINGS，Textual-free） | ui-dev |
 | widgets/plugin_slots.py | 插件状态栏项、插件面板宿主与表格 | ui-dev |
@@ -61,7 +62,7 @@
 ## 4. 事件流（单线程原则）
 
 - AgentSession 在事件循环里同步 sink.emit(dict)；TuiSink.emit 先更新内部状态（usage/final/error 计数），再调用 on_event。
-- on_event = App.handle_event：step → ConversationView.begin_step(turn, step)；thinking → stream_thinking（单行进度）；text → stream_text；tool_call/tool_result → 工具卡片；usage → 上下文占用；final → finish_turn（同时结束当前 TurnProgress）；error → 红色错误块；status → 状态栏 phase。
+- on_event = App.handle_event：step → ConversationView.begin_step(turn, step)；thinking → stream_thinking（写入当前 AgentProcess 的 step 行）；text → stream_text；tool_call/tool_result → AgentProcess 内的工具行；usage → 上下文占用；final → finish_turn（收起当前 AgentProcess）；error → 先 finish_turn(None) 收起过程再红色错误块；status → 状态栏 phase。
 - 每个事件处理后刷新活动栏（plan/jobs/agents 投影来自 activity 服务）；status 事件后还会应用插件对话行槽位。
 - handle_event 整体 try/except：渲染异常不得中断 agent turn（只记录/忽略）。
 - session 事件不由 AgentSession 发出；TUI 模式不产生该事件。
@@ -80,7 +81,8 @@
 | Ctrl+P | 聚焦输入框（命令面板预留） |
 | 任意键（splash 显示时） | 关闭启动画面进入对话（splash 不会自动关闭） |
 | Esc | 关闭模态（审批/选择器/插件管理/插件面板/路径输入/计划/任务/团队/思考/命令选择器） |
-| 点击折叠的思考摘要 | 打开 ThinkingScreen 查看该 turn 的完整 reasoning；对话行随滚动保留 |
+| 点击 AgentProcess header | 展开/收起该 turn 的过程（思考行 + 工具行）；展开后点击 step 行打开 ThinkingScreen |
+| 点击过程内的工具行 | 展开/收起该工具的完整 arguments 与 result |
 
 ## 6. Slash 命令
 
@@ -119,11 +121,11 @@
 
 - 流式文本 60ms 节流（STREAM_REFRESH_SECONDS），避免每 token 重排。
 - 流式阶段 Markdown 增量更新，结束后定稿；局部 Markdown 非法不得抛异常。
-- 思考进度按用户 turn 组织：每个 turn 只有一个 TurnProgress；step 事件切换当前 step，thinking 增量只显示当前 step 的最新完整句（单行上限 120 字符，超长保留尾部）。
-- turn 结束（final）折叠为 “· thinking · N steps · M sentences  (click to view)”；点击打开 ThinkingScreen，按 Turn/Step 显示完整 reasoning；/thinking 打开同一查看器（可指定最近 N 个 turn 或 all）。
+- agent 过程按用户 turn 组织：每个 turn 只有一个 AgentProcess，思考 step 行与工具行按发生顺序排列（同一过程，不分开）。运行中过程 body 可见，step 行只显示当前 step 的最新完整句（单行上限 120 字符，超长保留尾部）。
+- turn 结束（final）后过程自动收起为一行摘要 “· agent process · N steps · M tools · K sentences  (click to view)”；点击 header 展开/收起，展开后点击 step 行打开 ThinkingScreen（按 Turn/Step 显示完整 reasoning），点击工具行展开该工具的完整 arguments/result；/thinking 打开同一查看器（可指定最近 N 个 turn 或 all）。
 - reasoning 来源：AgentSession 把完整 ReasoningPart 写进 assistant/message，TUI 历史由 reasoning_map 从 durable 日志重建，不新增存储格式。
 - splash 使用 wordmark.py 里预渲染的 ansi_shadow 字形：DEEPPYRO 火色渐变、HARNESS 冰蓝色渐变，逐行揭示；不依赖 pyfiglet 等运行时字体工具。
-- 工具调用：name + 参数摘要；结果 1-3 行预览，错误红色；write/edit 显示 diff（能力上限见 tui-widgets.md）。
+- 工具调用是过程的一部分：每个调用一行，运行中 “→ name 摘要”，完成 “✓ name 摘要 · 结果预览”，失败 “✗ name failed”（红色）；默认一行，点击展开完整参数与结果（20 行/2000 字符、40 行/4000 字符，write/edit 参数展开为 diff，能力上限见 tui-widgets.md）。
 - 用户消息块左 accent 边框；系统 info/error 用 dim/红色静态行。
 - provider/model 切换：/provider 重建 llm.client 与 AgentSession（同会话继续，不新建 session），/model 支持裸模型名或 provider/model；两者都写 model/selection 记录并调用 save_agent_selection 持久化到 config.toml 的 [agent]（写失败只提示，不打断切换）。
 - 会话设置全部走 slash 命令，不再有顶部下拉：/policy 切权限预设、/approval 切审批策略、/cwd 切工作目录。切换立即作用于同一会话——sandbox gate 与工具注册表随工作目录更新，并写 permission/preset、approval/policy、working-directory/change 记录；turn 运行中拒绝切换并提示。无参命令打开 PickerScreen（当前值标记 current），/cwd 额外提供 Enter path… 选项打开 PathPromptScreen。
@@ -153,19 +155,19 @@
 - 插件槽位测试：tests/tui/test_slots.py（注册表排序/去重/dispose、theme/locale）与 test_plugin_slots.py（状态栏、对话行、面板宿主）、test_ui_package.py（ui.toml 声明式包、坏 entry 隔离）；跨层集成在 tests/integration/test_plugin_services.py。
 - preset revision 接线测试：tests/tui/test_runtime_presets.py（new_session 记录 revision、resume 固定 revision、revision 失效回退、/preset 物化最新 revision）。
 - provider/model 接线测试：tests/tui/test_runtime_models.py（set_provider/set_model、model/selection 记录、resume 恢复、_resolve_model 不跨 provider 泄漏、持久化失败兜底、team attach/shutdown）与 tests/test_config.py（save_agent_selection 注释保留/原子写/校验）。
-- 活动/思考/任务/团队 UI 测试：tests/tui/test_activity_bar.py、test_plan_screen.py、test_turn_progress.py、test_thinking_screen.py、test_jobs_screen.py、test_team_screen.py；history 重建在 tests/tui/test_history.py，activity 投影在 tests/builtin/test_activity.py。
+- 活动/过程/任务/团队 UI 测试：tests/tui/test_activity_bar.py、test_plan_screen.py、test_agent_process.py、test_thinking_screen.py、test_jobs_screen.py、test_team_screen.py；对话过程接线在 tests/tui/test_conversation.py 与 test_app.py；history 重建在 tests/tui/test_history.py，activity 投影在 tests/builtin/test_activity.py。
 
 ## 9.1 思考过程的来源
 
 TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasoning_content` 字段）。本地 dshinfer 端点是否
 返回思考由 `DSHINFER_ENABLE_THINKING` 控制（默认 `false`，即只出答案）；要看到逐句思考，用
 `$env:DSHINFER_ENABLE_THINKING="true"; uv run uvicorn dshinfer.api:app --port 8000` 启动推理服务即可（本机真实冒烟即用此配置）。
-`[agent] maxTokens` 默认 4096：思考与答案共用这个输出预算，太小会把答案截断。
+`[agent] maxTokens` 默认 8192：思考、答案与工具调用参数共用这个输出预算。输出被截断（finish.kind=length）时，本轮尚未执行的 tool call 会被丢弃（避免日志里留下没有 tool/result 的孤儿调用），TUI 显示 error “response truncated at maxTokens=...; N tool call(s) were not executed”，turn 以 max-tokens 结束；此时需要提高 maxTokens 或把工作拆成更小步骤。
 
 ## 10. 已知偏离与待办
 
 - 图片输入/粘贴：v1 不支持（session 层 image part 只读展示）。
-- 会话恢复渲染 user/assistant/tool 文本，并按 turn 折叠重放 reasoning 摘要（可点击查看）；usage 明细不重放。
+- 会话恢复按 turn 重建统一的 AgentProcess（思考 step 行 + 工具行按顺序）并折叠成摘要，可点击展开/查看完整 reasoning；usage 明细不重放。
 - 自动滚动固定在底部；用户上滚时不抢滚动（v1 以 call_after_refresh(scroll_end) 为主，后续精修）。
 - 审批 always 粒度是 gate 级（本会话全局），未做 per-tool。
 - 无 PTY；后台任务由 jobs 服务托管（shell run_in_background），不是持久交互 shell。

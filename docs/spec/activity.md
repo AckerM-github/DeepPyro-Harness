@@ -79,52 +79,71 @@ Plan screen: src/deeppyro/tui/screens/plan.py, PlanScreen(ModalScreen[None])
 constructed with the current todos, grouped in_progress -> pending -> completed,
 Esc closes, empty state says no plan yet.
 
-## 4. Turn progress and thinking viewer (M1)
+## 4. Agent process (M1)
 
-Reasoning history helper: src/deeppyro/tui/history.py.
+History helper: src/deeppyro/tui/history.py.
 
     ReasoningStep(step: int, text: str)
     TurnReasoning(turn: int, steps: list[ReasoningStep], finished: bool)
+    TurnTool(call_id, name, arguments, result_text="", is_error=False, has_result=False)
+    ProcessEntry(kind="step" | "tool", step=0, text="", tool: TurnTool | None = None)
+    TurnProcess(turn: int, reasoning: TurnReasoning, entries: list[ProcessEntry],
+                tools: list[TurnTool], finished: bool)
     reasoning_from_session(session, *, last_turns: int | None = 1) -> list[TurnReasoning]
     reasoning_map(session) -> dict[int, TurnReasoning]
+    processes_from_session(session, *, last_turns=None) -> list[TurnProcess]
+    process_map(session) -> dict[int, TurnProcess]
     reasoning_text(message) -> str
 
-A user turn owns one TurnProgress widget, not one per assistant step. The
-widget is a single line while streaming and a single summary line when the turn
-ends; it is never a multi-line dump of the whole chain of thought.
+A user turn owns one AgentProcess widget, not one per assistant step. Reasoning
+steps and tool calls are interleaved in the order they happened; they are all
+part of the same process. While streaming the body is visible and each step line
+shows only the latest complete sentence of the current step (one terminal line,
+120 chars). When the turn ends the whole process collapses to a single summary
+line and is never a multi-line dump of the chain of thought.
 
-Module: src/deeppyro/tui/widgets/turn_progress.py.
+Module: src/deeppyro/tui/widgets/agent_process.py.
 
-    TurnProgress(Static, classes="turn-progress")
-    TurnProgress(turn: int = 0, reasoning: TurnReasoning | None = None)
+    AgentProcess(Vertical, classes="agent-process")
+    AgentProcess(turn: int = 0, reasoning: TurnReasoning | None = None)
     begin_step(step: int) -> None
-    append(chunk: str) -> None
+    append_thinking(chunk: str) -> None
+    add_tool_call(call_id: str, name: str, arguments: str) -> None
+    add_tool_result(call_id: str, is_error: bool, text: str) -> None
     finish() -> None
-    reasoning -> TurnReasoning
-    ThinkingRequested(Message)   # carries .reasoning
+    toggle() -> None
+    ThinkingRequested(Message)   # carries .reasoning; posted by step line clicks
 
-Streaming rendering: prefix + latest complete sentence from the current step,
-trimmed to one terminal line (120 chars). Finished rendering: one summary such
-as "· thinking · 3 steps · 12 sentences  (click to view)" and the full text is
-available through the message. Clicking the line posts ThinkingRequested.
+    ToolProcessLine(Vertical, classes="process-tool")
+    ToolProcessLine(call_id: str, tool_name: str, arguments: str)
+    set_result(text: str, is_error: bool) -> None
+    toggle() -> None
+
+Streaming rendering: header line with the latest sentence plus one line per
+step and one line per tool call (running "-> name summary", done "ok name
+summary . result preview", failed "x name failed"). Finished rendering: one
+summary such as "· agent process · 3 steps · 2 tools · 12 sentences
+(click to view)"; the body is hidden. Clicking the header toggles the body;
+clicking a step line posts ThinkingRequested; clicking a tool line expands its
+full arguments and result.
 
 Thinking viewer: src/deeppyro/tui/screens/thinking.py,
 ThinkingScreen(ModalScreen[None]) constructed with one or more TurnReasoning
 objects. It renders turn headings, step headings and the complete reasoning
 text in a scrollable area. Esc closes. /thinking opens the same screen for the
-current turn (or the last N turns when given a number); clicking a summary opens
-it for that turn. /resume replays collapsed summaries, not full text.
+current turn (or the last N turns when given a number); clicking a step line
+opens it for that turn. /resume replays the collapsed process, not full text.
 
 Conversation integration (Lead owns conversation.py and app.py):
 
-* AssistantBlock loses its embedded ThinkingBlock; it keeps the label and the
-  Markdown answer.
-* ConversationView keeps one optional TurnProgress per user turn and exposes
+* AssistantBlock only renders the label and the Markdown answer.
+* ConversationView keeps one optional AgentProcess per user turn and exposes
   begin_step(turn, step), stream_thinking(chunk), finish_turn(final_text),
-  add_history_reasoning(turn_reasoning), current_reasoning.
-* add_tool_call/add_tool_result only finish the assistant text block; they do
-  not end the turn progress.
-* add_user starts a new user turn and resets the progress widget.
+  add_history_process(turn_process), current_reasoning, process.
+* add_tool_call/add_tool_result are forwarded into the current AgentProcess;
+  they only finish the assistant text block, never the process.
+* add_user starts a new user turn, finishes the previous process and mounts a
+  fresh one.
 
 ## 5. Jobs (M2)
 
@@ -191,11 +210,12 @@ rebinds the service on every attach, and closes it during shutdown.
   revision stability, subscribe/unsubscribe, plan_counts/current_todo.
 * ActivityBar: empty state hides the row, each segment, click message.
 * PlanScreen: grouped rows, empty state, Esc.
-* TurnProgress: latest-sentence streaming, begin_step, finish summary, click
-  message, load from TurnReasoning, empty hidden.
+* AgentProcess/ToolProcessLine: latest-sentence streaming, begin_step, finish
+  summary, click message, tool line summary/result, expand detail, empty hidden.
 * ThinkingScreen: full text per step, multi-turn headings, Esc.
-* Conversation/app: one progress per user turn, tool calls do not finish it,
-  final event closes it, /thinking /plan /jobs /team commands, history replay.
+* Conversation/app: one process per user turn, thought and tool lines in order,
+  tool calls do not finish it, final event collapses it, /thinking /plan /jobs
+  /team commands, history replay.
 * Agent loop: step event emitted after step/start and before the model stream.
 * Jobs: service lifecycle records, job tools, background shell, headless
   cancellation (tests/jobs, tests/tools/test_shell_jobs.py,

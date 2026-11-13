@@ -49,7 +49,9 @@ class AgentConfig(BaseModel):
     temperature: float | None = None
     # Output cap per request. Reasoning consumes this budget too, so a low value
     # truncates answers that think first (the dshinfer default is just 512).
-    maxTokens: int | None = 4096
+    # Tool-heavy steps can emit several long tool calls in one assistant message;
+    # 8192 leaves room for that on DeepSeek's 8k-output models.
+    maxTokens: int | None = 8192
     maxSteps: int = 100
     permissionPreset: Literal["read-only", "workspace-write", "danger-full-access"] = "workspace-write"
     approvalPolicy: Literal["ask", "never", "always"] = "ask"
@@ -83,7 +85,7 @@ DEFAULT_TOML = """
 [agent]
 provider = "local"
 model = "deepseek-v4-pro-qwen3.5-9b"
-maxTokens = 4096
+maxTokens = 8192
 permissionPreset = "workspace-write"
 approvalPolicy = "ask"
 

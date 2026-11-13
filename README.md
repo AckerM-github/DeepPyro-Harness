@@ -8,9 +8,10 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
 - 产品形态：**只有一套终端前端** —— Textual 全屏 TUI（`dpyro`，唯一交互形态）+
   headless 一次性模式（`dpyro --headless "prompt"`，支持 `--json` NDJSON，供脚本/CI）。
   不做 Web UI。
-- 启动页是 FIGlet `ansi_shadow` 像素字标（火色 / 冰蓝渐变、逐行揭示）；思考过程按用户 turn
-  逐 step 实时展示当前最新一句，turn 结束折叠为一行摘要，点击或 `/thinking` 打开全屏按 step 查看
-  完整 reasoning（来自已落盘的 assistant/message）。
+- 启动页是 FIGlet `ansi_shadow` 像素字标（火色 / 冰蓝渐变、逐行揭示）；每个用户 turn 的**思考与
+  工具调用融合成一个 agent 过程**：step 行与工具行按发生顺序排列，运行中实时显示当前一句，turn
+  结束自动收起为一行摘要；点击摘要展开过程，点击 step 行或 `/thinking` 打开全屏按 step 查看完整
+  reasoning，点击工具行展开完整参数与结果（reasoning 来自已落盘的 assistant/message，不另存格式）。
 - 会话设置全部走 slash 命令：`/policy` 切权限预设（read-only / workspace-write /
   danger-full-access）、`/approval` 切审批策略（ask / never / always）、`/cwd` 切工作目录，
   切换立即作用于当前会话（并写入 `permission/preset`、`approval/policy`、

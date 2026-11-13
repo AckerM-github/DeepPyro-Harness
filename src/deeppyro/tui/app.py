@@ -24,8 +24,8 @@ from textual.widgets import Footer, Header
 from deeppyro import __version__
 from deeppyro.sandbox.types import APPROVALS, PRESETS
 from deeppyro.tui.commands import dispatch, help_text, live_commands
-from deeppyro.tui.format import compact_text, context_percent, short_session_id
-from deeppyro.tui.history import reasoning_from_session, reasoning_map
+from deeppyro.tui.format import context_percent, short_session_id
+from deeppyro.tui.history import process_map, reasoning_from_session
 from deeppyro.tui.screens.approval import ALLOW_ALWAYS, ApprovalScreen
 from deeppyro.tui.screens.jobs import JobsPanelScreen
 from deeppyro.tui.screens.path_prompt import PathPromptScreen
@@ -43,11 +43,11 @@ from deeppyro.tui.slots import (
     resolve_slot_registry,
 )
 from deeppyro.tui.widgets.activity_bar import AGENTS, JOBS, PLAN, ActivityBar
+from deeppyro.tui.widgets.agent_process import AgentProcess
 from deeppyro.tui.widgets.conversation import ConversationView
 from deeppyro.tui.widgets.plugin_slots import PluginStatusBar
 from deeppyro.tui.widgets.prompt_area import PromptArea
 from deeppyro.tui.widgets.status_bar import StatusBar
-from deeppyro.tui.widgets.turn_progress import TurnProgress
 
 RuntimeFactory = Callable[["DeepPyroApp"], Awaitable[Any]]
 
@@ -228,6 +228,7 @@ class DeepPyroApp(App[None]):
             elif kind == "final":
                 conversation.finish_turn(str(event.get("text") or ""))
             elif kind == "error":
+                conversation.finish_turn(None)
                 conversation.add_error(str(event.get("message") or "unknown error"))
             elif kind == "status":
                 self._phase = str(event.get("phase") or "idle")
@@ -407,9 +408,9 @@ class DeepPyroApp(App[None]):
         elif event.segment == AGENTS:
             self.run_worker(self._open_team(), group="panel")
 
-    @on(TurnProgress.ThinkingRequested)
-    def _on_thinking_requested(self, event: TurnProgress.ThinkingRequested) -> None:
-        """Open the full-screen viewer when a collapsed progress line is clicked."""
+    @on(AgentProcess.ThinkingRequested)
+    def _on_thinking_requested(self, event: AgentProcess.ThinkingRequested) -> None:
+        """Open the full-screen viewer when a collapsed step line is clicked."""
         self.push_screen(ThinkingScreen([event.reasoning]))
 
     # -- policy / approval / workspace commands --------------------------
@@ -575,7 +576,7 @@ class DeepPyroApp(App[None]):
         except Exception as exc:  # noqa: BLE001 - a bad log must not brick the UI
             conversation.add_error(f"cannot derive session history: {exc}")
             return
-        reasoning_by_turn = reasoning_map(session)
+        processes = process_map(session)
         turn_number = 0
         for message in messages:
             role = str(getattr(message, "role", "") or "")
@@ -583,16 +584,16 @@ class DeepPyroApp(App[None]):
             if role == "user":
                 turn_number += 1
                 conversation.add_user(text)
-                # Replay the collapsed reasoning summary for this turn once.
-                turn_reasoning = reasoning_by_turn.get(turn_number)
-                if turn_reasoning is not None:
-                    conversation.add_history_reasoning(turn_reasoning)
+                # Replay the collapsed thinking and tool lines for this turn.
+                turn_process = processes.get(turn_number)
+                if turn_process is not None:
+                    conversation.add_history_process(turn_process)
             elif role == "assistant" and text.strip():
                 conversation.stream_text(text)
                 conversation.finish_assistant(text)
             elif role == "tool":
-                preview = compact_text(text, max_lines=2, max_chars=160)
-                conversation.add_info(f"[tool result] {preview}")
+                # Tool calls and results are already inside the process block.
+                continue
 
     # -- commands (called by deeppyro.tui.commands) ----------------------
     def command_list(self) -> list[Any] | None:

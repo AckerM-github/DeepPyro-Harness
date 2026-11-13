@@ -1,17 +1,17 @@
-"""Conversation stream: user blocks, streaming assistant markdown, tool cards.
+"""Conversation stream: user blocks, agent processes, assistant markdown.
 
 The widget is a thin rendering layer. It never talks to the agent directly:
 DeepPyroApp forwards agent events to the methods below, always on the Textual
 event loop, so all widget mutation stays single-threaded.
 
-Assistant replies are grouped per user turn: the first assistant block of a turn
-carries the "DeepPyro" label, later blocks produced by tool steps do not, so a
-multi-step turn reads as one answer instead of repeated headers.
+Every user turn owns exactly one AgentProcess block. It groups the reasoning
+steps and the tool calls of that turn in the order they happened: while the turn
+runs the body is expanded with one line per step and one line per tool call, and
+when the turn ends it collapses to a single summary line. The final assistant
+answer is rendered after the process block.
 
-Reasoning is rendered by exactly one TurnProgress line per user turn. The line
-shows the newest sentence of the current step while the model thinks and
-collapses to a one-line summary at the end of the turn; clicking it (or using
-/thinking) opens the full-screen viewer.
+Reasoning and tool history are already durable in the session log, so replaying
+a session rebuilds the same collapsed blocks through add_history_process.
 """
 
 from __future__ import annotations
@@ -23,9 +23,8 @@ from textual.app import ComposeResult
 from textual.containers import ScrollableContainer, Vertical
 from textual.widgets import Markdown, Static
 
-from deeppyro.tui.history import TurnReasoning
-from deeppyro.tui.widgets.tool_card import ToolCallCard
-from deeppyro.tui.widgets.turn_progress import TurnProgress
+from deeppyro.tui.history import TurnProcess, TurnReasoning
+from deeppyro.tui.widgets.agent_process import AgentProcess
 
 STREAM_REFRESH_SECONDS = 0.06
 
@@ -90,19 +89,18 @@ class AssistantBlock(Vertical):
 
 
 class ConversationView(ScrollableContainer):
-    """Scrollable log of user, assistant and tool blocks."""
+    """Scrollable log of user blocks, agent processes and assistant answers."""
 
     def __init__(self) -> None:
         super().__init__(id="conversation")
         self._assistant: AssistantBlock | None = None
-        self._progress: TurnProgress | None = None
-        self._progress_turn = 0
-        self._tool_cards: dict[str, ToolCallCard] = {}
+        self._process: AgentProcess | None = None
+        self._process_turn = 0
         self._turn_has_assistant = False
 
     # -- user / info ----------------------------------------------------
     def add_user(self, text: str) -> None:
-        self._finish_progress()
+        self._finish_process()
         block = Vertical(
             Static("You", classes="block-label"),
             Static(Text(text), classes="user-text"),
@@ -120,56 +118,55 @@ class ConversationView(ScrollableContainer):
         self.mount(Static(Text("error: " + text, style="bold red"), classes="system-block system-error"))
         self._scroll_to_end()
 
-    # -- progress -------------------------------------------------------
+    # -- agent process --------------------------------------------------
     def begin_step(self, turn: int, step: int) -> None:
-        """Start a new assistant step; one progress line is kept per user turn."""
-        progress = self._progress
-        if progress is None or progress.turn != turn or progress.finished:
-            if progress is not None:
-                progress.finish()
-            progress = self._new_progress(turn)
-        self._progress_turn = turn
-        progress.begin_step(step)
+        """Start a new step inside the current per-turn agent process."""
+        process = self._ensure_process(turn)
+        process.begin_step(step)
         self._scroll_to_end()
 
     def stream_thinking(self, chunk: str) -> None:
         if not chunk:
             return
-        progress = self._progress
-        if progress is None or progress.finished:
-            progress = self._new_progress(self._progress_turn or 1)
-        progress.append(chunk)
+        process = self._ensure_process(self._process_turn or 1)
+        process.append_thinking(chunk)
         self._scroll_to_end()
 
-    def _new_progress(self, turn: int, reasoning: TurnReasoning | None = None) -> TurnProgress:
-        progress = TurnProgress(turn=turn, reasoning=reasoning)
-        self._progress = progress
-        self._progress_turn = turn
-        self.mount(progress)
-        return progress
+    def _ensure_process(self, turn: int) -> AgentProcess:
+        process = self._process
+        if process is not None and not process.finished and (not turn or process.turn == turn):
+            return process
+        if process is not None:
+            process.finish()
+        number = turn or self._process_turn or 1
+        process = AgentProcess(turn=number)
+        self._process = process
+        self._process_turn = number
+        self.mount(process)
+        return process
 
-    def _finish_progress(self) -> None:
-        progress = self._progress
-        if progress is None:
+    def _finish_process(self) -> None:
+        process = self._process
+        if process is None:
             return
-        progress.finish()
-        self._progress = None
+        process.finish()
+        self._process = None
 
     def finish_turn(self, final_text: str | None = None) -> None:
-        """Close the assistant answer and the turn progress line."""
+        """Close the agent process block and the final assistant answer."""
         self.finish_assistant(final_text)
-        self._finish_progress()
+        self._finish_process()
 
     @property
     def current_reasoning(self) -> TurnReasoning | None:
         """Reasoning accumulated for the current turn, if any."""
-        progress = self._progress
-        return None if progress is None else progress.reasoning
+        process = self._process
+        return None if process is None else process.reasoning
 
     @property
-    def progress(self) -> TurnProgress | None:
-        """The live progress line of the current turn, if any."""
-        return self._progress
+    def process(self) -> AgentProcess | None:
+        """The live agent process block of the current turn, if any."""
+        return self._process
 
     # -- assistant ------------------------------------------------------
     def _ensure_assistant(self) -> AssistantBlock:
@@ -195,41 +192,41 @@ class ConversationView(ScrollableContainer):
     # -- tools ----------------------------------------------------------
     def add_tool_call(self, call_id: str, name: str, arguments: str) -> None:
         self.finish_assistant()
-        card = ToolCallCard(call_id, name, arguments)
-        if call_id:
-            self._tool_cards[call_id] = card
-        self.mount(card)
+        process = self._ensure_process(self._process_turn or 1)
+        process.add_tool_call(call_id, name, arguments)
         self._scroll_to_end()
 
     def add_tool_result(self, call_id: str, is_error: bool, text: str) -> None:
         self.finish_assistant()
-        card = self._tool_cards.get(call_id)
-        if card is None:
-            # A result without a preceding call still deserves a visible card
-            # (for example when replaying a partial event stream).
-            card = ToolCallCard(call_id, "tool", "")
-            if call_id:
-                self._tool_cards[call_id] = card
-            self.mount(card)
-        card.set_result(text, is_error)
+        process = self._ensure_process(self._process_turn or 1)
+        process.add_tool_result(call_id, is_error, text)
         self._scroll_to_end()
 
     # -- history --------------------------------------------------------
-    def add_history_reasoning(self, reasoning: TurnReasoning) -> None:
-        """Render a finished reasoning line while replaying a session."""
-        self._finish_progress()
-        progress = TurnProgress(turn=reasoning.turn, reasoning=reasoning)
-        progress.finish()
-        self.mount(progress)
+    def add_history_process(self, turn_process: TurnProcess) -> None:
+        """Render one finished agent process while replaying a session."""
+        self._finish_process()
+        process = AgentProcess(turn=turn_process.turn)
+        for entry in turn_process.entries:
+            if entry.kind == "step":
+                process.begin_step(entry.step)
+                if entry.text:
+                    process.append_thinking(entry.text)
+            elif entry.kind == "tool" and entry.tool is not None:
+                tool = entry.tool
+                process.add_tool_call(tool.call_id, tool.name, tool.arguments)
+                if tool.has_result:
+                    process.add_tool_result(tool.call_id, tool.is_error, tool.result_text)
+        process.finish()
+        self.mount(process)
         self._scroll_to_end()
 
     # -- lifecycle ------------------------------------------------------
     def clear(self) -> None:
         self.remove_children()
         self._assistant = None
-        self._progress = None
-        self._progress_turn = 0
-        self._tool_cards.clear()
+        self._process = None
+        self._process_turn = 0
         self._turn_has_assistant = False
 
     def _scroll_to_end(self) -> None:

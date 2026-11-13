@@ -1,12 +1,12 @@
 """Full-screen viewer for the reasoning recorded across user turns.
 
-The conversation itself only shows a one-line TurnProgress per turn. This modal
+The conversation itself only shows a collapsed agent process per turn. This modal
 renders the complete reasoning for one or more turns: a turn heading, one heading
 per assistant step and the full step text inside a scrollable area. Escape closes
 the screen and returns None, matching the other read-only modals.
 
 The screen is pure presentation: callers pass the TurnReasoning objects rebuilt
-by deeppyro.tui.history (or handed over by TurnProgress.ThinkingRequested). It
+by deeppyro.tui.history (or handed over by AgentProcess.ThinkingRequested). It
 never talks to the agent loop and it does not read the session log itself.
 Styling lives in DEFAULT_CSS so no theme edit is required.
 """
