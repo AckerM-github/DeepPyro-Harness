@@ -60,7 +60,8 @@ class FakeAgent:
         self.busy = True
         try:
             self.sink.emit({"type": "status", "phase": "thinking"})
-            self.sink.emit({"type": "thinking", "text": "pondering"})
+            self.sink.emit({"type": "step", "turn": 1, "step": 1})
+            self.sink.emit({"type": "thinking", "text": "pondering。more"})
             self.sink.emit({"type": "text", "text": "hello "})
             self.sink.emit({"type": "text", "text": "world"})
             self.sink.emit({"type": "usage", "input": 12, "output": 3, "cached": 0})
@@ -87,6 +88,53 @@ class FakePreset:
         self.description = description
 
 
+class FakeJob:
+    def __init__(self, job_id: str, status: str = "running") -> None:
+        self.id = job_id
+        self.kind = "pwsh"
+        self.label = "uv run pytest"
+        self.status = status
+        self.owner = "session-11112222"
+        self.started_at = 1_700_000_000_000
+        self.finished_at = None
+        self.call_id = "call-1"
+
+
+class FakeJobs:
+    def __init__(self) -> None:
+        self.rows = [FakeJob("pwsh-1111222233334444")]
+
+    def list(self) -> list[FakeJob]:
+        return list(self.rows)
+
+
+class FakeTeam:
+    team_id = "team-1"
+
+    def members(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": "member-1",
+                "name": "scout",
+                "description": "searches the workspace",
+                "phase": "running",
+                "model": "fake-1",
+            }
+        ]
+
+    def tasks(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": "task-1",
+                "subject": "wire the team panel",
+                "status": "pending",
+                "owner": "",
+                "blocked_by": [],
+                "write_scopes": [],
+            }
+        ]
+
+
 class FakeRuntime:
     def __init__(self, app: DeepPyroApp) -> None:
         self.sink = app.sink
@@ -101,6 +149,8 @@ class FakeRuntime:
         self.closed = False
         self.opened_sessions: list[str] = []
         self.agent_preset = "default"
+        self.jobs = FakeJobs()
+        self.team = FakeTeam()
 
     @property
     def session_id(self) -> str:
@@ -519,3 +569,125 @@ async def test_panel_command_opens_a_plugin_panel() -> None:
                 break
             await pilot.pause(0.05)
         assert isinstance(app.screen, PluginPanelScreen)
+
+
+async def test_step_and_final_events_drive_one_progress_line() -> None:
+    from deeppyro.tui.widgets.turn_progress import TurnProgress
+
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.pause()
+        app.handle_event({"type": "step", "turn": 1, "step": 1})
+        app.handle_event({"type": "thinking", "text": "first thought。second thought。"})
+        app.handle_event({"type": "text", "text": "answer"})
+        await pilot.pause()
+        progress = app.query_one(TurnProgress)
+        assert progress.finished is False
+        assert "second thought" in progress.line_text
+
+        app.handle_event({"type": "final", "text": "answer"})
+        await pilot.pause()
+        assert progress.finished is True
+        assert "(click to view)" in progress.line_text
+
+
+async def test_clicking_progress_opens_the_thinking_viewer() -> None:
+    from deeppyro.tui.screens.thinking import ThinkingScreen
+    from deeppyro.tui.widgets.turn_progress import TurnProgress
+
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.pause()
+        app.handle_event({"type": "step", "turn": 1, "step": 1})
+        app.handle_event({"type": "thinking", "text": "first thought。second thought。"})
+        app.handle_event({"type": "final", "text": "answer"})
+        await pilot.pause()
+        await pilot.click(app.query_one(TurnProgress))
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if isinstance(app.screen, ThinkingScreen):
+                break
+        assert isinstance(app.screen, ThinkingScreen)
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+
+
+async def test_thinking_command_opens_the_viewer(monkeypatch: Any) -> None:
+    from deeppyro.tui.history import ReasoningStep, TurnReasoning
+    from deeppyro.tui.screens.thinking import ThinkingScreen
+
+    reasoning = TurnReasoning(turn=1, steps=[ReasoningStep(step=1, text="deep thought")], finished=True)
+    monkeypatch.setattr(
+        "deeppyro.tui.app.reasoning_from_session",
+        lambda session, last_turns=1: [reasoning],
+    )
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one(PromptArea)
+        prompt.text = "/thinking"
+        await pilot.press("enter")
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if isinstance(app.screen, ThinkingScreen):
+                break
+        assert isinstance(app.screen, ThinkingScreen)
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+
+
+async def test_jobs_command_opens_the_jobs_panel() -> None:
+    from deeppyro.tui.screens.jobs import JobsPanelScreen
+
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one(PromptArea)
+        prompt.text = "/jobs"
+        await pilot.press("enter")
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if isinstance(app.screen, JobsPanelScreen):
+                break
+        assert isinstance(app.screen, JobsPanelScreen)
+        assert app.screen.jobs[0].id == "pwsh-1111222233334444"
+
+
+async def test_team_command_opens_the_team_panel() -> None:
+    from deeppyro.tui.screens.team import TeamPanelScreen
+
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(110, 32)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one(PromptArea)
+        prompt.text = "/team"
+        await pilot.press("enter")
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if isinstance(app.screen, TeamPanelScreen):
+                break
+        assert isinstance(app.screen, TeamPanelScreen)
+        assert app.screen.members[0].name == "scout"
+        assert app.screen.tasks[0].id == "task-1"
+        assert app.screen.team_id == "team-1"
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+
+
+async def test_team_command_board_opens_the_task_board() -> None:
+    from deeppyro.tui.screens.team import TaskBoardScreen
+
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(110, 32)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one(PromptArea)
+        prompt.text = "/team board"
+        await pilot.press("enter")
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if isinstance(app.screen, TaskBoardScreen):
+                break
+        assert isinstance(app.screen, TaskBoardScreen)
+        assert app.screen.ordered_tasks[0].subject == "wire the team panel"
+        await pilot.press("escape")
+        await pilot.pause(0.2)

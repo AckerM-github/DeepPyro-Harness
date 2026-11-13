@@ -34,23 +34,10 @@ class _ShellTool(BaseTool):
     def argv(self, command: str) -> list[str]:  # pragma: no cover - overridden
         raise NotImplementedError
 
-    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        command = require_str(args, "command")
-        timeout_ms = optional_int(args, "timeoutMs", DEFAULT_TIMEOUT_MS, minimum=1, maximum=MAX_TIMEOUT_MS)
-        if optional_bool(args, "run_in_background", False):
-            raise ToolError(
-                "run_in_background is not supported by this implementation; "
-                "run a foreground command with a timeout instead"
-            )
-        workdir_arg = optional_str(args, "workdir")
-        await check_command(ctx, args, command)
-        cwd = resolve_path(Path(ctx.cwd), workdir_arg) if workdir_arg else Path(ctx.cwd).resolve(strict=False)
-        if not cwd.is_dir():
-            raise ToolError(f"workdir is not a directory: {cwd}")
-        argv = self.argv(command)
-        started = time.monotonic()
+    async def _spawn(self, argv: list[str], cwd: Path) -> asyncio.subprocess.Process:
+        """Start one shell process with stderr merged into stdout."""
         try:
-            process = await asyncio.create_subprocess_exec(
+            return await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=str(cwd),
                 stdout=asyncio.subprocess.PIPE,
@@ -60,6 +47,65 @@ class _ShellTool(BaseTool):
             raise ToolError(f"cannot start shell: {argv[0]!r} was not found on PATH") from None
         except OSError as exc:
             raise ToolError(f"cannot start shell {argv[0]!r}: {exc}") from exc
+
+    async def _run_background(
+        self,
+        command: str,
+        argv: list[str],
+        cwd: Path,
+        ctx: ToolContext,
+    ) -> ToolResult:
+        """Admit a real background job and return its id immediately."""
+        jobs = (ctx.services or {}).get("jobs")
+        if jobs is None:
+            raise ToolError(
+                "run_in_background requires the jobs service, which is not available in this session"
+            )
+
+        async def runner(handle: Any) -> int | None:
+            process = await self._spawn(argv, cwd)
+            try:
+                assert process.stdout is not None
+                while True:
+                    chunk = await process.stdout.read(65536)
+                    if not chunk:
+                        break
+                    handle.write(chunk.decode("utf-8", errors="replace").replace("\r\n", "\n"))
+                return await process.wait()
+            except asyncio.CancelledError:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                with contextlib.suppress(Exception):
+                    await process.wait()
+                raise
+
+        handle = jobs.start(
+            self.name,
+            command,
+            runner,
+            owner=ctx.session_id,
+            call_id=ctx.call_id,
+            record=getattr(ctx, "log", None),
+        )
+        return ToolResult(
+            text=f"started background job {handle.id}",
+            meta={"jobId": handle.id, "kind": self.name},
+        )
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        command = require_str(args, "command")
+        timeout_ms = optional_int(args, "timeoutMs", DEFAULT_TIMEOUT_MS, minimum=1, maximum=MAX_TIMEOUT_MS)
+        background = optional_bool(args, "run_in_background", False)
+        workdir_arg = optional_str(args, "workdir")
+        await check_command(ctx, args, command)
+        cwd = resolve_path(Path(ctx.cwd), workdir_arg) if workdir_arg else Path(ctx.cwd).resolve(strict=False)
+        if not cwd.is_dir():
+            raise ToolError(f"workdir is not a directory: {cwd}")
+        argv = self.argv(command)
+        if background:
+            return await self._run_background(command, argv, cwd, ctx)
+        started = time.monotonic()
+        process = await self._spawn(argv, cwd)
         try:
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout_ms / 1000)
         except TimeoutError:
@@ -105,7 +151,7 @@ class PwshTool(_ShellTool):
                 "workdir": {"type": "string", "description": "Working directory for this command."},
                 "run_in_background": {
                     "type": "boolean",
-                    "description": "Run in the background and return a job id immediately.",
+                    "description": "Start a background job and return its job id immediately.",
                 },
             }
         ),
@@ -139,6 +185,10 @@ class BashTool(_ShellTool):
                 "description": "Timeout in milliseconds (default 120000, max 600000).",
             },
             "workdir": {"type": "string", "description": "Working directory for this command."},
+            "run_in_background": {
+                "type": "boolean",
+                "description": "Start a background job and return its job id immediately.",
+            },
         },
         required=["command"],
     )

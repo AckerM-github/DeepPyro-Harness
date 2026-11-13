@@ -53,6 +53,18 @@ def test_create_writes_header_only_log(tmp_path: pathlib.Path) -> None:
     }
 
 
+def test_context_tokens_tracks_the_latest_request(tmp_path: pathlib.Path) -> None:
+    store = _new_store(tmp_path)
+    session = store.create(pathlib.Path("C:/work"), session_id="session-context")
+    _conversation(session)
+    assert session.context_tokens() == 10
+    second = support.assistant_message("msg_assistant_2", "again", step=2)
+    second["usage"] = {"inputTokens": 40, "outputTokens": 7, "cacheReadTokens": 3}
+    session.append("assistant/message", second)
+    assert session.context_tokens() == 40
+    assert session.usage()["input"] == 50
+
+
 def test_create_rejects_bad_arguments(tmp_path: pathlib.Path) -> None:
     store = _new_store(tmp_path)
     with pytest.raises(SessionError, match="absolute path"):

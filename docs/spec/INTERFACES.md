@@ -330,7 +330,7 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 - 活状态：`App.row_states()` 返回 active/failed/disabled/overridden/restart-required/pending，
   以及 runtime_state/config/children/parent/group；`App.mark_restart_required(id)` 用于 live apply 后标记。
 
-### 11.4 服务图（core bundle 行）
+### 11.4 服务图（core bundle 20 行，按加载顺序）
 
 | 行 id | 模块 | 服务名 / 关键方法 |
 |---|---|---|
@@ -344,9 +344,11 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 | `prompt` | `builtin.prompt_service` | `prompt`：`.add_section(..., scope=None, revision=...)`、`.sections(...)`、`.build(tools, prompt_context, scope=None, revision=...)` |
 | `prompt-core` | `builtin.prompt_core` | 5 个核心提示词段（order 10/20/30/40/50） |
 | `commands` | `builtin.commands` | `commands`：`.add`、`.all()`、`.resolve()`、`.invoke()` |
-| `commands-builtin` | `builtin.commands_builtin` | 15 个内置 slash 命令（含 `/provider`、`/model`、`/preset`、`/policy`、`/approval`、`/cwd`、`/panel`） |
+| `commands-builtin` | `builtin.commands_builtin` | 19 个内置 slash 命令（含 `/provider`、`/model`、`/preset`、`/policy`、`/approval`、`/cwd`、`/plan`、`/jobs`、`/team`、`/thinking`、`/panel`） |
 | `agents` | `builtin.agents` | `agents`：`.create(..., preset=None, preset_revision=None, registry=None)`、`.options(**overrides)` |
-| `plugin-tools` | `tools.builtin.plugin_tools` | 5 个 agent 工具：`plugin_manager`/`plugin_create`/`plugin_inspect`/`settings_read`/`settings_write` |
+| `activity` | `builtin.activity` | `activity`：`.state`、`.refresh(session)`、`.subscribe(listener)`；投影 todo/job/team/subagent/plan 记录 |
+| `team` | `builtin.team` | `team`：`.configure(...)`、`.bind_session`、`.spawn/.send/.wait/.cancel`、任务板 `.create_task/.update_task`；9 个 `team_*` 工具 |
+| `jobs` | `builtin.jobs` | `jobs`：`.start(...)`、`.get/.list/.output/.wait/.kill/.cancel_owner/.cancel_all`；`job_output/job_kill/job_list` 工具 |
 | `slots` | `tui.slots` | `slots`：TUI 插件槽位注册表（状态栏项/对话行/面板/设置页、theme/locale） |
 | `plugin-manager` | `builtin.plugin_manager` | `plugin_manager`：外部插件与 bundle（`.manager`，含 `.create_bundle`） |
 | `settings` | `builtin.settings` | `settings`：插件配置读写 + revision CAS + volatile live apply（`.store`） |
@@ -379,4 +381,7 @@ await app.stop()                           # 逆序 dispose
 - `tests/builtin/test_preset_revisions.py`：preset revision 不可变注册、realm 物化、按 revision 过滤工具/提示词。
 - `tests/tui/test_runtime_presets.py`：TUI new_session/resume/preset 切换的 revision 固定与回退。
 - `tests/plugins/test_template.py`：`plugin_create` 模板脚手架与 `PluginManager.create_bundle`。
+- `tests/jobs/`、`tests/tools/test_shell_jobs.py`：jobs 服务生命周期、job 记录形状、后台 shell、job 工具。
+- `tests/team/`：spawn/send/wait/cancel、任务板迁移、team/subagent 记录、9 个工具。
+- `tests/builtin/test_activity.py`、`tests/tui/test_activity_bar.py`、`test_plan_screen.py`、`test_jobs_screen.py`、`test_team_screen.py`：活动投影与 M1/M2/M3 界面。
 

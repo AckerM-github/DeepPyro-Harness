@@ -1,6 +1,10 @@
 # DeepPyro TUI 规格（Textual 8.2.8）
 
-状态：TUI 已完整实现（FIGlet 像素字标启动页、单行滚动思考 ticker、对话流、多行输入与 slash 补全、选择器、审批、插件管理、插件槽位、状态栏），885+ 测试与 ruff 全绿；真实模型端到端冒烟通过（启动页 → 任意键 → 工具调用 → 回答；真机用 /policy 切到 read-only、/approval 切到 never、/cwd 切换工作目录；插件贡献状态栏项/对话行/面板）。
+状态：TUI 已完整实现（FIGlet 像素字标启动页、每 turn 的思考进度与全屏查看器、对话流、活动栏、
+多行输入与 slash 补全、选择器、审批、插件管理、插件槽位、后台任务面板、团队面板与任务板、状态栏），
+1067 测试与 ruff 全绿；真实模型端到端冒烟通过（启动页 → 任意键 → 工具调用 → 回答；真机用 /policy
+切到 read-only、/approval 切到 never、/cwd 切换工作目录；插件贡献状态栏项/对话行/面板；jobs 与 team
+服务由真实内核装配）。
 
 ## 1. 形态与范围
 
@@ -20,7 +24,14 @@
 | format.py | 纯函数格式化（短 session id、token、上下文百分比、文本截断） | Lead |
 | wordmark.py | FIGlet ansi_shadow 预渲染像素字标 + 逐字符渐变色（宽/窄两套） | Lead |
 | commands.py | slash 命令定义与分发 | tui-dev |
-| widgets/conversation.py | 对话流：user/assistant/tool/thinking 块 | ui-dev |
+| widgets/conversation.py | 对话流：user/assistant/tool 块 + 每 turn 的 TurnProgress | Lead |
+| widgets/turn_progress.py / widgets/thinking.py | 单行思考进度、全屏按 step 查看 reasoning | tui-dev |
+| widgets/activity_bar.py | 对话区上方活动栏：plan / jobs / agents 三段 | ui-dev |
+| screens/plan.py | 待办计划模态（/plan、点击 plan 段） | ui-dev |
+| screens/jobs.py | 后台任务面板（/jobs、点击 jobs 段） | tui-dev |
+| screens/team.py | 团队面板与任务板（/team、/team board、点击 agents 段） | ui-dev |
+| screens/thinking.py | 全屏思考查看器（/thinking、点击折叠行） | tui-dev |
+| history.py | 从会话日志按 turn/step 重建 ReasoningStep/TurnReasoning | Lead |
 | widgets/status_bar.py | 底部状态栏（session/model/tokens/ctx/policy/phase） | ui-dev |
 | slots.py | 插件槽位注册表（STATUS/CONVERSATION/PANEL/SETTINGS，Textual-free） | ui-dev |
 | widgets/plugin_slots.py | 插件状态栏项、插件面板宿主与表格 | ui-dev |
@@ -42,7 +53,7 @@
 1. dpyro（无参数）→ main.main → DeepPyroApp(cwd/provider/model 可选)。
 2. App.on_mount：先 push_screen(SplashScreen(...), callback=重新聚焦输入框)，再 await TuiRuntime.boot(sink=app.sink, ask=app.ask_approval)。
 3. SplashScreen：内容按 40ms/行逐行揭示（宽 >= 72 且高 >= 24 用 22 行大字标，否则退化为单行字标），**揭示完成后一直停留，直到用户按任意键才进入主界面**（不自动关闭）；boot 完成后 App 调 set_runtime 回填 provider/model/cwd；boot 失败时立即关闭 splash 并显示错误。
-4. TuiRuntime.boot：load_config → resolve_workspace → 校验 provider/model → kernel.boot（core bundle 17 行，首行 kernel 运行时）→ 取 llm.provider、tools.registry_for(workspace)、sandbox.gate(workspace, ask=ask)，并把 kernel/plugin_manager/settings/inspect 服务一并注入 AgentSession.services → presets.ensure_all() 物化全部 preset revision → new_session()。
+4. TuiRuntime.boot：load_config → resolve_workspace → 校验 provider/model → kernel.boot（core bundle 20 行，首行 kernel 运行时）→ 取 llm.provider、tools.registry_for(workspace)、sandbox.gate(workspace, ask=ask)、activity/jobs/team 服务，并把 kernel/plugin_manager/inspect/settings/jobs/team 服务一并注入 AgentSession.services → presets.ensure_all() 物化全部 preset revision → 为 team 服务 configure + bind_session → new_session()。
 5. new_session：preset_revision 清空 → SessionStore.create → _attach（agents.options(model=, context_window=) → agents.create(..., preset=, preset_revision=)）→ 写 model/selection（初始 provider/model）→ 写 agent-preset/selected（含 revision）→ AgentSession；open_session 先按日志最后一条 model/selection 恢复 provider/model（provider 不存在时忽略），再从 header 的 agentPreset 与日志里的 agent-preset/selected revision 恢复固定 revision，revision 已被删除时回退 latest。
 6. 失败：conversation.add_error(failed to start: ...)，App 仍可退出。
 7. App.on_unmount：await runtime.close()（kernel_app.stop 逆序释放插件）；幂等。
@@ -50,7 +61,8 @@
 ## 4. 事件流（单线程原则）
 
 - AgentSession 在事件循环里同步 sink.emit(dict)；TuiSink.emit 先更新内部状态（usage/final/error 计数），再调用 on_event。
-- on_event = App.handle_event：text/thinking → ConversationView.stream_*；tool_call/tool_result → 工具卡片；usage → 上下文占用；final → 收尾；error → 红色错误块；status → 状态栏 phase。
+- on_event = App.handle_event：step → ConversationView.begin_step(turn, step)；thinking → stream_thinking（单行进度）；text → stream_text；tool_call/tool_result → 工具卡片；usage → 上下文占用；final → finish_turn（同时结束当前 TurnProgress）；error → 红色错误块；status → 状态栏 phase。
+- 每个事件处理后刷新活动栏（plan/jobs/agents 投影来自 activity 服务）；status 事件后还会应用插件对话行槽位。
 - handle_event 整体 try/except：渲染异常不得中断 agent turn（只记录/忽略）。
 - session 事件不由 AgentSession 发出；TUI 模式不产生该事件。
 - 落盘顺序由 AgentSession 保证：先 append session 记录，再 emit 事件（widgets 观察到的事件总对应已落盘记录）。
@@ -67,7 +79,8 @@
 | Ctrl+D | 退出 |
 | Ctrl+P | 聚焦输入框（命令面板预留） |
 | 任意键（splash 显示时） | 关闭启动画面进入对话（splash 不会自动关闭） |
-| Esc | 关闭模态（审批/选择器/插件管理/插件面板/路径输入/命令选择器） |
+| Esc | 关闭模态（审批/选择器/插件管理/插件面板/路径输入/计划/任务/团队/思考/命令选择器） |
+| 点击折叠的思考摘要 | 打开 ThinkingScreen 查看该 turn 的完整 reasoning；对话行随滚动保留 |
 
 ## 6. Slash 命令
 
@@ -83,6 +96,10 @@
 | /approval [policy] | 查看/切换审批策略（ask / never / always）；无参打开选择器；写 approval/policy 记录 |
 | /cwd [path] | 查看/切换工作目录；无参打开选择器（当前 + 最近会话目录 + 自定义路径模态）；写 working-directory/change 记录 |
 | /status | 当前 provider（含 key 状态）与可用 providers、model、preset、policy、cwd、session、tokens、上下文 |
+| /plan | 打开当前 todo 计划（PlanScreen，按 in_progress / pending / completed 分组） |
+| /jobs | 打开后台任务面板（JobsPanelScreen：id/kind/status/label/started/finished） |
+| /team [board] | 打开团队面板（成员 + 任务）；`/team board` 打开完整任务板 |
+| /thinking [turns] | 打开全屏思考查看器：默认当前 turn，`all` 全部，数字指定最近 N 个 turn |
 | /compact | 手动压缩（要求无运行中 turn；Compactor.compact） |
 | /clear | 清空对话视图（不删除会话日志） |
 | /plugins | 外部插件/ bundle 管理界面（PluginScreen，数据来自 plugin_manager 服务） |
@@ -102,14 +119,20 @@
 
 - 流式文本 60ms 节流（STREAM_REFRESH_SECONDS），避免每 token 重排。
 - 流式阶段 Markdown 增量更新，结束后定稿；局部 Markdown 非法不得抛异常。
-- thinking 是单行滚动 ticker：流式只显示“最新一句”（按句末标点/换行切句，单行上限 120 字符，超长保留尾部），答句一开始就折叠成 “· thinking · N sentences (click to expand)”，点击展开全文（40 行 / 4000 字）。
+- 思考进度按用户 turn 组织：每个 turn 只有一个 TurnProgress；step 事件切换当前 step，thinking 增量只显示当前 step 的最新完整句（单行上限 120 字符，超长保留尾部）。
+- turn 结束（final）折叠为 “· thinking · N steps · M sentences  (click to view)”；点击打开 ThinkingScreen，按 Turn/Step 显示完整 reasoning；/thinking 打开同一查看器（可指定最近 N 个 turn 或 all）。
+- reasoning 来源：AgentSession 把完整 ReasoningPart 写进 assistant/message，TUI 历史由 reasoning_map 从 durable 日志重建，不新增存储格式。
 - splash 使用 wordmark.py 里预渲染的 ansi_shadow 字形：DEEPPYRO 火色渐变、HARNESS 冰蓝色渐变，逐行揭示；不依赖 pyfiglet 等运行时字体工具。
 - 工具调用：name + 参数摘要；结果 1-3 行预览，错误红色；write/edit 显示 diff（能力上限见 tui-widgets.md）。
 - 用户消息块左 accent 边框；系统 info/error 用 dim/红色静态行。
 - provider/model 切换：/provider 重建 llm.client 与 AgentSession（同会话继续，不新建 session），/model 支持裸模型名或 provider/model；两者都写 model/selection 记录并调用 save_agent_selection 持久化到 config.toml 的 [agent]（写失败只提示，不打断切换）。
 - 会话设置全部走 slash 命令，不再有顶部下拉：/policy 切权限预设、/approval 切审批策略、/cwd 切工作目录。切换立即作用于同一会话——sandbox gate 与工具注册表随工作目录更新，并写 permission/preset、approval/policy、working-directory/change 记录；turn 运行中拒绝切换并提示。无参命令打开 PickerScreen（当前值标记 current），/cwd 额外提供 Enter path… 选项打开 PathPromptScreen。
 - 状态栏单行：session 短 id、provider/model、↑输入 ↓输出 ⚡缓存、ctx 百分比（>=75% 黄色）、policy（preset/approval）、phase。
+  ctx 用最近一次模型请求的 inputTokens（`Session.context_tokens()`），不是会话累计；累计值只出现在 ↑。
 - 插件状态栏项：状态栏上方另有一行 PluginStatusBar，插件通过 slots.add_status_item 注册的渲染器按 (order,id) 排序渲染；每次 refresh_status 重新求值，渲染异常显示为 dim 错误标记而不影响主状态栏。
+- 活动栏：Header 与对话区之间一行 ActivityBar，数据来自 activity 服务对 todo/write、job/registered|settled、team/member、subagent/descriptor|catalog、plan/mode 的投影；空段隐藏，点击段打开 PlanScreen / JobsPanelScreen / TeamPanelScreen。
+- 后台任务：JobsPanelScreen 只读展示 jobs 服务快照（超长输出由 job_output 工具按 head/tail 预览）；/jobs 与活动栏 jobs 段等价。
+- 团队：TeamPanelScreen 展示成员与任务，TaskBoardScreen 按 pending → in_progress → completed 排序；/team 无参打开团队面板，/team board 打开任务板；活动栏 agents 段打开团队面板。
 - 插件对话行：handle_event 在 status 事件后调用 apply_conversation_slots，插件按 predicate 匹配事件并追加自定义行（只追加、宿主不重放历史）。
 - 插件面板：/panel 从 slots 的 PANEL 槽位取工厂，打开 PluginPanelScreen（表格/自定义 widget 二选一）。
 - agent preset：会话创建时把 preset id 写进 session header 的 agentPreset，并把最新 revision 写进
@@ -129,7 +152,8 @@
 - 所有 widget 刷新只允许在 Textual 事件循环线程内；后台线程只允许 put_message/post_message。
 - 插件槽位测试：tests/tui/test_slots.py（注册表排序/去重/dispose、theme/locale）与 test_plugin_slots.py（状态栏、对话行、面板宿主）、test_ui_package.py（ui.toml 声明式包、坏 entry 隔离）；跨层集成在 tests/integration/test_plugin_services.py。
 - preset revision 接线测试：tests/tui/test_runtime_presets.py（new_session 记录 revision、resume 固定 revision、revision 失效回退、/preset 物化最新 revision）。
-- provider/model 接线测试：tests/tui/test_runtime_models.py（set_provider/set_model、model/selection 记录、resume 恢复、_resolve_model 不跨 provider 泄漏、持久化失败兜底）与 tests/test_config.py（save_agent_selection 注释保留/原子写/校验）。
+- provider/model 接线测试：tests/tui/test_runtime_models.py（set_provider/set_model、model/selection 记录、resume 恢复、_resolve_model 不跨 provider 泄漏、持久化失败兜底、team attach/shutdown）与 tests/test_config.py（save_agent_selection 注释保留/原子写/校验）。
+- 活动/思考/任务/团队 UI 测试：tests/tui/test_activity_bar.py、test_plan_screen.py、test_turn_progress.py、test_thinking_screen.py、test_jobs_screen.py、test_team_screen.py；history 重建在 tests/tui/test_history.py，activity 投影在 tests/builtin/test_activity.py。
 
 ## 9.1 思考过程的来源
 
@@ -141,15 +165,17 @@ TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasonin
 ## 10. 已知偏离与待办
 
 - 图片输入/粘贴：v1 不支持（session 层 image part 只读展示）。
-- 会话恢复只渲染 user/assistant/tool 文本，不重放 thinking/usage 明细。
+- 会话恢复渲染 user/assistant/tool 文本，并按 turn 折叠重放 reasoning 摘要（可点击查看）；usage 明细不重放。
 - 自动滚动固定在底部；用户上滚时不抢滚动（v1 以 call_after_refresh(scroll_end) 为主，后续精修）。
 - 审批 always 粒度是 gate 级（本会话全局），未做 per-tool。
-- 无 PTY/后台任务界面（run_in_background 工具未实现）。
+- 无 PTY；后台任务由 jobs 服务托管（shell run_in_background），不是持久交互 shell。
+- 团队任务板只在内存中（重启清空），成员子会话没有专门的会话浏览器（可 /resume 打开）。
 - Ctrl+C 语义依赖 Textual 绑定；真实终端下的双击退出阈值 1.2s。
 - splash 是纯文本逐行揭示（无淡入/逐字动画），且依赖 Unicode 方块字符；极窄或极矮终端用单行字标。
 - thinking 单行滚动不保留已滚过的句子，只有折叠后点击展开才能看到全文。
 - /policy 与 /approval 切换不改写已生成的 system prompt（提示词里的沙箱说明仍是 turn 开始时的快照）；
   session header 的 cwd 保持会话创建值，切换只写 working-directory/change 记录。
 - 切换工作目录要求当前无运行中 turn；/cwd 无参列表只含当前目录与最近会话目录，任意路径走路径输入模态。
-- 插件设置页（SETTINGS 槽位）已注册但暂无宿主界面；设置写入仍是 next-boot 生效。
+- 插件设置页（SETTINGS 槽位）已注册但暂无宿主界面；设置写入仍是 next-boot 生效（volatile 字段除外）。
+- 后台任务输出保存在内存中（模型侧 job_output 有界预览），进程重启后不恢复；headless 退出会 cancel_owner 取消本会话任务。
 - 插件状态栏项在 refresh_status 时才刷新，插件内部状态变化需自行触发；插件对话行只追加。

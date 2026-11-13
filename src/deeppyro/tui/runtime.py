@@ -73,6 +73,9 @@ class TuiRuntime:
     agents: Any
     sink: Any
     ask: Callable[[Any], Awaitable[bool]]
+    activity: Any = None
+    jobs: Any = None
+    team: Any = None
     agent_preset: str = "default"
     preset_revision: int | None = None
     session: Any = None
@@ -113,6 +116,21 @@ class TuiRuntime:
         except BaseException:
             await await_maybe(kernel_app.stop())
             raise
+        activity = None
+        try:
+            activity = kernel_app.service("activity")
+        except LookupError:
+            pass
+        jobs = None
+        try:
+            jobs = kernel_app.service("jobs")
+        except LookupError:
+            pass
+        team = None
+        try:
+            team = kernel_app.service("team")
+        except LookupError:
+            pass
         runtime = cls(
             cfg=cfg,
             cwd=workspace,
@@ -127,8 +145,12 @@ class TuiRuntime:
             agents=services["agents"],
             sink=sink,
             ask=ask,
+            activity=activity,
+            jobs=jobs,
+            team=team,
         )
         await runtime.ensure_presets()
+        runtime._configure_team(None)
         await runtime.new_session()
         return runtime
 
@@ -193,11 +215,38 @@ class TuiRuntime:
         self.session = session
         self.agent = agent
         self.preset_revision = getattr(agent, "preset_revision", None)
+        self._configure_team(session)
+
+    def _configure_team(self, session: Any) -> None:
+        """Keep the team service pointed at the live lead session context."""
+        service = self.team
+        if service is None:
+            return
+        configure = getattr(service, "configure", None)
+        try:
+            if configure is not None:
+                configure(
+                    cwd=self.cwd,
+                    provider=self.provider,
+                    registry=self._scoped_registry(self.cwd),
+                    permission=self.permission,
+                    model=self.model,
+                    context_window=self.context_window,
+                    preset=self.agent_preset,
+                    preset_revision=self.preset_revision,
+                    services=self._plugin_services(),
+                    ask=self.ask,
+                )
+            bind = getattr(service, "bind_session", None)
+            if bind is not None and session is not None:
+                bind(session)
+        except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
+            pass
 
     def _plugin_services(self) -> dict[str, Any]:
         """Plugin services the agent tools read from ToolContext.services."""
         services: dict[str, Any] = {}
-        for name in ("plugin_manager", "inspect", "settings"):
+        for name in ("plugin_manager", "inspect", "settings", "jobs", "team"):
             service = self._service(name)
             if service is not None:
                 services[name] = service
@@ -482,6 +531,16 @@ class TuiRuntime:
             return {"input": 0, "output": 0, "cached": 0}
         return {key: int(usage.get(key, 0)) for key in ("input", "output", "cached")}
 
+    def context_tokens(self) -> int:
+        """Prompt tokens of the latest request, i.e. the live context size."""
+        getter = getattr(self.session, "context_tokens", None)
+        if getter is None:
+            return self.session_usage()["input"]
+        try:
+            return int(getter())
+        except Exception:  # noqa: BLE001 - context display must never break the UI
+            return 0
+
     def recent_sessions(self, limit: int = 20) -> list[Any]:
         """Most recent sessions, newest first."""
         return list(self.store.list())[: max(limit, 0)]
@@ -503,6 +562,20 @@ class TuiRuntime:
         if self._closed:
             return
         self._closed = True
+        jobs = self.jobs
+        cancel_all = getattr(jobs, "cancel_all", None)
+        if cancel_all is not None:
+            try:
+                await await_maybe(cancel_all())
+            except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
+                pass
+        team = self.team
+        close_team = getattr(team, "close", None)
+        if close_team is not None:
+            try:
+                await await_maybe(close_team())
+            except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
+                pass
         kernel_app, self.kernel_app = self.kernel_app, None
         if kernel_app is not None:
             try:

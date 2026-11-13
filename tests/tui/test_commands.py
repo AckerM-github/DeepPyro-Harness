@@ -26,6 +26,10 @@ EXPECTED_NAMES = [
     "approval",
     "cwd",
     "status",
+    "plan",
+    "jobs",
+    "team",
+    "thinking",
     "compact",
     "clear",
     "plugins",
@@ -60,6 +64,18 @@ class FakeApp:
 
     def show_status(self) -> None:
         self.calls.append(("status", ""))
+
+    def plan_command(self) -> None:
+        self.calls.append(("plan", ""))
+
+    async def jobs_command(self, argument: str) -> None:
+        self.calls.append(("jobs", argument))
+
+    async def team_command(self, argument: str) -> None:
+        self.calls.append(("team", argument))
+
+    async def thinking_command(self, argument: str) -> None:
+        self.calls.append(("thinking", argument))
 
     async def compact(self) -> None:
         self.calls.append(("compact", ""))

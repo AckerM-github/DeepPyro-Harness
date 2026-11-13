@@ -25,11 +25,16 @@ from deeppyro import __version__
 from deeppyro.sandbox.types import APPROVALS, PRESETS
 from deeppyro.tui.commands import dispatch, help_text, live_commands
 from deeppyro.tui.format import compact_text, context_percent, short_session_id
+from deeppyro.tui.history import reasoning_from_session, reasoning_map
 from deeppyro.tui.screens.approval import ALLOW_ALWAYS, ApprovalScreen
+from deeppyro.tui.screens.jobs import JobsPanelScreen
 from deeppyro.tui.screens.path_prompt import PathPromptScreen
 from deeppyro.tui.screens.picker import PickerScreen
+from deeppyro.tui.screens.plan import PlanScreen, plan_summary
 from deeppyro.tui.screens.plugin_panel import open_plugin_panel
 from deeppyro.tui.screens.splash import SplashScreen
+from deeppyro.tui.screens.team import TaskBoardScreen, TeamPanelScreen
+from deeppyro.tui.screens.thinking import ThinkingScreen
 from deeppyro.tui.sink import TuiSink
 from deeppyro.tui.slots import (
     SlotRegistry,
@@ -37,10 +42,12 @@ from deeppyro.tui.slots import (
     build_slot_context,
     resolve_slot_registry,
 )
+from deeppyro.tui.widgets.activity_bar import AGENTS, JOBS, PLAN, ActivityBar
 from deeppyro.tui.widgets.conversation import ConversationView
 from deeppyro.tui.widgets.plugin_slots import PluginStatusBar
 from deeppyro.tui.widgets.prompt_area import PromptArea
 from deeppyro.tui.widgets.status_bar import StatusBar
+from deeppyro.tui.widgets.turn_progress import TurnProgress
 
 RuntimeFactory = Callable[["DeepPyroApp"], Awaitable[Any]]
 
@@ -89,6 +96,7 @@ class DeepPyroApp(App[None]):
     # -- composition -----------------------------------------------------
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
+        yield ActivityBar()
         yield ConversationView()
         yield StatusBar()
         yield PluginStatusBar()
@@ -131,6 +139,8 @@ class DeepPyroApp(App[None]):
         self._bind_slots()
         self._update_splash()
         self._render_welcome()
+        self._refresh_activity()
+        self.set_interval(1.0, self._refresh_activity)
         self.refresh_status()
 
     def _bind_slots(self) -> None:
@@ -199,6 +209,8 @@ class DeepPyroApp(App[None]):
                 conversation.stream_text(str(event.get("text") or ""))
             elif kind == "thinking":
                 conversation.stream_thinking(str(event.get("text") or ""))
+            elif kind == "step":
+                conversation.begin_step(int(event.get("turn") or 0), int(event.get("step") or 0))
             elif kind == "tool_call":
                 conversation.add_tool_call(
                     str(event.get("callId") or ""),
@@ -214,7 +226,7 @@ class DeepPyroApp(App[None]):
             elif kind == "usage":
                 self._context_used = int(event.get("input") or 0)
             elif kind == "final":
-                conversation.finish_assistant(str(event.get("text") or ""))
+                conversation.finish_turn(str(event.get("text") or ""))
             elif kind == "error":
                 conversation.add_error(str(event.get("message") or "unknown error"))
             elif kind == "status":
@@ -222,6 +234,7 @@ class DeepPyroApp(App[None]):
             apply_conversation_slots(conversation, event, self._slots, context=build_slot_context(self))
         except Exception:  # noqa: BLE001, S110 - rendering must never kill a turn
             pass
+        self._refresh_activity()
         self.refresh_status()
 
     # -- input -----------------------------------------------------------
@@ -335,6 +348,8 @@ class DeepPyroApp(App[None]):
             return
         usage = runtime.session_usage()
         window = int(getattr(runtime, "context_window", 0) or 0)
+        context_reader = getattr(runtime, "context_tokens", None)
+        context_used = int(context_reader()) if callable(context_reader) else usage["input"]
         status.show(
             session_id=runtime.session_id,
             provider=runtime.provider_name,
@@ -346,6 +361,7 @@ class DeepPyroApp(App[None]):
             phase=self._phase,
             preset=self._current_preset(),
             approval=self._current_approval(),
+            context_tokens=context_used,
         )
         self.sub_title = f"{runtime.provider_name}/{runtime.model}"
         # Never steal focus from an overlay (splash, picker, approval modal).
@@ -359,6 +375,42 @@ class DeepPyroApp(App[None]):
         except Exception:  # noqa: BLE001 - composition not ready yet
             return
         bar.refresh_items(build_slot_context(self))
+
+    # -- activity bar ----------------------------------------------------
+    def _activity_state(self) -> Any:
+        """Refresh and return the current activity projection, if available."""
+        runtime = self.runtime
+        service = getattr(runtime, "activity", None) if runtime is not None else None
+        if service is None:
+            return None
+        try:
+            return service.refresh(getattr(runtime, "session", None))
+        except Exception:  # noqa: BLE001 - the bar is cosmetic chrome
+            return None
+
+    def _refresh_activity(self) -> None:
+        """Render the plan/jobs/agents strip; hidden when every segment is empty."""
+        state = self._activity_state()
+        if state is None:
+            return
+        try:
+            self.query_one(ActivityBar).update_state(state)
+        except Exception:  # noqa: BLE001, S110 - composition not ready yet
+            pass
+
+    @on(ActivityBar.SegmentClicked)
+    def _on_activity_segment(self, event: ActivityBar.SegmentClicked) -> None:
+        if event.segment == PLAN:
+            self.run_worker(self._open_plan(), group="panel")
+        elif event.segment == JOBS:
+            self.run_worker(self._open_jobs(), group="panel")
+        elif event.segment == AGENTS:
+            self.run_worker(self._open_team(), group="panel")
+
+    @on(TurnProgress.ThinkingRequested)
+    def _on_thinking_requested(self, event: TurnProgress.ThinkingRequested) -> None:
+        """Open the full-screen viewer when a collapsed progress line is clicked."""
+        self.push_screen(ThinkingScreen([event.reasoning]))
 
     # -- policy / approval / workspace commands --------------------------
     def _current_preset(self) -> str:
@@ -523,11 +575,18 @@ class DeepPyroApp(App[None]):
         except Exception as exc:  # noqa: BLE001 - a bad log must not brick the UI
             conversation.add_error(f"cannot derive session history: {exc}")
             return
+        reasoning_by_turn = reasoning_map(session)
+        turn_number = 0
         for message in messages:
             role = str(getattr(message, "role", "") or "")
             text = message.text() if hasattr(message, "text") else ""
             if role == "user":
+                turn_number += 1
                 conversation.add_user(text)
+                # Replay the collapsed reasoning summary for this turn once.
+                turn_reasoning = reasoning_by_turn.get(turn_number)
+                if turn_reasoning is not None:
+                    conversation.add_history_reasoning(turn_reasoning)
             elif role == "assistant" and text.strip():
                 conversation.stream_text(text)
                 conversation.finish_assistant(text)
@@ -858,6 +917,134 @@ class DeepPyroApp(App[None]):
         ]
         for line in lines:
             self.conversation.add_info(line)
+
+    async def _open_plan(self) -> None:
+        """Open the plan viewer with the current todo snapshot."""
+        state = self._activity_state()
+        todos = tuple(getattr(state, "todos", ()) or ())
+        if not todos:
+            self.conversation.add_info("no plan yet")
+            return
+        try:
+            await self.push_screen_wait(PlanScreen(todos))
+        except Exception:  # noqa: BLE001 - outside a worker there is no modal
+            self.conversation.add_info("plan: " + plan_summary(todos))
+
+    async def plan_command(self, argument: str = "") -> None:
+        """Open the plan viewer (/plan)."""
+        await self._open_plan()
+
+    def _job_rows(self) -> list[Any]:
+        """Background jobs from the activity projection, else the live service."""
+        state = self._activity_state()
+        rows = list(getattr(state, "jobs", ()) or ())
+        if rows:
+            return rows
+        jobs = getattr(self.runtime, "jobs", None) if self.runtime is not None else None
+        lister = getattr(jobs, "list", None)
+        if lister is None:
+            return []
+        try:
+            return list(lister())
+        except Exception:  # noqa: BLE001 - a broken registry must not crash the UI
+            return []
+
+    async def _open_jobs(self) -> None:
+        """Open the background-jobs panel with the current snapshot."""
+        rows = self._job_rows()
+        try:
+            await self.push_screen_wait(JobsPanelScreen(rows))
+        except Exception:  # noqa: BLE001 - outside a worker there is no modal
+            if not rows:
+                self.conversation.add_info("no background jobs")
+                return
+            for job in rows:
+                line = (
+                    f"{getattr(job, 'id', '?')}  {getattr(job, 'status', '?')}  {getattr(job, 'label', '')}"
+                )
+                self.conversation.add_info(line)
+
+    async def jobs_command(self, argument: str = "") -> None:
+        """Open the background-jobs panel (/jobs)."""
+        await self._open_jobs()
+
+    def _team_snapshot(self) -> tuple[list[Any], list[Any], str]:
+        """Members, tasks and team id from the team service, tolerating absence."""
+        team = getattr(self.runtime, "team", None) if self.runtime is not None else None
+        members: list[Any] = []
+        tasks: list[Any] = []
+        team_id = ""
+        if team is not None:
+            for getter_name, target in (("members", members), ("tasks", tasks)):
+                getter = getattr(team, getter_name, None)
+                if not callable(getter):
+                    continue
+                try:
+                    target.extend(getter())
+                except Exception:  # noqa: BLE001, S110 - a broken store must not crash the UI
+                    pass
+            team_id = str(getattr(team, "team_id", "") or "")
+        return members, tasks, team_id
+
+    async def _open_team(self, argument: str = "") -> None:
+        """Open the team roster or the shared task board (/team [board])."""
+        members, tasks, team_id = self._team_snapshot()
+        spec = argument.strip().lower()
+        if spec in ("board", "tasks", "task-board"):
+            try:
+                await self.push_screen_wait(TaskBoardScreen(tasks))
+            except Exception:  # noqa: BLE001 - outside a worker there is no modal
+                self.conversation.add_info(f"task board: {len(tasks)} task(s)")
+            return
+        if spec not in ("", "members", "team"):
+            self.conversation.add_error("usage: /team [board]")
+            return
+        try:
+            await self.push_screen_wait(TeamPanelScreen(members, tasks, team_id))
+        except Exception:  # noqa: BLE001 - outside a worker there is no modal
+            if not members and not tasks:
+                self.conversation.add_info("no team members or tasks yet")
+                return
+            self.conversation.add_info(f"team: {len(members)} member(s) · {len(tasks)} task(s)")
+
+    async def team_command(self, argument: str = "") -> None:
+        """Open the team panel, or the task board with /team board (/team)."""
+        await self._open_team(argument)
+
+    async def thinking_command(self, argument: str) -> None:
+        """Open the full-screen reasoning viewer (/thinking [turns])."""
+        session = getattr(self.runtime, "session", None)
+        turns: list[Any] = []
+        if session is not None:
+            spec = argument.strip().lower()
+            if spec in ("", "current"):
+                turns = list(reasoning_from_session(session, last_turns=1))
+            elif spec in ("all", "*"):
+                turns = list(reasoning_from_session(session, last_turns=None))
+            else:
+                try:
+                    count = int(spec)
+                except ValueError:
+                    self.conversation.add_error("usage: /thinking [number of turns|all]")
+                    return
+                if count <= 0:
+                    self.conversation.add_error("usage: /thinking [number of turns|all]")
+                    return
+                turns = list(reasoning_from_session(session, last_turns=count))
+        if not turns:
+            current = self.conversation.current_reasoning
+            if current is not None and current.has_reasoning:
+                turns = [current]
+        if not turns:
+            self.conversation.add_info("no reasoning recorded for this session yet")
+            return
+        try:
+            await self.push_screen_wait(ThinkingScreen(turns))
+        except Exception:  # noqa: BLE001 - outside a worker there is no modal
+            steps = sum(len(turn.steps) for turn in turns)
+            self.conversation.add_info(
+                f"reasoning available: {len(turns)} turn(s), {steps} step(s) (use /thinking)"
+            )
 
     async def compact(self) -> None:
         if self._working:

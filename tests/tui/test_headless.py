@@ -64,14 +64,37 @@ class FakeAgents:
         return self.agent
 
 
+class FakeJobs:
+    def __init__(self) -> None:
+        self.owners: list[str] = []
+
+    async def cancel_owner(self, owner: str) -> int:
+        self.owners.append(owner)
+        return 0
+
+
+class FakeTeam:
+    def __init__(self) -> None:
+        self.bound: list[Any] = []
+        self.closed = False
+
+    def bind_session(self, session: Any) -> None:
+        self.bound.append(session)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 class FakeRuntime:
-    def __init__(self, agent: FakeAgent) -> None:
+    def __init__(self, agent: FakeAgent, *, jobs: Any = None, team: Any = None) -> None:
         self.cwd = Path("D:/work")
         self.provider_name = "fake"
         self.model = "fake-1"
         self.context_window = 8192
         self.store = FakeStore()
         self.agents = FakeAgents(agent)
+        self.jobs = jobs
+        self.team = team
         self.closed = False
 
     def create_agent(self, session: Any, sink: Any, *, max_steps: int | None = None) -> FakeAgent:
@@ -227,6 +250,27 @@ def test_create_agent_passes_the_resolved_model() -> None:
     assert agents.options_seen[-1]["context_window"] == 8192
     assert agents.options_seen[-1]["max_steps"] == 7
     assert agents.created[-1]["cwd"] == str(Path("D:/work"))
+
+
+def test_run_once_cancels_background_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    agent = FakeAgent([{"type": "final", "text": "done"}])
+    jobs = FakeJobs()
+    runtime = FakeRuntime(agent, jobs=jobs)
+    patch_runtime(monkeypatch, runtime)
+    console, _stream = make_console()
+    assert headless.run_once("question", console=console) == headless.EXIT_OK
+    assert jobs.owners == [FakeSession.session_id]
+
+
+def test_run_once_binds_the_team_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    agent = FakeAgent([{"type": "final", "text": "done"}])
+    team = FakeTeam()
+    runtime = FakeRuntime(agent, team=team)
+    patch_runtime(monkeypatch, runtime)
+    console, _stream = make_console()
+    assert headless.run_once("question", console=console) == headless.EXIT_OK
+    assert len(team.bound) == 1
+    assert getattr(team.bound[0], "session_id", "") == FakeSession.session_id
 
 
 def test_run_once_streams_a_turn(monkeypatch: pytest.MonkeyPatch) -> None:

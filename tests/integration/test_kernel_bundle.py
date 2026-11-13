@@ -43,7 +43,7 @@ async def app(tmp_path: Path):
 
 
 async def test_bundle_services_are_available(app) -> None:
-    for name in ("llm", "sandbox", "tools"):
+    for name in ("llm", "sandbox", "tools", "jobs"):
         assert app.has_service(name), name
     assert not app.has_service("sessions")
     assert not app.has_service("agents")
@@ -69,6 +69,7 @@ async def test_tools_service_builds_registry_for_workspace(app, tmp_path: Path) 
     registry = app.service("tools").registry_for(tmp_path)
     names = set(registry.names()) if hasattr(registry, "names") else set()
     assert "read" in names or "read_file" in names
+    assert "job_list" in names
     # a second workspace gets independent instances
     other = app.service("tools").registry_for(tmp_path / "other")
     assert other is not registry

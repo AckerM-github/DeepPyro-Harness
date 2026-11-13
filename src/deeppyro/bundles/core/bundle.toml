@@ -38,6 +38,10 @@ id = "tools-builtin"
 plugin = "deeppyro.builtin.tools:BuiltinToolsPlugin"
 
 [[plugins]]
+id = "jobs"
+plugin = "deeppyro.builtin.jobs:JobsPlugin"
+
+[[plugins]]
 id = "plugin-tools"
 plugin = "deeppyro.tools.builtin.plugin_tools:PluginToolsPlugin"
 
@@ -64,6 +68,14 @@ plugin = "deeppyro.builtin.commands_builtin:CommandsBuiltinPlugin"
 [[plugins]]
 id = "agents"
 plugin = "deeppyro.builtin.agents:AgentsPlugin"
+
+[[plugins]]
+id = "team"
+plugin = "deeppyro.builtin.team:TeamPlugin"
+
+[[plugins]]
+id = "activity"
+plugin = "deeppyro.builtin.activity:ActivityPlugin"
 
 [[plugins]]
 id = "slots"

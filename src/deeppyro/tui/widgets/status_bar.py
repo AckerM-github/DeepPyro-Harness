@@ -35,6 +35,7 @@ class StatusBar(Static):
         phase: str,
         preset: str = "",
         approval: str = "",
+        context_tokens: int | None = None,
     ) -> None:
         line = Text()
         line.append("session ", style="dim")
@@ -48,7 +49,7 @@ class StatusBar(Static):
         if cached_tokens:
             line.append(" ⚡", style="dim")
             line.append(format_tokens(cached_tokens), style="#9ece6a")
-        pct = context_percent(input_tokens, context_window)
+        pct = context_percent(input_tokens if context_tokens is None else context_tokens, context_window)
         line.append(" · ctx ", style="dim")
         line.append(f"{pct}%", style="#e0af68" if pct >= 75 else "dim")
         if preset or approval:

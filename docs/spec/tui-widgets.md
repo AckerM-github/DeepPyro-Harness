@@ -1,25 +1,33 @@
-# TUI 对话渲染与状态栏规格（widgets）
+# TUI 对话渲染、活动栏与状态栏规格（widgets）
 
-状态：task-6 已实现；M0 截图问题修复、状态栏字段精简、策略/审批/工作目录改走 slash 命令（/policy /approval /cwd）后已移除控制栏，视觉验证通过。
+状态：M1/M2/M3 已实现；对话流按 user turn 组织，思考改为每 turn 一个 TurnProgress + 全屏查看器，
+新增活动栏、计划/任务/团队面板；M0 截图问题修复、状态栏字段精简、设置改走 slash 命令（/policy
+/approval /cwd）后已移除控制栏，视觉验证通过。
 
-本文件描述 `src/deeppyro/tui/widgets/` 中对话流、思考块、工具卡与状态栏的**渲染语义**，
-以及从 fixtures 事件与终端截图逆向出的取舍。总体形态、键位与启动流程见 `docs/spec/tui.md`；
-跨模块事件字段以 `docs/spec/INTERFACES.md` §7 为准。
+本文件描述 `src/deeppyro/tui/widgets/` 与相关 screens 的**渲染语义**，以及从 fixtures 事件与终端
+截图逆向出的取舍。总体形态、键位与启动流程见 `docs/spec/tui.md`；跨模块事件字段以
+`docs/spec/INTERFACES.md` §7 为准。
 
 ## 1. 负责文件
 
 | 文件 | 职责 |
 | --- | --- |
-| `widgets/conversation.py` | `ConversationView`：user/assistant/system 块、流式文本、同 turn 标签去重、工具卡挂载 |
-| `widgets/thinking.py` | `ThinkingBlock`：思考流式尾部、结束折叠、点击展开 |
+| `widgets/conversation.py` | `ConversationView`：user/assistant/system 块、流式文本、同 turn 标签去重、工具卡挂载、每 turn 一个 TurnProgress |
+| `widgets/turn_progress.py` | `TurnProgress`：单行思考进度（当前 step 最新一句）、结束摘要、点击打开查看器 |
+| `screens/thinking.py` | `ThinkingScreen`：全屏按 Turn/Step 查看完整 reasoning |
+| `tui/history.py` | `ReasoningStep`/`TurnReasoning`/`reasoning_from_session`/`reasoning_map`：从 durable 日志重建 reasoning |
+| `widgets/activity_bar.py` | `ActivityBar`：plan/jobs/agents 三段活动栏（空段隐藏，点击发事件） |
+| `screens/plan.py` | `PlanScreen`：待办按 in_progress / pending / completed 分组 |
+| `screens/jobs.py` / `screens/team.py` | `JobsPanelScreen` / `TeamPanelScreen` / `TaskBoardScreen`：只读快照 |
 | `widgets/tool_card.py` | `ToolCallCard`：调用行摘要、结果预览、错误着色、write/edit diff 推断 |
-| `widgets/status_bar.py` | `StatusBar`：单行状态（session/model/tokens/ctx/phase） |
-| `theme.tcss` | 调色板、user/assistant/tool/thinking/状态栏样式、Markdown 边距覆盖 |
-| `tests/tui/test_conversation.py`、`test_tool_card.py`、`test_status_bar.py` | 组件与纯函数回归测试 |
+| `widgets/status_bar.py` | `StatusBar`：单行状态（session/model/tokens/ctx/policy/phase） |
+| `theme.tcss` | 调色板、user/assistant/tool/活动栏/状态栏样式、Markdown 边距覆盖 |
+| `tests/tui/` | test_conversation / test_tool_card / test_status_bar / test_turn_progress / test_thinking_screen / test_activity_bar / test_plan_screen / test_jobs_screen / test_team_screen / test_history |
 
 公开 API 兼容性是硬约束：`ConversationView` 的 `add_user/add_info/add_error/stream_text/`
-`stream_thinking/finish_assistant/add_tool_call/add_tool_result/clear` 方法名、参数与语义保持不变
-（`app.py` 直接调用）；`StatusBar.show()` 的关键字参数已精简为
+`stream_thinking/finish_assistant/add_tool_call/add_tool_result/clear` 方法名与参数保持不变（`app.py`
+直接调用）；在此基础上新增 `begin_step(turn, step)`、`finish_turn(final_text)`、`current_reasoning`、
+`progress`、`add_history_reasoning(TurnReasoning)`。`StatusBar.show()` 的关键字参数已精简为
 `session_id/provider/model/input_tokens/output_tokens/cached_tokens/context_window/phase`
 （`cwd` 与 `approval` 改由 slash 命令 /cwd 与 /approval 管理，不再进状态栏）。只做了新增（如 `ThinkingBlock` 的只读属性、`ToolCallCard.summary`）。
 
@@ -30,8 +38,10 @@
 | 事件 `type` | 字段（实际使用） | 渲染 |
 | --- | --- | --- |
 | `text` | `text` | 追加到当前 assistant 块，Markdown 增量预览 |
-| `thinking` | `text` | 追加到当前 assistant 块的 `ThinkingBlock` |
-| `tool_call` | `callId`、`name`、`arguments`（JSON 字符串） | 新建 `ToolCallCard`，按 `callId` 登记 |
+| `step` | `turn`、`step` | `ConversationView.begin_step`：同一 user turn 复用同一个 `TurnProgress`，切到新 step（UI-only hint，紧跟 durable `step/start`） |
+| `thinking` | `text` | 追加到当前 turn 的 `TurnProgress`（单行只显示当前 step 最新一句） |
+| `final` | `text` | `finish_turn`：定稿 assistant 文本并结束 `TurnProgress` |
+| `tool_call` | `callId`、`name`、`arguments`（JSON 字符串） | 新建 `ToolCallCard`，按 `callId` 登记（只收尾 assistant，不结束 progress） |
 | `tool_result` | `callId`、`isError`、`text` | 回填对应卡片；找不到调用时建 fallback 卡片 `tool` |
 | `final` | `text` | 用最终文本覆盖增量文本并收尾 |
 | `error` | `message` | `add_error` 红色系统行 |
@@ -47,9 +57,10 @@
 
 - user 块：`Vertical` 内含 `You` 标签与正文 `Static`；左侧 `thick $accent` 竖条、`$surface-2`
   背景、宽度 `1fr` 自动换行。`add_user` 同时把“本 turn 是否已有 assistant 块”重置为 False。
-- assistant 块：`AssistantBlock(show_label=...)`，包含可选 `DeepPyro` 标签、`ThinkingBlock`、
-  `Markdown`。首个块懒挂载；流式文本 60ms 节流（`STREAM_REFRESH_SECONDS`），未挂载时先累积，
-  `on_mount` 时强制刷新，因此“事件早于 mount”不会丢字或崩溃。
+- assistant 块：`AssistantBlock(show_label=...)` 只含可选 `DeepPyro` 标签与 `Markdown`；思考由独立的
+  `TurnProgress` 承载，不再嵌在 assistant 块内。首个块懒挂载；流式文本 60ms 节流
+  （`STREAM_REFRESH_SECONDS`），未挂载时先累积，`on_mount` 时强制刷新，因此“事件早于 mount”不会
+  丢字或崩溃。
 - 标签去重：同一 user turn 内只有一个 `DeepPyro` 标签。tool step 之间的过渡块、`final` 后新建的块
   都不再显示标签；下一次 `add_user`（或 `clear`）后恢复。工具调用/结果会先收尾当前 assistant 块，
   保证卡片顺序 = 事件顺序。
@@ -58,19 +69,20 @@
   因此历史 assistant 消息也遵守同样的标签规则。
 - `add_info` 为 dim 系统行；`add_error` 为红色 `error:` 行。
 
-## 4. 思考块（ThinkingBlock）
+## 4. 思考进度（TurnProgress）与查看器
 
-- 单行滚动 ticker：流式期只显示“最新一句”（`split_sentences` 按 `。！？!?；;` 与换行切句，
-  `latest_sentence` 取最后一句），前缀 `✻ `，dim italic；单行上限 `STREAMING_LINE_CHARS = 120`，
-  超长时保留尾部并以 `…` 开头，保证滚动感。
-- 答句开始时自动折叠：`AssistantBlock.append_text` 首次收到正文即调 `finish()`；
-  `finish()` 幂等，turn 结束/工具调用前也会调用。
-- 折叠行：`· thinking · N sentences  (click to expand)`（N = 句数，单句用单数）；
-  展开后提示变为 `(click to collapse)`。
-- 交互：折叠状态下点击展开，再点收起；展开上限 `EXPANDED_LINES = 40` / `EXPANDED_CHARS = 4000`
-  （`compact_text`），避免超长 reasoning 卡死布局。
-- 没有内容时 `display = False`，不占行。
-- 历史回放不重放 thinking（`_render_history` 只处理 user/assistant/tool 文本），见 `tui.md` §10。
+- 每个 **user turn** 只有一个 `TurnProgress`，而不是每个 assistant step 一个；`begin_step(turn, step)`
+  在 turn 变化或上一条已结束时新建，否则复用并切换 step。
+- 流式行：`✻ ` + 当前 step 的最新完整句（按句末标点/换行切句），单行上限 120 字符，超长保留尾部
+  并加 `…`；dim italic，保证“只展示当前步骤”的滚动感。
+- 结束行：`finish()` 幂等，折叠为 `· thinking · N steps · M sentences  (click to view)`（单复数）。
+- 交互：点击有内容的结束行发 `TurnProgress.ThinkingRequested(reasoning)`；app 打开
+  `ThinkingScreen([reasoning])`，按 Turn/Step 显示完整文本（markup=False，可滚动）。
+- 没有 reasoning 时 `display = False`；turn 内 assistant 正文与工具卡不会结束 progress，只有 `final`
+  或下一条 user 消息会收尾。
+- 历史回放：`reasoning_map(session)` 从 `turn/start` + `assistant/message` 的 reasoning part 重建每个
+  turn，`_render_history` 在 user 消息后 `add_history_reasoning` 挂一条已完成的行，可点击查看。
+- 完整 reasoning 已由 AgentSession 持久化在 `assistant/message`，查看器不新增存储格式。
 
 ## 5. 工具卡（ToolCallCard）
 
@@ -101,19 +113,36 @@
 **限制**：diff 由调用参数推断，不是真实文件 diff（未读文件、未做上下文合并）；多段 edit 只展示
 首尾片段；无法解析参数时只有普通结果预览。这些都在卡片上以“摘要”而非“权威 diff”呈现。
 
-## 6. 状态栏（StatusBar）
+## 6. 活动栏与任务/团队面板
+
+- `ActivityBar` 是纯视图：`update_state(ActivityState)` 是唯一入口，state 来自 activity 服务对
+  `todo/write`、`job/registered|settled`、`team/member`、`subagent/descriptor|catalog`、`plan/mode`
+  的投影。三段为空则整条隐藏；任一段为空则隐藏该段。
+- 点击子段发 `ActivityBar.SegmentClicked(segment)`；app 映射 plan→`PlanScreen`、jobs→`JobsPanelScreen`、
+  agents→`TeamPanelScreen`。
+- `PlanScreen` 按 in_progress → pending → completed 分组（glyph ◐/☐/✓），空态 `No plan yet.`。
+- `JobsPanelScreen` 列 ID/Kind/Status/Label/Started/Finished；running 绿、failed 红、cancelled/killed 黄；
+  空态 `No background jobs.`。
+- `TeamPanelScreen` 两张表（成员、任务）；`TaskBoardScreen` 单表并稳定排序 pending → in_progress →
+  completed；两者接受 service 对象/dict/activity 对象，缺字段容错。
+- 活动栏由 app 的 1 秒定时器刷新；事件处理末尾也会刷新。
+
+## 7. 状态栏（StatusBar）
 
 单行字段顺序：`session <短id> · <provider>/<model> · ↑输入 ↓输出 [⚡缓存] · ctx N% · phase`。
 
 - 短 id：去掉 `session-` 前缀后前 8 位（fixtures 的 id 是 `session-<uuid>`，字面前 8 位无区分度）。
 - model：`MAX_MODEL_CHARS = 40`，超长截断加 `…`；provider 为空时只显示 model。
-- ctx：`round(100 * input / context_window)`，>= 75% 用黄色；token 数量 k/M 缩写。
+- ctx：`round(100 * context_tokens / context_window)`，>= 75% 用黄色；token 数量 k/M 缩写。
+  `context_tokens` 是最近一次模型请求的 `inputTokens`（`Session.context_tokens()`），不是会话累计；
+  `input_tokens` 仍是累计值，只用于 ↑ 显示。
 - 颜色：session 蓝、model 青、token 绿、phase 非 idle 蓝；其余 dim。
 - 行级 `text-wrap: nowrap` + ellipsis，保证永远一行；不换行比截断选项更可预期。
-- `show()` 关键字参数：`session_id/provider/model/input_tokens/output_tokens/cached_tokens/context_window/phase`；
+- `show()` 关键字参数：`session_id/provider/model/input_tokens/output_tokens/cached_tokens/context_window/phase`，
+  以及可选的 `context_tokens`（缺省回退 `input_tokens`）；
   `cwd` 与 `approval` 由 slash 命令（/cwd、/approval）管理，不占状态栏空间（见 `tui.md` §8）。
 
-## 7. 主题与 CSS 取舍
+## 8. 主题与 CSS 取舍
 
 调色板（唯一来源 `theme.tcss`，widget 的 rich Text 里只允许引用同一组十六进制值）：
 
@@ -135,7 +164,7 @@
   一条亮蓝色粗边。
 - `#status-bar` 固定 1 行、`padding: 0 2`、nowrap + ellipsis。
 
-## 8. 视觉验证
+## 9. 视觉验证
 
 - 预览脚本：`D:/dshworkspace/.dsh-tmp/tui_preview_v2.py`（假 runtime，固定 local 模型与假工具流，
   在创建 App 前 `os.environ.pop("NO_COLOR")`；否则 Textual 会去色）。
@@ -146,23 +175,25 @@
   状态栏单行且长路径压缩。
 - SVG 由字体渲染，个别间距（如 user 左边条的分段）与真实终端不同；以终端为准，截图只用于布局回归。
 
-## 9. 测试
+## 10. 测试
 
 ```
 uv run pytest tests/tui -q
 uv run ruff check src/deeppyro/tui tests/tui
 ```
 
-`tests/tui/` 用 `App.run_test(size=...)` 挂最小 host（`ConversationHost`/`StatusHost`），不启动
-kernel；覆盖：挂载前流式不丢字、同 turn 单标签、`clear` 重置、thinking 尾部行数/折叠/点击展开、
-工具卡摘要/结果清洗/错误/diff/孤儿结果 fallback、状态栏字段/长 model/ctx 告警。
+`tests/tui/` 用 `App.run_test(size=...)` 挂最小 host（`ConversationHost`/`StatusHost`）或直接单测 widget，
+不启动 kernel；覆盖：挂载前流式不丢字、同 turn 单标签、`clear` 重置、每 turn 一个 progress、step
+切换、最新一句/长句截断、结束摘要与点击打开查看器、历史 reasoning 重放、工具卡摘要/结果清洗/错误/diff/
+孤儿结果 fallback、状态栏字段/长 model/ctx 告警、活动栏空段隐藏与点击事件、计划分组、任务/团队空态与
+排序。
 
-## 10. 已知限制与风险
+## 11. 已知限制与风险
 
 1. diff 是“参数推断”而非真实文件 diff；不能保证与实际落盘内容一致。
 2. 同 turn 单标签是启发式：以 `add_user` 为 turn 边界；若 agent 在同一 user 消息内产生多个
    独立回答块（例如多次 final），只有第一个带标签。
-3. 历史回放不重放 thinking/usage 明细，因此展开状态无法在 /resume 后恢复。
+3. 历史回放会重放 reasoning 摘要，但展开状态不持久化（/resume 后默认折叠）；usage 明细不重放。
 4. 状态栏里的 rich Text 颜色是十六进制常量，不能引用 CSS 变量；改主题需同步改
    `status_bar.py` 与 `theme.tcss`。
 5. 工具参数若非合法 JSON 且不是 Python 字面量，只显示原文摘要，不显示 diff。

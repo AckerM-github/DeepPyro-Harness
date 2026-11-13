@@ -7,6 +7,11 @@ event loop, so all widget mutation stays single-threaded.
 Assistant replies are grouped per user turn: the first assistant block of a turn
 carries the "DeepPyro" label, later blocks produced by tool steps do not, so a
 multi-step turn reads as one answer instead of repeated headers.
+
+Reasoning is rendered by exactly one TurnProgress line per user turn. The line
+shows the newest sentence of the current step while the model thinks and
+collapses to a one-line summary at the end of the turn; clicking it (or using
+/thinking) opens the full-screen viewer.
 """
 
 from __future__ import annotations
@@ -18,14 +23,15 @@ from textual.app import ComposeResult
 from textual.containers import ScrollableContainer, Vertical
 from textual.widgets import Markdown, Static
 
-from deeppyro.tui.widgets.thinking import ThinkingBlock
+from deeppyro.tui.history import TurnReasoning
 from deeppyro.tui.widgets.tool_card import ToolCallCard
+from deeppyro.tui.widgets.turn_progress import TurnProgress
 
 STREAM_REFRESH_SECONDS = 0.06
 
 
 class AssistantBlock(Vertical):
-    """One assistant reply: optional reasoning, then streaming markdown."""
+    """One assistant reply: optional label, then streaming markdown."""
 
     def __init__(self, *, show_label: bool = True) -> None:
         super().__init__(classes="assistant-block")
@@ -35,12 +41,10 @@ class AssistantBlock(Vertical):
         self._finished = False
         self._mounted = False
         self._markdown: Markdown | None = None
-        self._thinking = ThinkingBlock()
 
     def compose(self) -> ComposeResult:
         if self._show_label:
             yield Static("DeepPyro", classes="block-label block-label-assistant")
-        yield self._thinking
         yield Markdown("", classes="assistant-markdown")
 
     def on_mount(self) -> None:
@@ -50,17 +54,9 @@ class AssistantBlock(Vertical):
         self._refresh_preview(force=True)
 
     # -- streaming ------------------------------------------------------
-    def append_thinking(self, chunk: str) -> None:
-        if not chunk:
-            return
-        self._thinking.append(chunk)
-
     def append_text(self, chunk: str) -> None:
         if not chunk:
             return
-        # The moment the answer starts, the reasoning ticker collapses into its
-        # one-line summary so the answer itself gets the space.
-        self._thinking.finish()
         self._text += chunk
         if self._mounted:
             self._refresh_preview()
@@ -68,7 +64,6 @@ class AssistantBlock(Vertical):
     def finish(self, final_text: str | None = None) -> None:
         if final_text:
             self._text = final_text
-        self._thinking.finish()
         self._finished = True
         self._refresh_preview(force=True)
 
@@ -100,11 +95,14 @@ class ConversationView(ScrollableContainer):
     def __init__(self) -> None:
         super().__init__(id="conversation")
         self._assistant: AssistantBlock | None = None
+        self._progress: TurnProgress | None = None
+        self._progress_turn = 0
         self._tool_cards: dict[str, ToolCallCard] = {}
         self._turn_has_assistant = False
 
     # -- user / info ----------------------------------------------------
     def add_user(self, text: str) -> None:
+        self._finish_progress()
         block = Vertical(
             Static("You", classes="block-label"),
             Static(Text(text), classes="user-text"),
@@ -122,6 +120,57 @@ class ConversationView(ScrollableContainer):
         self.mount(Static(Text("error: " + text, style="bold red"), classes="system-block system-error"))
         self._scroll_to_end()
 
+    # -- progress -------------------------------------------------------
+    def begin_step(self, turn: int, step: int) -> None:
+        """Start a new assistant step; one progress line is kept per user turn."""
+        progress = self._progress
+        if progress is None or progress.turn != turn or progress.finished:
+            if progress is not None:
+                progress.finish()
+            progress = self._new_progress(turn)
+        self._progress_turn = turn
+        progress.begin_step(step)
+        self._scroll_to_end()
+
+    def stream_thinking(self, chunk: str) -> None:
+        if not chunk:
+            return
+        progress = self._progress
+        if progress is None or progress.finished:
+            progress = self._new_progress(self._progress_turn or 1)
+        progress.append(chunk)
+        self._scroll_to_end()
+
+    def _new_progress(self, turn: int, reasoning: TurnReasoning | None = None) -> TurnProgress:
+        progress = TurnProgress(turn=turn, reasoning=reasoning)
+        self._progress = progress
+        self._progress_turn = turn
+        self.mount(progress)
+        return progress
+
+    def _finish_progress(self) -> None:
+        progress = self._progress
+        if progress is None:
+            return
+        progress.finish()
+        self._progress = None
+
+    def finish_turn(self, final_text: str | None = None) -> None:
+        """Close the assistant answer and the turn progress line."""
+        self.finish_assistant(final_text)
+        self._finish_progress()
+
+    @property
+    def current_reasoning(self) -> TurnReasoning | None:
+        """Reasoning accumulated for the current turn, if any."""
+        progress = self._progress
+        return None if progress is None else progress.reasoning
+
+    @property
+    def progress(self) -> TurnProgress | None:
+        """The live progress line of the current turn, if any."""
+        return self._progress
+
     # -- assistant ------------------------------------------------------
     def _ensure_assistant(self) -> AssistantBlock:
         if self._assistant is None:
@@ -133,10 +182,6 @@ class ConversationView(ScrollableContainer):
 
     def stream_text(self, chunk: str) -> None:
         self._ensure_assistant().append_text(chunk)
-        self._scroll_to_end()
-
-    def stream_thinking(self, chunk: str) -> None:
-        self._ensure_assistant().append_thinking(chunk)
         self._scroll_to_end()
 
     def finish_assistant(self, final_text: str | None = None) -> None:
@@ -169,10 +214,21 @@ class ConversationView(ScrollableContainer):
         card.set_result(text, is_error)
         self._scroll_to_end()
 
+    # -- history --------------------------------------------------------
+    def add_history_reasoning(self, reasoning: TurnReasoning) -> None:
+        """Render a finished reasoning line while replaying a session."""
+        self._finish_progress()
+        progress = TurnProgress(turn=reasoning.turn, reasoning=reasoning)
+        progress.finish()
+        self.mount(progress)
+        self._scroll_to_end()
+
     # -- lifecycle ------------------------------------------------------
     def clear(self) -> None:
         self.remove_children()
         self._assistant = None
+        self._progress = None
+        self._progress_turn = 0
         self._tool_cards.clear()
         self._turn_has_assistant = False
 

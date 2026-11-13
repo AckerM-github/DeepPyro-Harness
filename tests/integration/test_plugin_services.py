@@ -11,9 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from deeppyro.agent import AgentOptions, AgentSession
+from deeppyro.builtin.activity import ActivityService
 from deeppyro.config import Config, ModelConfig, ProviderConfig
+from deeppyro.jobs import JobsService
 from deeppyro.kernel import boot
 from deeppyro.session import SessionStore
+from deeppyro.team.manager import TeamService
 from tests.integration.fake_provider import Response, ScriptedProvider, tool_response
 
 SLOTS_SOURCE = 'from deeppyro.api import Plugin\n\n\nclass DemoslotsPlugin(Plugin):\n    plugin_id = "demo-slots"\n    version = "0.1.0"\n    inject = ["slots"]\n\n    def setup(self, ctx, config):\n        registry = ctx.service("slots")\n        registry.add_status_item(lambda context: "demo: on", id="demo-status", plugin_id="demo-slots")\n        registry.add_panel("Demo panel", lambda context: None, id="demo-panel", plugin_id="demo-slots")\n'
@@ -70,6 +73,32 @@ async def test_plugin_tools_run_with_kernel_services(tmp_path: Path) -> None:
         text = message["content"][0]["text"]
         assert "plugin_manager" in text
         assert "slots" in text
+    finally:
+        await app.stop()
+
+
+async def test_runtime_services_expose_manager_objects(tmp_path: Path) -> None:
+    """The service registry must expose managers, not the plugin wrappers.
+
+    Regression: JobsPlugin used to be a cordis Service, so service("jobs")
+    returned the plugin object (which has no start/list) and every job tool
+    failed with "'JobsPlugin' object has no attribute 'start'".
+    """
+
+    app = await boot(_config())
+    try:
+        jobs = app.service("jobs")
+        team = app.service("team")
+        activity = app.service("activity")
+        assert isinstance(jobs, JobsService)
+        assert callable(jobs.start) and callable(jobs.list)
+        assert isinstance(team, TeamService)
+        assert callable(team.spawn) and callable(team.tasks)
+        assert isinstance(activity, ActivityService)
+        assert callable(activity.refresh)
+        registry = app.service("tools").registry_for(tmp_path)
+        assert "job_list" in registry
+        assert "team_task_list" in registry
     finally:
         await app.stop()
 

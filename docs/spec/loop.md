@@ -136,6 +136,7 @@ Event shapes are the frozen ones from INTERFACES §7:
 
 ```text
 {"type": "session", "sessionId"}
+{"type": "step", "turn", "step"}
 {"type": "status", "phase": "thinking" | "tool" | "done"}
 {"type": "text", "text"}
 {"type": "thinking", "text"}
@@ -148,7 +149,10 @@ Event shapes are the frozen ones from INTERFACES §7:
 
 Ordering rules implemented here:
 
-* `session` is a frontend event: the CLI emits it once before the first `turn/start`; `AgentSession` never emits it, so JSON consumers see it exactly once.
+* `step` is a UI-only hint emitted immediately after the `step/start` record and before the
+  model stream; the durable `step/start` record remains the only step bookkeeping.
+* `session` is a frontend event: the headless runner emits it once before the first
+  `turn/start`; `AgentSession` never emits it, so JSON consumers see it exactly once.
 * `status thinking` is emitted after the first-step preamble records and before compaction /
   the provider request; `status tool` after the assistant record and before the first
   `tool/call`.

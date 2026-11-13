@@ -82,6 +82,20 @@ async def test_show_omits_policy_when_not_given() -> None:
     assert "ask" not in text
 
 
+async def test_show_uses_latest_request_for_context_percent() -> None:
+    app = StatusHost()
+    async with app.run_test(size=(120, 10)) as pilot:
+        await pilot.pause()
+        status = app.query_one(StatusBar)
+        # Cumulative usage is large because a turn has many steps, but the
+        # live context is only the latest request.
+        show(status, input_tokens=40_000, context_tokens=6_000, context_window=32_768)
+        await pilot.pause()
+        text = rendered(status)
+    assert "ctx 18%" in text
+    assert "40.0k" in text
+
+
 async def test_show_warns_when_context_is_nearly_full() -> None:
     app = StatusHost()
     async with app.run_test(size=(120, 10)) as pilot:

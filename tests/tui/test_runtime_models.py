@@ -228,6 +228,45 @@ def test_resolve_model_does_not_leak_the_configured_model_across_providers() -> 
         _resolve_model(cfg, "deepseek", model="local-model")
 
 
+class FakeTeam:
+    def __init__(self) -> None:
+        self.configures: list[dict[str, Any]] = []
+        self.bound: list[Any] = []
+        self.closed = False
+
+    def configure(self, **kwargs: Any) -> None:
+        self.configures.append(kwargs)
+
+    def bind_session(self, session: Any) -> None:
+        self.bound.append(session)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def test_attach_configures_and_binds_the_team_service() -> None:
+    runtime, _, _ = make_runtime()
+    team = FakeTeam()
+    runtime.team = team
+    session = FakeSession()
+    await runtime._attach(session)
+    assert len(team.configures) == 1
+    configure = team.configures[0]
+    assert configure["cwd"] == Path("D:/work")
+    assert configure["model"] == "local-model"
+    assert configure["context_window"] == 32768
+    assert configure["preset"] == "default"
+    assert team.bound == [session]
+
+
+async def test_close_cancels_jobs_and_closes_the_team() -> None:
+    runtime, _, _ = make_runtime()
+    team = FakeTeam()
+    runtime.team = team
+    await runtime.close()
+    assert team.closed is True
+
+
 def test_recorded_model_selection_reads_the_last_record() -> None:
     session = FakeSession()
     session.records.extend(

@@ -8,8 +8,9 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
 - 产品形态：**只有一套终端前端** —— Textual 全屏 TUI（`dpyro`，唯一交互形态）+
   headless 一次性模式（`dpyro --headless "prompt"`，支持 `--json` NDJSON，供脚本/CI）。
   不做 Web UI。
-- 启动页是 FIGlet `ansi_shadow` 像素字标（火色 / 冰蓝渐变、逐行揭示）；思考过程用单行滚动 ticker
-  实时展示最新一句，回答一开始就折叠成一行，点击可展开全文。
+- 启动页是 FIGlet `ansi_shadow` 像素字标（火色 / 冰蓝渐变、逐行揭示）；思考过程按用户 turn
+  逐 step 实时展示当前最新一句，turn 结束折叠为一行摘要，点击或 `/thinking` 打开全屏按 step 查看
+  完整 reasoning（来自已落盘的 assistant/message）。
 - 会话设置全部走 slash 命令：`/policy` 切权限预设（read-only / workspace-write /
   danger-full-access）、`/approval` 切审批策略（ask / never / always）、`/cwd` 切工作目录，
   切换立即作用于当前会话（并写入 `permission/preset`、`approval/policy`、
@@ -21,10 +22,15 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   按 id 覆盖 config（整体替换）、`before/after` 插入、`disabled/critical/isolate/intercept`；
   还支持 group 行（`group = true` + 子行）、`include` 外部行文件、`[bundle].requires`
   依赖拓扑排序，以及 active/failed/disabled/overridden/restart-required 活状态。
-  core bundle 只有 17 行（kernel 运行时 + LLM、会话、沙箱、工具、提示词、命令、agent、
-  插件管理、设置、inspect、TUI 槽位），其余能力都由插件贡献。插件可注册工具、提示词段、
+  core bundle 只有 20 行（kernel 运行时 + LLM、会话、沙箱、工具、提示词、命令、agent、
+  activity 活动栏、jobs 后台任务、team 团队、插件管理、设置、inspect、TUI 槽位），其余能力都由插件贡献。插件可注册工具、提示词段、
   slash 命令、LLM provider、agent preset（带 revision 与 per-preset realm 子插件），以及
   TUI 状态栏项 / 对话行 / 面板 / 设置页。
+- **活动栏与多任务**：对话区上方一行活动栏（plan / jobs / agents，空段隐藏）；待办计划来自
+  `todo_write`（`/plan` 查看）；后台任务由 jobs 服务托管，shell `run_in_background` 立即返回
+  job id，`/jobs` 或 `job_output` / `job_kill` / `job_list` 管理，headless 退出时自动取消；
+  team 服务支持最多 8 个成员、共享任务板、成员消息与独立子会话（`/team`、`/team board`，
+  agent 侧有 `team_*` 工具），记录按 DSH 的 `team/*`、`subagent/*` 形状落盘。
 - **运行时自扩展**：`/plugins` 界面与 `plugin_manager` / `plugin_inspect` /
   `settings_read` / `settings_write` / `plugin_create` 五个工具让 agent 自己安装/脚手架
   外部 bundle、启停插件、读改插件配置、查看 live 组合（安装/脚手架会执行或生成第三方代码，
@@ -46,9 +52,11 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
       _vendor/cordis_port/  vendored cordis Python 内核（MIT，不改动）
       kernel/   cordis 服务图、composition/bundle/patch、boot（唯一装配层）
       api/      插件契约（Plugin/Service/PluginContext/注册表/preset spec）
-      builtin/  core 插件行（llm/sessions/sandbox/tools/prompt/commands/agents/presets/
-                plugin_manager/settings/inspect）
-      bundles/core/bundle.toml  core bundle 的 17 个插件行（首行 kernel 运行时）
+      builtin/  core 插件行（llm/sessions/sandbox/tools/prompt/commands/agents/activity/
+                jobs/team/presets/plugin_manager/settings/inspect）
+      bundles/core/bundle.toml  core bundle 的 20 个插件行（首行 kernel 运行时）
+      jobs/     后台任务服务（JobHandle/JobResult、job/registered|settled）
+      team/     子智能体团队与共享任务板（成员、消息、子会话、team/* 记录）
       core/     冻结的 wire 模型 + 运行时协议（共享契约）
       session/  session.v4 日志：模型、append 校验、derive、fork、store
       llm/      provider 适配层（OpenAI-compatible SSE）、重试
@@ -77,8 +85,9 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
     echo "1+1=?" | uv run dpyro --headless --json # stdin 管道
 
 TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /preset /policy /approval /cwd
-/status /compact /clear /plugins /panel /exit`）；`/provider`、`/model`、`/policy`、`/approval`、
-`/cwd` 无参时打开选择器，带参数的切换立即生效（turn 运行中拒绝）；
+/status /plan /jobs /team /thinking /compact /clear /plugins /panel /exit`）；`/provider`、`/model`、
+`/policy`、`/approval`、`/cwd`、`/team` 等无参时打开选择器或面板，带参数的切换立即生效（turn
+运行中拒绝）；
 `Ctrl+C` 在 turn 中取消当前 turn，空闲时清空输入，再按退出；`Ctrl+D` 退出。
 
 ### 配置与数据目录
@@ -106,7 +115,7 @@ TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /pres
 
 ### 插件与组合
 
-- core bundle：`src/deeppyro/bundles/core/bundle.toml`（17 行，首行 `kernel` 运行时服务，`critical = true`）。
+- core bundle：`src/deeppyro/bundles/core/bundle.toml`（20 行，首行 `kernel` 运行时服务，`critical = true`）。
 - 外部 bundle：`~/.dpro/bundles/<id>/bundle.toml` + Python 文件；`/plugins` 或
   `plugin_manager` 工具可安装/启停/卸载（安装只做结构校验，下次 boot 执行第三方代码）。
 - 其他插件来源：entry point 组 `deeppyro.plugins`、`~/.dpro/plugins/<id>/plugin.toml`、

@@ -61,8 +61,8 @@ async def test_pwsh_requires_description(workspace) -> None:  # type: ignore[no-
         await PwshTool().run({"command": "Write-Output 1"}, make_context(workspace))
 
 
-async def test_pwsh_rejects_background_execution(workspace) -> None:  # type: ignore[no-untyped-def]
-    with pytest.raises(ToolError, match="background"):
+async def test_pwsh_background_delegates_to_jobs_service(workspace) -> None:  # type: ignore[no-untyped-def]
+    with pytest.raises(ToolError, match="requires the jobs service"):
         await PwshTool().run(
             {"description": "Background", "command": "Write-Output 1", "run_in_background": True},
             make_context(workspace),

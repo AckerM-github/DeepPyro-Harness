@@ -250,6 +250,9 @@ class AgentSession:
             step += 1
             self._step = step
             self._append("step/start", {"turn": turn, "step": step})
+            # UI-only hint so a TUI can start a fresh reasoning step; the durable
+            # step/start record above already carries the same information.
+            self._emit({"type": "step", "turn": turn, "step": step})
             self._step_open = True
             self._acc = None
             self._assistant_appended = False

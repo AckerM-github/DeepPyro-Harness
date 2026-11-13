@@ -343,6 +343,8 @@ class HeadlessRuntime:
     registry: Any
     permission: Any
     agents: Any
+    jobs: Any = None
+    team: Any = None
     _closed: bool = field(default=False, repr=False)
 
     def create_agent(self, session: Any, sink: Any, *, max_steps: int | None = None) -> Any:
@@ -370,7 +372,7 @@ class HeadlessRuntime:
         kernel_app = self.kernel_app
         if kernel_app is None:
             return services
-        for name in ("plugin_manager", "inspect", "settings"):
+        for name in ("plugin_manager", "inspect", "settings", "jobs", "team"):
             try:
                 value = kernel_app.service(name)
             except LookupError:
@@ -382,6 +384,13 @@ class HeadlessRuntime:
         if self._closed:
             return
         self._closed = True
+        team = self.team
+        close_team = getattr(team, "close", None)
+        if close_team is not None:
+            try:
+                await await_maybe(close_team())
+            except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
+                pass
         kernel_app, self.kernel_app = self.kernel_app, None
         if kernel_app is not None:
             try:
@@ -418,7 +427,17 @@ async def boot_runtime(
     except BaseException:
         await await_maybe(kernel_app.stop())
         raise
-    return HeadlessRuntime(
+    jobs = None
+    try:
+        jobs = kernel_app.service("jobs")
+    except LookupError:
+        pass
+    team = None
+    try:
+        team = kernel_app.service("team")
+    except LookupError:
+        pass
+    runtime = HeadlessRuntime(
         cfg=cfg,
         cwd=workspace,
         kernel_app=kernel_app,
@@ -430,7 +449,25 @@ async def boot_runtime(
         registry=registry,
         permission=permission,
         agents=services["agents"],
+        jobs=jobs,
+        team=team,
     )
+    configure_team = getattr(team, "configure", None)
+    if configure_team is not None:
+        try:
+            configure_team(
+                cwd=workspace,
+                provider=llm_provider,
+                registry=registry,
+                permission=permission,
+                model=model_id,
+                context_window=runtime.context_window,
+                services=runtime._plugin_services(),
+                ask=ask or _denying_ask,
+            )
+        except Exception:  # noqa: BLE001, S110 - the optional team service must not break headless
+            pass
+    return runtime
 
 
 # --------------------------------------------------------------------------
@@ -476,6 +513,20 @@ def run_once(
         return EXIT_INTERRUPTED
 
 
+async def _cancel_jobs(runtime: HeadlessRuntime, session_id: str) -> int:
+    """Cancel every background job this session started (one-shot cleanup)."""
+    jobs = getattr(runtime, "jobs", None)
+    if jobs is None:
+        return 0
+    cancel_owner = getattr(jobs, "cancel_owner", None)
+    if cancel_owner is None:
+        return 0
+    try:
+        return int(await await_maybe(cancel_owner(session_id)) or 0)
+    except Exception:  # noqa: BLE001 - cleanup must not change the exit code
+        return 0
+
+
 async def _run_async(
     text: str,
     *,
@@ -507,6 +558,10 @@ async def _run_async(
                 f"session {session_label}  {runtime.provider_name}/{runtime.model}  cwd {runtime.cwd}",
                 style="dim",
             )
+        team = getattr(runtime, "team", None)
+        bind_team = getattr(team, "bind_session", None)
+        if bind_team is not None:
+            bind_team(session)
         agent = runtime.create_agent(session, sink, max_steps=max_steps)
         sink.begin_turn()
         try:
@@ -527,6 +582,7 @@ async def _run_async(
             close_agent = getattr(agent, "aclose", None)
             if close_agent is not None:
                 await await_maybe(close_agent())
+            await _cancel_jobs(runtime, session_id)
         sink.end_turn()
         if not json_output:
             usage = getattr(sink, "usage", None) or {}

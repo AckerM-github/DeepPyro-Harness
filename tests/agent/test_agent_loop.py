@@ -76,7 +76,7 @@ async def test_simple_turn_records_and_events(tmp_path: Path) -> None:
     assert session.records_of("assistant/message")[0].surfaceOp == "append"
     assert session.records_of("user/message")[0].surfaceOp == "append"
 
-    assert sink.types() == ["status", "text", "text", "usage", "final", "status"]
+    assert sink.types() == ["step", "status", "text", "text", "usage", "final", "status"]
     assert [event["phase"] for event in sink.of_type("status")] == ["thinking", "done"]
     assert sink.of_type("final")[0]["text"] == "Hello world"
     assert sink.of_type("usage")[0] == {"type": "usage", "input": 10, "output": 5, "cached": 0}
@@ -94,6 +94,52 @@ async def test_simple_turn_records_and_events(tmp_path: Path) -> None:
     assert provider.requests[0].model == "test-model"
     assert provider.requests[0].session_id == session.session_id
     assert agent.busy is False
+
+
+async def test_step_events_mirror_step_start_records(tmp_path: Path) -> None:
+    """Each step emits one UI-only step event, with no extra durable record."""
+    echo = FakeTool("echo", text="ok")
+    registry = FakeRegistry([echo])
+    script = [
+        ScriptedTurn(
+            events=[
+                ToolCallStart("call_1", "echo"),
+                ToolCallArgsDelta("call_1", "{}"),
+                finish("tool-calls"),
+            ]
+        ),
+        ScriptedTurn(events=[TextDelta("done"), finish("stop")]),
+    ]
+    session, _provider, sink, agent = make_session(tmp_path, registry, script)
+
+    assert await agent.send("go") == "done"
+
+    step_records = session.records_of("step/start")
+    step_events = sink.of_type("step")
+    assert len(step_records) == 2
+    assert [(event["turn"], event["step"]) for event in step_events] == [
+        (record.data["turn"], record.data["step"]) for record in step_records
+    ]
+    assert all(set(event) == {"type", "turn", "step"} for event in step_events)
+    assert all(isinstance(event["turn"], int) and isinstance(event["step"], int) for event in step_events)
+    assert [event["step"] for event in step_events] == [1, 2]
+
+    # No new durable step record: step/start stays the only step bookkeeping.
+    assert "step" not in session.types()
+    assert sum(1 for record in session.records if record.type == "step") == 0
+
+    # Exactly one event per step, emitted right after step/start (before the
+    # request records and the model stream) and before that step's status.
+    step_event_indexes = [index for index, event in enumerate(sink.events) if event["type"] == "step"]
+    assert len(step_event_indexes) == len(step_records)
+    for event_index, record in zip(step_event_indexes, step_records, strict=True):
+        assert sink.record_counts[event_index] == record.seq
+        status_index = next(
+            index
+            for index in range(event_index + 1, len(sink.events))
+            if sink.events[index]["type"] == "status"
+        )
+        assert sink.events[status_index]["phase"] == "thinking"
 
 
 async def test_second_turn_reuses_system_prompt_and_header_is_series(tmp_path: Path) -> None:

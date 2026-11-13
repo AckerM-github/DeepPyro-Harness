@@ -137,7 +137,9 @@ async def test_two_step_turn_with_tool_call(tmp_path):
     event_types = [event["type"] for event in sink.events]
     # The CLI emits the single `session` event; a bare AgentSession does not.
     assert "session" not in event_types
-    assert event_types[0] == "status"
+    # A UI-only step hint is emitted right after each durable step/start record.
+    assert event_types[0] == "step"
+    assert "status" in event_types
     assert event_types.index("tool_call") < event_types.index("tool_result")
     assert event_types[-2:] == ["final", "status"]
     assert sink.events[-1] == {"type": "status", "phase": "done"}

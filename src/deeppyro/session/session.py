@@ -110,6 +110,21 @@ class Session:
             totals["cached"] += _as_int(usage.get("cacheReadTokens"))
         return totals
 
+    def context_tokens(self) -> int:
+        """Prompt tokens of the most recent model request (the live context size).
+
+        Cumulative usage grows across every step of a turn, so it cannot answer
+        "how full is the window". The latest assistant message records the input
+        tokens of the request that produced it; that is the current context.
+        """
+        for record in reversed(self.records):
+            if record.type != "assistant/message":
+                continue
+            usage = record.data.get("usage")
+            if isinstance(usage, Mapping):
+                return _as_int(usage.get("inputTokens"))
+        return 0
+
     def turn_count(self) -> int:
         """Number of turns started in this session."""
         return sum(1 for record in self.records if record.type == "turn/start")

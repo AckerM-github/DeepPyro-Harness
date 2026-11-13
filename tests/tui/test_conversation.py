@@ -9,9 +9,10 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.widgets import Markdown, Static
 
+from deeppyro.tui.history import ReasoningStep, TurnReasoning
 from deeppyro.tui.widgets.conversation import AssistantBlock, ConversationView
-from deeppyro.tui.widgets.thinking import ThinkingBlock
 from deeppyro.tui.widgets.tool_card import ToolCallCard
+from deeppyro.tui.widgets.turn_progress import TurnProgress
 
 
 class ConversationHost(App[Any]):
@@ -72,33 +73,62 @@ async def test_one_assistant_label_per_user_turn() -> None:
         assert len(conversation.query(".block-label-assistant")) == 2
 
 
-async def test_thinking_shows_one_rolling_sentence_then_collapses() -> None:
+async def test_progress_streams_one_rolling_sentence_then_collapses() -> None:
     app = ConversationHost()
     async with app.run_test(size=(100, 30)) as pilot:
         conversation = app.query_one(ConversationView)
         conversation.add_user("why?")
+        conversation.begin_step(1, 1)
         conversation.stream_thinking("第一句。second line")
         await pilot.pause(0.2)
-        thinking = conversation.query_one(ThinkingBlock)
-        assert thinking.finished is False
-        live = rendered(thinking)
+        progress = conversation.query_one(TurnProgress)
+        assert progress.finished is False
+        live = progress.line_text
         assert "second line" in live
         assert "第一句" not in live
         assert len(live.splitlines()) == 1
-        assert thinking.display is True
+        assert progress.display is True
 
-        conversation.finish_assistant("because")
+        conversation.finish_turn("because")
         await pilot.pause()
-        assert thinking.finished is True
-        collapsed = rendered(thinking)
+        assert progress.finished is True
+        collapsed = progress.line_text
         assert "· thinking" in collapsed
         assert "second line" not in collapsed
-        assert thinking.display is True
+        assert progress.display is True
 
-        await pilot.click(thinking)
+
+async def test_begin_step_updates_the_same_progress_line() -> None:
+    app = ConversationHost()
+    async with app.run_test(size=(100, 30)) as pilot:
+        conversation = app.query_one(ConversationView)
+        conversation.add_user("q")
+        conversation.begin_step(1, 1)
+        conversation.stream_thinking("first step thought。")
+        conversation.add_tool_call("call-1", "read", json.dumps({"path": "a.py"}))
+        conversation.add_tool_result("call-1", False, "ok")
+        conversation.begin_step(1, 2)
+        conversation.stream_thinking("second step thought。")
+        await pilot.pause(0.2)
+        progress = conversation.query_one(TurnProgress)
+        assert progress.step_count == 2
+        assert "second step thought" in progress.line_text
+        assert progress.finished is False
+
+
+async def test_tool_calls_do_not_finish_the_progress_line() -> None:
+    app = ConversationHost()
+    async with app.run_test(size=(100, 30)) as pilot:
+        conversation = app.query_one(ConversationView)
+        conversation.add_user("q")
+        conversation.begin_step(1, 1)
+        conversation.stream_thinking("planning。")
+        conversation.add_tool_call("call-1", "read", json.dumps({"path": "a.py"}))
+        conversation.add_tool_result("call-1", False, "ok")
         await pilot.pause()
-        assert thinking.expanded is True
-        assert "第一句" in rendered(thinking)
+        progress = conversation.query_one(TurnProgress)
+        assert progress.finished is False
+        assert "planning" in progress.line_text
 
 
 async def test_long_thinking_keeps_only_the_newest_sentence() -> None:
@@ -106,32 +136,14 @@ async def test_long_thinking_keeps_only_the_newest_sentence() -> None:
     async with app.run_test(size=(100, 30)) as pilot:
         conversation = app.query_one(ConversationView)
         conversation.add_user("q")
+        conversation.begin_step(1, 1)
         conversation.stream_thinking("\n".join(f"line {index}。" for index in range(12)))
         await pilot.pause(0.2)
-        thinking = conversation.query_one(ThinkingBlock)
-        text = rendered(thinking)
+        progress = conversation.query_one(TurnProgress)
+        text = progress.line_text
         assert "line 11" in text
         assert "line 0" not in text
         assert len(text.splitlines()) == 1
-
-
-async def test_answer_start_collapses_the_reasoning_ticker() -> None:
-    app = ConversationHost()
-    async with app.run_test(size=(100, 30)) as pilot:
-        conversation = app.query_one(ConversationView)
-        conversation.add_user("q")
-        conversation.stream_thinking("first thought。second thought。")
-        await pilot.pause(0.2)
-        thinking = conversation.query_one(ThinkingBlock)
-        assert thinking.finished is False
-
-        conversation.stream_text("the answer")
-        await pilot.pause(0.2)
-        assert thinking.finished is True
-        collapsed = rendered(thinking)
-        assert "· thinking" in collapsed
-        assert "2 sentences" in collapsed
-        assert "second thought" not in collapsed
 
 
 async def test_streaming_sentence_is_single_line_and_tail_truncated() -> None:
@@ -139,13 +151,51 @@ async def test_streaming_sentence_is_single_line_and_tail_truncated() -> None:
     async with app.run_test(size=(100, 30)) as pilot:
         conversation = app.query_one(ConversationView)
         conversation.add_user("q")
+        conversation.begin_step(1, 1)
         conversation.stream_thinking("开头。" + "很长的思考" * 60 + "结束")
         await pilot.pause(0.2)
-        thinking = conversation.query_one(ThinkingBlock)
-        text = rendered(thinking)
+        progress = conversation.query_one(TurnProgress)
+        text = progress.line_text
         assert len(text.splitlines()) == 1
         assert "结束" in text
-        assert len(text) <= 130
+        assert len(text) <= 120
+
+
+async def test_one_progress_line_per_user_turn() -> None:
+    app = ConversationHost()
+    async with app.run_test(size=(100, 30)) as pilot:
+        conversation = app.query_one(ConversationView)
+        conversation.add_user("first")
+        conversation.begin_step(1, 1)
+        conversation.stream_thinking("first thought。")
+        conversation.finish_turn("one")
+        conversation.add_user("second")
+        conversation.begin_step(2, 1)
+        conversation.stream_thinking("second thought。")
+        conversation.finish_turn("two")
+        await pilot.pause()
+        progress = conversation.query(TurnProgress)
+        assert len(progress) == 2
+        assert progress[0].reasoning.turn == 1
+        assert progress[1].reasoning.turn == 2
+
+
+async def test_history_reasoning_renders_a_collapsed_summary() -> None:
+    app = ConversationHost()
+    async with app.run_test(size=(100, 30)) as pilot:
+        conversation = app.query_one(ConversationView)
+        reasoning = TurnReasoning(
+            turn=3,
+            steps=[ReasoningStep(step=1, text="first。second。"), ReasoningStep(step=2, text="third。")],
+            finished=True,
+        )
+        conversation.add_history_reasoning(reasoning)
+        await pilot.pause()
+        progress = conversation.query_one(TurnProgress)
+        assert progress.reasoning is reasoning
+        assert progress.finished is True
+        assert "3" in progress.line_text
+        assert "(click to view)" in progress.line_text
 
 
 async def test_tool_call_and_result_render_on_one_card() -> None:
