@@ -29,6 +29,10 @@ id = "tools-builtin"
 plugin = "deeppyro.builtin.tools:BuiltinToolsPlugin"
 
 [[plugins]]
+id = "presets"
+plugin = "deeppyro.builtin.presets:PresetsPlugin"
+
+[[plugins]]
 id = "prompt"
 plugin = "deeppyro.builtin.prompt_service:PromptPlugin"
 

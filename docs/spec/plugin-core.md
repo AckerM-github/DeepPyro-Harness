@@ -98,10 +98,11 @@ Patch semantics (deliberately different from a deep merge):
 | `sandbox` | `builtin.sandbox` | `sandbox`: `.gate(workspace, ask)` |
 | `tools` | `builtin.tools` | `tools`: contribution registry, `.registry_for(workspace, scope=None)` |
 | `tools-builtin` | `builtin.tools` | eleven built-in tools |
-| `prompt` | `builtin.prompt_service` | `prompt`: ordered sections, `.build(tools, prompt_context)` |
+| `presets` | `builtin.presets` | `presets`: named scopes for tools and prompt sections |
+| `prompt` | `builtin.prompt_service` | `prompt`: ordered sections, `.build(tools, prompt_context, scope=None)` |
 | `prompt-core` | `builtin.prompt_core` | identity/environment/instructions/tools/rules sections |
 | `commands` | `builtin.commands` | `commands`: slash-command registry |
-| `commands-builtin` | `builtin.commands_builtin` | the nine built-in slash commands |
+| `commands-builtin` | `builtin.commands_builtin` | the ten built-in slash commands |
 | `agents` | `builtin.agents` | `agents`: `.create(...)`, `.options(**overrides)` |
 
 Core rows are `critical = true`: a failure aborts boot with `KernelBootError` and disposes
@@ -112,9 +113,14 @@ every already-mounted fiber. External rows default to non-critical: a failure is
 
 - tools: `ctx.register_tool(factory, scope=None)`; the factory is `callable(config, workspace)`
   and returns one tool or a list. A non-None `scope` reserves the tool for an agent preset.
-- prompt sections: `ctx.register_prompt_section(name, order, renderer)`; renderer is
+- prompt sections: `ctx.register_prompt_section(name, order, renderer, scope=None)`; renderer is
   `callable(tools, prompt_context) -> str`, sorted by `(order, name)`. Core uses 10 identity,
   20 environment, 30 instructions, 40 tools, 50 rules; plugin sections usually sit in between.
+  A non-None `scope` renders only for agents created with that preset.
+- presets: `ctx.register_preset(PresetSpec(...))`; a preset carries `id`, `name`,
+  `description`, `order`, an optional `model` override and extra `instructions`. Sessions are
+  created with `agent_preset=<id>` (the id lands in the session header), and the TUI switches
+  presets through `/preset`.
 - commands: `ctx.register_command(name, handler, summary=..., usage=..., aliases=...)`; handler is
   `callable(host, argument)` where host is the TUI app (or headless host object).
 - providers: `ctx.register_provider(name, factory, description=...)`; factory is
@@ -122,6 +128,15 @@ every already-mounted fiber. External rows default to non-critical: a failure is
 - services: a `Service` subclass exposes an entirely new service name.
 
 All registration helpers return a dispose callable and are torn down with the plugin fiber.
+
+### 5.1 Agent presets (per-session composition)
+
+A preset is the smallest per-session composition unit. Tools and prompt sections registered with
+`scope=<preset id>` are visible only to an agent created with `preset=<preset id>`; unscoped
+contributions stay visible everywhere. `agents.create(..., preset=id)` resolves the preset,
+appends its `instructions` to the agent options, applies its `model` override when the caller
+did not set one, and builds the system prompt with that scope. Unknown ids raise
+`PluginDependencyError`.
 
 ## 6. Failure isolation and status
 
@@ -166,13 +181,14 @@ class GreetPlugin(Plugin):
 | contract | `src/deeppyro/api/{__init__,errors,types,context,plugin}.py` |
 | composition | `src/deeppyro/kernel/{app,composition,bundle,manifest}.py` |
 | core plugins | `src/deeppyro/builtin/*.py`, `src/deeppyro/bundles/core/bundle.toml` |
-| tests | `tests/kernel/`, `tests/integration/test_plugin_composition.py`, `tests/tui/test_commands.py` |
+| tests | `tests/kernel/`, `tests/integration/test_plugin_composition.py`, `tests/integration/test_agent_presets.py`, `tests/tui/test_commands.py` |
 
 ## 9. Known limits
 
 - No install/remove of bundles yet (layer D: `plugin_manager`), no settings editor and no live
   inspection yet.
-- No per-session agent presets yet (layer C): the `scope` parameter on tool contributions is
-  already wired through `tools.registry_for(workspace, scope=...)`.
+- Preset switching rebuilds the live agent but does not rewrite the current session header, so
+  `agentPreset` keeps the value the session was created with; only new sessions record the new id.
+- Preset `model` overrides skip config validation; an unknown model id fails on the next request.
 - Plugins run in-process and are trusted once loaded; there is no OS-level isolation.
 - `api_version` is a single integer gate, not a negotiation protocol.

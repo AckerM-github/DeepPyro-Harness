@@ -6,8 +6,10 @@ import them without importing the kernel.
 
 from __future__ import annotations
 
+from deeppyro.core.errors import DeeppyroError
 
-class PluginError(RuntimeError):
+
+class PluginError(DeeppyroError):
     """Base error for plugin contract violations."""
 
 

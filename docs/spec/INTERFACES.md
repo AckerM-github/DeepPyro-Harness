@@ -329,11 +329,12 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 | `sandbox` | `builtin.sandbox` | `sandbox`：`.gate(workspace, ask=None)` |
 | `tools` | `builtin.tools` | `tools`：`.add(factory, scope=...)`、`.registry_for(workspace, scope=None)` |
 | `tools-builtin` | `builtin.tools` | 11 个内置工具 |
-| `prompt` | `builtin.prompt_service` | `prompt`：`.add_section`、`.build(tools, prompt_context)` |
+| `presets` | `builtin.presets` | `presets`：`.add`、`.resolve(id)`、`.all()`、`.ids()` |
+| `prompt` | `builtin.prompt_service` | `prompt`：`.add_section(..., scope=None)`、`.build(tools, prompt_context, scope=None)` |
 | `prompt-core` | `builtin.prompt_core` | 5 个核心提示词段（order 10/20/30/40/50） |
 | `commands` | `builtin.commands` | `commands`：`.add`、`.all()`、`.resolve()`、`.invoke()` |
-| `commands-builtin` | `builtin.commands_builtin` | 9 个内置 slash 命令 |
-| `agents` | `builtin.agents` | `agents`：`.create(...)`、`.options(**overrides)` |
+| `commands-builtin` | `builtin.commands_builtin` | 10 个内置 slash 命令（含 `/preset`） |
+| `agents` | `builtin.agents` | `agents`：`.create(..., preset=None)`、`.options(**overrides)` |
 
 ### 11.5 API
 

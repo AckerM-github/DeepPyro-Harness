@@ -72,6 +72,7 @@ class TuiRuntime:
     agents: Any
     sink: Any
     ask: Callable[[Any], Awaitable[bool]]
+    agent_preset: str = "default"
     session: Any = None
     agent: Any = None
     _closed: bool = field(default=False, repr=False)
@@ -130,13 +131,16 @@ class TuiRuntime:
     # -- sessions -------------------------------------------------------
     async def new_session(self) -> Any:
         """Create a fresh durable session and rebuild the agent."""
-        session = self.store.create(str(self.cwd))
+        session = self.store.create(str(self.cwd), agent_preset=self.agent_preset)
         await self._attach(session)
         return session
 
     async def open_session(self, session_id: str) -> Any:
         """Open an existing session and rebuild the agent around it."""
         session = self.store.open(session_id)
+        preset = str(getattr(session.header, "agentPreset", "") or "").strip()
+        if preset:
+            self.agent_preset = preset
         await self._attach(session)
         return session
 
@@ -148,17 +152,69 @@ class TuiRuntime:
         agent = self.agents.create(
             session=session,
             provider=self.provider,
-            registry=self.registry,
+            registry=self._scoped_registry(self.cwd),
             options=options,
             sink=self.sink,
             permission=self.permission,
             cwd=str(self.cwd),
+            preset=self.agent_preset,
         )
         await await_maybe(getattr(self.agent, "aclose", None))
         self.session = session
         self.agent = agent
 
+    def _service(self, name: str) -> Any | None:
+        app = self.kernel_app
+        if app is None:
+            return None
+        try:
+            return app.service(name)
+        except LookupError:
+            return None
+
+    def _scoped_registry(self, workspace: Any) -> Any:
+        """Tools registry narrowed to contributions visible to the preset."""
+        service = self._service("tools")
+        if service is None:
+            return self.registry
+        registry_for = getattr(service, "registry_for", None)
+        if registry_for is None:
+            return self.registry
+        try:
+            return registry_for(Path(workspace), scope=self.agent_preset)
+        except TypeError:
+            return registry_for(Path(workspace))
+
     # -- services -------------------------------------------------------
+    @property
+    def presets(self) -> list[Any]:
+        """Agent presets offered by the bundle, ordered by the service."""
+        service = self._service("presets")
+        if service is None:
+            return []
+        try:
+            return list(service.all())
+        except Exception:  # noqa: BLE001 - the picker must keep working
+            return []
+
+    async def set_agent_preset(self, preset: str) -> str:
+        """Switch the preset used by subsequent agents on this runtime."""
+        service = self._service("presets")
+        if service is None:
+            raise DeeppyroError("agent presets are not available in this bundle")
+        wanted = (preset or "").strip()
+        try:
+            spec = service.resolve(wanted or None)
+        except Exception as exc:  # surface the service message
+            raise DeeppyroError(str(exc)) from exc
+        if spec.id == self.agent_preset:
+            return spec.id
+        self.agent_preset = spec.id
+        if self.session is not None:
+            await self._attach(self.session)
+        self._record("agent-preset/selected", {"preset": spec.id})
+        return spec.id
+
     @property
     def commands(self) -> Any | None:
         """The kernel commands service, when the bundle provides one."""

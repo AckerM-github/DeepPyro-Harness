@@ -34,12 +34,38 @@ class CommandSpec:
 
 @dataclass(frozen=True, slots=True)
 class PromptSection:
-    """A named, ordered chunk of the system prompt."""
+    """A named, ordered chunk of the system prompt.
+
+    A non-None scope reserves the section for one agent preset; None means the
+    section is visible to every agent.
+    """
 
     name: str
     order: int
     renderer: Callable[[Any, Any], str]
     plugin_id: str = ""
+    scope: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PresetSpec:
+    """One named agent composition selected per session.
+
+    A preset is a scope label rather than a container: tools and prompt
+    sections registered with scope=<preset id> are only visible to agents
+    created with that preset, on top of the global contributions.
+    """
+
+    id: str
+    name: str = ""
+    description: str = ""
+    model: str = ""
+    instructions: tuple[str, ...] = ()
+    order: int = 100
+    plugin_id: str = ""
+
+    def display_name(self) -> str:
+        return self.name or self.id
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +108,7 @@ class PluginStatus:
 __all__ = [
     "CommandSpec",
     "PluginStatus",
+    "PresetSpec",
     "PromptSection",
     "ProviderContribution",
     "ToolContribution",

@@ -76,6 +76,13 @@ class FakeSessionInfo:
         self.cwd = cwd
 
 
+class FakePreset:
+    def __init__(self, preset_id: str, name: str, description: str = "") -> None:
+        self.id = preset_id
+        self.name = name
+        self.description = description
+
+
 class FakeRuntime:
     def __init__(self, app: DeepPyroApp) -> None:
         self.sink = app.sink
@@ -89,6 +96,7 @@ class FakeRuntime:
         self.kernel_app = None
         self.closed = False
         self.opened_sessions: list[str] = []
+        self.agent_preset = "default"
 
     @property
     def session_id(self) -> str:
@@ -112,6 +120,13 @@ class FakeRuntime:
 
     def models(self) -> list[str]:
         return ["fake-1", "fake-2"]
+
+    def presets(self) -> list[Any]:
+        return [FakePreset("default", "Default"), FakePreset("reviewer", "Reviewer", "review only")]
+
+    async def set_agent_preset(self, preset: str) -> str:
+        self.agent_preset = preset
+        return preset
 
     def known_workspaces(self, limit: int = 12) -> list[str]:
         workspaces = [str(Path("D:/work")), str(Path("D:/other"))]
@@ -231,6 +246,31 @@ async def test_model_without_argument_uses_picker(monkeypatch: Any) -> None:
         monkeypatch.setattr(app, "_pick", fake_pick)
         await app.model_command("")
         assert app.runtime.model == "fake-2"
+
+
+async def test_preset_command_switches_the_agent_preset() -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one(PromptArea)
+        prompt.text = "/preset reviewer"
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        assert app.runtime.agent_preset == "reviewer"
+
+
+async def test_preset_without_argument_uses_picker(monkeypatch: Any) -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+
+        async def fake_pick(title: str, items: Any) -> str:
+            assert title == "Select agent preset"
+            return "reviewer"
+
+        monkeypatch.setattr(app, "_pick", fake_pick)
+        await app.preset_command("")
+        assert app.runtime.agent_preset == "reviewer"
 
 
 async def test_ctrl_c_clears_the_composer_when_idle() -> None:

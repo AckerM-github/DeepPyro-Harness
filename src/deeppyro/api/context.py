@@ -78,6 +78,10 @@ class PluginContext:
     def llm(self) -> Any:
         return self.service("llm")
 
+    @property
+    def presets(self) -> Any:
+        return self.service("presets")
+
     # -- lifecycle helpers ------------------------------------------------
     def effect(self, execute: Callable[[], Any], label: str = "anonymous") -> Any:
         return self._raw.effect(execute, label=f"{self.plugin_id}:{label}")
@@ -114,9 +118,15 @@ class PluginContext:
         dispose = self.tools.add(factory, scope=scope, plugin_id=self.plugin_id)
         return self._own(dispose, label="tool")
 
-    def register_prompt_section(self, name: str, order: int, renderer: Any) -> Callable[[], Any]:
-        dispose = self.prompt.add_section(name, order, renderer, plugin_id=self.plugin_id)
+    def register_prompt_section(
+        self, name: str, order: int, renderer: Any, *, scope: str | None = None
+    ) -> Callable[[], Any]:
+        dispose = self.prompt.add_section(name, order, renderer, plugin_id=self.plugin_id, scope=scope)
         return self._own(dispose, label=f"prompt-section:{name}")
+
+    def register_preset(self, preset: Any) -> Callable[[], Any]:
+        dispose = self.presets.add(preset, plugin_id=self.plugin_id)
+        return self._own(dispose, label=f"preset:{getattr(preset, 'id', preset)}")
 
     def register_command(
         self,

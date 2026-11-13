@@ -11,6 +11,7 @@ from deeppyro.builtin.agents import AgentsPlugin
 from deeppyro.builtin.commands import CommandsPlugin
 from deeppyro.builtin.commands_builtin import CommandsBuiltinPlugin
 from deeppyro.builtin.llm import LlmPlugin
+from deeppyro.builtin.presets import PresetsPlugin
 from deeppyro.builtin.prompt_core import PromptCorePlugin
 from deeppyro.builtin.prompt_service import PromptPlugin
 from deeppyro.builtin.sandbox import SandboxPlugin
@@ -23,6 +24,7 @@ __all__ = [
     "CommandsBuiltinPlugin",
     "CommandsPlugin",
     "LlmPlugin",
+    "PresetsPlugin",
     "PromptCorePlugin",
     "PromptPlugin",
     "SandboxPlugin",

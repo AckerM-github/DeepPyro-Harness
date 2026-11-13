@@ -76,7 +76,8 @@
 | /new | 新建会话（保留当前 App 与 sink，重建 AgentSession） |
 | /resume [id 或序号] | 恢复最近会话；无参打开选择器 |
 | /model [id] | 切换模型；无参打开选择器 |
-| /status | 当前 provider/model/cwd/session/tokens/上下文 |
+| /preset [id] | 切换 agent preset（按会话组合工具/提示词）；无参打开选择器 |
+| /status | 当前 provider/model/preset/cwd/session/tokens/上下文 |
 | /compact | 手动压缩（要求无运行中 turn；Compactor.compact） |
 | /clear | 清空对话视图（不删除会话日志） |
 | /plugins | 外部插件管理界面（plugin-dev 提供 PluginScreen，Lead 接线） |
@@ -101,6 +102,9 @@
 - 用户消息块左 accent 边框；系统 info/error 用 dim/红色静态行。
 - 顶部控制栏位于 Header 下方、会话区上方：三个紧凑下拉（权限预设 / 审批策略 / 工作目录）。切换立即作用于同一会话——sandbox gate 与工具注册表随工作目录更新，并写 permission/preset、approval/policy、working-directory/change 记录；turn 运行中三个下拉禁用。cwd 选项 = 当前目录 + 最近会话目录（去重，上限 12）+ Enter path…（路径模态）。
 - 状态栏单行：session 短 id、provider/model、↑输入 ↓输出 ⚡缓存、ctx 百分比（>=75% 黄色）、phase。
+- agent preset：会话创建时把 preset id 写进 session header 的 agentPreset；TUI 启动默认 default，
+  /resume 沿用会话 header 的 preset，/preset 切换后重建当前会话的 agent 并写 agent-preset/selected
+  记录（当前会话 header 不重写，只影响后续新建会话）。prompt 段与工具贡献按 preset scope 过滤。
 
 ## 9. 开发与验证
 

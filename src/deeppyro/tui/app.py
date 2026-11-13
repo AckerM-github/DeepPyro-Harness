@@ -569,6 +569,56 @@ class DeepPyroApp(App[None]):
         self.conversation.add_info(f"model switched to {argument}")
         self.refresh_status()
 
+    def _preset_specs(self) -> list[Any]:
+        value = getattr(self.runtime, "presets", None)
+        if callable(value):
+            try:
+                value = value()
+            except Exception:  # noqa: BLE001 - the command must keep working
+                return []
+        return list(value or [])
+
+    async def preset_command(self, argument: str) -> None:
+        presets = self._preset_specs()
+        current = str(getattr(self.runtime, "agent_preset", "default") or "default")
+        if self._working:
+            self.notify("cannot switch agent preset during a turn", severity="warning")
+            return
+        if not argument:
+            if len(presets) > 1:
+                items: list[tuple[str, str, str]] = []
+                for spec in presets:
+                    preset_id = str(getattr(spec, "id", "") or "")
+                    label = str(getattr(spec, "name", "") or preset_id)
+                    note = "current" if preset_id == current else str(
+                        getattr(spec, "description", "") or ""
+                    )
+                    items.append((preset_id, label, note))
+                choice = await self._pick("Select agent preset", items)
+                if choice is None:
+                    self.conversation.add_info(f"current preset: {current}")
+                    self.conversation.add_info(
+                        "available: " + ", ".join(str(getattr(s, "id", "")) for s in presets)
+                    )
+                    self.conversation.add_info("use /preset <id>")
+                    return
+                argument = choice
+            else:
+                self.conversation.add_info(f"current preset: {current}")
+                if presets:
+                    self.conversation.add_info(
+                        "available: " + ", ".join(str(getattr(s, "id", "")) for s in presets)
+                    )
+                self.conversation.add_info("use /preset <id>")
+                return
+        try:
+            selected = await self.runtime.set_agent_preset(argument)
+        except Exception as exc:  # noqa: BLE001 - show the service message
+            self.conversation.add_error(f"preset switch failed: {exc}")
+            return
+        self.conversation.add_info(f"agent preset switched to {selected}")
+        self.refresh_status()
+
     def show_status(self) -> None:
         runtime = self.runtime
         usage = runtime.session_usage()
@@ -580,6 +630,7 @@ class DeepPyroApp(App[None]):
             f"session  {runtime.session_id}",
             f"model    {runtime.provider_name}/{runtime.model}",
             f"cwd      {runtime.cwd}",
+            f"preset   {getattr(runtime, 'agent_preset', 'default')}",
             f"policy   {policy}",
             f"tokens   input {usage['input']}  output {usage['output']}  cached {usage['cached']}",
             f"context  {context_percent(self._context_used, runtime.context_window)}% of {runtime.context_window}",

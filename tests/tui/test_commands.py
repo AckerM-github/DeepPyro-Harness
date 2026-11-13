@@ -20,6 +20,7 @@ EXPECTED_NAMES = [
     "new",
     "resume",
     "model",
+    "preset",
     "status",
     "compact",
     "clear",
@@ -45,6 +46,9 @@ class FakeApp:
 
     async def model_command(self, argument: str) -> None:
         self.calls.append(("model", argument))
+
+    async def preset_command(self, argument: str) -> None:
+        self.calls.append(("preset", argument))
 
     def show_status(self) -> None:
         self.calls.append(("status", ""))
@@ -141,6 +145,7 @@ async def test_dispatch_routes_every_command() -> None:
         "/new",
         "/resume session-1",
         "/model fake-2",
+        "/preset reviewer",
         "/status",
         "/compact",
         "/clear",
@@ -154,6 +159,7 @@ async def test_dispatch_routes_every_command() -> None:
         ("new", ""),
         ("resume", "session-1"),
         ("model", "fake-2"),
+        ("preset", "reviewer"),
         ("status", ""),
         ("compact", ""),
         ("clear", ""),
