@@ -15,7 +15,17 @@ from deeppyro.kernel import (
     create_app,
 )
 
-EXPECTED_ORDER = ["llm", "sessions", "sandbox", "tools", "agents"]
+EXPECTED_ORDER = [
+    "llm",
+    "sessions",
+    "sandbox",
+    "tools",
+    "tools-builtin",
+    "prompt",
+    "prompt-core",
+    "commands",
+    "agents",
+]
 
 
 def _config() -> Config:
@@ -32,7 +42,8 @@ def _config() -> Config:
 
 def test_default_plugin_order() -> None:
     assert [spec.id for spec in DEFAULT_PLUGINS] == EXPECTED_ORDER
-    assert [spec.name for spec in DEFAULT_PLUGINS] == EXPECTED_ORDER  # aliases
+    # Core bundle rows point at concrete plugin classes, not aliases.
+    assert all(spec.name and ":" in spec.name for spec in DEFAULT_PLUGINS)
     assert all(spec.enabled() for spec in DEFAULT_PLUGINS)
 
 
@@ -72,6 +83,10 @@ config = { start = 5 }
         "sessions",
         "sandbox",
         "tools",
+        "tools-builtin",
+        "prompt",
+        "prompt-core",
+        "commands",
         "agents",
     ]
 
@@ -89,9 +104,21 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
     try:
         assert app.has_service("llm")
         assert not app.has_service("sessions")
-        # started only lists active plugin fibers, in manifest order.
-        assert list(app.started) == ["llm"]
-        assert all(state == "ACTIVE" for state in app.started.values())
+        assert not app.has_service("tools")
+        # Every loaded row is listed in bundle order; disabled rows are absent.
+        assert list(app.started) == [
+            "llm",
+            "tools-builtin",
+            "prompt",
+            "prompt-core",
+            "commands",
+        ]
+        # tools-builtin injects the tools service, so it waits for a provider.
+        assert app.started["tools-builtin"] == "PENDING"
+        assert app.started["llm"] == "ACTIVE"
+        assert app.started["prompt"] == "ACTIVE"
+        assert app.started["prompt-core"] == "ACTIVE"
+        assert app.started["commands"] == "ACTIVE"
     finally:
         await app.stop()
     assert not app.has_service("llm")

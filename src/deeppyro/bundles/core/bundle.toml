@@ -1,0 +1,45 @@
+[bundle]
+id = "core"
+name = "DeepPyro core"
+version = "0.1.0"
+order = 0
+critical = true
+
+# The kernel provides the config service itself. Every capability below is a
+# plugin row: user bundles can override config, disable a row, or insert their
+# own rows before or after any id here.
+[[plugins]]
+id = "llm"
+plugin = "deeppyro.builtin.llm:LlmPlugin"
+
+[[plugins]]
+id = "sessions"
+plugin = "deeppyro.builtin.sessions:SessionsPlugin"
+
+[[plugins]]
+id = "sandbox"
+plugin = "deeppyro.builtin.sandbox:SandboxPlugin"
+
+[[plugins]]
+id = "tools"
+plugin = "deeppyro.builtin.tools:ToolsPlugin"
+
+[[plugins]]
+id = "tools-builtin"
+plugin = "deeppyro.builtin.tools:BuiltinToolsPlugin"
+
+[[plugins]]
+id = "prompt"
+plugin = "deeppyro.builtin.prompt_service:PromptPlugin"
+
+[[plugins]]
+id = "prompt-core"
+plugin = "deeppyro.builtin.prompt_core:PromptCorePlugin"
+
+[[plugins]]
+id = "commands"
+plugin = "deeppyro.builtin.commands:CommandsPlugin"
+
+[[plugins]]
+id = "agents"
+plugin = "deeppyro.builtin.agents:AgentsPlugin"

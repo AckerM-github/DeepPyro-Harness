@@ -131,6 +131,7 @@ class AgentSession:
         cwd: Path,
         services: dict[str, Any] | None = None,
         compactor: Compactor | None = None,
+        prompt_builder: Any | None = None,
     ) -> None:
         self._session = session
         self._provider = provider
@@ -140,6 +141,7 @@ class AgentSession:
         self._permission = permission
         self._cwd = Path(cwd)
         self._services = dict(services or {})
+        self._prompt_builder = prompt_builder or build_system_prompt
         self._busy = False
         self._interrupt_requested = False
         self._turn_task: asyncio.Task[Any] | None = None
@@ -511,7 +513,7 @@ class AgentSession:
             instructions=[*collect_instructions(self._cwd), *self._options.instructions],
             env={},
         )
-        prompt = build_system_prompt(self._registry.schemas(), prompt_context)
+        prompt = self._prompt_builder(self._registry.schemas(), prompt_context)
         message = Message(
             role="system",
             content=[TextPart(text=prompt)],

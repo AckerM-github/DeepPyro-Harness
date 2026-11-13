@@ -5,15 +5,15 @@ tool schemas and the PromptContext the caller passes in.  That keeps prompt
 snapshots testable and makes the runtime environment (cwd, platform, model,
 permissions) explicit instead of hidden in prose.
 
-Instruction files are discovered the way coding agents generally do it: walk
-from the working directory up to the filesystem root and load every
-AGENTS.md found on the way.  Root-most files come first so that more specific
-(deeper) instructions appear later and read as refinements.
+The prompt is assembled from ordered sections. The core sections live here and
+are registered by the prompt-core plugin; other plugins can append their own
+section through the prompt service without touching this module.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +23,8 @@ from deeppyro.core.protocols import ToolSchema
 INSTRUCTION_FILENAME = "AGENTS.md"
 DEFAULT_MAX_INSTRUCTION_CHARS = 20_000
 _MAX_ENV_ENTRIES = 50
+
+SectionRenderer = Callable[[list[ToolSchema], "PromptContext"], str]
 
 
 @dataclass(slots=True)
@@ -79,12 +81,56 @@ def collect_instructions(cwd: Path, *, max_chars_per_file: int = DEFAULT_MAX_INS
     return blocks
 
 
-def _environment_lines(ctx: PromptContext) -> list[str]:
+def environment_entries(ctx: PromptContext) -> list[str]:
     entries = sorted(ctx.env.items())[:_MAX_ENV_ENTRIES]
     return [f"- {key}={value}" for key, value in entries]
 
 
-def _tool_section(tools: list[ToolSchema]) -> str:
+# -- core sections ---------------------------------------------------------
+
+
+def identity_section(tools: list[ToolSchema], ctx: PromptContext) -> str:
+    return (
+        "You are DeepPyro, a coding agent running in a terminal.\n"
+        "You help with software engineering tasks in the user's workspace: inspect code, edit files, "
+        "run commands, search for information, and verify your changes."
+    )
+
+
+def environment_section(tools: list[ToolSchema], ctx: PromptContext) -> str:
+    started = datetime.fromtimestamp(ctx.started_at / 1000, tz=UTC)
+    lines = [
+        "## Environment",
+        "",
+        f"- Working directory: {ctx.cwd}",
+        f"- Platform: {ctx.platform}",
+        f"- Model: {ctx.model or 'unknown'}",
+        f"- Session: {ctx.session_id}",
+        f"- Started (UTC): {started.isoformat(timespec='seconds').replace('+00:00', 'Z')}",
+        f"- Permission preset: {ctx.permission_preset or 'unknown'}",
+        f"- Approval policy: {ctx.approval_policy or 'unknown'}",
+    ]
+    env_lines = environment_entries(ctx)
+    if env_lines:
+        lines.extend(["- Environment:", *[f"  {line}" for line in env_lines]])
+    return "\n".join(lines)
+
+
+def instructions_section(tools: list[ToolSchema], ctx: PromptContext) -> str:
+    lines = ["## Project instructions", ""]
+    if ctx.instructions:
+        lines.append(
+            "The following instructions were loaded from AGENTS.md files. Treat them as binding "
+            "project guidance for every action in this workspace."
+        )
+        for index, block in enumerate(ctx.instructions, start=1):
+            lines.extend(["", f"### Instruction block {index}", "", block])
+    else:
+        lines.append("No AGENTS.md instruction files were found for this workspace.")
+    return "\n".join(lines)
+
+
+def tools_section(tools: list[ToolSchema], ctx: PromptContext) -> str:
     if not tools:
         return "## Tools\n\nNo tools are currently registered. Answer directly."
     blocks = [
@@ -106,63 +152,84 @@ def _tool_section(tools: list[ToolSchema]) -> str:
     return "\n".join(blocks)
 
 
+def rules_section(tools: list[ToolSchema], ctx: PromptContext) -> str:
+    lines = [
+        "## Operating rules",
+        "",
+        "- Inspect before you change: read the relevant files and search for usages before editing.",
+        "- Prefer targeted edits over whole-file rewrites; preserve unrelated code and formatting.",
+        "- Use the shell tool for commands; prefer non-interactive invocations and capture exit codes.",
+        "- Verify work: run the focused tests or checks that cover what you changed.",
+        "- Never fabricate file contents, command output, or test results.",
+        "- Follow the project instructions above when they are more specific than these rules.",
+        "- Ask the user only when you are blocked by missing information or a decision that is theirs.",
+        "- Keep replies concise and reference files by their path.",
+        "- When a tool fails, read the error and adapt; do not repeat the identical failing call.",
+        "",
+        "If the user asks a question that needs no tools, answer directly without calling tools.",
+    ]
+    return "\n".join(lines)
+
+
+#: (name, order, renderer) of the built-in prompt sections.
+CORE_PROMPT_SECTIONS: tuple[tuple[str, int, SectionRenderer], ...] = (
+    ("identity", 10, identity_section),
+    ("environment", 20, environment_section),
+    ("instructions", 30, instructions_section),
+    ("tools", 40, tools_section),
+    ("rules", 50, rules_section),
+)
+
+
+def render_sections(
+    tools: list[ToolSchema],
+    ctx: PromptContext,
+    sections: list[tuple[int, str, SectionRenderer]],
+) -> str:
+    """Render ordered sections and join them with one blank line."""
+    parts: list[str] = []
+    for _order, _name, renderer in sorted(sections, key=lambda item: (item[0], item[1])):
+        text = renderer(tools, ctx)
+        if text is None:
+            continue
+        text = str(text).strip("\n")
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts)
+
+
 def build_system_prompt(tools: list[ToolSchema], ctx: PromptContext) -> str:
-    """Assemble the complete system prompt for one session.
+    """Assemble the complete system prompt from the core sections.
 
     Sections, in order: identity, environment, project instructions, tool
     catalog, operating rules.  The function never reads the filesystem itself;
     instruction files must already be collected into ctx.instructions.
     """
-    started = datetime.fromtimestamp(ctx.started_at / 1000, tz=UTC)
-    lines = [
-        "You are DeepPyro, a coding agent running in a terminal.",
-        (
-            "You help with software engineering tasks in the user's workspace: inspect code, edit files, "
-            "run commands, search for information, and verify your changes."
-        ),
-        "",
-        "## Environment",
-        "",
-        f"- Working directory: {ctx.cwd}",
-        f"- Platform: {ctx.platform}",
-        f"- Model: {ctx.model or 'unknown'}",
-        f"- Session: {ctx.session_id}",
-        f"- Started (UTC): {started.isoformat(timespec='seconds').replace('+00:00', 'Z')}",
-        f"- Permission preset: {ctx.permission_preset or 'unknown'}",
-        f"- Approval policy: {ctx.approval_policy or 'unknown'}",
-    ]
-    env_lines = _environment_lines(ctx)
-    if env_lines:
-        lines.extend(["- Environment:", *[f"  {line}" for line in env_lines]])
-
-    lines.extend(["", "## Project instructions", ""])
-    if ctx.instructions:
-        lines.append(
-            "The following instructions were loaded from AGENTS.md files. Treat them as binding "
-            "project guidance for every action in this workspace."
-        )
-        for index, block in enumerate(ctx.instructions, start=1):
-            lines.extend(["", f"### Instruction block {index}", "", block])
-    else:
-        lines.append("No AGENTS.md instruction files were found for this workspace.")
-
-    lines.extend(["", _tool_section(tools)])
-    lines.extend(
-        [
-            "",
-            "## Operating rules",
-            "",
-            "- Inspect before you change: read the relevant files and search for usages before editing.",
-            "- Prefer targeted edits over whole-file rewrites; preserve unrelated code and formatting.",
-            "- Use the shell tool for commands; prefer non-interactive invocations and capture exit codes.",
-            "- Verify work: run the focused tests or checks that cover what you changed.",
-            "- Never fabricate file contents, command output, or test results.",
-            "- Follow the project instructions above when they are more specific than these rules.",
-            "- Ask the user only when you are blocked by missing information or a decision that is theirs.",
-            "- Keep replies concise and reference files by their path.",
-            "- When a tool fails, read the error and adapt; do not repeat the identical failing call.",
-            "",
-            "If the user asks a question that needs no tools, answer directly without calling tools.",
-        ]
+    return render_sections(
+        tools,
+        ctx,
+        [(order, name, renderer) for name, order, renderer in CORE_PROMPT_SECTIONS],
     )
-    return "\n".join(lines)
+
+
+def core_sections() -> tuple[tuple[str, int, SectionRenderer], ...]:
+    return CORE_PROMPT_SECTIONS
+
+
+__all__ = [
+    "CORE_PROMPT_SECTIONS",
+    "DEFAULT_MAX_INSTRUCTION_CHARS",
+    "INSTRUCTION_FILENAME",
+    "PromptContext",
+    "SectionRenderer",
+    "build_system_prompt",
+    "collect_instructions",
+    "core_sections",
+    "environment_entries",
+    "environment_section",
+    "identity_section",
+    "instructions_section",
+    "render_sections",
+    "rules_section",
+    "tools_section",
+]
