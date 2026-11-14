@@ -121,7 +121,8 @@ async def test_tool_hooks_receive_the_agent_and_the_visible_tool_set(tmp_path: P
     assert payloads, "tool hooks were never dispatched"
     for payload in payloads:
         assert payload["agent"] is agent
-        assert payload["toolSet"] == ["echo", "read"]
+        # HookService freezes payload lists into tuples before dispatch.
+        assert list(payload["toolSet"]) == ["echo", "read"]
 
 
 async def test_tool_hook_agent_is_none_for_a_bare_pipeline_caller() -> None:
