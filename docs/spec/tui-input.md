@@ -134,9 +134,9 @@ value/label/note 三个字段做大小写不敏感的子串过滤；无匹配时
 
 ## 6. ApprovalScreen 精修（screens/approval.py）
 
-对外契约保持不变：ALLOW_ONCE = "once"、ALLOW_ALWAYS = "always"、DENY = "deny"，
-类名 ApprovalScreen、构造参数 request、按钮 id allow-once/allow-always/deny 全部不变，
-app.py 的 ask_approval() 无需修改。
+对外契约：`ALLOW_ONCE = "once"` 与 `DENY = "deny"`（DSH 只有一次性批准与拒绝，
+`ALLOW_ALWAYS`/always 选项已删除）；类名 ApprovalScreen、构造参数 request、按钮 id
+allow-once/deny 保持不变。
 
 新增内容：
 
@@ -150,7 +150,7 @@ app.py 的 ask_approval() 无需修改。
   - kind == "sandbox-escalation" 且 summary 含 danger-full-access → DANGER；
   - 其余 → WARN，黄色 WARNING（$text-warning，类 risk-warn）。
   危险模式来自 deeppyro.sandbox.gate.DANGEROUS_PATTERNS，保持单一来源。
-- 键位：y = allow once、a = always、n / Esc = deny；三个按钮可聚焦，初始焦点在
+- 键位：y = allow once、n / Esc = deny；两个按钮可聚焦，初始焦点在
   Allow once，Tab/Shift+Tab 在按钮间移动，Enter/Space 触发按钮。
 - 兼容对象属性与 Mapping（测试可直接传 dict）。
 

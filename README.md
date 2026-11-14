@@ -15,10 +15,10 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   step/tool 明细默认收起；turn 结束 header 变为一行摘要。点击 header 展开/收起明细，点击 step 行或
   `/thinking` 打开全屏按 step 查看完整 reasoning，点击工具行展开完整参数与结果（reasoning 来自已落盘的
   assistant/message，不另存格式）。
-- 会话设置全部走 slash 命令：`/policy` 切权限预设（read-only / workspace-write /
-  danger-full-access）、`/approval` 切审批策略（ask / never / always）、`/cwd` 切工作目录，
-  切换立即作用于当前会话（并写入 `permission/preset`、`approval/policy`、
-  `working-directory/change` 记录）。
+- 会话设置全部走 slash 命令：`/permission` 切命名权限预设（read-only / workspace-write /
+  danger-full-access，把沙箱模式与审批策略打包；`/policy`、`/approval` 已删除）、
+  `/cwd` 切工作目录，切换立即作用于当前会话（并写入 `permission/preset`、
+  `sandbox/mode`、`approval/policy`、`working-directory/change` 记录）。
 - 内核直接 vendor 了 [cordis](https://github.com/cordiverse/cordis) 的 Python 移植
   （`src/deeppyro/_vendor/cordis_port`，MIT）：服务、依赖注入、事件总线、fiber 生命周期
   都与 DSH 同构；领域模块不 import cordis，只有 `kernel/` 负责装配。
@@ -33,6 +33,12 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   还有 agent-presets），其余能力都由插件贡献。插件可注册工具、提示词段、
   slash 命令、LLM provider、agent preset（内置 standard/ptc/minimal/cordis 四个，`/preset`
   会话内切换，带 revision 与 per-preset realm 子插件），以及 TUI 状态栏项 / 对话行 / 面板 / 设置页。
+- **DSH 同款权限边界**：`/permission` 在 read-only / workspace-write / danger-full-access 三个
+  命名预设间切换（同时打包 `sandbox/mode` 与 `approval/policy`，只写变化的旋钮）；审批只有
+  `ask` / `never` 两值，`never` 在 hook 之前直接拒绝；文件写入按会话 writable roots 判定并给出
+  DSH 原文 denial / escalation 提示；shell 命令在 Windows 上经 restricted-token ACL runner
+  真实受限执行（enforcement=partial），无法提供约束时 fail closed 而不是静默放行。详见
+  [docs/spec/sandbox.md](docs/spec/sandbox.md)。
 - **活动栏与多任务**：对话区上方一行活动栏（plan / jobs / agents，空段隐藏）；待办计划来自
   `todo_write`（`/plan` 查看）；后台任务由 jobs 服务托管，shell `run_in_background` 立即返回
   job id，`/jobs` 或 `job_output` / `job_kill` / `job_list` 管理，headless 退出时自动取消；
@@ -97,7 +103,8 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
       tools/    工具注册表、执行流水线、内置工具
       ptc/      Python PTC 呈现模式（run_code 保留工具、自动 Python SDK、worker 协议、
                 内层 dispatch 并发/额度、runtime seam；默认 native，ptc preset 启用）
-      sandbox/  权限预设 / 策略闸门
+      sandbox/  DSH 四层权限：策略（sandbox/mode）、审批（ask/never）、命名预设（/permission）、
+                执行器（Windows ACL restricted-token runner，fail closed）
       prompt/   系统提示词与运行时上下文装配
       agent/    turn/step 循环、inbox、事件流
       compact/  上下文压缩、compress block/ref sidecar 与检索工具
@@ -123,9 +130,9 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
     uv run dpyro --headless --json "1+1=?"        # NDJSON 事件流
     echo "1+1=?" | uv run dpyro --headless --json # stdin 管道
 
-TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /preset /policy /approval /cwd
+TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /preset /permission /cwd
 /status /plan /jobs /team /thinking /hooks /compact /clear /plugins /panel /exit`）；`/provider`、`/model`、
-`/preset`、`/policy`、`/approval`、`/cwd`、`/team` 等无参时打开选择器或面板，带参数的切换立即生效
+`/preset`、`/permission`、`/cwd`、`/team` 等无参时打开选择器或面板，带参数的切换立即生效
 （turn 运行中拒绝）。`/preset` 列出四个内置 agent preset：`standard`（默认）、`ptc`、`minimal`、
 `cordis`，空闲时可实时切换（不重启、历史连续；旧 id `default` 归一为 `standard`）。`/team on` 在当前
 会话进入 Team 模式、`/team off` 回到进入前的 preset，Team 模式只给 Lead 开放 `team_*` 工具并隐藏 `subagent`；

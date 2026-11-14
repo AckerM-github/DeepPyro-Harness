@@ -3,8 +3,7 @@
 状态：TUI 已完整实现（FIGlet 像素字标启动页、每 turn 一个统一 AgentProcess（思考行 + 工具行按时间
 顺序融合、默认收起、点击展开）与全屏思考查看器、对话流、活动栏、多行输入与 slash 补全、选择器、审批、
 插件管理、插件槽位、后台任务面板、团队面板与任务板、状态栏），1075 测试与 ruff 全绿；真实模型端到端
-冒烟通过（启动页 → 任意键 → 思考/工具过程 → 回答；真机用 /policy 切到 read-only、/approval 切到 never、
-/cwd 切换工作目录；插件贡献状态栏项/对话行/面板；jobs 与 team 服务由真实内核装配）。
+冒烟通过（启动页 → 任意键 → 思考/工具过程 → 回答；真机用 /permission 切到 read-only、用 /permission custom 组合、/cwd 切换工作目录；插件贡献状态栏项/对话行/面板；jobs 与 team 服务由真实内核装配）。
 
 ## 1. 形态与范围
 
@@ -17,7 +16,7 @@
 
 | 文件 | 职责 | 所有者 |
 | --- | --- | --- |
-| main.py | argparse 入口 dpyro；--version/--headless/--json/--provider/--model/--preset/--cwd/--max-steps | Lead |
+| main.py | argparse 入口 dpyro；--version/--headless/--json/--provider/--model/--preset/--permission-mode/--approval-policy/--cwd/--max-steps | Lead |
 | app.py | DeepPyroApp：compose 布局、事件分发、turn 生命周期、快捷键、命令处理方法 | Lead |
 | runtime.py | TuiRuntime：boot 内核服务（含 kernel/presets）、创建/切换会话、按 preset revision 重建 AgentSession、compact_now、close | Lead |
 | sink.py | TuiSink：EventSink 实现，累计 usage/final/error 并转发 dict 事件 | Lead |
@@ -34,7 +33,7 @@
 | screens/team.py | 团队面板与任务板（/team、/team board、/team on/off、点击 agents 段） | ui-dev |
 | screens/thinking.py | 全屏思考查看器（/thinking、点击折叠行） | tui-dev |
 | history.py | 从会话日志按 turn 重建 ReasoningStep/TurnReasoning/TurnProcess（思考 + 工具有序过程） | Lead |
-| widgets/status_bar.py | 底部状态栏（session/model/tokens/ctx/policy/phase） | ui-dev |
+| widgets/status_bar.py | 底部状态栏（session/model/tokens/ctx/permission/phase） | ui-dev |
 | slots.py | 插件槽位注册表（STATUS/CONVERSATION/PANEL/SETTINGS，Textual-free） | ui-dev |
 | widgets/plugin_slots.py | 插件状态栏项、插件面板宿主与表格 | ui-dev |
 | screens/plugin_panel.py | 插件面板模态（/panel） | ui-dev |
@@ -95,10 +94,10 @@
 | /provider [name] | 查看/切换 LLM provider；无参打开选择器（缺失 API key 会标注）；切换后重建 provider 与 AgentSession，写 model/selection 并持久化到 config [agent] |
 | /model [id] | 切换模型；支持跨 provider 的 provider/model 形式；无参打开选择器（多 provider 时值为 provider/model）；写 model/selection 并持久化 |
 | /preset [id] | 切换 agent preset（`standard` / `ptc` / `minimal` / `cordis`，按会话组合工具面、提示词、呈现模式与 agent mode）；无参打开选择器（英文 display name + id + presentation + 描述，当前项标记 current）。选择器与参数只列出可见 preset，`team` 隐藏；`/preset team` 会被拒绝并提示用 `/team on`。切换只在空闲时允许，不重启进程、历史连续 |
-| /policy [preset] | 查看/切换权限预设（read-only / workspace-write / danger-full-access）；无参打开选择器；写 permission/preset 记录 |
-| /approval [policy] | 查看/切换审批策略（ask / never / always）；无参打开选择器；写 approval/policy 记录 |
+| /permission [preset] | 查看/切换命名权限预设（read-only / workspace-write / danger-full-access），一个预设同时打包 sandbox mode 与 approval policy；无参打开选择器；写 permission/preset，并只对发生变化的旋钮写 sandbox/mode、approval/policy |
+
 | /cwd [path] | 查看/切换工作目录；无参打开选择器（当前 + 最近会话目录 + 自定义路径模态）；写 working-directory/change 记录 |
-| /status | 当前 provider（含 key 状态）与可用 providers、model、preset、policy、cwd、session、tokens、上下文 |
+| /status | 当前 provider（含 key 状态）与可用 providers、model、preset、permission preset/approval policy、cwd、session、tokens、上下文 |
 | /plan | 打开当前 todo 计划（PlanScreen，按 in_progress / pending / completed 分组） |
 | /jobs | 打开后台任务面板（JobsPanelScreen：id/kind/status/label/started/finished） |
 | /hooks | 最近 hook 决策链（HookTraceScreen：最近 50 条 hook/invoked + hook/result 配对，显示 hook、mode、ok、durationMs、error/preview） |
@@ -114,10 +113,10 @@
 
 ## 7. 审批流
 
-- PermissionGate(preset, approval, workspace, ask)：approval=ask 时工具流水线调用 ask(request)。
-- App.ask_approval → await push_screen_wait(ApprovalScreen(request))：用户选择 once/always/deny。
-- 选择 always 时调用 gate.set_approval(always)（本会话后续该 gate 全部自动允许）；once/deny 保持原策略。
-- approval=never 时工具侧直接拒绝并返回 isError 结果，不弹模态。
+- 权限预设把 sandbox mode 与 approval policy 打包（read-only→ask、workspace-write→ask、danger-full-access→never）；`/permission` 只切换 preset 身份，gate 动态从会话日志解析两个旋钮。手动把旋钮调成不在预设表里的组合时，当前值显示为派生的 `custom`（只读，不能选）。切换只写变化的事件，净零切换不写记录。
+- ApprovalService：policy=never 时直接 rejected（不发 hook/模态）；policy=ask 时先 emit approval/asked，再走 APPROVAL_REQUEST waterfall，最后 emit approval/decided。
+- App.ask_approval → await push_screen_wait(ApprovalScreen(request))：用户只能选择 once/deny（DSH 审批只允许一次；没有 always 选项，也没有全局放宽）。
+- hook/answerer 都没有给出决定时按 unavailable fail closed，工具侧返回 isError 结果，不弹模态。
 
 ## 8. 渲染约定
 
@@ -130,8 +129,8 @@
 - 工具调用是过程的一部分：每个调用一行，运行中 “→ name 摘要”，完成 “✓ name 摘要 · 结果预览”，失败 “✗ name failed”（红色）；默认一行，点击展开完整参数与结果（20 行/2000 字符、40 行/4000 字符，write/edit 参数展开为 diff，能力上限见 tui-widgets.md）。
 - 用户消息块左 accent 边框；系统 info/error 用 dim/红色静态行。
 - provider/model 切换：/provider 重建 llm.client 与 AgentSession（同会话继续，不新建 session），/model 支持裸模型名或 provider/model；两者都写 model/selection 记录并调用 save_agent_selection 持久化到 config.toml 的 [agent]（写失败只提示，不打断切换）。
-- 会话设置全部走 slash 命令，不再有顶部下拉：/policy 切权限预设、/approval 切审批策略、/cwd 切工作目录。切换立即作用于同一会话——sandbox gate 与工具注册表随工作目录更新，并写 permission/preset、approval/policy、working-directory/change 记录；turn 运行中拒绝切换并提示。无参命令打开 PickerScreen（当前值标记 current），/cwd 额外提供 Enter path… 选项打开 PathPromptScreen。
-- 状态栏单行：session 短 id、provider/model、↑输入 ↓输出 ⚡缓存、ctx 百分比（>=75% 黄色）、policy（preset/approval）、phase。
+- 会话设置全部走 slash 命令，不再有顶部下拉：/permission 切命名权限预设、/cwd 切工作目录。切换立即作用于同一会话——sandbox gate 与工具注册表随工作目录更新，并写 permission/preset、sandbox/mode、approval/policy、working-directory/change 记录；turn 运行中拒绝切换并提示。无参命令打开 PickerScreen（当前值标记 current），/cwd 额外提供 Enter path… 选项打开 PathPromptScreen。
+- 状态栏单行：session 短 id、provider/model、↑输入 ↓输出 ⚡缓存、ctx 百分比（>=75% 黄色）、permission（preset，组合不在预设表时显示 custom）、phase。
   ctx 用最近一次模型请求的 inputTokens（`Session.context_tokens()`），不是会话累计；累计值只出现在 ↑。
 - 插件状态栏项：状态栏上方另有一行 PluginStatusBar，插件通过 slots.add_status_item 注册的渲染器按 (order,id) 排序渲染；每次 refresh_status 重新求值，渲染异常显示为 dim 错误标记而不影响主状态栏。
 - 活动栏：Header 与对话区之间一行 ActivityBar，数据来自 activity 服务对 todo/write、job/registered|settled、team/member、subagent/descriptor|catalog、plan/mode 的投影；空段隐藏，点击段打开 PlanScreen / JobsPanelScreen / TeamPanelScreen。
@@ -179,13 +178,13 @@ TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasonin
 - 图片输入/粘贴：v1 不支持（session 层 image part 只读展示）。
 - 会话恢复按 turn 重建统一的 AgentProcess（思考 step 行 + 工具行按顺序）并折叠成摘要，可点击展开/查看完整 reasoning；usage 明细不重放。
 - 自动滚动固定在底部；用户上滚时不抢滚动（v1 以 call_after_refresh(scroll_end) 为主，后续精修）。
-- 审批 always 粒度是 gate 级（本会话全局），未做 per-tool。
+- 审批没有 always 选项：每次升权都要一次批准（一次一审批），不存在 gate 级全放行。
 - 无 PTY；后台任务由 jobs 服务托管（shell run_in_background），不是持久交互 shell。
 - 团队任务板只在内存中（重启清空），成员子会话没有专门的会话浏览器（可 /resume 打开）。
 - Ctrl+C 语义依赖 Textual 绑定；真实终端下的双击退出阈值 1.2s。
 - splash 是纯文本逐行揭示（无淡入/逐字动画），且依赖 Unicode 方块字符；极窄或极矮终端用单行字标。
 - thinking 单行滚动不保留已滚过的句子，只有折叠后点击展开才能看到全文。
-- /policy 与 /approval 切换不改写已生成的 system prompt（提示词里的沙箱说明仍是 turn 开始时的快照）；
+- /permission 切换不改写已生成的 system prompt；新的 sandbox:policy / approval:policy 两段随下一次 runtime context 刷新进入请求；
   session header 的 cwd 保持会话创建值，切换只写 working-directory/change 记录。
 - 切换工作目录要求当前无运行中 turn；/cwd 无参列表只含当前目录与最近会话目录，任意路径走路径输入模态。
 - 插件设置页（SETTINGS 槽位）已注册但暂无宿主界面；设置写入仍是 next-boot 生效（volatile 字段除外）。

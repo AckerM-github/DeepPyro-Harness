@@ -584,35 +584,39 @@ record, and the hook must stay cheap for every call.
 
 ### 6.2 approval/request
 
-    payload = {request, preset, policy, agent, signal}
-    fallback = lambda: "ask"
+    payload = {id, request, approval, agent, policy, signal}
+    fallback = lambda: "unavailable"
 
-waterfall: inside the permission gate, before the policy or a human is
-consulted. request is the approval request object (kind, summary, and details),
-preset is the session permission preset, policy is the approval policy name,
-and agent/signal are None because the gate is not owned by one agent turn.
+waterfall: inside ApprovalService.request, before the interactive answerer is
+consulted. It is not dispatched when the effective policy is "never": DSH
+rejects before the waterfall so a prepended listener cannot approve while
+prompts are disabled. id is the approval id; request is the ApprovalRequest
+(kind, summary, detail, tool, call_id, reason); approval is the serialisable
+view {id, toolName, callId}; policy is "ask"; agent/signal are the caller's
+values.
 
-A listener returns one of "allow", "deny", "ask", or "cancel". allow/deny/cancel
-short-circuit with reason "approved by approval plugin" / "denied by approval
-plugin" / "approval canceled" and via "hook"; "ask" falls back to the normal
-policy path (always/never decide directly, ask produces approval/asked and a
-question). Any other string raises SessionError. A veto (None) is treated as
-"ask", so a veto cannot silently grant or deny access.
+A listener returns "allow", "deny" or "cancel" (outcome strings allowed-once /
+rejected / cancelled are accepted as aliases). allow short-circuits to
+allowed-once, deny to rejected, cancel to cancelled. "ask", "unavailable" and
+None continue to the answerer (or produce unavailable when no answerer is
+installed); any other value becomes unavailable rather than raising, and a
+listener exception is isolated into unavailable.
 
 ### 6.3 approval/asked
 
-    payload = {request, policy}
+    payload = {id, toolName[, callId][, reason]}
 
-emit: just before the interactive approval question is shown to a human. It is
-not dispatched for policy shortcuts (never/always) or hook decisions.
+emit: just before the request is resolved (after the policy check, before the
+waterfall). It is not dispatched when the policy is "never", when the signal is
+already set, or when the hooks service has neither a listener nor an observer.
 
 ### 6.4 approval/decided
 
-    payload = {request, allowed, reason, via}
+    payload = {id, outcome}
 
-emit: after every gate decision. via is "hook" for request-hook decisions,
-"user" for an interactive answer, and "policy" for always/never shortcuts;
-allowed is the boolean outcome and reason is the human-readable explanation.
+emit: after a request that reached the waterfall/answerer path is resolved.
+outcome is one of "allowed-once", "rejected", "cancelled", "unavailable". The
+"never" shortcut returns rejected without emitting asked/decided.
 
 ### 6.5 hook/observability consumer
 
@@ -659,17 +663,18 @@ approval/request listener:
 
 `[approval].hookTools` is a list of tool names (empty means every tool). A
 non-matching request continues the chain, so the plugin is inert until a tool is
-listed or the mode is allow/deny. The gate validates the returned value and
-records via="hook" in approval/decided for hook decisions.
+listed or the mode is allow/deny. ApprovalService maps "allow" to allowed-once
+and "deny" to rejected, then emits approval/decided.
 
 The match is against `ApprovalRequest.tool`, which the tool-side permission
-bridge populates with the calling tool's name: `write` and `edit` for the
-filesystem tools, `pwsh`/`bash` for shell commands. It is set on both the
-plain `write-outside-workspace`/`command-approval` requests and on the
-`sandbox-escalation` request produced by `sandbox_permissions`, so one
-`hookTools` entry covers every approval path that tool takes. Callers that
-build their own `ApprovalRequest` may leave `tool` unset, in which case only
-an empty `hookTools` list matches.
+bridge populates with the calling tool's name: `write`/`edit` for explicit
+filesystem escalation and `pwsh`/`bash` for shell commands. Since DSH aligns
+writes with the sandbox policy, outside-workspace writes are denied directly
+(no approval), so in practice the request kind is `sandbox-escalation` produced
+by `sandbox_permissions`; one `hookTools` entry covers every escalation path a
+tool takes. Callers that build their own `ApprovalRequest` may leave `tool`
+unset, in which case only an empty `hookTools` list matches. A "never" policy
+bypasses the waterfall entirely.
 
 ## 7. Wiring
 

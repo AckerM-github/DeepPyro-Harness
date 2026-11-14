@@ -11,12 +11,16 @@
 - @base.py：BaseTool（ClassVar name/description/parameters/parallel_safe），make_parameters、sandbox_properties。
 - @args.py：参数类型校验（require_str/optional_str/optional_int/optional_bool/optional_str_list/as_object），错误统一 ToolError。
 - @paths.py：把工具参数解析为绝对 Path（相对路径按 ToolContext.cwd），display_path 输出 cwd 相对路径。
-- @permissions.py：工具侧权限桥（gate_for/check_read/check_write/check_command/一次性 sandbox 升级）。
+- @permissions.py：工具侧权限桥（gate_for/check_read/check_write/check_command/一次性 sandbox 升级、拒绝与升权文案）。
 - @builtin/fs.py（read/write/edit）、@builtin/search.py（glob/grep）、@builtin/shell.py（pwsh/bash）、@builtin/web.py（web_search/web_fetch）、@builtin/todo.py、@builtin/present.py。
 
-@src/deeppyro/sandbox/：
-- @types.py：Preset / Approval / Decision / ApprovalRequest（字段名与默认值冻结）。
-- @gate.py：PermissionGate（路径越界、危险命令、approval 策略、一次性升级校验）。
+@src/deeppyro/sandbox/（四层见 @docs/spec/sandbox.md）：
+- @types.py：Preset / Approval / Decision / ApprovalRequest / PermissionPresetSpec（字段名与默认值冻结）。
+- @policy.py：SandboxPolicyService（sandbox/mode 记录、workspace root、writable roots、runtime context 文案）。
+- @approval.py：ApprovalService（ask/never、approval/asked|decided、hook waterfall、answerer）。
+- @permission.py：PermissionPresetsService（命名预设、custom 派生、permission/preset 记录）。
+- @provider.py + @windows_acl_runner.py：confine() 与 Windows ACL restricted-token runner。
+- @gate.py：PermissionGate（策略/审批服务的兼容入口，check_* 与一次性升级校验）。
 
 ## 2. 公开 API 与注册表
 
@@ -40,18 +44,20 @@
   - 工具返回非 ToolResult：ToolError，最终呈现为错误结果
 - 输出保留：默认单结果最多 30000 字符（services["max_output_chars"] 可覆盖）。超出时保留头尾（各约一半），中间插入 @... [truncated N chars] ...；meta 增加 truncated=True、omittedChars=N、spillPath=<路径或 None>。完整文本写入 services["spill_dir"]（缺省为 cwd/.deeppyro/spill）下的 @{call_id}-{tool_name}.txt。落盘失败只降级为无 spillPath，不把成功调用变成错误。
 
-## 4. PermissionGate
+## 4. PermissionGate（兼容入口）
 
-构造：@PermissionGate(preset, approval, workspace, ask=None)。非法 preset/approval 抛 ConfigError。
+构造：@PermissionGate(preset="workspace-write", approval="ask", workspace=None, ask=None, *, hooks=None, policy_service=None, approval_service=None, permission_presets=None, session=None)。非法 preset/approval 抛 ConfigError；@approval 只剩 ask / never（DSH 没有 always）。
 
-- check_read：所有 preset 都允许（与 DSH 一致；否则模型无法诊断文件问题）。
-- check_write：read-only 拒绝（needs_approval=False）；workspace-write 仅在 resolve 后位于 workspace 内允许，越界给出 allowed=False、needs_approval=True 的 Decision；danger-full-access 直接允许。
-- check_command：read-only 拒绝；danger-full-access 允许；workspace-write 对危险命令（rm -rf、Remove-Item -Recurse -Force、rmdir /s、format X:、mkfs/diskpart/dd if=、git push --force、shutdown/reboot、reg delete、cipher /w）给出 needs_approval=True；其余命令允许。
-- approval 策略在 Decision 上落地：never 直接拒绝并写 reason 含 "approval policy is never"、needs_approval 归 False；always 直接放行；ask 保留 needs_approval=True，由 PermissionGate.request 询问。
-- request(req)：never 拒绝；always 允许；ask 调用 ask 回调，回调为 None 时拒绝（"no interactive approval handler is available"），回调抛异常时拒绝（"approval handler failed: ..."），回调返回 False 为 "rejected by the user"。每次请求与决定都追加到 gate.approvals 便于会话日志。
-- validate_escalation(target)：只允许严格更宽（read-only < workspace-write < danger-full-access），重复当前模式或收窄抛 ConfigError；非法模式同样 ConfigError。
+- @bind_session(session) / @bind_hooks(hooks) / @bind_answerer(ask)：由 AgentSession、SandboxPlugin 调用；gate 每次 check 都从会话日志动态解析当前两个旋钮。
+- @preset：优先 permissionPresets.current(session)（custom 时回退 policy.mode）；@approval：approval_service.effective_policy(session)。
+- check_read：恒 True（与 DSH 一致；读不受 fs fence 限制）。
+- check_write：@danger-full-access → True；@read-only → False；@workspace-write → canonicalize 后位于 writable_roots（workspace + additional roots + temp）才 True。拒绝不弹审批；消息由 tools 层拼 denial marker 与 escalation hint。
+- check_command：恒 True；真正的执行约束由 sandbox provider 的 confine() 在 OS 层完成。
+- validate_escalation(target)：只允许严格更宽（WIDER_MODES：read-only → workspace-write/danger，workspace-write → danger）；同模式 no-op；非法/收窄抛 ConfigError。
+- request(req, *, signal=None, agent=None)：委托 ApprovalService，映射 Decision reason：allowed-once→"approved for this call"、rejected→"approval was rejected"、cancelled→"approval was cancelled"、unavailable→"no interactive approval handler is available"。
+- DANGEROUS_PATTERNS 保留 9 条，只供 TUI ApprovalScreen 的风险徽标使用，不再驱动审批。
 
-工具侧（@permissions.py）：write/edit/pwsh 支持参数 sandbox_permissions=sandbox_permissions + justification 的一次性升级；设置 sandbox_permissions 时 justification 必填（ToolError），且目标必须严格更宽；升级需经 gate.request 批准（ApprovalRequest.kind="sandbox-escalation"），拒绝抛 PermissionDenied。普通越界写/危险命令的 needs_approval 分别以 kind="write-outside-workspace"/"command-approval" 走 request。三条路径的 ApprovalRequest.tool 都填调用工具名（write/edit/pwsh/bash），供 approval/request 消费者（如 [approval].hookTools）按工具过滤。
+工具侧（@permissions.py）：write/edit 的普通越界写直接 PermissionDenied（不再走审批）；pwsh/bash 与 write/edit 支持 sandbox_permissions + justification 的一次性升权，缺 justification 报 ToolError，目标必须严格更宽，经 ApprovalService 一次一审批（kind="sandbox-escalation"）。拒绝文案 "the user rejected escalating this <subject> to \"<mode>\"; it stays denied, so stop and explain instead of working around it"；取消文案 "approval for escalating to \"<mode>\" was cancelled"。ApprovalRequest.tool 仍填调用工具名，供 [approval].hookTools 过滤。
 
 ## 5. 内置工具
 
@@ -83,8 +89,10 @@ footer 三选一：读完为 @(End of file - total N lines)；从 offset>1 开�
 行为：目录遍历跳过 VCS 目录；前 8192 字节含 NUL 视为二进制跳过；文件按 utf-8 replace 解码；每文件分组，输出 @Found {total} matches（截断时 @Found {shown} of {total} matches）+ 空行 + @{相对路径} + @Line N: {行预览}；每行预览上限 2000 字符；最多 250 条匹配，超出追加提示；空结果 @No matches found；无效正则在编译时报 invalid regular expression；遍历超过 30s 报 grep timed out。meta：matches/returned/files。
 
 ### pwsh / bash
-参数：pwsh 需要 description（必填，schema 中排在 command 前）、command；两者都支持 timeoutMs（默认 120000，上限 600000）、workdir；write/edit/pwsh 支持 sandbox 升级字段。run_in_background 当前不支持，直接 ToolError。
-执行：每个调用新建进程；stdout/stderr 合并；输出 CRLF 归一为 LF 并去掉末尾换行；非零退出码在文本末尾追加 @[exit code: N]，但 is_error=False（与 fixtures 一致，交由模型判断）；超时 kill 并抛 ToolError timed out；命令启动失败为 cannot start shell；workdir 不存在的报错。pwsh 优先找 PATH 上的 pwsh，找不到回退 Windows PowerShell（powershell.exe），参数为 -NoLogo -NoProfile -NonInteractive -Command；bash 使用 bash -lc（找不到则 sh -lc）。meta：exitCode/durationMs/workdir。
+参数：pwsh 需要 description（必填，schema 中排在 command 前）、command；两者都支持 timeoutMs（默认 120000，上限 600000）、workdir、run_in_background（jobs 服务，返回 jobId）；pwsh/bash 都支持 sandbox_permissions + justification 的一次性升权字段。
+执行：先 check_command（恒允许）再 sandbox.confine() 生成受约束 argv；confine 失败 fail closed，绝不降级为无约束执行。每个调用新建进程；stdout/stderr 合并；输出 CRLF 归一为 LF 并去掉末尾换行；非零退出码在文本末尾追加 @[exit code: N]，但 is_error=False（与 fixtures 一致，交由模型判断）；超时 kill 并抛 ToolError timed out；命令启动失败为 cannot start shell；workdir 不存在的报错。pwsh 优先找 PATH 上的 pwsh，找不到回退 Windows PowerShell（powershell.exe），参数为 -NoLogo -NoProfile -NonInteractive -Command；bash 使用 bash -lc（找不到则 sh -lc）。
+沙箱事实：结果附 `meta["sandbox"]={"mode","enforcement","denied"}`（runner 失败再加 runnerFailed=True），并按 §4 的 marker 规则在文本尾部追加 denial / escalation / runner-failure 提示；后台任务在进程结束时做同样分类，并在 finally 清理私有 temp root。
+meta：exitCode/durationMs/workdir/sandbox。
 
 ### web_search
 参数：queries（1 到 4 个非空字符串）。通过 DuckDuckGo HTML 端点 POST 表单 q=... 搜索；多个 query 并发请求，结果 round-robin 合并并按 URL 去重，最多 8 条。成功文本：
@@ -130,7 +138,7 @@ footer 三选一：读完为 @(End of file - total N lines)；从 offset>1 开�
 - web_search 直接抓 DuckDuckGo HTML（无搜索 provider 配置/API key）；DSH 的 provider 抽象与 summary 字段未实现，因此 fixtures 里的 answer 前缀不会出现。
 - grep 用 Python re，不是 ripgrep：字符类/转义细节、Unicode 行为可能不同；include 只匹配文件名 basename。
 - glob 跳过 VCS 目录（DSH 也跳过）；路径输出在 Windows 上为反斜杠（与 fixtures 一致）。
-- 沙箱是进程内策略判定（路径 resolve 后前缀检查 + 危险命令正则），不是 OS 级隔离/ACL 强制；审批由 ask 回调提供，CLI 需要实现交互 y/n。
+- 沙箱已改为 DSH 四层：策略/审批/命名预设 + OS 执行层（Windows ACL restricted-token runner，enforcement=partial）。POSIX 后端尚未实现，非 Windows 上 read-only/workspace-write fail closed；danger-full-access 原样执行。
 - present 只记录交付物，不触发宿主 UI 展示。
 - 没有 PTC（run_code 内再调工具）、没有 tool/ptc-dispatch 记录。
 

@@ -133,7 +133,10 @@ class OpenAICompatProvider:  # 实现 LlmProvider
 
 ```python
 from deeppyro.tools import ToolRegistry, builtin_tools, run_tool_batch, ToolCallRequest, ToolOutcome
-from deeppyro.sandbox import PermissionGate, Decision, ApprovalRequest
+from deeppyro.sandbox import (
+    ApprovalRequest, ApprovalService, Decision, LocalSandboxProvider, PermissionGate,
+    PermissionPresetsService, SandboxPolicy, SandboxPolicyService,
+)
 
 class ToolRegistry:
     RESERVED_TOOL_NAMES = frozenset({"run_code"})  # 只允许 reserved_tool=True 的 transport 注册
@@ -181,10 +184,11 @@ async def run_tool_batch(requests: list[ToolCallRequest], *, registry: ToolRegis
 每个工具：`name/description/parameters(JSON Schema)/parallel_safe` + `async run(args, ctx) -> ToolResult`。
 `run_code` 由 `ptc` 行提供：`[ptc].mode = "ptc"` 时全局注册；默认 native 下以 `scope="ptc"` 注册，供 `ptc` agent preset 使用（`reserved_tool=True`，参数 `code`/`description` 必填 + 可选 `timeoutMs`；presentation=ptc 时它是模型唯一直接可见的工具）。
 
-sandbox：
+sandbox（四层语义详见 `docs/spec/sandbox.md`）：
 ```python
 Preset = Literal["read-only", "workspace-write", "danger-full-access"]
-Approval = Literal["ask", "never", "always"]
+Approval = Literal["ask", "never"]          # DSH 没有 always
+OUTCOMES = ("allowed-once", "rejected", "cancelled", "unavailable")
 
 @dataclasses.dataclass
 class Decision:
@@ -193,18 +197,70 @@ class Decision:
 @dataclasses.dataclass
 class ApprovalRequest:
     kind: str; summary: str; detail: str = ""; tool: str | None = None
+    call_id: str | None = None; reason: str | None = None
 
-class PermissionGate:
-    def __init__(self, preset: Preset, approval: Approval, workspace: Path,
-                 ask: Callable[[ApprovalRequest], Awaitable[bool]] | None = None) -> None
+@dataclasses.dataclass
+class PermissionPresetSpec:
+    name: str; sandbox: Preset; approval: Approval; description: str
+
+@dataclasses.dataclass
+class SandboxPolicy:
+    mode: Preset; workspace_root: Path; additional_writable_roots: tuple[Path, ...] = ()
+
+class SandboxPolicyService:
+    def resolve(self, session=None, mode: str | None = None) -> SandboxPolicy
+    def workspace_root(self, session=None) -> Path
+    def last_mode(self, session=None) -> Preset | None
+    def set_mode(self, session, mode: str) -> Preset     # 写 sandbox/mode，幂等
+
+class ApprovalService:
+    def policy(self) -> Approval
+    def last_policy(self, session=None) -> Approval | None
+    def effective_policy(self, session=None) -> Approval
+    def set_policy(self, session, policy: str) -> Approval  # 写 approval/policy，幂等
+    def bind_hooks(self, hooks) -> None
+    def bind_answerer(self, answerer) -> None
+    async def request(self, request: ApprovalRequest, *, signal=None, agent=None,
+                      session=None) -> str    # outcomes 之一
+
+class PermissionPresetsService:
+    def names(self) -> tuple[str, ...]
+    def catalog(self) -> tuple[PermissionPresetSpec, ...]
+    def get(self, name: str) -> PermissionPresetSpec
+    def is_custom(self, session=None) -> bool
+    def derive(self, session=None) -> str          # 组合不匹配 -> "custom"
+    def current(self, session=None) -> str
+    def apply(self, session, name: str) -> str     # 只写变化的旋钮
+    def pin_initial(self, session) -> str          # 会话创建时补初始记录
+
+@dataclasses.dataclass
+class Confinement:
+    argv: tuple[str, ...]; enforcement: str = "full"
+    denial_signatures: tuple[str, ...] = ()
+    runner_failure_rules: tuple[RunnerFailureRule, ...] = ()
+    temp_root: Path | None = None
+
+class LocalSandboxProvider:
+    def confine(self, argv, policy: SandboxPolicy, *, signal=None,
+                temp_root=None) -> Confinement   # 无可用后端 -> SandboxUnavailableError
+
+class PermissionGate:                            # 兼容入口，供工具与旧调用方
+    def __init__(self, preset: Preset = "workspace-write", approval: Approval = "ask",
+                 workspace: Path | None = None, ask=None, *, hooks=None,
+                 policy_service=None, approval_service=None,
+                 permission_presets=None, session=None) -> None
+    def bind_session(self, session) -> None
+    def bind_hooks(self, hooks) -> None
+    def bind_answerer(self, answerer) -> None
     def check_read(self, path: Path) -> Decision
     def check_write(self, path: Path) -> Decision
     def check_command(self, command: str) -> Decision
-    async def request(self, req: ApprovalRequest) -> Decision
+    async def request(self, req: ApprovalRequest, *, signal=None, agent=None) -> Decision
 ```
-- `read-only`：写/命令一律拒绝；`workspace-write`：仅 workspace 内写允许，命令允许（危险命令仍拦）；`danger-full-access`：全放行。
-- `approval="never"`：`needs_approval` 一律直接拒绝（reason 说明"approval policy is never"）。
-- `approval="ask"`：调用 `ask` 回调（CLI 会把它实现成终端 y/n；非交互时按拒绝）。
+- `check_read` 恒 True；`check_write` 按 policy.mode 与 writable_roots（workspace + additional + temp）直接判 True/False；`check_command` 恒 True，执行约束由 `confine()` 在 OS 层完成。
+- `approval="never"` 直接 rejected（不发 hook/模态）；`approval="ask"` 先 emit `approval/asked`，再走 `APPROVAL_REQUEST` waterfall（fallback `"unavailable"`），最后 emit `approval/decided`；无 answerer/未知返回值/unavailable 均 fail closed。
+- `validate_escalation` 只允许严格更宽（WIDER_MODES）；一次性升权由 tools 层发起 `kind="sandbox-escalation"` 审批。
+- `danger-full-access` 原样执行（enforcement=full）；Windows 的 read-only/workspace-write 走 ACL restricted-token runner（enforcement=partial）；非 Windows 且非 danger 抛 `SandboxUnavailableError`，绝不静默无约束执行。
 
 ## 7. prompt + agent + compact（loop-dev）
 
@@ -217,6 +273,8 @@ from deeppyro.compact import Compactor
 class PromptContext:
     cwd: Path; platform: str; session_id: str; started_at: int
     permission_preset: str; approval_policy: str; model: str
+    # runtime context 的 sandbox:policy / approval:policy 两段文本（空串则不渲染）
+    sandbox_policy_text: str = ""; approval_policy_text: str = ""
     instructions: list[str] = field(default_factory=list)   # AGENTS.md 等
     env: dict[str, str] = field(default_factory=dict)
     # 非 None 时核心 tools 段只列这些“可直接调用”的工具；PTC preset 的 surface 传 ("run_code",)
@@ -381,7 +439,7 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 | `llm` | `builtin.llm` | `llm`：`.provider(name)`、`.add_provider`、`.list_models/.model_info/.catalog_snapshot` |
 | `sessions` | `builtin.sessions` | `sessions`：`.store`（SessionStore） |
 | `session-query` | `builtin.session_query` | `session_query`：`.list_summaries/.get/.read_session/.read_surface/.list_events/.read_event/.filter_events/.trace_session/.trace_event` |
-| `sandbox` | `builtin.sandbox` | `sandbox`：`.gate(workspace, ask=None)` |
+| `sandbox` | `builtin.sandbox` | 插件 provide=`sandbox`；另 provide `sandboxPolicy`（SandboxPolicyService）、`approval`（ApprovalService）、`permissionPresets`（PermissionPresetsService）。方法：`.gate(workspace, ask=None, *, session=None)`、`.confine(argv, policy, *, signal=None)`、`.preset`、`.approval`；读 `[sandbox]`、`[approval].policy`、`[permission].defaultPreset`（见 sandbox.md §8） |
 | `tools` | `builtin.tools` | `tools`：`.add(factory, scope=..., revision=...)`、`.registry_for(workspace, scope=None, revision=None)` |
 | `tools-builtin` | `builtin.tools` | 内置工具（read/write/edit/glob/grep/pwsh|bash/web_search/web_fetch/todo_write/present 等） |
 | `compress` | `builtin.compress` | 无服务；注册 `compress`、`search_context`、`decompress` 三个工具（BlockStore/RefStore 侧车文件） |
@@ -406,7 +464,7 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 | `memory` | `builtin.memory` | `memory`（critical=false）：`.entries/.snapshot/.remember/.replace/.forget/.status`；`mnemon_runtime_memory` 工具（tools 缺失时降级为仅提示词段）；提示词段 `memory-runtime` order 12 |
 | `skills` | `builtin.skills` | `skills`（critical=false）：`.registry`（list/get/snapshot/render_catalog）；`skill` 工具；提示词段 `skills` order 35 |
 | `commands` | `builtin.commands` | `commands`：`.add`、`.all()`、`.resolve()`、`.invoke()` |
-| `commands-builtin` | `builtin.commands_builtin` | 20 个内置 slash 命令（含 `/provider`、`/model`、`/preset`、`/policy`、`/approval`、`/cwd`、`/plan`、`/jobs`、`/team`、`/thinking`、`/hooks`、`/panel`） |
+| `commands-builtin` | `builtin.commands_builtin` | 内置 slash 命令（含 `/provider`、`/model`、`/preset`、`/permission`、`/cwd`、`/plan`、`/jobs`、`/team`、`/thinking`、`/hooks`、`/panel`）；`/policy` 与 `/approval` 已删除 |
 | `agents` | `builtin.agents` | `agents`：`.create(..., preset=None, preset_revision=None, registry=None)`、`.options(**overrides)`；按 preset spec 过滤 registry（`tools` allowlist / `tools_exclude`）、决定 surface（`presentation="ptc"` → 仅 `run_code`）、提示词段 allowlist（`prompt_sections`）与 runtime context 开关，并把 `agent.presentation`/`preset`/`preset_revision`/`preset_spec` 挂到会话 |
 | `team` | `builtin.team` | `team`：`.configure(...)`、`.bind_session`、`.spawn/.send/.wait/.cancel`、任务板 `.create_task/.update_task`；9 个 `team_*` 工具（scope=`team`） |
 | `subagent` | `builtin.subagent` | `subagent`：`.configure(...)`、`.bind_session`、`.run(prompt, ...)->SubagentResult`；1 个 host-wide `subagent` 工具（team preset 下由 AgentsService 过滤） |

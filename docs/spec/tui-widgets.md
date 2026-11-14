@@ -2,7 +2,7 @@
 
 状态：M1/M2/M3 已实现；对话流按 user turn 组织，思考与工具合并为每 turn 一个可折叠 AgentProcess
 （默认收起为一行摘要，展开按时间顺序显示 step 行与工具行），全屏查看器查看完整 reasoning；
-新增活动栏、计划/任务/团队面板；设置改走 slash 命令（/policy /approval /cwd）。
+新增活动栏、计划/任务/团队面板；设置改走 slash 命令（/permission /cwd）。
 
 本文件描述 `src/deeppyro/tui/widgets/` 与相关 screens 的**渲染语义**，以及从 fixtures 事件与终端
 截图逆向出的取舍。总体形态、键位与启动流程见 `docs/spec/tui.md`；跨模块事件字段以
@@ -20,7 +20,7 @@
 | `screens/plan.py` | `PlanScreen`：待办按 in_progress / pending / completed 分组 |
 | `screens/jobs.py` / `screens/team.py` | `JobsPanelScreen` / `TeamPanelScreen` / `TaskBoardScreen`：只读快照 |
 | `widgets/tool_card.py` | 工具摘要辅助函数：`parse_arguments` / `summarize_arguments` / `clean_result_text` / `diff_preview_lines`（AgentProcess 复用，纯函数） |
-| `widgets/status_bar.py` | `StatusBar`：单行状态（session/model/tokens/ctx/policy/phase） |
+| `widgets/status_bar.py` | `StatusBar`：单行状态（session/model/tokens/ctx/permission/phase） |
 | `theme.tcss` | 调色板、user/assistant/tool/活动栏/状态栏样式、Markdown 边距覆盖 |
 | `tests/tui/` | test_conversation / test_agent_process / test_tool_card / test_status_bar / test_thinking_screen / test_activity_bar / test_plan_screen / test_jobs_screen / test_team_screen / test_history |
 
@@ -29,7 +29,7 @@
 直接调用）；在此基础上新增 `begin_step(turn, step)`、`finish_turn(final_text)`、`current_reasoning`、
 `process`、`add_history_process(TurnProcess)`。`StatusBar.show()` 的关键字参数已精简为
 `session_id/provider/model/input_tokens/output_tokens/cached_tokens/context_window/phase`
-（`cwd` 与 `approval` 改由 slash 命令 /cwd 与 /approval 管理，不再进状态栏）。
+（`cwd` 与权限/审批改由 slash 命令 /cwd 与 /permission 管理，不再进状态栏）。
 
 ## 2. 事件到 widget 的映射
 
@@ -149,7 +149,7 @@
 - 行级 `text-wrap: nowrap` + ellipsis，保证永远一行；不换行比截断选项更可预期。
 - `show()` 关键字参数：`session_id/provider/model/input_tokens/output_tokens/cached_tokens/context_window/phase`，
   以及可选的 `context_tokens`（缺省回退 `input_tokens`）；
-  `cwd` 与 `approval` 由 slash 命令（/cwd、/approval）管理，不占状态栏空间（见 `tui.md` §8）。
+  `cwd` 与权限/审批由 slash 命令（/cwd、/permission）管理，不占状态栏空间（见 `tui.md` §8）。
 
 ## 8. 主题与 CSS 取舍
 
