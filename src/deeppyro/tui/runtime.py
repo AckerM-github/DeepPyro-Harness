@@ -558,6 +558,7 @@ class TuiRuntime:
         for name in (
             "llm",
             "hooks",
+            "retryPolicy",
             "plugin_manager",
             "inspect",
             "settings",

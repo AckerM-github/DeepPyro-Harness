@@ -29,6 +29,7 @@ EXPECTED_ORDER = [
     "user-questions",
     "attachments",
     "hooks",
+    "llm-retry",
     "jobs",
     "plugin-tools",
     "presets",
@@ -115,6 +116,7 @@ config = { start = 5 }
         "user-questions",
         "attachments",
         "hooks",
+        "llm-retry",
         "jobs",
         "plugin-tools",
         "presets",
@@ -163,6 +165,7 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
             "user-questions",
             "attachments",
             "hooks",
+            "llm-retry",
             "jobs",
             "plugin-tools",
             "presets",
@@ -198,6 +201,7 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
         assert app.started["projections"] == "ACTIVE"
         assert app.started["llm"] == "ACTIVE"
         assert app.started["hooks"] == "ACTIVE"
+        assert app.started["llm-retry"] == "ACTIVE"
         assert app.started["presets"] == "ACTIVE"
         assert app.started["prompt"] == "ACTIVE"
         assert app.started["prompt-core"] == "ACTIVE"

@@ -106,6 +106,16 @@ models = [{ id = "deepseek-chat", contextWindow = 65536 }]
 # through async bindings. See docs/spec/ptc.md.
 [ptc]
 mode = "native"
+
+# Retry policy for failed provider requests. See docs/spec/llm.md and
+# src/deeppyro/builtin/llm_retry.py. "normal" retries only retryable failures
+# within maxRetries; "always" retries every failure until the turn is cancelled.
+[retry]
+mode = "normal"
+maxRetries = 5
+initialDelayMs = 500
+maxDelayMs = 10000
+jitterRatio = 0.1
 """
 
 
