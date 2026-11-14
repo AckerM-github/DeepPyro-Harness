@@ -45,7 +45,8 @@ async def test_spawn_creates_child_session_agent_and_records(tmp_path) -> None:
     env = make_team(tmp_path)
     info = env.service.spawn("scout", "researches the bug", "find the bug")
     assert isinstance(info, MemberInfo)
-    assert info.id.startswith("member-")
+    assert info.id == info.session_id
+    assert info.id.startswith("session-")
     assert info.name == "scout"
     assert info.description == "researches the bug"
     assert info.provider == "local"

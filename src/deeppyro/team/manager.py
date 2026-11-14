@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import inspect
+import logging
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import Any
 from deeppyro.api import CHILD_DISABLED_TOOLS, DEFAULT_PRESET_ID
 from deeppyro.core.ids import new_session_id, now_ms
 from deeppyro.core.wire import SessionHeader
+from deeppyro.session.fork import open_turn_closers
 from deeppyro.session.layout import flat_session_path
 from deeppyro.session.session import Session
 from deeppyro.session.writer import write_new_session
@@ -39,6 +41,8 @@ from deeppyro.team.types import (
     TaskInfo,
 )
 from deeppyro.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_PRESET = DEFAULT_PRESET_ID
 _DEFAULT_CONTEXT_WINDOW = 32768
@@ -90,6 +94,7 @@ class _Member:
     last_reply: str = ""
     error: str | None = None
     agent: Any = None
+    restored_session: Any = None
     task: asyncio.Task[None] | None = None
     queue: list[str] = field(default_factory=list)
     rest: asyncio.Event = field(default_factory=asyncio.Event)
@@ -161,6 +166,7 @@ class TeamService:
         self._parent: Any = None
         self._members: dict[str, _Member] = {}
         self._board: dict[str, TaskInfo] = {}
+        self._restored = False
 
     # -- configuration --------------------------------------------------
     @property
@@ -215,6 +221,7 @@ class TeamService:
     def bind_session(self, session: Any) -> None:
         """Bind the lead session that receives this team's records."""
         self._parent = session
+        self._restored = False
 
     def set_ask(self, ask: Any) -> None:
         """Set the approval callback used by child permission gates."""
@@ -257,7 +264,7 @@ class TeamService:
             preset_revision=preset_revision,
         )
         member = _Member(
-            id=f"member-{uuid.uuid4().hex[:12]}",
+            id=child_session.session_id,
             name=member_name,
             description=member_description,
             provider=_provider_name(self._resolve_provider(provider)),
@@ -300,6 +307,14 @@ class TeamService:
             member.queue.append(text)
             self._record_message(member, "team/message/queued", text)
             return "queued"
+        if member.agent is None:
+            try:
+                self._load_agent(member)
+            except Exception as exc:
+                member.error = f"{type(exc).__name__}: {exc}"
+                member.phase = PHASE_FAILED
+                self._record_member(member)
+                raise TeamError(f"cannot restore team member {member.id!r}: {exc}") from exc
         member.rest.clear()
         member.phase = PHASE_RUNNING
         self._record_member(member)
@@ -348,7 +363,7 @@ class TeamService:
         return True
 
     async def close(self) -> None:
-        """Cancel every running member task (used by runtime shutdown)."""
+        """Cancel running members and close their agents (runtime shutdown)."""
         tasks = [
             member.task
             for member in self._members.values()
@@ -358,6 +373,132 @@ class TeamService:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        for member in self._members.values():
+            await self._close_agent(member.agent)
+
+    # -- cold restore ---------------------------------------------------
+    async def restore(self) -> tuple[MemberInfo, ...]:
+        """Rebuild the roster, task board and inbox from the lead session log.
+
+        A fresh process binds the lead session and calls restore() once: the
+        persistent records are folded back into memory, then every member with a
+        queued message resumes it in the background.  Repeated calls return the
+        current roster instead of replaying the same records twice.
+        """
+        if self._restored:
+            return tuple(_member_info(item) for item in self._members.values())
+        parent = self._parent
+        records = getattr(parent, "records", None) if parent is not None else None
+        if not records:
+            return ()
+        self._restored = True
+        order, members, queues, tasks = _fold_team_records(records, self.team_id)
+        self._members.clear()
+        self._board.clear()
+        for member_id in order:
+            member = self._restore_member(member_id, members[member_id])
+            member.queue = queues.get(member_id, [])
+            self._members[member_id] = member
+        for task_id, payload in tasks.items():
+            self._board[task_id] = _task_from_record(task_id, payload)
+        for member in self._members.values():
+            self._resume_member(member)
+        return tuple(_member_info(item) for item in self._members.values())
+
+    def _restore_member(self, member_id: str, payload: dict[str, Any]) -> _Member:
+        phase = _safe_text(payload.get("phase")) or PHASE_IDLE
+        if phase in (PHASE_SPAWNING, PHASE_RUNNING):
+            phase = PHASE_IDLE
+        member = _Member(
+            id=member_id,
+            name=_safe_text(payload.get("name")),
+            description=_safe_text(payload.get("description")),
+            provider=_safe_text(payload.get("provider")),
+            model=_safe_text(payload.get("model")),
+            preset=_safe_text(payload.get("context")) or self._preset,
+            session_id=member_id,
+            created_at=_safe_int(payload.get("createdAt")),
+            phase=phase,
+        )
+        try:
+            member.restored_session = self._open_member_session(member)
+        except Exception as exc:  # noqa: BLE001 - one lost session must not break restore
+            member.error = f"cannot restore team member session: {exc}"
+            member.phase = PHASE_FAILED
+        return member
+
+    def _resume_member(self, member: _Member) -> None:
+        if not member.queue or member.phase in (PHASE_FAILED, PHASE_CANCELLED):
+            return
+        text = member.queue.pop(0)
+        member.phase = PHASE_RUNNING
+        try:
+            self._load_agent(member)
+            member.task = asyncio.create_task(self._run(member, text, initial=False))
+        except Exception as exc:  # noqa: BLE001 - resume is best effort
+            member.queue.insert(0, text)
+            member.error = f"{type(exc).__name__}: {exc}"
+            member.phase = PHASE_FAILED
+            self._record_member(member)
+
+    def _load_agent(self, member: _Member) -> Any:
+        if member.agent is not None:
+            return member.agent
+        session = member.restored_session
+        if session is None:
+            session = self._open_member_session(member)
+            member.restored_session = session
+        self._close_open_turn(session)
+        preset = member.preset or self._preset
+        member.agent = self._create_agent(
+            session,
+            provider=member.provider or None,
+            model=member.model,
+            preset=preset,
+            preset_revision=self._preset_revision if preset == self._preset else None,
+        )
+        return member.agent
+
+    def _open_member_session(self, member: _Member) -> Session:
+        store = getattr(self._sessions, "store", None)
+        opener = getattr(store, "open", None)
+        if not callable(opener):
+            raise TeamError("sessions service store does not support opening sessions")
+        return opener(member.session_id)
+
+    def _close_open_turn(self, session: Session) -> None:
+        records = getattr(session, "records", None) or []
+        try:
+            closers = open_turn_closers(records, {"kind": "interrupted"})
+        except Exception:
+            logger.warning("failed to build team member turn closers", exc_info=True)
+            return
+        for closer in closers:
+            try:
+                envelope: dict[str, Any] = {}
+                if closer.get("surfaceOp") is not None:
+                    envelope["surfaceOp"] = closer["surfaceOp"]
+                if closer.get("sourceEventSeqs") is not None:
+                    envelope["sourceEventSeqs"] = closer["sourceEventSeqs"]
+                if closer.get("time") is not None:
+                    envelope["time"] = closer["time"]
+                session.append(closer["type"], closer["data"], **envelope)
+            except Exception:
+                logger.warning("failed to close team member open turn", exc_info=True)
+                return
+
+    async def _close_agent(self, agent: Any) -> None:
+        if agent is None:
+            return
+        aclose = getattr(agent, "aclose", None)
+        if not callable(aclose):
+            return
+        try:
+            result = aclose()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001, S110 - shutdown must not raise
+            pass
 
     # -- child wiring ---------------------------------------------------
     def _create_child_session(self, preset_id: str) -> Session:
@@ -661,6 +802,8 @@ class TeamService:
                     "status": task.status,
                     "blockedBy": list(task.blocked_by),
                     "writeScopes": list(task.write_scopes),
+                    "owner": task.owner,
+                    "createdAt": task.created_at,
                 },
             },
         )
@@ -689,6 +832,91 @@ class TeamService:
             if found is not None and found.status != "completed":
                 blocked.append(ref)
         return blocked
+
+
+def _safe_text(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _safe_int(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value
+
+
+def _safe_strings(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _revision(value: Any) -> int:
+    return _safe_int(value)
+
+
+def _message_text(data: dict[str, Any]) -> str:
+    message = data.get("message")
+    if not isinstance(message, dict):
+        return ""
+    text = message.get("text")
+    return text if isinstance(text, str) else ""
+
+
+def _fold_team_records(
+    records: Any,
+    team_id: str,
+) -> tuple[list[str], dict[str, dict[str, Any]], dict[str, list[str]], dict[str, dict[str, Any]]]:
+    order: list[str] = []
+    members: dict[str, dict[str, Any]] = {}
+    queues: dict[str, list[str]] = {}
+    tasks: dict[str, dict[str, Any]] = {}
+    for record in records:
+        data = getattr(record, "data", None)
+        if not isinstance(data, dict) or data.get("teamId") != team_id:
+            continue
+        record_type = getattr(record, "type", "")
+        if record_type == "team/member":
+            payload = data.get("member")
+            member_id = payload.get("id") if isinstance(payload, dict) else None
+            if not isinstance(member_id, str) or not member_id:
+                continue
+            if member_id not in members:
+                order.append(member_id)
+            members[member_id] = payload
+        elif record_type == "team/task":
+            payload = data.get("task")
+            task_id = payload.get("id") if isinstance(payload, dict) else None
+            if not isinstance(task_id, str) or not task_id:
+                continue
+            current = tasks.get(task_id)
+            if current is None or _revision(payload.get("revision")) >= _revision(current.get("revision")):
+                tasks[task_id] = payload
+        elif record_type == "team/message/queued":
+            member_id = data.get("memberId")
+            text = _message_text(data)
+            if isinstance(member_id, str) and member_id and text:
+                queues.setdefault(member_id, []).append(text)
+        elif record_type == "team/message/delivered":
+            member_id = data.get("memberId")
+            text = _message_text(data)
+            queue = queues.get(member_id) if isinstance(member_id, str) else None
+            if queue is not None and text in queue:
+                queue.remove(text)
+    return order, members, queues, tasks
+
+
+def _task_from_record(task_id: str, payload: dict[str, Any]) -> TaskInfo:
+    return TaskInfo(
+        id=task_id,
+        revision=_revision(payload.get("revision")),
+        subject=_safe_text(payload.get("subject")),
+        description=_safe_text(payload.get("description")),
+        status=_safe_text(payload.get("status")) or "pending",
+        blocked_by=tuple(_safe_strings(payload.get("blockedBy"))),
+        write_scopes=tuple(_safe_strings(payload.get("writeScopes"))),
+        owner=_safe_text(payload.get("owner")),
+        created_at=_safe_int(payload.get("createdAt")),
+    )
 
 
 def _provider_name(provider: Any) -> str:

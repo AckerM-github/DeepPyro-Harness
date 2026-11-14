@@ -21,6 +21,7 @@ class FakeAgent:
         self.gate = gate
         self.prompts: list[str] = []
         self.interrupted = False
+        self.closed = False
 
     async def send(self, text: str) -> str:
         self.prompts.append(text)
@@ -30,6 +31,9 @@ class FakeAgent:
 
     async def interrupt(self) -> None:
         self.interrupted = True
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 class FakeAgents:
@@ -100,6 +104,7 @@ class TeamEnv:
     sandbox: FakeSandbox
     permission: FakeGate
     provider: SimpleNamespace
+    cwd: Path
 
 
 def make_team(
@@ -148,6 +153,7 @@ def make_team(
         sandbox=sandbox,
         permission=permission,
         provider=provider,
+        cwd=tmp_path,
     )
 
 

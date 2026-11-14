@@ -127,6 +127,7 @@ class TuiRuntime:
     _schedule_tasks: set[asyncio.Task[Any]] = field(default_factory=set, repr=False)
     _schedule_once: dict[str, str] = field(default_factory=dict, repr=False)
     _created_sessions: set[str] = field(default_factory=set, repr=False)
+    _restored_team_sessions: set[str] = field(default_factory=set, repr=False)
     _closed: bool = field(default=False, repr=False)
 
     # -- construction ---------------------------------------------------
@@ -450,6 +451,8 @@ class TuiRuntime:
         self._configure_subagent(session)
         self._configure_working_directory(session)
         self._restore_projections(session)
+        if self.agent_mode == AGENT_MODE_TEAM:
+            await self._restore_team(session)
 
     def _save_projections(self) -> None:
         """Write the live session's projection sidecar and stop observing it."""
@@ -552,8 +555,36 @@ class TuiRuntime:
             bind = getattr(service, "bind_session", None)
             if bind is not None and session is not None:
                 bind(session)
+            bind_parent = getattr(service, "bind_parent", None)
+            if bind_parent is not None and self.agent is not None:
+                bind_parent(self.agent)
         except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
             pass
+
+    async def _restore_team(self, session: Any) -> None:
+        """Rebuild team state from the lead session log (cold resume).
+
+        A session is restored at most once per process: switching presets or
+        rebinding a workspace re-attaches the same session and must not clear a
+        live roster.  The team service itself is idempotent, but auto-resumed
+        members would be orphaned by a second replay, hence the session guard.
+        """
+        service = self.team
+        if service is None:
+            return
+        restore = getattr(service, "restore", None)
+        if not callable(restore):
+            return
+        header = getattr(session, "header", None)
+        session_id = str(getattr(header, "id", "") or getattr(session, "session_id", "") or "").strip()
+        if session_id:
+            if session_id in self._restored_team_sessions:
+                return
+            self._restored_team_sessions.add(session_id)
+        try:
+            await await_maybe(restore())
+        except Exception:
+            logger.warning("failed to restore team state", exc_info=True)
 
     def _canonical_preset(self, preset: Any) -> str | None:
         """Normalize a preset id through the presets service aliases."""

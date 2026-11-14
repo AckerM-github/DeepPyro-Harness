@@ -38,6 +38,8 @@ def test_create_task_fields_and_record(tmp_path) -> None:
             "status": "pending",
             "blockedBy": [],
             "writeScopes": ["tests/team"],
+            "owner": "",
+            "createdAt": task.created_at,
         },
     }
     assert env.service.tasks() == [task]
