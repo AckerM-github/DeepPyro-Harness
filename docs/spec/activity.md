@@ -189,22 +189,60 @@ team, inject agents/sessions/sandbox/tools).
     TeamService.send(member_id, message) -> "started" or "queued"
     TeamService.wait(member_id, timeout_s=None) -> MemberInfo
     TeamService.cancel(member_id) -> bool
-    TeamService.members() / get_member(id) / close()
+    TeamService.members() / get_member(id)
     TeamService.create_task(subject, description="", *, blocked_by=(),
                             write_scopes=()) -> TaskInfo
     TeamService.update_task(task_id, action, *, ...) -> TaskInfo
     TeamService.tasks() / get_task(id)
+    await TeamService.restore() -> tuple[MemberInfo, ...]
+    TeamService.close()
 
 Actions: claim, start, complete, reopen, edit. Records mirror DSH: team/member,
 team/task, team/message/queued, team/message/delivered, subagent/descriptor,
-subagent/catalog plus the existing subagent lifecycle. Each member has its own
-child session (session header parentSession/delegationDepth=1/isSeeded) and its
-own AgentSession; the Lead remains the only approver. Nine tools (team_spawn,
-team_send, team_wait, team_cancel / team_task_create, team_task_update,
-team_task_list, team_members, team_tasks) are registered by the team plugin.
-TeamPanelScreen (/team, clicking the agents segment) shows members and tasks;
-TaskBoardScreen shows the full board. The TUI runtime reconfigures and
-rebinds the service on every attach, and closes it during shutdown.
+subagent/catalog plus the existing subagent lifecycle. A member's id **is** its
+child session id (DSH's roster identity); the child session header carries
+parentSession/delegationDepth=1/isSeeded and the team/member payload keeps its
+seven keys (id, name, description, provider, context, phase, model). team/task
+also records owner and createdAt. Each member has its own AgentSession; the Lead
+remains the only approver. Nine tools (team_spawn, team_send, team_wait,
+team_cancel / team_task_create, team_task_update, team_task_list, team_members,
+team_tasks) are registered by the team plugin. TeamPanelScreen (/team, clicking
+the agents segment) shows members and tasks; TaskBoardScreen shows the full board.
+
+### 6.1 Cold resume
+
+A TUI process that reopens a team-mode session rebuilds the roster, the task
+board and the pending inbox from the lead session log (`/resume`, or
+`open_session`). The TUI runtime calls `TeamService.restore()` once per
+session id, right after binding the restored lead session; it never calls it
+again on later re-attaches (preset/workspace switches), because a second replay
+would orphan the auto-resumed members.
+
+`restore()` folds only records whose `data.teamId` matches the live team:
+the last `team/member` payload per id wins; `team/task` keeps the highest
+revision; queued messages are FIFO-append and `team/message/delivered` removes
+the oldest equal text from the queue. A team/member left in `spawning` or
+`running` by a crash becomes `idle`. A member whose child session is missing
+or unreadable becomes `failed` with `cannot restore team member session: ...`
+and does not stop the other members from being restored.
+
+Every restorable member keeps its session open; the member agent is created
+lazily on the next `send()` (cold wake) or by auto-resume. If a member has a
+queued message, restore removes the first one, marks the member `running`, and
+starts `_run(..., initial=False)` in the background; remaining queued messages
+stay queued. Before creating a restored member agent, an open turn in the child
+session is closed with `open_turn_closers(..., {"kind": "interrupted"})`
+(best effort). The provider/model/preset recorded on the member are reused; the
+new process must be able to resolve that provider name.
+
+`restore()` is idempotent until the next `bind_session`; `bind_session`
+resets it, so a brand-new AgentSession object replays once. It must only run on
+a freshly bound service (it clears the in-memory roster/board); the TUI runtime
+owns that call. Headless always starts a new session, so it never restores a
+team.
+
+`close()` cancels running members, closes their agents defensively and keeps
+the roster/board in memory (the durable copy is the session log).
 
 ## 7. Test expectations
 
@@ -223,4 +261,9 @@ rebinds the service on every attach, and closes it during shutdown.
   cancellation (tests/jobs, tests/tools/test_shell_jobs.py,
   tests/tui/test_jobs_screen.py, tests/tui/test_headless.py).
 * Team: spawn/send/wait/cancel, task board transitions, record shapes, nine
-  tools, TUI binding and shutdown (tests/team, tests/tui/test_team_screen.py).
+  tools, member id = child session id, TUI binding and shutdown (tests/team,
+  tests/tui/test_team_screen.py).
+* Team cold resume: replay of roster/board/queued inbox, idempotence, auto-resume
+  of the first queued message, cold wake, open-turn repair, missing session,
+  other-team filtering (tests/team/test_cold_resume.py), plus the TUI runtime
+  restore-once wiring (tests/tui/test_runtime_team_restore.py).

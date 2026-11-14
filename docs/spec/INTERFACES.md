@@ -466,8 +466,8 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 | `commands` | `builtin.commands` | `commands`：`.add`、`.all()`、`.resolve()`、`.invoke()` |
 | `commands-builtin` | `builtin.commands_builtin` | 内置 slash 命令（含 `/provider`、`/model`、`/preset`、`/permission`、`/cwd`、`/plan`、`/jobs`、`/team`、`/thinking`、`/hooks`、`/panel`）；`/policy` 与 `/approval` 已删除 |
 | `agents` | `builtin.agents` | `agents`：`.create(..., preset=None, preset_revision=None, registry=None)`、`.options(**overrides)`；按 preset spec 过滤 registry（`tools` allowlist / `tools_exclude`）、决定 surface（`presentation="ptc"` → 仅 `run_code`）、提示词段 allowlist（`prompt_sections`）与 runtime context 开关，并把 `agent.presentation`/`preset`/`preset_revision`/`preset_spec` 挂到会话 |
-| `team` | `builtin.team` | `team`：`.configure(...)`、`.bind_session`、`.spawn/.send/.wait/.cancel`、任务板 `.create_task/.update_task`；9 个 `team_*` 工具（scope=`team`） |
-| `subagent` | `builtin.subagent` | `subagent`：`.configure(...)`、`.bind_session`、`.run(prompt, ...)->SubagentResult`；1 个 host-wide `subagent` 工具（team preset 下由 AgentsService 过滤） |
+| `team` | `builtin.team` | `team`：`.configure(...)`、`.bind_session`、`.spawn/.send/.wait/.cancel`、任务板 `.create_task/.update_task`、冷恢复 `.restore()`（每 bind 一次；成员 id=子会话 id；折叠 Lead 记录的 roster/任务板/queued inbox，首条 queued 自动续跑）；9 个 `team_*` 工具（scope=`team`） |
+| `subagent` | `builtin.subagent` | `subagent`：`.configure(...)`、`.bind_session`、`.bind_parent(agent)`、`.run(prompt, ...)->SubagentResult`（一次性阻塞）、`.start(prompt, ..., mode='spawn'|'fork')->SubagentActivation`（后台）、`.wait_children(timeout)`、`.cancel_all`、`.close`；2 个 host-wide 工具 `subagent`（阻塞）与 `subagent_fork`（后台，种子=父会话最后一个 turn/end 前缀，结果走 settlement notice）；team preset 下由 AgentsService 过滤 |
 | `activity` | `builtin.activity` | `activity`：`.state`、`.refresh(session)`、`.subscribe(listener)`；投影 todo/job/team/subagent/plan 记录 |
 | `projections` | `builtin.projections` | `projections`：`.attach(session)/.detach/.save/.path_for/.snapshot/.checkpoint/.notify`；activity/todos/jobs/agents/plan_mode 生产定义 + sidecar |
 | `slots` | `tui.slots` | `slots`：TUI 插件槽位注册表（状态栏项/对话行/面板/设置页、theme/locale） |
@@ -504,7 +504,8 @@ await app.stop()                           # 逆序 dispose
 - `tests/integration/test_preset_modes.py`：真实 core bundle 的四个 preset（工具面、presentation、提示词段、runtime context）与 `default` 别名。
 - `tests/plugins/test_template.py`：`plugin_create` 模板脚手架与 `PluginManager.create_bundle`。
 - `tests/jobs/`、`tests/tools/test_shell_jobs.py`：jobs 服务生命周期、job 记录形状、后台 shell、job 工具。
-- `tests/team/`：spawn/send/wait/cancel、任务板迁移、team/subagent 记录、9 个工具。
+- `tests/team/`：spawn/send/wait/cancel、任务板迁移、team/subagent 记录、9 个工具、冷恢复（roster/board/queued 重放、自动续跑、冷唤醒、半开 turn、缺失会话）。
+- `tests/subagent/`：一次性与后台 child、fork 前缀/空种子/override 拒绝、激活 id、settlement notice、工具契约与插件接线。
 - `tests/builtin/test_activity.py`、`tests/tui/test_activity_bar.py`、`test_plan_screen.py`、`test_jobs_screen.py`、`test_team_screen.py`：活动投影与 M1/M2/M3 界面。
 - `tests/session_query/`：会话摘要/读取/事件窗口/过滤/trace，只读不落盘；`test_hook_trace.py` 覆盖 hook/invoked+result 配对与 limit/session 校验。
 - `tests/hooks/test_observer.py`：`add_observer` 统一观察点（第五条 dispatch 全覆盖、成对 invoked/resolved、观察者异常隔离、`observed` 生命周期）；`test_records.py`：hook 记录整理与固定键序。

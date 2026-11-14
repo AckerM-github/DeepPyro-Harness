@@ -44,12 +44,14 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   job id，`/jobs` 或 `job_output` / `job_kill` / `job_list` 管理，headless 退出时自动取消；
   team 服务支持最多 8 个成员、共享任务板、成员消息与独立子会话（`/team on` 进入 Team 模式、
   `/team off` 退出，`/team` 打开面板、`/team board` 打开任务板；agent 侧有 `team_*` 工具），
-  记录按 DSH 的 `team/*`、`subagent/*` 形状落盘。
-- **默认 subagent，Team 是显式模式**：默认单 Agent 直接持有 `subagent` 工具，把独立子任务委派给
-  一次性子会话（结果回传，不进入 Team 协作层）；`/team on` 在当前会话进入内置 team preset 后，Lead
-  获得 `team_*` 工具（spawn / 任务板 / 消息）并收起 `subagent`，Team 成员子会话两者都没有，避免嵌套。
-  `/team off` 回到进入前的 preset（仍有 live 成员时拒绝），两种模式的子会话都按 DSH 形状写
-  `subagent/*`、`team/*` 记录。
+  记录按 DSH 的 `team/*`、`subagent/*` 形状落盘；成员 id 就是其子会话 id，TUI `/resume` 打开
+  team 模式会话时会从 Lead 日志冷恢复成员、任务板与 queued inbox，并自动续跑第一条待办消息。
+- **默认 subagent，Team 是显式模式**：默认单 Agent 直接持有 `subagent`（阻塞运行）与
+  `subagent_fork`（后台、复制父会话最后一个 `turn/end` 前缀作为种子、结果走 settlement notice）
+  两个工具，把独立子任务委派给一次性子会话（结果回传，不进入 Team 协作层）；`/team on` 在当前会话
+  进入内置 team preset 后，Lead 获得 `team_*` 工具（spawn / 任务板 / 消息）并收起 subagent 工具，
+  Team 成员子会话两者都没有，避免嵌套。`/team off` 回到进入前的 preset（仍有 live 成员时拒绝），
+  两种模式的子会话都按 DSH 形状写 `subagent/*`、`team/*` 记录。
 - **P1 运行时能力**：会话查询（`session_query` 服务：摘要/事件窗口/trace）、模型自压缩
   （`compress` / `search_context` / `decompress`，block 侧车文件按 session 寻址）、定时任务
   （`schedule` 工具 + TUI timer + `~/.dpro/schedules.json`）、只读 skills 目录（`skill` 工具 +

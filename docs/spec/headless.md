@@ -63,7 +63,8 @@
 - 团队：team 服务同样 `configure`/`bind_session`，退出时 `aclose()` 关闭所有成员子会话；
   `team_*` 工具只在 session 的 agentPreset 为 `team` 时可见。headless 用 `--preset team` 以 team
   preset 启动，也支持 `standard`/`ptc`/`minimal`/`cordis`；它没有会话内 `/preset` 切换，仍不支持
-  在运行中切 preset。
+  在运行中切 preset。headless 总是新建会话，因此不调用 `TeamService.restore()`；团队冷恢复只发生在
+  TUI `/resume` 打开 team 模式会话时。
 - 默认 vs Team：默认单 Agent + `subagent` 委派；Team 是显式模式（TUI 用 `/team on`，
   headless 用 `--preset team` 启动）。两者记录都按 DSH 的 `subagent/*`、`team/*` 形状落盘。
 

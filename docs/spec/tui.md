@@ -55,7 +55,7 @@
 2. App.on_mount：先 push_screen(SplashScreen(...), callback=重新聚焦输入框)，再 await TuiRuntime.boot(sink=app.sink, ask=app.ask_approval)。
 3. SplashScreen：内容按 40ms/行逐行揭示（宽 >= 72 且高 >= 24 用 22 行大字标，否则退化为单行字标），**揭示完成后一直停留，直到用户按任意键才进入主界面**（不自动关闭）；boot 完成后 App 调 set_runtime 回填 provider/model/cwd；boot 失败时立即关闭 splash 并显示错误。
 4. TuiRuntime.boot：load_config → resolve_workspace → 校验 provider/model → kernel.boot（core bundle 39 行，首行 kernel 运行时）→ 取 llm.provider、tools.registry_for(workspace)、sandbox.gate(workspace, ask=ask)、activity/jobs/team/subagent 服务，并把 kernel/plugin_manager/inspect/settings/jobs/team/subagent 服务一并注入 AgentSession.services → presets.ensure_all() 物化全部 preset revision → 为 team 与 subagent 服务 configure + bind_session → new_session()。
-5. new_session：preset_revision 清空 → SessionStore.create → _attach（agents.options(model=, context_window=) → agents.create(..., preset=, preset_revision=)）→ 写 model/selection（初始 provider/model）→ 写 agent-preset/selected（含 revision）→ AgentSession；open_session 先按日志最后一条 model/selection 恢复 provider/model（provider 不存在时忽略），再从 header 的 agentPreset 与日志里的 agent-preset/selected revision 恢复固定 revision，revision 已被删除时回退 latest。
+5. new_session：preset_revision 清空 → SessionStore.create → _attach（agents.options(model=, context_window=) → agents.create(..., preset=, preset_revision=)）→ 写 model/selection（初始 provider/model）→ 写 agent-preset/selected（含 revision）→ AgentSession；open_session 先按日志最后一条 model/selection 恢复 provider/model（provider 不存在时忽略），再从 header 的 agentPreset 与日志里的 agent-preset/selected revision 恢复固定 revision，revision 已被删除时回退 latest。_attach 末尾若当前 preset 是 team 模式，则以会话 id 为键调用一次 TeamService.restore() 冷恢复团队（同一进程内再次 attach 不重放）。
 6. 失败：conversation.add_error(failed to start: ...)，App 仍可退出。
 7. App.on_unmount：await runtime.close()（kernel_app.stop 逆序释放插件）；幂等。
 
@@ -137,6 +137,7 @@
 - 后台任务：JobsPanelScreen 只读展示 jobs 服务快照（超长输出由 job_output 工具按 head/tail 预览）；/jobs 与活动栏 jobs 段等价。
 - Hook 决策链：/hooks 从当前会话日志取 hook/invoked 与 hook/result 记录并配对（优先 SessionQuery.hook_trace，退化到 records 过滤），显示最近 50 条；热 hook 不落盘所以不出现，approval/* 与 session 生命周期 hook 无 agent 同样不出现；无记录时显示 "no hook activity yet"。
 - 团队：TeamPanelScreen 展示成员与任务，TaskBoardScreen 按 pending → in_progress → completed 排序；/team 无参打开团队面板，/team board 打开任务板；活动栏 agents 段打开团队面板。/team on 在当前会话进入 Team 模式（Lead 获得 `team_*`、收起 `subagent`），/team off 回到进入前的 preset；有 live 成员（spawning/running/idle）时拒绝离开并列出成员。default 模式且无成员/任务时 /team 提示用 /team on 显式开启 Team 模式。
+- 团队冷恢复：/resume 打开 team 模式会话时，_attach 在 bind 之后按会话 id 调用一次 TeamService.restore()：从 Lead 的 team/member、team/task、team/message/queued|delivered 记录重建成员、任务板与待办 inbox，崩溃残留的 spawning/running 归一为 idle，缺失的子会话标记 failed，第一条 queued 消息自动续跑（其余保留）；成员 id 即子会话 id。该重放每进程每会话只发生一次（preset/工作目录重新 attach 不会重放）。
 - agent preset：可见的内置 preset 为 `standard`（默认，native 呈现）、`ptc`（PTC 呈现）、`minimal`（仅平台 shell + 极简提示词）、`cordis`（standard + 插件创作工具 + cordis 指南）；`team` 仍是 hidden，只由 /team on 进入。旧 id `default` 作为 `standard` 的别名继续可解析（会话 header/记录里的 legacy 值会在打开会话时归一）。欢迎页与 /status 显示 `agent preset Display Name (presentation · mode mode)`；状态栏标题在 team 模式追加 ` · team`。
 - agent mode：default 模式注入 host-wide `subagent` 工具（一次性子会话委派）；team 模式只给 Lead 注入 `team_*` 工具并隐藏 `subagent`；Team 成员子会话两者都没有（防嵌套）。
 - preset 的 `presentation` 决定模型直接看到的工具面：`native` 暴露全部工具，`ptc` 只暴露 `run_code` 并注入 Python SDK（见 ptc.md §4）。`minimal` 只注册平台 shell（Windows `pwsh`、其他平台 `bash`）、只渲染 minimal persona/tools/rules 三段提示词并关闭 runtime context。
@@ -180,7 +181,7 @@ TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasonin
 - 自动滚动固定在底部；用户上滚时不抢滚动（v1 以 call_after_refresh(scroll_end) 为主，后续精修）。
 - 审批没有 always 选项：每次升权都要一次批准（一次一审批），不存在 gate 级全放行。
 - 无 PTY；后台任务由 jobs 服务托管（shell run_in_background），不是持久交互 shell。
-- 团队任务板只在内存中（重启清空），成员子会话没有专门的会话浏览器（可 /resume 打开）。
+- 团队成员 id 是子会话 id；旧版本 `member-*` 记录无法恢复（成员标记 failed），恢复成员的 created_at 记为 0。团队成员子会话没有专门的会话浏览器（可 /resume 打开）。
 - Ctrl+C 语义依赖 Textual 绑定；真实终端下的双击退出阈值 1.2s。
 - splash 是纯文本逐行揭示（无淡入/逐字动画），且依赖 Unicode 方块字符；极窄或极矮终端用单行字标。
 - thinking 单行滚动不保留已滚过的句子，只有折叠后点击展开才能看到全文。
