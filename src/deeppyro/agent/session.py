@@ -246,6 +246,7 @@ class AgentSession:
         compactor: Compactor | None = None,
         prompt_builder: Any | None = None,
         surface_registry: Any | None = None,
+        runtime_context: bool = True,
     ) -> None:
         self._session = session
         self._provider = provider
@@ -256,6 +257,9 @@ class AgentSession:
         self._surface = surface_registry if surface_registry is not None else registry
         #: The registry this session was asked to present (None means native).
         self.surface_registry = surface_registry
+        #: Whether each step writes the per-turn runtime-context projection.
+        #: Presets that hide host facts (minimal compositions) turn it off.
+        self._runtime_context = bool(runtime_context)
         self._options = options
         self._sink = sink
         self._permission = permission
@@ -602,7 +606,8 @@ class AgentSession:
             await self._commit_system_prompt(turn, step, starts_series=starts_series and first)
             for message in step_messages:
                 self._append_user_message(message)
-            self._commit_runtime_context(turn, step)
+            if self._runtime_context:
+                self._commit_runtime_context(turn, step)
             self._write_request_records(turn, step, starts_series=starts_series and first)
             self._emit_status("thinking")
             await self._maybe_compact()

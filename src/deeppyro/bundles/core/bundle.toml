@@ -126,6 +126,14 @@ id = "ptc"
 plugin = "deeppyro.builtin.ptc:PtcPlugin"
 critical = false
 
+# Built-in DSH-style agent presets: standard lives in `presets`; this row adds
+# the PTC, minimal and cordis presets plus their scoped prompt sections, so it
+# must mount after both presets and prompt.
+[[plugins]]
+id = "agent-presets"
+plugin = "deeppyro.builtin.agent_presets:AgentPresetsPlugin"
+critical = false
+
 [[plugins]]
 id = "memory"
 plugin = "deeppyro.builtin.memory:MemoryPlugin"

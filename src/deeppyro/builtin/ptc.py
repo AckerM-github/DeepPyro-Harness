@@ -1,9 +1,10 @@
 """Kernel plugin that exposes the Python PTC runtime and the run_code mode.
 
-The "ptc" service is always provided so a host can inspect configuration, but
-the run_code tool and the PTC prompt sections are only registered when
-[ptc].mode is "ptc".  This keeps the model-facing tool list and prompt unchanged
-unless programmatic tool calling is explicitly selected.
+The "ptc" service is always provided so a host can inspect configuration.
+When [ptc].mode is "ptc" the run_code tool and both PTC prompt sections are
+registered globally.  In the default native mode they are registered inside
+the PTC agent preset scope instead, so only a session that selected that preset
+sees run_code and the programmatic tool calling instructions.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import PTC_PRESET_ID, Plugin
 from deeppyro.core.protocols import ToolSchema
 from deeppyro.ptc import NESTED_EXCLUDED_TOOLS, RUN_CODE_NAME, PtcConfig, PtcRuntime, RunCodeTool
 from deeppyro.ptc.sdk import render_tools_sdk
@@ -64,11 +65,29 @@ class PtcPlugin(Plugin):
 
     def setup(self, ctx: Any, config: Any) -> None:
         ctx.provide("ptc", self.service)
-        if self.config.mode != "ptc":
+        if self.config.mode == "ptc":
+            # Global mode: the host selected PTC for every composition.
+            ctx.register_tool(lambda _cfg, _workspace: [RunCodeTool(self.service)])
+            ctx.register_prompt_section(PTC_ONLY_SECTION, PTC_ONLY_ORDER, self._render_ptc_only)
+            ctx.register_prompt_section(PTC_SDK_SECTION, PTC_SDK_ORDER, self._render_sdk)
             return
-        ctx.register_tool(lambda _cfg, _workspace: [RunCodeTool(self.service)])
-        ctx.register_prompt_section(PTC_ONLY_SECTION, PTC_ONLY_ORDER, self._render_ptc_only)
-        ctx.register_prompt_section(PTC_SDK_SECTION, PTC_SDK_ORDER, self._render_sdk)
+        # Native mode: the PTC preset opts into run_code and the SDK sections.
+        ctx.register_tool(
+            lambda _cfg, _workspace: [RunCodeTool(self.service)],
+            scope=PTC_PRESET_ID,
+        )
+        ctx.register_prompt_section(
+            PTC_ONLY_SECTION,
+            PTC_ONLY_ORDER,
+            self._render_ptc_only,
+            scope=PTC_PRESET_ID,
+        )
+        ctx.register_prompt_section(
+            PTC_SDK_SECTION,
+            PTC_SDK_ORDER,
+            self._render_sdk,
+            scope=PTC_PRESET_ID,
+        )
 
     @staticmethod
     def _render_ptc_only(tools: Any, prompt_context: Any) -> str:

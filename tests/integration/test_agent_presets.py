@@ -105,7 +105,7 @@ async def test_preset_scopes_tools_and_prompt_sections(tmp_path: Path) -> None:
     try:
         presets = app.service("presets")
         ids = presets.ids()
-        assert "default" in ids
+        assert "standard" in ids
         assert "reviewer" in ids
         reviewer = presets.resolve("reviewer")
         assert reviewer.instructions == ("Review only.",)

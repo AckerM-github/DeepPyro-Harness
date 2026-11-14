@@ -97,6 +97,18 @@ class PresetSpec:
     #: Hidden presets are reachable only through a dedicated command (the
     #: built-in team preset is entered with /team, not /preset).
     hidden: bool = False
+    #: Tool presentation: 'native' offers every tool directly, while 'ptc'
+    #: offers run_code only and reaches the other tools through the generated
+    #: Python SDK.
+    presentation: str = "native"
+    #: Tool allowlist by name; None keeps every registered tool.
+    tools: tuple[str, ...] | None = None
+    #: Tool names removed after the allowlist (and host mode filter) is applied.
+    tools_exclude: tuple[str, ...] = ()
+    #: Prompt-section allowlist by section name; None keeps every visible one.
+    prompt_sections: tuple[str, ...] | None = None
+    #: Whether the per-turn runtime-context projection is emitted.
+    runtime_context: bool = True
     #: Base directory used to resolve relative '.py' plugin targets.
     base: Path | None = None
 
@@ -143,8 +155,26 @@ class PluginStatus:
 
 
 #: Canonical preset ids understood by the host.
-DEFAULT_PRESET_ID = "default"
+DEFAULT_PRESET_ID = "standard"
+#: Legacy id accepted as an alias for the host-wide standard preset.
+LEGACY_DEFAULT_PRESET_ID = "default"
+PTC_PRESET_ID = "ptc"
+MINIMAL_PRESET_ID = "minimal"
+CORDIS_PRESET_ID = "cordis"
 TEAM_PRESET_ID = "team"
+
+#: Tool presentation modes carried by PresetSpec.presentation.
+AGENT_PRESENTATION_NATIVE = "native"
+AGENT_PRESENTATION_PTC = "ptc"
+
+#: Plugin-authoring tools: standard and minimal hide them, cordis adds them back.
+PLUGIN_AUTHORING_TOOL_NAMES: tuple[str, ...] = (
+    "plugin_manager",
+    "plugin_create",
+    "plugin_inspect",
+    "settings_read",
+    "settings_write",
+)
 
 #: Agent modes carried by PresetSpec.mode.
 AGENT_MODE_DEFAULT = "default"
@@ -178,8 +208,15 @@ CHILD_DISABLED_TOOLS: tuple[str, ...] = TEAM_TOOL_NAMES + SUBAGENT_TOOL_NAMES + 
 __all__ = [
     "AGENT_MODE_DEFAULT",
     "AGENT_MODE_TEAM",
+    "AGENT_PRESENTATION_NATIVE",
+    "AGENT_PRESENTATION_PTC",
     "CHILD_DISABLED_TOOLS",
+    "CORDIS_PRESET_ID",
     "DEFAULT_PRESET_ID",
+    "LEGACY_DEFAULT_PRESET_ID",
+    "MINIMAL_PRESET_ID",
+    "PLUGIN_AUTHORING_TOOL_NAMES",
+    "PTC_PRESET_ID",
     "SCHEDULE_TOOL_NAMES",
     "SUBAGENT_TOOL_NAMES",
     "TEAM_MODE_DISABLED_TOOLS",

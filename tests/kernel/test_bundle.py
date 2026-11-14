@@ -41,6 +41,7 @@ EXPECTED_ORDER = [
     "prompt-extension",
     "approval-policy",
     "ptc",
+    "agent-presets",
     "memory",
     "skills",
     "commands",
@@ -133,6 +134,7 @@ config = { start = 5 }
         "prompt-extension",
         "approval-policy",
         "ptc",
+        "agent-presets",
         "memory",
         "skills",
         "commands",
@@ -187,6 +189,7 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
             "prompt-extension",
             "approval-policy",
             "ptc",
+            "agent-presets",
             "memory",
             "skills",
             "commands",
@@ -225,6 +228,7 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
         assert app.started["prompt-core"] == "ACTIVE"
         assert app.started["prompt-extension"] == "ACTIVE"
         assert app.started["approval-policy"] == "ACTIVE"
+        assert app.started["agent-presets"] == "ACTIVE"
         assert app.started["commands"] == "ACTIVE"
         assert app.started["commands-builtin"] == "ACTIVE"
     finally:

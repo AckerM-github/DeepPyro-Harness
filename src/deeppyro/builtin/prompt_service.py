@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from deeppyro.api import PluginDependencyError, PromptSection, Service
@@ -97,9 +97,24 @@ class PromptPlugin(Service):
         *,
         scope: str | None = None,
         revision: int | None = None,
+        include: Sequence[str] | None = None,
     ) -> str:
-        """Render every visible section; fall back to the core prompt."""
+        """Render every visible section; fall back to the core prompt.
+
+        An explicit include allowlist narrows the composition to the named
+        sections and never falls back to the core prompt: a preset that opted
+        out of the standard sections must not silently receive all of them.
+        Unknown names are ignored, and an allowlist that matches nothing is a
+        dependency error rather than an empty system prompt.
+        """
         sections = self.sections(scope=scope, revision=revision)
+        if include is not None:
+            wanted = set(include)
+            sections = [section for section in sections if section.name in wanted]
+            if not sections:
+                raise PluginDependencyError(
+                    f"prompt section allowlist {tuple(include)!r} matched no sections for scope {scope!r}"
+                )
         if not sections:
             from deeppyro.prompt.prompt import build_system_prompt
 

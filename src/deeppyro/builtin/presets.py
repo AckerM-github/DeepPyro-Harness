@@ -26,6 +26,8 @@ from deeppyro.api import (
     AGENT_MODE_TEAM,
     API_VERSION,
     DEFAULT_PRESET_ID,
+    LEGACY_DEFAULT_PRESET_ID,
+    PLUGIN_AUTHORING_TOOL_NAMES,
     TEAM_PRESET_ID,
     Plugin,
     PluginConfigError,
@@ -37,6 +39,9 @@ from deeppyro.api import (
 )
 
 logger = logging.getLogger("deeppyro.presets")
+
+#: Legacy preset ids accepted as aliases for their canonical replacements.
+_PRESET_ALIASES: dict[str, str] = {LEGACY_DEFAULT_PRESET_ID: DEFAULT_PRESET_ID}
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +127,7 @@ def _api_adapter(preset: PresetSpec, plugin_cls: type) -> Any:
 
 
 class PresetsPlugin(Service):
-    """Registry of agent presets; always offers the host-wide default."""
+    """Registry of agent presets; always offers the host-wide standard preset."""
 
     provide = "presets"
     plugin_id = "presets"
@@ -140,12 +145,13 @@ class PresetsPlugin(Service):
             self._raw_ctx = ctx
         default = PresetSpec(
             id=DEFAULT_PRESET_ID,
-            name="Default",
-            description="host-wide tools and prompt sections",
+            name="Standard",
+            description="host-wide tools and prompt sections, native tool presentation",
             order=0,
             plugin_id="presets",
             revision=0,
             mode=AGENT_MODE_DEFAULT,
+            tools_exclude=PLUGIN_AUTHORING_TOOL_NAMES,
         )
         #: The team preset is the explicit team-mode switch (/team on): it is
         #: hidden from /preset, exposes the team tools, and hides one-shot
@@ -159,6 +165,7 @@ class PresetsPlugin(Service):
             revision=0,
             mode=AGENT_MODE_TEAM,
             hidden=True,
+            tools_exclude=PLUGIN_AUTHORING_TOOL_NAMES,
         )
         #: preset id -> {revision: immutable spec}
         self._presets: dict[str, dict[int, PresetSpec]] = {
@@ -233,8 +240,22 @@ class PresetsPlugin(Service):
         return True
 
     # -- lookup ----------------------------------------------------------
+    def canonical(self, preset_id: str | None) -> str | None:
+        """Canonicalize a caller-supplied preset id.
+
+        Legacy ids stay accepted as aliases ("default" -> the standard preset)
+        so persisted sessions and older plugins keep resolving.
+        """
+        if not preset_id:
+            return None
+        wanted = preset_id.strip()
+        if not wanted:
+            return None
+        return _PRESET_ALIASES.get(wanted, wanted)
+
     def get(self, preset_id: str | None) -> PresetSpec | None:
         """Return the latest revision of one preset, or None."""
+        preset_id = self.canonical(preset_id)
         if not preset_id:
             return None
         revision = self._latest.get(preset_id)
@@ -249,7 +270,7 @@ class PresetsPlugin(Service):
         new agents); passing a revision pins the caller to that snapshot, which
         is how live agents keep seeing the composition they started with.
         """
-        wanted = (preset_id or DEFAULT_PRESET_ID).strip() or DEFAULT_PRESET_ID
+        wanted = self.canonical(preset_id) or DEFAULT_PRESET_ID
         history = self._presets.get(wanted)
         if history is None:
             raise PluginDependencyError(f"unknown agent preset: {wanted!r}")
@@ -275,11 +296,17 @@ class PresetsPlugin(Service):
 
     def revision_of(self, preset_id: str) -> int | None:
         """Latest revision number of one preset, or None when unknown."""
-        return self._latest.get(preset_id)
+        wanted = self.canonical(preset_id)
+        if wanted is None:
+            return None
+        return self._latest.get(wanted)
 
     def revisions(self, preset_id: str) -> list[int]:
         """Every still-registered revision number of one preset, ascending."""
-        history = self._presets.get(preset_id)
+        wanted = self.canonical(preset_id)
+        if wanted is None:
+            return []
+        history = self._presets.get(wanted)
         return sorted(history) if history else []
 
     def default(self) -> PresetSpec:
@@ -354,6 +381,7 @@ class PresetsPlugin(Service):
 
     def is_materialized(self, preset_id: str, revision: int | None = None) -> bool:
         """Whether a preset revision's realm rows were mounted (or none exist)."""
+        preset_id = self.canonical(preset_id) or preset_id
         wanted = self._latest.get(preset_id) if revision is None else revision
         if wanted is None:
             return False
@@ -367,6 +395,7 @@ class PresetsPlugin(Service):
 
     def realm_failures(self, preset_id: str, revision: int | None = None) -> list[RealmFailure]:
         """Failures recorded while mounting a revision's realm."""
+        preset_id = self.canonical(preset_id) or preset_id
         wanted = self._latest.get(preset_id) if revision is None else revision
         if wanted is None:
             return []

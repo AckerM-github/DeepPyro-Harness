@@ -17,6 +17,8 @@ import pytest
 from deeppyro.api import (
     AGENT_MODE_DEFAULT,
     AGENT_MODE_TEAM,
+    AGENT_PRESENTATION_NATIVE,
+    PLUGIN_AUTHORING_TOOL_NAMES,
     SUBAGENT_TOOL_NAMES,
     TEAM_PRESET_ID,
     TEAM_TOOL_NAMES,
@@ -296,16 +298,16 @@ async def test_preset_revisions_are_immutable(tmp_path: Path) -> None:
     app = await _boot(tmp_path, bundle_dir)
     try:
         presets = app.service("presets")
-        assert "default" in presets.ids()
+        assert "standard" in presets.ids()
         assert "writer" in presets.ids()
-        assert presets.revisions("writer") == [1]
         first = presets.resolve("writer")
-        assert first.revision == 1
+        first_revision = first.revision
+        assert presets.revisions("writer") == [first_revision]
         assert first.instructions == ("Write clearly.",)
         assert first.model == "writer-model"
-        assert presets.revision_of("writer") == 1
+        assert presets.revision_of("writer") == first_revision
         assert presets.revision_of("missing") is None
-        assert presets.resolve_revision("writer", 1) == first
+        assert presets.resolve_revision("writer", first_revision) == first
 
         (bundle_dir / "realm_plugin_v2.py").write_text(REALM_PLUGIN_V2, encoding="utf-8")
         presets.add(
@@ -325,13 +327,13 @@ async def test_preset_revisions_are_immutable(tmp_path: Path) -> None:
                 base=bundle_dir,
             )
         )
-        assert presets.revisions("writer") == [1, 2]
-        assert presets.revision_of("writer") == 2
+        assert presets.revisions("writer") == [first_revision, first_revision + 1]
+        assert presets.revision_of("writer") == first_revision + 1
         latest = presets.resolve("writer")
-        assert latest.revision == 2
+        assert latest.revision == first_revision + 1
         assert latest.model == "writer-model-v2"
-        assert presets.resolve_revision("writer", 1).model == "writer-model"
-        assert [spec.revision for spec in presets.all() if spec.id == "writer"] == [2]
+        assert presets.resolve_revision("writer", first_revision).model == "writer-model"
+        assert [spec.revision for spec in presets.all() if spec.id == "writer"] == [first_revision + 1]
         with pytest.raises(PluginDependencyError):
             presets.resolve("writer", revision=99)
         with pytest.raises(DeeppyroError):
@@ -387,10 +389,11 @@ async def test_live_agent_keeps_its_revision(tmp_path: Path) -> None:
     try:
         presets = app.service("presets")
         await presets.ensure_all()
+        first_revision = presets.resolve("writer").revision
         first = _make_agent(app, tmp_path, preset="writer")
         assert first.preset == "writer"
-        assert first.preset_revision == 1
-        assert first.preset_spec.revision == 1
+        assert first.preset_revision == first_revision
+        assert first.preset_spec.revision == first_revision
         assert first._options.model == "writer-model"
         assert first._options.instructions == ["Write clearly."]
         assert {"writer_note", "realm_note"} <= set(first._registry.names())
@@ -409,7 +412,7 @@ async def test_live_agent_keeps_its_revision(tmp_path: Path) -> None:
         )
         await presets.ensure("writer")
         second = _make_agent(app, tmp_path, preset="writer")
-        assert second.preset_revision == 2
+        assert second.preset_revision == first_revision + 1
         assert second._options.model == "writer-model-v2"
         assert "realm_note_v2" in second._registry.names()
         assert "realm_note" not in second._registry.names()
@@ -419,7 +422,7 @@ async def test_live_agent_keeps_its_revision(tmp_path: Path) -> None:
         assert "realm_note" in first._registry.names()
         assert "realm_note_v2" not in first._registry.names()
         assert "## Realm v2" not in first._prompt_builder([], _prompt_context(tmp_path))
-        assert presets.is_materialized("writer", 1)
+        assert presets.is_materialized("writer", first_revision)
     finally:
         await app.stop()
 
@@ -479,6 +482,7 @@ async def test_realm_contributions_are_removed_with_the_revision(tmp_path: Path)
         presets = app.service("presets")
         await presets.ensure("writer")
         first = presets.resolve("writer")
+        first_revision = first.revision
         remove = presets.add(
             PresetSpec(
                 id="writer",
@@ -491,11 +495,11 @@ async def test_realm_contributions_are_removed_with_the_revision(tmp_path: Path)
         )
         (bundle_dir / "realm_plugin_v2.py").write_text(REALM_PLUGIN_V2, encoding="utf-8")
         await presets.ensure("writer")
-        assert presets.revision_of("writer") == 2
+        assert presets.revision_of("writer") == first_revision + 1
         remove()
-        assert presets.revision_of("writer") == 1
-        assert presets.revisions("writer") == [1]
-        assert presets.is_materialized("writer", 1)
+        assert presets.revision_of("writer") == first_revision
+        assert presets.revisions("writer") == [first_revision]
+        assert presets.is_materialized("writer", first_revision)
         tools = app.service("tools")
         assert (
             "realm_note" in tools.registry_for(str(tmp_path), scope="writer", revision=first.revision).names()
@@ -508,7 +512,7 @@ async def test_realm_contributions_are_removed_with_the_revision(tmp_path: Path)
         await app.stop()
 
 
-async def test_builtin_presets_offer_default_and_explicit_team_mode(tmp_path: Path) -> None:
+async def test_builtin_presets_offer_standard_and_explicit_team_mode(tmp_path: Path) -> None:
     bundle_dir = _write_bundle(
         tmp_path,
         "writer",
@@ -518,10 +522,21 @@ async def test_builtin_presets_offer_default_and_explicit_team_mode(tmp_path: Pa
     app = await _boot(tmp_path, bundle_dir)
     try:
         presets = app.service("presets")
-        default = presets.resolve()
-        assert default.id == "default"
-        assert default.mode == AGENT_MODE_DEFAULT
-        assert default.revision == 0
+        standard = presets.resolve()
+        assert standard.id == "standard"
+        assert standard.name == "Standard"
+        assert standard.mode == AGENT_MODE_DEFAULT
+        assert standard.revision == 0
+        assert standard.presentation == AGENT_PRESENTATION_NATIVE
+        assert standard.tools is None
+        assert standard.tools_exclude == PLUGIN_AUTHORING_TOOL_NAMES
+        assert standard.runtime_context is True
+        # The pre-rename id stays accepted as an alias for persisted sessions.
+        assert presets.resolve("default").id == "standard"
+        assert presets.get("default") == presets.get("standard")
+        assert presets.revision_of("default") == 0
+        assert presets.canonical("default") == "standard"
+        assert presets.canonical("") is None
 
         team = presets.resolve(TEAM_PRESET_ID)
         assert team.id == TEAM_PRESET_ID
@@ -531,13 +546,13 @@ async def test_builtin_presets_offer_default_and_explicit_team_mode(tmp_path: Pa
         assert team.revision == 0
         assert team.plugins == ()
         assert team.hidden is True
-        assert default.hidden is False
-        assert {"default", TEAM_PRESET_ID} <= set(presets.ids())
+        assert standard.hidden is False
+        assert {"standard", TEAM_PRESET_ID} <= set(presets.ids())
         assert presets.revision_of(TEAM_PRESET_ID) == 0
         assert presets.revisions(TEAM_PRESET_ID) == [0]
         # Team mode is entered with /team on, so /preset only lists visible presets.
         visible_ids = [spec.id for spec in presets.visible()]
-        assert "default" in visible_ids
+        assert "standard" in visible_ids
         assert TEAM_PRESET_ID not in visible_ids
         assert presets.resolve("team").mode == AGENT_MODE_TEAM
         assert [spec.id for spec in presets.all()][-1] == TEAM_PRESET_ID
