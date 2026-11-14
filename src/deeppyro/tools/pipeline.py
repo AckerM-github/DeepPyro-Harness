@@ -33,12 +33,13 @@ import inspect
 import json
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 from deeppyro.core.errors import AbortedError, PermissionDenied, ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
+from deeppyro.hooks import TOOLS_EXECUTE, TOOLS_POST_EXECUTE, TOOLS_PRE_EXECUTE
 from deeppyro.tools.registry import ToolRegistry
 from deeppyro.tools.spill import (
     default_spill_dir,
@@ -103,12 +104,30 @@ def _retain_output(result: ToolResult, ctx: ToolContext, tool_name: str) -> Tool
         spill_dir = spill_dir_from_services(services) or default_spill_dir(Path(ctx.cwd))
         spill_path = spill_text(spill_dir, ctx.call_id, tool_name, text)
         meta["spillPath"] = spill_path
-    return ToolResult(text=kept, is_error=result.is_error, meta=meta, parts=list(result.parts or []))
+    return ToolResult(
+        text=kept,
+        is_error=result.is_error,
+        meta=meta,
+        parts=list(result.parts or []),
+        error=result.error,
+    )
 
 
 def _call_payload(request: ToolCallRequest) -> dict[str, Any]:
     """The wire-shaped tool call shared by every hook payload."""
     return {"callId": request.call_id, "name": request.name, "arguments": request.arguments}
+
+
+def _hook_fields(agent: Any | None, tool_set: Sequence[str] | None) -> dict[str, Any]:
+    """Context fields added to every tool hook payload.
+
+    agent is always present (None when the caller has no agent object); toolSet
+    appears only when the caller supplies the direct tool name snapshot.
+    """
+    fields: dict[str, Any] = {"agent": agent}
+    if tool_set is not None:
+        fields["toolSet"] = list(tool_set)
+    return fields
 
 
 def _decision_reason(decision: dict[str, Any], default: str) -> str:
@@ -170,14 +189,23 @@ async def _pre_execute(
     call: dict[str, Any],
     turn: int | None,
     step: int | None,
+    *,
+    agent: Any | None = None,
+    tool_set: Sequence[str] | None = None,
 ) -> ToolResult | None:
     """Run tools/pre-execute; return a denial result, or None to continue."""
-    payload = {"call": call, "tool": request.name, "turn": turn, "step": step}
+    payload = {
+        "call": call,
+        "tool": request.name,
+        "turn": turn,
+        "step": step,
+        **_hook_fields(agent, tool_set),
+    }
 
     async def fallback(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"kind": "allow"}
 
-    decision = await _waterfall(hooks, "tools/pre-execute", payload, fallback)
+    decision = await _waterfall(hooks, TOOLS_PRE_EXECUTE, payload, fallback)
     if not isinstance(decision, dict):
         raise ToolError(f"tools/pre-execute must return a decision object, not {type(decision).__name__}")
     kind = decision.get("kind")
@@ -210,6 +238,9 @@ async def _execute(
     turn: int | None,
     step: int | None,
     dispatch: Callable[..., Any] | None,
+    *,
+    agent: Any | None = None,
+    tool_set: Sequence[str] | None = None,
 ) -> Any:
     """Run tools/execute, falling back to the real tool (or a test dispatch)."""
     payload = {
@@ -218,6 +249,7 @@ async def _execute(
         "turn": turn,
         "step": step,
         "arguments": args,
+        **_hook_fields(agent, tool_set),
     }
 
     async def fallback(*_args: Any, **_kwargs: Any) -> Any:
@@ -228,7 +260,7 @@ async def _execute(
             outcome = await outcome
         return outcome
 
-    decision = await _waterfall(hooks, "tools/execute", payload, fallback)
+    decision = await _waterfall(hooks, TOOLS_EXECUTE, payload, fallback)
     if isinstance(decision, ToolResult):
         return decision
     if isinstance(decision, dict):
@@ -245,6 +277,9 @@ async def _post_execute(
     turn: int | None,
     step: int | None,
     result: ToolResult,
+    *,
+    agent: Any | None = None,
+    tool_set: Sequence[str] | None = None,
 ) -> ToolResult:
     """Run tools/post-execute and apply its accept/block decision."""
     payload = {
@@ -253,19 +288,24 @@ async def _post_execute(
         "turn": turn,
         "step": step,
         "result": result,
+        **_hook_fields(agent, tool_set),
     }
 
     async def fallback(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"kind": "accept"}
 
-    decision = await _waterfall(hooks, "tools/post-execute", payload, fallback)
+    decision = await _waterfall(hooks, TOOLS_POST_EXECUTE, payload, fallback)
     if not isinstance(decision, dict):
         raise ToolError(f"tools/post-execute must return a decision object, not {type(decision).__name__}")
     kind = decision.get("kind")
     if kind == "block":
         feedback = decision.get("feedback")
         text = _content_to_text(feedback)
-        return ToolResult(text=text or "tool result blocked by post-execute policy", is_error=True)
+        return ToolResult(
+            text=text or "tool result blocked by post-execute policy",
+            is_error=True,
+            error=result.error,
+        )
     if kind != "accept":
         raise ToolError(f"invalid tools/post-execute decision kind: {kind!r}")
 
@@ -283,6 +323,7 @@ async def _post_execute(
             is_error=False,
             meta=meta,
             parts=list(result.parts or []),
+            error=result.error,
         )
     if has_content:
         return ToolResult(
@@ -290,6 +331,7 @@ async def _post_execute(
             is_error=result.is_error,
             meta=result.meta,
             parts=list(result.parts or []),
+            error=result.error,
         )
     return result
 
@@ -304,16 +346,31 @@ async def _run_hooked(
     turn: int | None,
     step: int | None,
     dispatch: Callable[..., Any] | None,
+    *,
+    agent: Any | None = None,
+    tool_set: Sequence[str] | None = None,
 ) -> ToolResult:
     """Run pre/execute/post around one tool, applying DSH decision semantics."""
     try:
-        denied = await _pre_execute(hooks, request, call, turn, step)
+        denied = await _pre_execute(hooks, request, call, turn, step, agent=agent, tool_set=tool_set)
         if denied is not None:
             return denied
-        raw = await _execute(hooks, tool, args, ctx, request, call, turn, step, dispatch)
+        raw = await _execute(
+            hooks,
+            tool,
+            args,
+            ctx,
+            request,
+            call,
+            turn,
+            step,
+            dispatch,
+            agent=agent,
+            tool_set=tool_set,
+        )
         if not isinstance(raw, ToolResult):
             raise ToolError(f"tool {request.name!r} returned {type(raw).__name__}, not ToolResult")
-        return await _post_execute(hooks, request, call, turn, step, raw)
+        return await _post_execute(hooks, request, call, turn, step, raw, agent=agent, tool_set=tool_set)
     except ValueError as exc:
         # Policy violations are ordinary error results, not turn-fatal exceptions.
         raise ToolError(str(exc)) from exc
@@ -359,6 +416,8 @@ async def run_tool_call(
     hooks: Any | None = None,
     turn: int | None = None,
     step: int | None = None,
+    agent: Any | None = None,
+    tool_set: Sequence[str] | None = None,
 ) -> ToolOutcome:
     """Run exactly one tool call through the normal pre/execute/post pipeline.
 
@@ -392,6 +451,8 @@ async def run_tool_call(
                     turn,
                     step,
                     None,
+                    agent=agent,
+                    tool_set=tool_set,
                 )
         except asyncio.CancelledError:
             raise
@@ -425,6 +486,8 @@ async def run_tool_batch(
     step: int | None = None,
     log: Callable[..., int] | None = None,
     dispatch: Callable[..., Any] | None = None,
+    agent: Any | None = None,
+    tool_set: Sequence[str] | None = None,
 ) -> list[ToolOutcome]:
     """Execute requests honouring barriers, concurrency, ordering, and hooks."""
     if max_concurrency < 1:
@@ -466,6 +529,8 @@ async def run_tool_batch(
                                 turn,
                                 step,
                                 dispatch,
+                                agent=agent,
+                                tool_set=tool_set,
                             )
                 except asyncio.CancelledError:
                     raise

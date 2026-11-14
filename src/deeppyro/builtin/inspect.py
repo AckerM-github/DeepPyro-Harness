@@ -13,8 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
-from deeppyro._vendor.cordis_port import FiberState
-from deeppyro.api import PluginDependencyError, Service
+from deeppyro.api import FiberState, PluginDependencyError, Service
 from deeppyro.core.wire import MESSAGE_PROJECTION_TYPES, RECORD_TYPES, SURFACE_EVENT_TYPES
 from deeppyro.kernel.bundle import load_composition
 from deeppyro.plugins.settings_store import SettingsStore

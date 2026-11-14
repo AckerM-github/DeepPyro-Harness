@@ -138,6 +138,10 @@ class ToolResult:
     meta: dict[str, Any] | None = None
     # optional non-text parts (images etc.) in wire form
     parts: list[dict[str, Any]] = field(default_factory=list)
+    # structured failure info persisted as tool/result.data.error, mirroring
+    # the reference pipeline's `{name, code}` shape (for example
+    # `{"name": "AbortError", "code": TOOL_ABORTED}`).
+    error: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)

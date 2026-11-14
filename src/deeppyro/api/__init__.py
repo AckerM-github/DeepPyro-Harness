@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from .context import PluginContext
 from .errors import PluginConfigError, PluginDependencyError, PluginError
+from .kernel_types import FiberState
 from .plugin import Plugin, Service
 from .types import (
     AGENT_MODE_DEFAULT,
@@ -44,6 +45,7 @@ __all__ = [
     "TEAM_PRESET_ID",
     "TEAM_TOOL_NAMES",
     "CommandSpec",
+    "FiberState",
     "Plugin",
     "PluginConfigError",
     "PluginContext",

@@ -10,6 +10,7 @@ from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.tools import ToolCallRequest, ToolRegistry, run_tool_batch
 from deeppyro.tools.base import BaseTool
+from deeppyro.tools.pipeline import run_tool_call
 from tests.tools.helpers import make_context
 
 Handler = Any
@@ -92,6 +93,8 @@ async def run(
     log: Any | None = None,
     dispatch: Any | None = None,
     services: dict[str, Any] | None = None,
+    agent: Any | None = None,
+    tool_set: Any | None = None,
 ) -> list[Any]:
     return await run_tool_batch(
         requests,
@@ -103,6 +106,8 @@ async def run(
         step=step,
         log=log,
         dispatch=dispatch,
+        agent=agent,
+        tool_set=tool_set,
     )
 
 
@@ -134,10 +139,16 @@ async def test_pre_allow_runs_all_three_events_with_wire_payloads() -> None:
     assert pre["tool"] == "echo"
     assert pre["turn"] == 3
     assert pre["step"] == 2
+    assert pre["agent"] is None
+    assert "toolSet" not in pre
     execute = hooks.payloads["tools/execute"]
     assert execute["arguments"] == {"value": 1}
+    assert execute["agent"] is None
+    assert "toolSet" not in execute
     post = hooks.payloads["tools/post-execute"]
     assert post["result"].text == "echo:{'value': 1}"
+    assert post["agent"] is None
+    assert "toolSet" not in post
 
 
 async def test_pre_deny_short_circuits_and_never_runs_the_tool() -> None:
@@ -349,6 +360,42 @@ async def test_execute_result_that_is_not_a_toolresult_is_an_error() -> None:
     assert "not ToolResult" in outcomes[0].result.text
 
 
+async def test_tool_result_error_survives_output_retention() -> None:
+    error = {"name": "ToolError", "code": "boom"}
+    tool = RecordingTool(result=ToolResult(text="partial failure", error=error))
+    outcomes = await run(ToolRegistry([tool]), [request("c1", "echo")])
+    assert outcomes[0].result.error == error
+
+    long_tool = RecordingTool(result=ToolResult(text="x" * 200, error=error))
+    outcomes = await run(
+        ToolRegistry([long_tool]),
+        [request("c1", "echo")],
+        services={"max_output_chars": 20},
+    )
+    assert outcomes[0].result.meta["truncated"] is True
+    assert outcomes[0].result.error == error
+
+
+async def test_post_execute_preserves_error_on_accept_and_block() -> None:
+    error = {"name": "PermissionDenied", "code": "denied"}
+
+    async def content(payload: dict[str, Any], fallback: Any) -> dict[str, Any]:
+        return {"kind": "accept", "content": "clean text"}
+
+    tool = RecordingTool(result=ToolResult(text="raw", is_error=True, error=error))
+    outcomes = await run(ToolRegistry([tool]), [request("c1", "echo")], hooks=Hooks(post=content))
+    assert outcomes[0].result.is_error is True
+    assert outcomes[0].result.error == error
+
+    async def block(payload: dict[str, Any], fallback: Any) -> dict[str, Any]:
+        return {"kind": "block", "feedback": "blocked"}
+
+    tool = RecordingTool(result=ToolResult(text="raw", is_error=True, error=error))
+    outcomes = await run(ToolRegistry([tool]), [request("c1", "echo")], hooks=Hooks(post=block))
+    assert outcomes[0].result.is_error is True
+    assert outcomes[0].result.error == error
+
+
 async def test_concurrency_and_request_order_survive_hooks() -> None:
     state = {"current": 0, "max": 0}
     tool = RecordingTool(delay=0.03, state=state)
@@ -358,3 +405,60 @@ async def test_concurrency_and_request_order_survive_hooks() -> None:
     assert [outcome.call_id for outcome in outcomes] == [f"c{index}" for index in range(6)]
     assert state["max"] == 3
     assert hooks.events.count("tools/execute") == 6
+
+
+async def test_hook_payloads_include_agent_and_tool_set_when_supplied() -> None:
+    agent = object()
+    hooks = Hooks()
+    tool = RecordingTool()
+    outcomes = await run(
+        ToolRegistry([tool]),
+        [request("c1", "echo")],
+        hooks=hooks,
+        agent=agent,
+        tool_set=["echo", "read"],
+    )
+    assert outcomes[0].result.text == "echo:{}"
+    for name in ("tools/pre-execute", "tools/execute", "tools/post-execute"):
+        payload = hooks.payloads[name]
+        assert payload["agent"] is agent
+        assert payload["toolSet"] == ["echo", "read"]
+
+
+async def test_run_tool_call_forwards_agent_and_tool_set() -> None:
+    agent = object()
+    hooks = Hooks()
+    tool = RecordingTool()
+    outcome = await run_tool_call(
+        request("c1", "echo"),
+        registry=ToolRegistry([tool]),
+        ctx_factory=lambda req: make_context(Path.cwd(), call_id=req.call_id),
+        hooks=hooks,
+        turn=1,
+        step=2,
+        agent=agent,
+        tool_set=["echo"],
+    )
+    assert outcome.result.text == "echo:{}"
+    assert hooks.events == ["tools/pre-execute", "tools/execute", "tools/post-execute"]
+    for name in hooks.events:
+        payload = hooks.payloads[name]
+        assert payload["agent"] is agent
+        assert payload["toolSet"] == ["echo"]
+        assert payload["turn"] == 1
+        assert payload["step"] == 2
+
+
+async def test_run_tool_call_defaults_to_agent_none_without_tool_set() -> None:
+    hooks = Hooks()
+    outcome = await run_tool_call(
+        request("c1", "echo"),
+        registry=ToolRegistry([RecordingTool()]),
+        ctx_factory=lambda req: make_context(Path.cwd(), call_id=req.call_id),
+        hooks=hooks,
+    )
+    assert outcome.result.is_error is False
+    for name in hooks.events:
+        payload = hooks.payloads[name]
+        assert payload["agent"] is None
+        assert "toolSet" not in payload
