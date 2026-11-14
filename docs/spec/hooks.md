@@ -49,6 +49,8 @@ deeppyro.hooks.HookService and deeppyro.hooks.HookAggregateError.
     on(name, handler, *, prepend=False, once=False, scope=None, global_=False) -> disposer
     has(name) -> bool
     listeners(name) -> tuple[handler, ...]
+    add_observer(observer) -> disposer
+    observed -> bool
     await waterfall(name, payload, fallback=None, *, scope=None) -> Any
     await serial(name, payload, *, scope=None) -> list[Any]
     await emit(name, payload, *, scope=None) -> None
@@ -272,6 +274,31 @@ Current wiring:
 The pipeline tolerates duck-typed hook objects that predate scope: when the
 bound dispatch call rejects the scope keyword it retries without it, so test
 doubles keep working. Real HookService always accepts the keyword.
+
+### 2.11 Dispatch observers
+
+add_observer(observer) registers a synchronous callable that receives one
+HookObservation per dispatch phase: invoked before any listener runs, and
+resolved from the dispatch finally clause with the result (or error) and
+duration_ms. Observer failures are logged with logger.exception and never change
+the dispatch result. add_observer returns an idempotent disposer; a plugin wraps
+it with ctx.effect so the observer is removed when its fiber unloads.
+
+observed is True while at least one observer is registered. Dispatch call sites
+that skip work when no listener is registered should still dispatch while
+observed is True, so the observation chain sees fallback and veto decisions even
+when a hook has no listener. Hot hooks (llm/stream and agent/assistant-stream)
+stay listener-gated because they fire once per model frame.
+
+The in-tree call sites implement this with a shared guard:
+AgentSession._hook_enabled(name) returns has(name) or observed for the nine
+non-hot agent dispatches; PermissionGate._ask_hook/_emit and
+tools/pipeline.py _emit_call_events use the same rule.
+
+The default bundle consumes the observer stream twice: hook-journal writes
+hook/invoked and hook/result records through AgentSession.record_hook_event, and
+hook-bridge republishes the same phases as cordis events. Records are shaped by
+src/deeppyro/hooks/records.py and skip the two hot hooks.
 
 ## 3. Hook catalogue
 
@@ -603,6 +630,47 @@ the observation hooks observable without a tracing plugin:
 The plugin is a normal core-bundle row (id "hook-observability") and does not
 change behaviour: every listener continues the chain.
 
+### 6.6 prompt-extension consumer
+
+src/deeppyro/builtin/prompt_extension.py is the in-tree post-order waterfall
+consumer for system-prompt/assemble (plugin id "prompt-extension",
+inject ["hooks", "config"]):
+
+* It reads `[prompt].extension` from the config (default "").
+* The listener awaits next_step() first, so it extends the fully assembled
+  prompt; a non-string result or an empty extension is returned unchanged.
+* Otherwise it appends "
+
+" plus the stripped extension and returns the new
+  string. This is the reference example for post-order prompt customisation.
+
+### 6.7 approval-policy consumer
+
+src/deeppyro/builtin/approval_policy.py (plugin id "approval-policy",
+inject ["hooks", "config"]) turns `[approval].hookMode` into an
+approval/request listener:
+
+| hookMode | behaviour |
+| --- | --- |
+| off (default) | continue the chain (the gate falls back to the interactive policy) |
+| ask | continue the chain |
+| allow | return "allow" when ApprovalRequest.tool matches hookTools |
+| deny | return "deny" when ApprovalRequest.tool matches hookTools |
+
+`[approval].hookTools` is a list of tool names (empty means every tool). A
+non-matching request continues the chain, so the plugin is inert until a tool is
+listed or the mode is allow/deny. The gate validates the returned value and
+records via="hook" in approval/decided for hook decisions.
+
+The match is against `ApprovalRequest.tool`, which the tool-side permission
+bridge populates with the calling tool's name: `write` and `edit` for the
+filesystem tools, `pwsh`/`bash` for shell commands. It is set on both the
+plain `write-outside-workspace`/`command-approval` requests and on the
+`sandbox-escalation` request produced by `sandbox_permissions`, so one
+`hookTools` entry covers every approval path that tool takes. Callers that
+build their own `ApprovalRequest` may leave `tool` unset, in which case only
+an empty `hookTools` list matches.
+
 ## 7. Wiring
 
 The hooks plugin is a normal kernel plugin row. The core bundle mounts it after
@@ -627,8 +695,12 @@ agent loop uses the same pattern: check for the service, dispatch the hook, and
 apply the decision described above. Missing service means no listeners, not an
 error.
 
-The core bundle also mounts llm-retry (after hooks) and hook-observability
-(after llm-retry). Both are ordinary rows with their own ctx.effect cleanup:
+The core bundle also mounts four hook plugins around that row. llm-retry and
+hook-observability follow hooks; hook-bridge and hook-journal follow
+hook-observability and turn the observer stream into cordis events and session
+records. prompt-extension and approval-policy mount after prompt-core (their
+prompt/config dependencies) and are inert by default. All six are ordinary rows
+with their own ctx.effect cleanup:
 
     [[plugins]]
     id = "llm-retry"
@@ -637,6 +709,28 @@ The core bundle also mounts llm-retry (after hooks) and hook-observability
     [[plugins]]
     id = "hook-observability"
     plugin = "deeppyro.builtin.hook_observability:HookObservabilityPlugin"
+
+    [[plugins]]
+    id = "hook-bridge"
+    plugin = "deeppyro.builtin.hook_bridge:HookBridgePlugin"
+
+    [[plugins]]
+    id = "hook-journal"
+    plugin = "deeppyro.builtin.hook_journal:HookJournalPlugin"
+
+    [[plugins]]
+    id = "prompt-extension"
+    plugin = "deeppyro.builtin.prompt_extension:PromptExtensionPlugin"
+
+    [[plugins]]
+    id = "approval-policy"
+    plugin = "deeppyro.builtin.approval_policy:ApprovalPolicyPlugin"
+
+hook-bridge and hook-journal are critical=false: their failure is isolated and
+never blocks boot. Both subscribe through add_observer, so they see dispatches
+even when no listener is registered (section 2.11). hot hooks are skipped.
+approval/* and session/* dispatches carry no agent, so hook-journal skips them,
+while hook-bridge still republishes them.
 
 Current call sites:
 
@@ -655,6 +749,14 @@ Current call sites:
   that returns {"kind": "retry"} or continues the chain.
 * src/deeppyro/builtin/hook_observability.py registers a continuing listener
   for ten observation hooks and logs them.
+* src/deeppyro/builtin/hook_bridge.py registers a HookBridge observer that
+  republishes non-hot dispatches as kernel hook/invoked and hook/result events.
+* src/deeppyro/builtin/hook_journal.py registers an observer that appends
+  hook/invoked and hook/result records through AgentSession.record_hook_event;
+  SessionQuery.hook_trace pairs them back for /hooks and tests.
+* src/deeppyro/builtin/prompt_extension.py extends the assembled system prompt
+  post-order and src/deeppyro/builtin/approval_policy.py answers
+  approval/request from config.
 
 No hook name is left without a producer in the default bundle.
 

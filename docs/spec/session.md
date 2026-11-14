@@ -115,6 +115,31 @@ Common checks: non-empty string id, content is an array. developer/message and r
 
 request/header extra rules: data header must not contain system, and must omit empty tools/adapterDefaults. The record data is `{header, reason[, startsSeries]}` where startsSeries is only written when the record starts a request series. request/context record data is `{provider, model[, contextWindow][, systemPromptUpdate]}`; see `docs/spec/loop.md` §4.
 
+### 4.2 Hook journal records
+
+hook/invoked and hook/result are the only two known types written by the hook
+journal (src/deeppyro/builtin/hook_journal.py through
+AgentSession.record_hook_event). They are plain non-surface records: they carry
+no surfaceOp/sourceEventSeqs, and derivation, the surface fold and compaction
+never see them, so journaling cannot change what the model saw.
+
+| type | data keys |
+| --- | --- |
+| hook/invoked | `{hook, mode[, scope{session[, preset]}][, turn, step, tool, callId, provider, model, phase, status]}` |
+| hook/result | `{hook, mode, ok, outcome, durationMs[, valueType][, preview][, error{name, message}]}` plus the same optional context keys |
+
+`outcome` is "value" | "none" | "error"; `preview` is a string (or compact
+JSON) truncated to 120 chars; `valueType` is only present for non-string
+values. Keys are written in a fixed order for golden tests. The two hottest
+hooks (llm/stream, agent/assistant-stream) are never journaled, and dispatches
+without an agent (approval/*, session/created|disposed) have no session to
+write to. The record is appended before the live event is emitted, so a replayed
+log and the NDJSON/TUI stream agree; SessionQuery.hook_trace pairs invoked with
+the nearest following result for the same hook.
+
+The names align with the DSH v4 vocabulary, but the record shape above is a
+deeppyro contract (the reference implementation defines no writer).
+
 ## 5. Canonical surface fold
 
 The durable log is not the model history. The model history is the surface: an ordered list of seqs produced by replaying every event through the fold.
@@ -245,3 +270,5 @@ Coverage map:
 * tests/session/test_store.py (17) — create/open/list/latest, append round-trip and durability contract, nested and zstd layouts, layout encodings, usage/turn_count/last_step.
 * tests/session/test_fork.py (13) — prefix + end-seed + closers, boundary errors, pending started/not-started calls, trimmed rejection, real-fork fixture.
 * tests/session/test_invariants.py (11) — cross-fixture surface metadata, shadow coverage, tool pairing, derived-message legality, manifest aggregates, stable fixture statistics, SessionLogLike conformance.
+* tests/agent/test_hook_records.py (10) — record_hook_event writes both hook types with the observed seq/event order, rejects other types, and keeps derivation/surface unchanged.
+* tests/session_query/test_hook_trace.py (13) — hook_trace pairing (open results, orphan results, limit validation, missing session).

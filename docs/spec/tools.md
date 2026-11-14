@@ -51,7 +51,7 @@
 - request(req)：never 拒绝；always 允许；ask 调用 ask 回调，回调为 None 时拒绝（"no interactive approval handler is available"），回调抛异常时拒绝（"approval handler failed: ..."），回调返回 False 为 "rejected by the user"。每次请求与决定都追加到 gate.approvals 便于会话日志。
 - validate_escalation(target)：只允许严格更宽（read-only < workspace-write < danger-full-access），重复当前模式或收窄抛 ConfigError；非法模式同样 ConfigError。
 
-工具侧（@permissions.py）：write/edit/pwsh 支持参数 sandbox_permissions=sandbox_permissions + justification 的一次性升级；设置 sandbox_permissions 时 justification 必填（ToolError），且目标必须严格更宽；升级需经 gate.request 批准（ApprovalRequest.kind="sandbox-escalation"），拒绝抛 PermissionDenied。普通越界写/危险命令的 needs_approval 分别以 kind="write-outside-workspace"/"command-approval" 走 request。
+工具侧（@permissions.py）：write/edit/pwsh 支持参数 sandbox_permissions=sandbox_permissions + justification 的一次性升级；设置 sandbox_permissions 时 justification 必填（ToolError），且目标必须严格更宽；升级需经 gate.request 批准（ApprovalRequest.kind="sandbox-escalation"），拒绝抛 PermissionDenied。普通越界写/危险命令的 needs_approval 分别以 kind="write-outside-workspace"/"command-approval" 走 request。三条路径的 ApprovalRequest.tool 都填调用工具名（write/edit/pwsh/bash），供 approval/request 消费者（如 [approval].hookTools）按工具过滤。
 
 ## 5. 内置工具
 

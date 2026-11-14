@@ -122,7 +122,7 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
     echo "1+1=?" | uv run dpyro --headless --json # stdin 管道
 
 TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /preset /policy /approval /cwd
-/status /plan /jobs /team /thinking /compact /clear /plugins /panel /exit`）；`/provider`、`/model`、
+/status /plan /jobs /team /thinking /hooks /compact /clear /plugins /panel /exit`）；`/provider`、`/model`、
 `/policy`、`/approval`、`/cwd`、`/team` 等无参时打开选择器或面板，带参数的切换立即生效（turn
 运行中拒绝）。`/team on` 在当前会话进入 Team 模式、`/team off` 回到进入前的 preset，Team 模式
 只给 Lead 开放 `team_*` 工具并隐藏 `subagent`；

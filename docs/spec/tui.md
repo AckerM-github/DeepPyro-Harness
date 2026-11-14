@@ -30,6 +30,7 @@
 | widgets/activity_bar.py | 对话区上方活动栏：plan / jobs / agents 三段 | ui-dev |
 | screens/plan.py | 待办计划模态（/plan、点击 plan 段） | ui-dev |
 | screens/jobs.py | 后台任务面板（/jobs、点击 jobs 段） | tui-dev |
+| screens/hook_trace.py | 最近 hook 决策链模态（/hooks：hook/mode/ok/durationMs/error 或 preview） | tui-dev |
 | screens/team.py | 团队面板与任务板（/team、/team board、/team on/off、点击 agents 段） | ui-dev |
 | screens/thinking.py | 全屏思考查看器（/thinking、点击折叠行） | tui-dev |
 | history.py | 从会话日志按 turn 重建 ReasoningStep/TurnReasoning/TurnProcess（思考 + 工具有序过程） | Lead |
@@ -100,6 +101,7 @@
 | /status | 当前 provider（含 key 状态）与可用 providers、model、preset、policy、cwd、session、tokens、上下文 |
 | /plan | 打开当前 todo 计划（PlanScreen，按 in_progress / pending / completed 分组） |
 | /jobs | 打开后台任务面板（JobsPanelScreen：id/kind/status/label/started/finished） |
+| /hooks | 最近 hook 决策链（HookTraceScreen：最近 50 条 hook/invoked + hook/result 配对，显示 hook、mode、ok、durationMs、error/preview） |
 | /team [on|off|board] | 在当前会话进入/退出 Team 模式；`/team board` 打开完整任务板；无参打开团队面板（成员 + 任务） |
 | /thinking [turns] | 打开全屏思考查看器：默认当前 turn，`all` 全部，数字指定最近 N 个 turn |
 | /compact | 手动压缩（要求无运行中 turn；Compactor.compact） |
@@ -134,6 +136,7 @@
 - 插件状态栏项：状态栏上方另有一行 PluginStatusBar，插件通过 slots.add_status_item 注册的渲染器按 (order,id) 排序渲染；每次 refresh_status 重新求值，渲染异常显示为 dim 错误标记而不影响主状态栏。
 - 活动栏：Header 与对话区之间一行 ActivityBar，数据来自 activity 服务对 todo/write、job/registered|settled、team/member、subagent/descriptor|catalog、plan/mode 的投影；空段隐藏，点击段打开 PlanScreen / JobsPanelScreen / TeamPanelScreen。
 - 后台任务：JobsPanelScreen 只读展示 jobs 服务快照（超长输出由 job_output 工具按 head/tail 预览）；/jobs 与活动栏 jobs 段等价。
+- Hook 决策链：/hooks 从当前会话日志取 hook/invoked 与 hook/result 记录并配对（优先 SessionQuery.hook_trace，退化到 records 过滤），显示最近 50 条；热 hook 不落盘所以不出现，approval/* 与 session 生命周期 hook 无 agent 同样不出现；无记录时显示 "no hook activity yet"。
 - 团队：TeamPanelScreen 展示成员与任务，TaskBoardScreen 按 pending → in_progress → completed 排序；/team 无参打开团队面板，/team board 打开任务板；活动栏 agents 段打开团队面板。/team on 在当前会话进入 Team 模式（Lead 获得 `team_*`、收起 `subagent`），/team off 回到进入前的 preset；有 live 成员（spawning/running/idle）时拒绝离开并列出成员。default 模式且无成员/任务时 /team 提示用 /team on 显式开启 Team 模式。
 - agent mode：内置 preset `default`（mode default、可见）与 `team`（mode team、hidden，仅由 /team on 进入）。default 模式注入 host-wide `subagent` 工具（一次性子会话委派）；team 模式只给 Lead 注入 `team_*` 工具并隐藏 `subagent`；Team 成员子会话两者都没有（防嵌套）。欢迎页与 /status 显示 `agent preset X (mode Y)`，状态栏标题在 team 模式追加 ` · team`。
 - 插件对话行：handle_event 在 status 事件后调用 apply_conversation_slots，插件按 predicate 匹配事件并追加自定义行（只追加、宿主不重放历史）。

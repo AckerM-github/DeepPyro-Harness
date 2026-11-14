@@ -31,8 +31,12 @@
 - `run_once` 先建 Session，然后前端**恰好发一次** `{"type":"session","sessionId":...}`；
   `AgentSession` 永不发 session 事件。
 - 其余事件全部来自 `AgentSession` 注入的 sink：`status`/`step`/`text`/`thinking`/`tool_call`/
-  `tool_result`/`usage`/`final`/`error`。`step` 是 UI-only hint（紧跟 durable `step/start`，不写记录）；
-  落盘顺序仍是「先 append 记录、后 emit 事件」。
+  `tool_result`/`usage`/`final`/`error`，以及 hook journal 的 `hook/invoked`/`hook/result`。
+  `step` 是 UI-only hint（紧跟 durable `step/start`，不写记录）；落盘顺序仍是「先 append 记录、后 emit 事件」。
+- hook journal 记录同样走这个 sink：NDJSON 行带 `type`（`hook/invoked`|`hook/result`）、
+  `seq`、`hook`、`mode` 等字段，因此一次 turn 的 hook 决策链（含 `ok`/`durationMs`/
+  `error`）可直接从 stdout 解析；热 hook（`llm/stream`、`agent/assistant-stream`）不落日志。
+  `approval/*` 与 session 生命周期 hook 没有 agent，不会出现在该行流里（见 hooks.md §2.11）。
 - `--json`：stdout 只有 NDJSON；错误信息走 stderr；`saw_error` 时退出码 1。
 - 非 json：先打印 `session <label>  provider/model  cwd ...` 头，成功后打印
   `session <label> · tokens in=... out=... cached=...` 尾。
