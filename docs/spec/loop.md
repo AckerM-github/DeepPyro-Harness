@@ -137,7 +137,17 @@ no-op. The nine names are fixed and documented in `docs/spec/hooks.md`. Loop cal
 
 The provider keeps its own low-level `RetryPolicy` wrapper; the loop-level retry only runs
 when a plugin registers an `agent/request-error` listener that answers `{"kind":"retry"}`.
-By default the runtime therefore produces no `llm/retry` records at the agent level.
+The core bundle mounts the `llm-retry` plugin, which provides the `retryPolicy` service from
+the `[retry]` config table and answers retry for retryable failures (normal mode) or every
+failure (always mode), so a default runtime does emit `llm/retry` records. Disabling that
+plugin (or a bundle without it) leaves the payload policy empty, no listener answers, and the
+failure propagates as before.
+
+The listener receives `{agent, turn, step, provider, failure, retryPolicy, signal}` and only
+the `{"kind":"retry"}` answer starts the loop; the delay and the record pair come from
+`deeppyro.agent.retry.decide_retry` (`llm/retry`, then `llm/retry-started` after the delay),
+and the same request is streamed again without new request/header or request/context records.
+See `docs/spec/llm.md` §6.1 for the plugin and its config table.
 
 ## 4. Records written by the loop
 
@@ -149,16 +159,24 @@ By default the runtime therefore produces no `llm/retry` records at the agent le
 | `system/message` | `{turn, step, message}` (source `{"kind":"system-prompt"}`) | `surfaceOp="append"` or a replace projection |
 | `user/message` | the wire `Message` directly (`role, content, id, source`) | `surfaceOp="append"` or a replace projection (runtime-context) |
 | `developer/message` | tool-change message from `tool_change_data` | `surfaceOp="append"` |
-| `request/header` | `{turn, step, header: {config, adapterDefaults, tools}, reason}` | — |
-| `request/context` | `{turn, step, provider, model, contextWindow}` | — |
+| `request/header` | `{header: {config, adapterDefaults, tools}, reason[, startsSeries: true]}` — no turn/step; `reason` is `initial` (first header of a new session), `resume` (first header after a restart with an existing baseline), `change` (header differs from the latest one) or `series` (unchanged header that merely starts a new request series). `startsSeries` appears on initial/resume/change records only. | — |
+| `request/context` | `{provider, model[, contextWindow][, systemPromptUpdate]}` — no turn/step; optional fields are omitted rather than null, and the record is written only when one of the four tracked fields changed (missing counts as different from null). | — |
 | `assistant/message` | `{turn, step, message, usage?, stream: [], interrupted?}` | `surfaceOp="append"` |
 | `assistant/attempt` | `{turn, step, stream: [merged chunks]}` | — |
 | `tool/call` | `{turn, step, callId, name, arguments}` (`arguments` is a JSON string) | — |
-| `tool/result` | `{turn, step, message, meta?}` (`message.role="tool"`, `source.kind="tool"`) | `surfaceOp="append"`, `sourceEventSeqs=[tool/call seq]` when known |
+| `tool/result` | `{turn, step, message, meta?, error?}` (`message.role="tool"`, `source.kind="tool"`); `error` is `{name, code}` and only present for failures that carry error info | `surfaceOp="append"`, `sourceEventSeqs=[tool/call seq]` when known |
 | `llm/retry`, `llm/retry-started` | retry record pair from `decide_retry` | — |
 | `compaction/start`, `compaction/summary`, checkpoint `user/message`, `compaction/end` | section 9 | checkpoint replace envelope |
 | `agent/inbox/spliced` | inbox mutation from `Inbox` | — |
 | `image/offload` | `{targets: [{seq, imageIndexes}]}` — durable request-image offload decision (not a surface event; consumed by `derive_messages`) | — |
+
+Cancellation while tools are in flight mirrors the reference pipeline: a call that was already
+dispatched records `Error: tool call aborted` with `error={"name":"AbortError","code":"ABORTED"}`;
+a call that had not been dispatched records `Error: tool call aborted before dispatch` with
+`error={"name":"AbortError","code":"ABORTED_BEFORE_DISPATCH"}`, after the loop appends its own
+`tool/call` so the pair stays valid. Both results carry `sourceEventSeqs=[tool/call seq]`.
+A failure is written with `message.isError == true`; `error` is omitted when the tool result has
+no error info (the session validator requires that pairing).
 
 `usage` on `assistant/message` is camelCase like the fixtures:
 `{"inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens"}`;

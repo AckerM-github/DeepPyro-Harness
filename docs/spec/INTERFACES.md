@@ -161,6 +161,8 @@ async def run_tool_batch(requests: list[ToolCallRequest], *, registry: ToolRegis
                          max_concurrency: int = 8,
                          hooks: Any | None = None,        # HookService, optional
                          turn: int | None = None, step: int | None = None,
+                         agent: Any | None = None,        # hook payload agent
+                         tool_set: Sequence[str] | None = None,  # visible tool names
                          log: Callable[..., int] | None = None,
                          dispatch: Callable[..., Any] | None = None) -> list[ToolOutcome]
 ```
@@ -170,7 +172,8 @@ async def run_tool_batch(requests: list[ToolCallRequest], *, registry: ToolRegis
 - 结果按**调用顺序**返回（不是完成顺序）。
 - 未知工具、参数 JSON 解析失败、`PermissionDenied`、`ToolError` 都转换为 `ToolResult(is_error=True, text=...)`，绝不抛出（除非 `CancelledError`）。
 - 输出截断：单结果 `max_output_chars=30000`（超出保留头尾，中间写 `... [truncated N chars] ...`，并把完整输出落盘到 `services["spill_dir"]`，路径写进 meta.spillPath）。
-- 可选 `hooks` 会触发 `tools/pre-execute` / `tools/execute` / `tools/post-execute`（契约见 `docs/spec/hooks.md`）；`log` 在 pre-execute 之前按请求顺序为每个调用写 `tool/call` 并返回 seq，seq 通过 `ToolOutcome.call_seq` 暴露给 `tool/result.sourceEventSeqs`。
+- `ToolResult.error`（`{"name", "code"}`）会原样透传到 `tool/result.data.error`；只有 `result.is_error == True` 时才落盘，各条重建 ToolResult 的分支（截断、spill、post-execute、accept）都保留它。
+- 可选 `hooks` 会触发 `tools/pre-execute` / `tools/execute` / `tools/post-execute`（契约见 `docs/spec/hooks.md`）；三个 payload 总是带 `agent`（直接调用为 None），传入 `tool_set` 时再带 `toolSet`；`log` 在 pre-execute 之前按请求顺序为每个调用写 `tool/call` 并返回 seq，seq 通过 `ToolOutcome.call_seq` 暴露给 `tool/result.sourceEventSeqs`。
 - `run_code` 是 PTC 呈现模式的**保留工具名**（`RESERVED_TOOL_NAMES`）：普通工具注册/遮蔽该名字会抛 `ToolError`；只有 `reserved_tool=True` 的 transport 对象可以注册（见 `docs/spec/ptc.md`）。
 
 内置工具清单（语义对齐 DSH，用 fixtures 里真实 tool/call 参数与 tool/result 文本校准）：

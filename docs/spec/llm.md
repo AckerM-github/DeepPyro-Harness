@@ -177,6 +177,45 @@ TextDelta("Hel") TextDelta("lo") Usage(...) Finish(kind="stop")
 * Retries stop as soon as content was produced: mid-stream failures never replay the
   request (the consumer has already seen deltas).
 
+### 6.1 Builtin retry consumer (`deeppyro.builtin.llm_retry`, P0-2)
+
+The retry loop lives in the agent loop (`AgentSession._stream_step`); the builtin
+`llm-retry` plugin supplies the policy and the `agent/request-error` decision:
+
+    [[plugins]]
+    id = "llm-retry"
+    plugin = "deeppyro.builtin.llm_retry:LlmRetryPlugin"
+
+* The plugin injects `hooks` and `config`, provides the `retryPolicy` service, and
+  listens on the `agent/request-error` waterfall. Its handler returns
+  `{"kind": "retry"}` when the payload carries a policy and the signal is not
+  aborted; otherwise it calls `next()` so a later listener can decide.
+* The session builds the payload `{agent, turn, step, provider, failure,
+  retryPolicy, signal}`, where `retryPolicy` is the service value (None when the
+  plugin is disabled). Only that decision triggers `decide_retry`; the session
+  then appends `llm/retry` (and `llm/retry-started` after the delay) and repeats
+  the same request. Without the plugin no policy exists, so nothing retries and
+  pre-P0 behaviour is unchanged.
+* Config table (top-level, parsed while the plugin boots; invalid values raise
+  `ConfigError` instead of silently disabling recovery):
+
+      [retry]
+      mode = "normal"          # or "always"
+      maxRetries = 5
+      initialDelayMs = 500
+      maxDelayMs = 10000
+      jitterRatio = 0.1
+      retryableCodes = ["EMPTY_RESPONSE", "RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT"]
+
+  Missing keys fall back to the DSH defaults. `mode = "normal"` becomes
+  `RetryPolicy(max_attempts=maxRetries+1, base_delay=initialDelayMs/1000,
+  max_delay=maxDelayMs/1000, jitter=jitterRatio, retryable_codes=...)`; an absent
+  `[retry]` table means `RetryPolicy()` (3 attempts). `mode = "always"` returns a
+  mapping instead because `RetryPolicy` cannot express an unbounded retry budget.
+* Tests: `tests/builtin/test_llm_retry.py` (policy construction, hook decisions,
+  session integration incl. always mode and exhausted retries) and the retry
+  decision tests in `tests/agent/test_retry.py`.
+
 ## 7. Failure taxonomy
 
 | situation | code | retryable | surfaced as |

@@ -113,7 +113,7 @@ For the five message-producing types, data must contain a valid message:
 
 Common checks: non-empty string id, content is an array. developer/message and role == "developer" must occur together; non-developer messages may not contain tool-addition/tool-removal blocks. Developer tool additions need a non-empty toolName, must not inline a tool definition, and require data.headerSeq pointing at an earlier request/header; absent additions must not have headerSeq. tool/result with data.error requires message.isError == true.
 
-request/header extra rules: data.header must not contain system, and must omit empty tools/adapterDefaults.
+request/header extra rules: data header must not contain system, and must omit empty tools/adapterDefaults. The record data is `{header, reason[, startsSeries]}` where startsSeries is only written when the record starts a request series. request/context record data is `{provider, model[, contextWindow][, systemPromptUpdate]}`; see `docs/spec/loop.md` §4.
 
 ## 5. Canonical surface fold
 

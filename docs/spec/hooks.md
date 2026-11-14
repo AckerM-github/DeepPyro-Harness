@@ -191,9 +191,24 @@ arguments is the raw JSON string requested by the model. turn and step may be
 None when the caller cannot provide them. The pipeline appends the tool/call
 record before pre-execute runs.
 
+Every tool payload also carries `agent` and `toolSet`:
+
+* agent is the executing `AgentSession` (the object the loop passes as
+  `run_tool_batch(..., agent=self)`), or None for a direct pipeline caller that
+  did not provide one. The key is always present, so a handler can distinguish
+  "no agent" from "old payload shape".
+* toolSet is the sorted list of tool names visible for this batch when the
+  caller supplies `tool_set`; the agent loop passes its surface registry names
+  (native or ptc), so a handler can tell which tools the model could call. The
+  key is omitted when the caller supplies no tool set.
+
+Nested transports (the PTC dispatcher) pass the same two values so their tool
+hooks look identical to the model-driven path.
+
 ### 5.1 tools/pre-execute
 
-    payload = {"call": call, "tool": name, "turn": turn, "step": step}
+    payload = {"call": call, "tool": name, "turn": turn, "step": step,
+               "agent": agent, "toolSet": tool_set}
     fallback = lambda: {"kind": "allow"}
 
 Decision kinds:
@@ -214,7 +229,7 @@ that into an error result, not a turn-fatal exception.
 ### 5.2 tools/execute
 
     payload = {"call": call, "tool": name, "turn": turn, "step": step,
-               "arguments": arguments_dict}
+               "arguments": arguments_dict, "agent": agent, "toolSet": tool_set}
     fallback = lambda: await tool.run(arguments_dict, ctx)
 
 The fallback runs the real tool implementation. A handler may return None to
@@ -231,7 +246,7 @@ pipeline verifies the type after the waterfall.
 ### 5.3 tools/post-execute
 
     payload = {"call": call, "tool": name, "turn": turn, "step": step,
-               "result": ToolResult}
+               "result": ToolResult, "agent": agent, "toolSet": tool_set}
     fallback = lambda: {"kind": "accept"}
 
 Decision kinds:
