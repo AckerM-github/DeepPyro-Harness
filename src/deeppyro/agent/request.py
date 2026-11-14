@@ -33,6 +33,9 @@ class HeaderPlan:
     write: bool
     reason: str | None
     header: dict[str, Any]
+    # True only for initial/resume/change records: the reference loop marks the
+    # first request of a new surface series so a reader can group requests.
+    starts_series: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,17 +107,22 @@ def plan_header(
     The logged flag is True once this loop instance has written a header.  A
     resumed session that already carries a header but has not written one yet
     records resume; a brand-new session records initial.
+
+    The starts_series flag is carried on initial/resume/change records (the
+    header record starts a request series), but never on a series record: the
+    reference loop writes series purely as a marker and stores no seq for it,
+    so the flag would be redundant there.
     """
     header = build_header(provider=provider, model=model, max_tokens=max_tokens, tools=tools)
     baseline = latest_header(records)
     if not logged:
         reason = "initial" if baseline is None else "resume"
-        return HeaderPlan(write=True, reason=reason, header=header)
+        return HeaderPlan(write=True, reason=reason, header=header, starts_series=starts_series)
     if baseline is None or _canonical(baseline) != _canonical(header):
-        return HeaderPlan(write=True, reason="change", header=header)
+        return HeaderPlan(write=True, reason="change", header=header, starts_series=starts_series)
     if starts_series:
-        return HeaderPlan(write=True, reason="series", header=header)
-    return HeaderPlan(write=False, reason=None, header=header)
+        return HeaderPlan(write=True, reason="series", header=header, starts_series=False)
+    return HeaderPlan(write=False, reason=None, header=header, starts_series=False)
 
 
 def tool_changes(
@@ -184,37 +192,44 @@ def latest_context(records: Sequence[Any]) -> dict[str, Any] | None:
     return None
 
 
+#: Fields a request/context record compares; a missing key is distinct from a
+#: present null, matching the reference loop's undefined-vs-null check.
+CONTEXT_FIELDS: tuple[str, ...] = ("provider", "model", "contextWindow", "systemPromptUpdate")
+
+_MISSING = object()
+
+
+def _context_view(data: dict[str, Any]) -> dict[str, Any]:
+    return {field: data.get(field, _MISSING) for field in CONTEXT_FIELDS}
+
+
 def context_data(
     records: Sequence[Any],
     *,
     provider: str,
     model: str,
     context_window: int | None,
-    turn: int,
-    step: int,
     system_prompt_update: str | None = "in-history",
 ) -> dict[str, Any] | None:
-    """Build request/context when any field changed, else None."""
+    """Build request/context when any tracked field changed, else None.
+
+    Only provider/model/contextWindow/systemPromptUpdate are persisted (the
+    reference record has no turn/step position).  Absent optional fields are
+    omitted rather than written as null.
+    """
     previous = latest_context(records)
-    payload: dict[str, Any] = {
-        "turn": turn,
-        "step": step,
-        "provider": provider,
-        "model": model,
-    }
+    payload: dict[str, Any] = {"provider": provider, "model": model}
     if context_window is not None:
         payload["contextWindow"] = context_window
     if system_prompt_update is not None:
         payload["systemPromptUpdate"] = system_prompt_update
-    if previous is not None:
-        comparable_previous = {key: value for key, value in previous.items() if key not in ("turn", "step")}
-        comparable_payload = {key: value for key, value in payload.items() if key not in ("turn", "step")}
-        if comparable_previous == comparable_payload:
-            return None
+    if previous is not None and _context_view(previous) == _context_view(payload):
+        return None
     return payload
 
 
 __all__ = [
+    "CONTEXT_FIELDS",
     "HeaderPlan",
     "ToolChange",
     "build_header",

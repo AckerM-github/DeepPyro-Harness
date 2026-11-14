@@ -73,7 +73,25 @@ async def test_simple_turn_records_and_events(tmp_path: Path) -> None:
     assert session.records_of("turn/start")[0].data == {"turn": 1}
     assert session.records_of("step/start")[0].data == {"turn": 1, "step": 1}
     assert session.records_of("turn/end")[0].data == {"turn": 1, "reason": {"kind": "completed"}}
-    assert session.records_of("request/header")[0].data["reason"] == "initial"
+    header_record = session.records_of("request/header")[0]
+    assert header_record.data["reason"] == "initial"
+    # The durable header carries no position: turn/step are on the surrounding
+    # turn/step records, and the first request of a series is marked.
+    assert set(header_record.data) == {"header", "reason", "startsSeries"}
+    assert header_record.data["startsSeries"] is True
+    context_record = session.records_of("request/context")[0]
+    assert set(context_record.data) == {
+        "provider",
+        "model",
+        "contextWindow",
+        "systemPromptUpdate",
+    }
+    assert context_record.data["provider"] == "fake-provider"
+    assert context_record.data["model"] == "test-model"
+    assert context_record.data["contextWindow"] == 32768
+    for record in session.records:
+        if record.type in ("request/header", "request/context"):
+            assert "turn" not in record.data and "step" not in record.data
 
     assistant = session.records_of("assistant/message")[0].data["message"]
     assert assistant["role"] == "assistant"
@@ -172,7 +190,13 @@ async def test_second_turn_reuses_system_prompt_and_header_is_series(tmp_path: P
 
     assert len(session.records_of("system/message")) == 1
     assert len(session.records_of("request/header")) == 2
-    assert session.records_of("request/header")[1].data["reason"] == "series"
+    headers = session.records_of("request/header")
+    assert headers[0].data["reason"] == "initial"
+    assert headers[0].data["startsSeries"] is True
+    # A series marker is not the start of a series: it carries the flag nowhere
+    # and the loop keeps no seq for it.
+    assert headers[1].data["reason"] == "series"
+    assert set(headers[1].data) == {"header", "reason"}
     assert len(session.records_of("request/context")) == 1
     assert [m.role for m in session.derive_messages()] == [
         "system",

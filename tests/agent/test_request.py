@@ -31,7 +31,7 @@ def header_record(seq: int = 3, *, tools=TOOLS, header: dict | None = None):
         if header is not None
         else build_header(provider="deepseek", model="deepseek-v4-pro", max_tokens=8192, tools=tools)
     )
-    return record("request/header", seq, {"turn": 1, "step": 1, "header": value, "reason": "initial"})
+    return record("request/header", seq, {"header": value, "reason": "initial", "startsSeries": True})
 
 
 def test_build_header_shape_and_tool_order():
@@ -58,6 +58,7 @@ def test_plan_header_initial_for_empty_session():
     )
     assert plan.write is True
     assert plan.reason == "initial"
+    assert plan.starts_series is True
 
 
 def test_plan_header_resume_when_session_already_has_header():
@@ -72,6 +73,7 @@ def test_plan_header_resume_when_session_already_has_header():
     )
     assert plan.write is True
     assert plan.reason == "resume"
+    assert plan.starts_series is True
 
 
 def test_plan_header_series_when_unchanged_and_new_series():
@@ -86,6 +88,7 @@ def test_plan_header_series_when_unchanged_and_new_series():
     )
     assert plan.write is True
     assert plan.reason == "series"
+    assert plan.starts_series is False
 
 
 def test_plan_header_no_write_when_unchanged_and_not_new_series():
@@ -100,6 +103,7 @@ def test_plan_header_no_write_when_unchanged_and_not_new_series():
     )
     assert plan.write is False
     assert plan.reason is None
+    assert plan.starts_series is False
 
 
 def test_plan_header_change_when_config_changes():
@@ -114,6 +118,22 @@ def test_plan_header_change_when_config_changes():
     )
     assert plan.write is True
     assert plan.reason == "change"
+    assert plan.starts_series is False
+
+
+def test_plan_header_change_carries_starts_series():
+    plan = plan_header(
+        [header_record()],
+        provider="deepseek",
+        model="deepseek-chat",
+        max_tokens=8192,
+        tools=TOOLS,
+        starts_series=True,
+        logged=True,
+    )
+    assert plan.write is True
+    assert plan.reason == "change"
+    assert plan.starts_series is True
 
 
 def test_plan_header_change_when_tools_change():
@@ -191,12 +211,8 @@ def test_context_data_only_when_changed():
         provider="deepseek",
         model="deepseek-v4-pro",
         context_window=32768,
-        turn=1,
-        step=1,
     )
     assert first == {
-        "turn": 1,
-        "step": 1,
         "provider": "deepseek",
         "model": "deepseek-v4-pro",
         "contextWindow": 32768,
@@ -209,8 +225,6 @@ def test_context_data_only_when_changed():
             provider="deepseek",
             model="deepseek-v4-pro",
             context_window=32768,
-            turn=2,
-            step=1,
         )
         is None
     )
@@ -219,11 +233,45 @@ def test_context_data_only_when_changed():
         provider="deepseek",
         model="deepseek-chat",
         context_window=32768,
-        turn=2,
-        step=1,
     )
     assert changed is not None
     assert changed["model"] == "deepseek-chat"
+    assert "turn" not in changed and "step" not in changed
+
+
+def test_context_data_omits_absent_optional_fields():
+    payload = context_data([], provider="deepseek", model="m", context_window=None, system_prompt_update=None)
+    assert payload == {"provider": "deepseek", "model": "m"}
+
+
+def test_context_data_missing_field_differs_from_present_null():
+    # The reference compares with !==, so a previously persisted
+    # contextWindow: null differs from an absent contextWindow.
+    records = [
+        record("request/context", 1, {"provider": "deepseek", "model": "m", "contextWindow": None}),
+    ]
+    payload = context_data(records, provider="deepseek", model="m", context_window=None)
+    assert payload is not None
+    assert "contextWindow" not in payload
+
+
+def test_context_data_ignores_legacy_turn_step_fields():
+    records = [
+        record(
+            "request/context",
+            1,
+            {
+                "turn": 1,
+                "step": 1,
+                "provider": "deepseek",
+                "model": "m",
+                "contextWindow": 100,
+                "systemPromptUpdate": "in-history",
+            },
+        ),
+    ]
+    assert context_data(records, provider="deepseek", model="m", context_window=100) is None
+    assert context_data(records, provider="deepseek", model="m", context_window=101) is not None
 
 
 def test_latest_helpers_ignore_other_records():

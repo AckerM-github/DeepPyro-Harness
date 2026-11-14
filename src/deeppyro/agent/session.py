@@ -94,6 +94,15 @@ from deeppyro.session.image_projection import IMAGE_OFFLOAD_EVENT
 
 logger = logging.getLogger(__name__)
 
+#: Tool-abort codes persisted in tool/result.data.error (reference pipeline).
+TOOL_ABORTED = "ABORTED"
+TOOL_ABORTED_BEFORE_DISPATCH = "ABORTED_BEFORE_DISPATCH"
+
+
+def _abort_error(code: str) -> dict[str, Any]:
+    """Build the structured error persisted for an aborted tool call."""
+    return {"name": "AbortError", "code": code}
+
 
 @dataclass(slots=True)
 class ToolCallDraft:
@@ -275,6 +284,9 @@ class AgentSession:
         self._assistant_appended = False
         self._attempt_appended = False
         self._pending_calls: list[ToolCallDraft] = []
+        self._undispatched_calls: list[ToolCallDraft] = []
+        # callId -> seq of the tool/call record, so abort results can reference it.
+        self._call_seqs: dict[str, int] = {}
         self.compactor = compactor or Compactor(
             provider=provider,
             model=self._model,
@@ -452,6 +464,8 @@ class AgentSession:
         self._assistant_appended = False
         self._attempt_appended = False
         self._pending_calls = []
+        self._undispatched_calls = []
+        self._call_seqs = {}
 
     async def _turn_body(self, turn: int) -> str:
         claimed = self._inbox.claim(TARGET_NEXT_TURN, turn)
@@ -863,10 +877,18 @@ class AgentSession:
     # -- tools -------------------------------------------------------------
     async def _run_tools(self, turn: int, step: int, calls: list[ToolCallDraft]) -> None:
         self._emit_status("tool")
+        # Calls that have not been handed to a batch yet; a cancellation records
+        # them as aborted-before-dispatch (the pipeline only reports dispatched
+        # calls, and it re-raises cancellation without an outcome).
+        self._undispatched_calls = list(calls)
         for group in self._group_calls(calls):
             if self._interrupt_requested:
                 raise asyncio.CancelledError()
             self._pending_calls = list(group)
+            group_ids = {call.call_id for call in group}
+            self._undispatched_calls = [
+                pending for pending in self._undispatched_calls if pending.call_id not in group_ids
+            ]
             requests = [_tool_request(call.call_id, call.name, call.arguments or "{}") for call in group]
             outcomes = await self._execute_batch(requests, turn, step)
             by_id = {outcome.call_id: outcome for outcome in outcomes}
@@ -881,6 +903,7 @@ class AgentSession:
                     pending for pending in self._pending_calls if pending.call_id != call.call_id
                 ]
         self._pending_calls = []
+        self._undispatched_calls = []
 
     def _group_calls(self, calls: list[ToolCallDraft]) -> list[list[ToolCallDraft]]:
         groups: list[list[ToolCallDraft]] = []
@@ -938,6 +961,7 @@ class AgentSession:
             "arguments": payload["arguments"],
         }
         seq = self._append("tool/call", data)
+        self._call_seqs[str(payload["callId"])] = seq
         self._emit(
             {
                 "type": "tool_call",
@@ -966,6 +990,8 @@ class AgentSession:
                 turn=turn,
                 step=step,
                 log=self._tool_call_log,
+                agent=self,
+                tool_set=_tool_names(self._surface),
             )
         except TypeError as exc:
             if "unexpected keyword" not in str(exc):
@@ -1172,9 +1198,13 @@ class AgentSession:
         )
         header_seq: int | None = None
         if plan.write:
-            data: dict[str, Any] = {"turn": turn, "step": step, "header": plan.header}
+            # Position is carried by the surrounding turn/step records; the
+            # header itself only records what the request looked like.
+            data: dict[str, Any] = {"header": plan.header}
             if plan.reason is not None:
                 data["reason"] = plan.reason
+            if plan.starts_series:
+                data["startsSeries"] = True
             header_seq = self._append("request/header", data)
             self._header_logged = True
         change = tool_changes(previous, tools)
@@ -1192,8 +1222,6 @@ class AgentSession:
             provider=self._provider.name,
             model=self._model,
             context_window=self._options.context_window,
-            turn=turn,
-            step=step,
         )
         if payload is not None:
             self._append("request/context", payload)
@@ -1260,6 +1288,8 @@ class AgentSession:
             "step": step,
             "message": message.model_dump(exclude_none=True),
         }
+        if result.error:
+            data["error"] = dict(result.error)
         if result.meta:
             data["meta"] = result.meta
         envelope: dict[str, Any] = {"surfaceOp": "append"}
@@ -1328,6 +1358,7 @@ class AgentSession:
             self._emit({"type": "final", "text": final_text})
         self._emit_status("done")
 
+    # -- turn failure -----------------------------------------------------
     async def _blocked_turn(self, turn: int, reason: Any) -> None:
         nested: dict[str, Any] = {"kind": "pre-step"}
         if reason is not None:
@@ -1358,14 +1389,46 @@ class AgentSession:
                     include_tool_calls=False,
                     interrupted=True,
                 )
+        # A dispatched call is aborted by the pipeline; a call whose batch never
+        # started still gets its own tool/call + tool/result pair, mirroring the
+        # reference skip path so the history stays pairable.
         for call in list(self._pending_calls):
             self._append_tool_result(
                 self._turn,
                 self._step,
                 call,
-                ToolResult(text="Error: interrupted", is_error=True),
+                ToolResult(
+                    text="Error: tool call aborted",
+                    is_error=True,
+                    error=_abort_error(TOOL_ABORTED),
+                ),
+                call_seq=self._call_seqs.get(call.call_id),
             )
         self._pending_calls = []
+        for call in list(self._undispatched_calls):
+            call_seq = self._append(
+                "tool/call",
+                {
+                    "turn": self._turn,
+                    "step": self._step,
+                    "callId": call.call_id,
+                    "name": call.name,
+                    "arguments": call.arguments or "{}",
+                },
+            )
+            self._append_tool_result(
+                self._turn,
+                self._step,
+                call,
+                ToolResult(
+                    text="Error: tool call aborted before dispatch",
+                    is_error=True,
+                    error=_abort_error(TOOL_ABORTED_BEFORE_DISPATCH),
+                ),
+                call_seq=call_seq,
+            )
+            self._call_seqs[call.call_id] = call_seq
+        self._undispatched_calls = []
         self._close_step()
         await self._close_turn({"kind": "aborted", "reason": {"kind": reason_kind}}, final_text=None)
         return text
@@ -1400,6 +1463,18 @@ class AgentSession:
         except Exception as exc:  # noqa: BLE001 - auto compaction never fails the turn
             self.last_compaction_error = exc
             logger.warning("step compaction failed: %s; continuing the turn", exc)
+
+
+def _tool_names(registry: Any) -> tuple[str, ...] | None:
+    """Return the registry tool names for hook payloads, when exposed."""
+    names = getattr(registry, "names", None)
+    if not callable(names):
+        return None
+    try:
+        return tuple(sorted(str(name) for name in names()))
+    except Exception:  # hook metadata must never break a tool call
+        logger.warning("failed to list tool names for the tool hook payload", exc_info=True)
+        return None
 
 
 def _tool_request(call_id: str, name: str, arguments: str) -> Any:

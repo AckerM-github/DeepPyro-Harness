@@ -297,6 +297,9 @@ async def test_tool_change_writes_a_header_change_and_a_developer_message(tmp_pa
 
     headers = session.records_of("request/header")
     assert [record.data["reason"] for record in headers] == ["initial", "change"]
+    # Both records start a request series (a new turn); the change record says so.
+    assert [record.data.get("startsSeries") for record in headers] == [True, True]
+    assert all("turn" not in record.data and "step" not in record.data for record in headers)
     developers = session.records_of("developer/message")
     assert len(developers) == 1
     developer = developers[0]
