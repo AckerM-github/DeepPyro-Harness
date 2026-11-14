@@ -69,8 +69,46 @@ DSH 语义（`_cordis_events.ts:246-261`）：listener 收到 `next` 作为最�
 
 ## 7. 验收
 
-- 极性：veto/short-circuit/next 三路径测试；全量绿。
-- 冻结：listener 就地改 payload 失败；signal 中止不再派发。
-- scope：Lead/subagent 不串台测试。
-- P1-5：每个 hook ≥1 消费者 + ≥1 测试。
-- 全量 `uv run pytest -o addopts= -q`、`ruff check src tests docs`、`ruff format --check` 全绿；真实 TUI 冒烟各一次。
+- [x] 极性：veto/short-circuit/next 三路径测试；全量绿。
+- [x] 冻结：listener 就地改 payload 失败；signal 中止不再派发。
+- [x] scope：Lead/subagent 不串台测试（tests/integration/test_p1_bus.py 两个 AgentSession 共享 HookService）。
+- [x] P1-5：每个 hook ≥1 消费者 + ≥1 测试（见 §8 表）。
+- [x] 全量 `uv run pytest -o addopts= -q` 2555 passed；`ruff check src tests docs` 与 `ruff format --check` 全绿；真实模型冒烟（见 §8.5）。
+
+## 8. 执行记录
+
+四个共享任务与 Lead 接线（commit 4–7 的内容）：
+
+| 任务 | 执行者 | 交付 |
+| --- | --- | --- |
+| P1-1/2/3 hooks 核心语义 | plugin-dev（task-61） | hooks/service.py 全量重写：waterfall 极性（不调 next = veto、显式 next 续链、非 None 短路、next 只能调一次）、bail（isBailed：非 None 且非 False）、parallel（gather + HookAggregateError）、once、payload 递归冻结、每跳 signal 检查；tests/hooks/test_service.py 52 用例；docs/spec/hooks.md §2 |
+| P1-4 scoped handlers | tools-dev（task-62） | `on(..., scope=None, global_=False)`、五种 dispatch 的 scope 过滤、注册时校验并复制 scope、prepend 在过滤后生效；tests/hooks/test_scope.py 31 用例；hooks.md §2.10 |
+| 生命周期 + approval + 观测 | llm-dev（task-63） | PermissionGate `hooks=`：approval/request（waterfall，fallback "ask"）、approval/asked、approval/decided；sandbox 插件懒取 hooks；builtin/hook_observability.py（10 hook 持续监听 + snapshot/close）；runtime/headless 发 session/created、session/disposed；+50 测试 |
+| P1-5 消费者 hook | session-dev（task-64） | agent/session.py：system-prompt/assemble、model/selection、llm/stream、agent/error、tool/call（fallback 批路径）；tools/pipeline.py：tool/call emit；tests/agent/test_session_hooks_p1.py 12 项 |
+| scope 接线 + veto 语义（Lead） | Lead | session.py 11 处 dispatch 带 `{"session": session_id[, "preset": preset_id]}`；pipeline 从 agent 推导 scope（`_scoped` 兼容旧 duck-typed hooks）；agent/pre-step veto 走 `_blocked_turn`（turn/end blocked）；assemble veto 保留 rendered prompt；approval/request veto 退回 policy；tests/integration/test_p1_bus.py 6 项 |
+
+十个新 hook 的消费者与测试：
+
+| hook | 消费者 | 测试 |
+| --- | --- | --- |
+| system-prompt/assemble | session.py + hook-observability | tests/agent/test_session_hooks_p1.py、tests/integration/test_p1_bus.py |
+| llm/stream | session.py + hook-observability（DEBUG） | tests/agent/test_session_hooks_p1.py、tests/builtin/test_hook_observability.py |
+| model/selection | session.py + hook-observability | tests/agent/test_session_hooks_p1.py |
+| session/created | tui/runtime.py、headless.py | tests/tui/test_runtime_hooks.py、tests/tui/test_headless.py |
+| session/disposed | tui/runtime.py、headless.py | 同上 |
+| agent/error | session.py + hook-observability | tests/agent/test_session_hooks_p1.py |
+| tool/call | pipeline.py + hook-observability（DEBUG） | tests/tools/test_pipeline_hooks.py、tests/integration/test_p1_bus.py |
+| approval/request | sandbox/gate.py + hook-observability | tests/tools/test_sandbox.py、tests/integration/test_p1_bus.py |
+| approval/asked | sandbox/gate.py + hook-observability | tests/tools/test_sandbox.py |
+| approval/decided | sandbox/gate.py + hook-observability | tests/tools/test_sandbox.py、tests/tui/test_runtime_hooks.py |
+
+### 8.5 真实冒烟
+
+deepseek/deepseek-flash，headless `--json`，临时 `DEEPPYRO_HOME`（approvalPolicy=never，用后删除）；脚本 `logging.basicConfig(level=DEBUG)` 捕获 hook-observability 日志。观察到：
+
+- `hook session/created sessionId=... cwd=...`（所有 hook 日志 INFO 级，llm/stream 与 tool/call 为 DEBUG 级）。
+- 三次 step：`hook model/selection provider='deepseek' model='deepseek-flash' turn=1 step=N`、`hook system-prompt/assemble turn=1 step=N`。
+- `hook llm/stream provider='deepseek' model='deepseek-flash' frame=mappingproxy(...)` 多次。
+- `hook tool/call callId=... name='read' turn=1 step=1`、`name='pwsh'` 等；read/pwsh/glob 均执行成功。
+- 结束 `hook session/disposed sessionId=...`；NDJSON 以 `{"type":"final",...}` + `{"type":"status","phase":"done"}` 收尾，退出码 0。
+- 本次冒烟没有触发 approval 网关（workspace-write 下的 read/pwsh/glob 未走审批），因此日志无 approval/asked|decided；三个 approval hook 由 tests/tools/test_sandbox.py 覆盖。也没有失败路径，故无 agent/error。

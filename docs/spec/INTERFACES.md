@@ -269,7 +269,7 @@ class AgentSession:
 P0 追加的 loop 契约（细节见 `docs/spec/loop.md`）：
 - **inbox**：所有输入先入 `deeppyro.agent.inbox.Inbox`（next-turn / next-step 两队列，`claim`、`push/followup/steer/inject`、`clear/splice/remove/replace`、`agent/inbox/spliced` 持久重放）；`send` 在 driver 忙时入队并返回 `""`，不再抛 busy。
 - **投影**：`deeppyro.prompt.projection` 的 `SystemPromptProjection` / `RuntimeContextProjection` 在每个 step 生成 `system/message` / `user/message` 的 append 或 replace 更新；replace 用 `surfaceOp={"op":"replace","startSeq","endSeq"}` + `sourceEventSeqs`。
-- **hooks**：`services["hooks"]`（`deeppyro.hooks.HookService`）驱动 `agent/pre-step`、`agent/request`、`agent/request-error`、`agent/turn-stopping`、`agent/assistant-stream`、`agent/status`；payload/返回契约见 `docs/spec/hooks.md`。
+- **hooks**：`services["hooks"]`（`deeppyro.hooks.HookService`）驱动 agent 侧 11 个 hook：`agent/pre-step`、`agent/request`、`agent/request-error`、`agent/turn-stopping`、`agent/assistant-stream`、`agent/status`、`agent/error`、`model/selection`、`llm/stream`、`system-prompt/assemble`、`tool/call`（fallback 路径）；dispatch 带 `scope={"session": session_id[, "preset": preset_id]}`。payload/返回契约与各 veto 的默认行为见 `docs/spec/hooks.md`；工具侧 scope 由 pipeline 从执行 agent 推导。
 - **stream/retry**：`assistant/message.stream` / `assistant/attempt.stream` 保存合并后的 DSH 形状 chunk（`AssistantStreamAccumulator`、`expand_stream`）；`agent/request-error` 返回 `{"kind":"retry"}` 时由 `decide_retry` 计算并写 `llm/retry` / `llm/retry-started`。
 
 compact：
@@ -373,7 +373,7 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 - 活状态：`App.row_states()` 返回 active/failed/disabled/overridden/restart-required/pending，
   以及 runtime_state/config/children/parent/group；`App.mark_restart_required(id)` 用于 live apply 后标记。
 
-### 11.4 服务图（core bundle 32 行，按加载顺序）
+### 11.4 服务图（core bundle 34 行，按加载顺序）
 
 | 行 id | 模块 | 服务名 / 关键方法 |
 |---|---|---|
@@ -384,18 +384,20 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 | `sandbox` | `builtin.sandbox` | `sandbox`：`.gate(workspace, ask=None)` |
 | `tools` | `builtin.tools` | `tools`：`.add(factory, scope=..., revision=...)`、`.registry_for(workspace, scope=None, revision=None)` |
 | `tools-builtin` | `builtin.tools` | 内置工具（read/write/edit/glob/grep/pwsh|bash/web_search/web_fetch/todo_write/present 等） |
-| `ptc` | `builtin.ptc` | `ptc`（critical=false，默认 `mode="native"`）：`.run(spec, bindings=..., ctx=...)`、`.resolve(request, cwd=...)`、`.mode/.language/.program_format/.sandbox_mode/.execution_instructions/.config/.timeout`；`mode="ptc"` 时注册 `run_code`（reserved_tool）与 `tools:ptc-only`(41)/`tools:sdk`(42) 两个提示词段 |
 | `compress` | `builtin.compress` | 无服务；注册 `compress`、`search_context`、`decompress` 三个工具（BlockStore/RefStore 侧车文件） |
 | `schedule` | `builtin.schedule` | `schedule`（critical=false）：`.configure_host/.start/.stop/.create/.list/.view/.update/.delete/.tick`；`schedule` 工具 + 提示词段 |
 | `working-directory` | `builtin.working_directory` | `working_directory`：`.bind/.unbind/.get/.ensure/.set/.context_text`；`working_directory` 工具 |
 | `user-questions` | `builtin.user_questions` | `user_questions`：`.configure(handler)`、`.ask(questions, call_id=...)`；`ask_user_question` 工具 |
 | `attachments` | `builtin.attachments` | `attachments`：`.save_image(...)`、`.image_host_path/.read_image_bytes/.lookup/.validate_image_batch` |
-| `hooks` | `builtin.hooks` | `hooks`：`HookService.on/has/listeners/waterfall/serial/emit`；9 个固定 hook 名（见 `docs/spec/hooks.md`），不注册工具/命令/提示词 |
+| `hooks` | `builtin.hooks` | `hooks`：`HookService.on(name, handler, *, prepend=False, once=False, scope=None, global_=False)/has/listeners/waterfall/serial/emit/bail/parallel`；`HOOK_NAMES`/`HOOK_MODES` 共 19 个 hook（清单与 payload 见 `docs/spec/hooks.md`）；payload 递归冻结、waterfall 极性为 cordis（不调 next 即 veto）、`HookAggregateError` 汇总 parallel 失败；不注册工具/命令/提示词 |
+| `llm-retry` | `builtin.llm_retry` | `retryPolicy`：订阅 `agent/request-error` 的消费者；读 `[retry]`（mode normal/always、maxRetries、initialDelayMs、maxDelayMs、jitterRatio、retryableCodes），返回 `{"kind":"retry"}` 触发重试；不写记录（`decide_retry` 写） |
+| `hook-observability` | `builtin.hook_observability` | 无新服务；订阅 10 个观测 hook（3 个 waterfall 透传 + 7 个 emit），INFO/DEBUG 记 `hook <name> ...`，`snapshot()` 返回计数、`close()` 幂等注销 |
 | `jobs` | `builtin.jobs` | `jobs`：`.start(...)`、`.get/.list/.output/.wait/.kill/.cancel_owner/.cancel_all`；`job_output/job_kill/job_list` 工具 |
 | `plugin-tools` | `tools.builtin.plugin_tools` | 5 个 `plugin_*` 工具（manager/inspect/settings/create_bundle 等） |
 | `presets` | `builtin.presets` | `presets`：`.add`、`.resolve(id)`、`.resolve_revision(id, revision)`、`.ensure(..., revision=...)`、`.ensure_all()`、`.revisions()`、`.all()`、`.ids()`；内置 `default`（mode default）与 `team`（mode team）不占 host revision |
 | `prompt` | `builtin.prompt_service` | `prompt`：`.add_section(..., scope=None, revision=...)`、`.sections(...)`、`.build(tools, prompt_context, scope=None, revision=...)` |
 | `prompt-core` | `builtin.prompt_core` | 5 个核心提示词段（order 10/20/30/40/50） |
+| `ptc` | `builtin.ptc` | `ptc`（critical=false，默认 `mode="native"`）：`.run(spec, bindings=..., ctx=...)`、`.resolve(request, cwd=...)`、`.mode/.language/.program_format/.sandbox_mode/.execution_instructions/.config/.timeout`；`mode="ptc"` 时注册 `run_code`（reserved_tool）与 `tools:ptc-only`(41)/`tools:sdk`(42) 两个提示词段 |
 | `memory` | `builtin.memory` | `memory`（critical=false）：`.entries/.snapshot/.remember/.replace/.forget/.status`；`mnemon_runtime_memory` 工具（tools 缺失时降级为仅提示词段）；提示词段 `memory-runtime` order 12 |
 | `skills` | `builtin.skills` | `skills`（critical=false）：`.registry`（list/get/snapshot/render_catalog）；`skill` 工具；提示词段 `skills` order 35 |
 | `commands` | `builtin.commands` | `commands`：`.add`、`.all()`、`.resolve()`、`.invoke()` |
