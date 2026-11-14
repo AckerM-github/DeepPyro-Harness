@@ -189,17 +189,20 @@ async def test_system_prompt_assemble_veto_keeps_the_rendered_prompt(tmp_path: P
     assert system
 
 
-async def test_approval_request_veto_falls_back_to_the_policy(tmp_path: Path) -> None:
-    """A veto suppressing approval/request lets the configured policy decide."""
+async def test_approval_request_veto_falls_back_to_the_answerer(tmp_path: Path) -> None:
+    """A veto suppressing approval/request fails closed when no answerer exists."""
     hooks = HookService()
-    hooks.on(APPROVAL_REQUEST, lambda payload, next_step: None)
-    always = PermissionGate("workspace-write", "always", tmp_path, hooks=hooks)
-    never = PermissionGate("workspace-write", "never", tmp_path, hooks=hooks)
+    called: list[Any] = []
 
-    allowed = await always.request(ApprovalRequest(kind="command", summary="run"))
-    denied = await never.request(ApprovalRequest(kind="command", summary="run"))
+    def veto(payload: Any, next_step: Any) -> None:
+        called.append(payload)
 
-    assert allowed.allowed is True
-    assert allowed.reason == "approval policy is always"
-    assert denied.allowed is False
-    assert denied.reason == "approval policy is never"
+    hooks.on(APPROVAL_REQUEST, veto)
+    gate = PermissionGate("workspace-write", "ask", tmp_path, hooks=hooks)
+
+    decision = await gate.request(ApprovalRequest(kind="command", summary="run"))
+
+    assert called
+    assert decision.allowed is False
+    assert decision.reason == "no interactive approval handler is available"
+    assert gate.approvals[-1][0].kind == "command"

@@ -9,7 +9,6 @@ from textual.widgets import Button, Static
 
 from deeppyro.sandbox.types import ApprovalRequest
 from deeppyro.tui.screens.approval import (
-    ALLOW_ALWAYS,
     ALLOW_ONCE,
     DENY,
     DETAIL_LIMIT,
@@ -49,7 +48,6 @@ async def _open(app: HostApp, pilot: Any, request: Any) -> ApprovalScreen:
 
 def test_decision_constants_are_stable() -> None:
     assert ALLOW_ONCE == "once"
-    assert ALLOW_ALWAYS == "always"
     assert DENY == "deny"
 
 
@@ -154,7 +152,6 @@ async def test_write_outside_workspace_falls_back_to_filesystem_tool() -> None:
 async def test_keyboard_shortcuts_return_decisions() -> None:
     cases = [
         ("y", ALLOW_ONCE),
-        ("a", ALLOW_ALWAYS),
         ("n", DENY),
         ("escape", DENY),
     ]
@@ -176,9 +173,6 @@ async def test_allow_once_button_is_focused_and_tab_cycles() -> None:
         assert screen.query_one("#allow-once", Button).has_focus
         await pilot.press("tab")
         await pilot.pause()
-        assert screen.query_one("#allow-always", Button).has_focus
-        await pilot.press("tab")
-        await pilot.pause()
         assert screen.query_one("#deny", Button).has_focus
         await pilot.press("enter")
         await pilot.pause()
@@ -190,9 +184,9 @@ async def test_button_press_returns_the_decision() -> None:
     request = _request(kind="command-approval", summary="Allow this shell command?", detail="ls")
     async with app.run_test(size=(80, 24)) as pilot:
         screen = await _open(app, pilot, request)
-        screen.query_one("#allow-always", Button).press()
+        screen.query_one("#allow-once", Button).press()
         await pilot.pause()
-        assert app.results == [ALLOW_ALWAYS]
+        assert app.results == [ALLOW_ONCE]
 
 
 async def test_long_detail_is_truncated() -> None:

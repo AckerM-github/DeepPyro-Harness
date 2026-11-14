@@ -1,10 +1,14 @@
 """Runtime-context snapshot assembly.
 
 The system prompt is stable, but some facts belong to the current moment:
-working directory, model, permission preset and approval policy.  They are
+working directory, model, sandbox file policy and approval policy.  They are
 injected as a user message whose source is "runtime-context"; the projection in
 deeppyro.prompt.projection turns repeated identical snapshots into a no-op and
 marks older snapshots as superseded when the values change.
+
+The sandbox and approval paragraphs mirror the reference runtime-context
+contributions, so the model is told the standing policy and the escalation
+rules without freezing them into the system prompt.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ CLEARED_RUNTIME_CONTEXT = "Current runtime context: none. Earlier runtime-contex
 
 def runtime_context_sections(ctx: PromptContext) -> list[dict[str, Any]]:
     """Return the named sections that make up this runtime snapshot."""
-    text = "\n".join(
+    runtime = "\n".join(
         [
             "## Runtime",
             "",
@@ -31,11 +35,14 @@ def runtime_context_sections(ctx: PromptContext) -> list[dict[str, Any]]:
             f"- Platform: {ctx.platform}",
             f"- Model: {ctx.model or 'unknown'}",
             f"- Session: {ctx.session_id}",
-            f"- Permission preset: {ctx.permission_preset or 'unknown'}",
-            f"- Approval policy: {ctx.approval_policy or 'unknown'}",
         ]
     )
-    return [{"name": "runtime", "text": text}]
+    sections: list[dict[str, Any]] = [{"name": "runtime", "text": runtime}]
+    if ctx.sandbox_policy_text.strip():
+        sections.append({"name": "sandbox:policy", "text": ctx.sandbox_policy_text.strip()})
+    if ctx.approval_policy_text.strip():
+        sections.append({"name": "approval:policy", "text": ctx.approval_policy_text.strip()})
+    return sections
 
 
 def render_runtime_context(sections: Sequence[dict[str, Any]]) -> str:

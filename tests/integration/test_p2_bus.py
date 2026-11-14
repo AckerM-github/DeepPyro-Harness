@@ -173,7 +173,7 @@ async def test_approval_policy_plugin_answers_the_gate(tmp_path: Path) -> None:
 
     denied = await gate.request(ApprovalRequest(kind="command", summary="run", tool="shell"))
     assert denied.allowed is False
-    assert denied.reason == "denied by approval plugin"
+    assert denied.reason == "approval was rejected"
 
     unmatched = await gate.request(ApprovalRequest(kind="command", summary="run", tool="read"))
     assert unmatched.allowed is False
@@ -188,7 +188,7 @@ async def test_approval_policy_can_allow_without_prompting(tmp_path: Path) -> No
 
     allowed = await gate.request(ApprovalRequest(kind="command", summary="run", tool="shell"))
     assert allowed.allowed is True
-    assert allowed.reason == "approved by approval plugin"
+    assert allowed.reason == "approved for this call"
 
 
 async def test_bridge_skips_hot_streaming_hooks() -> None:

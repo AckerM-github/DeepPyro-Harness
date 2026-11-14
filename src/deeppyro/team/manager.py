@@ -420,21 +420,25 @@ class TeamService:
             return registry
         return ToolRegistry(tool for tool in tools if tool.name not in CHILD_DISABLED_TOOLS)
 
-    def _child_permission(self) -> Any:
+    def _child_permission(self, session: Session) -> Any:
+        """One gate per member session, inheriting the lead's current knobs.
+
+        DSH keeps sandbox mode and approval policy per session, so a member
+        gets its own log; it starts from the lead's standing values instead of
+        the host defaults.
+        """
         sandbox = self._sandbox
         parent = self._permission
         if sandbox is None or not hasattr(sandbox, "gate"):
             return parent
         try:
-            gate = sandbox.gate(self._cwd, ask=self._ask)
+            gate = sandbox.gate(self._cwd, ask=self._ask, session=session)
         except TypeError:
-            gate = sandbox.gate(self._cwd)
-        preset = getattr(parent, "preset", None)
-        approval = getattr(parent, "approval", None)
-        if preset is not None and hasattr(gate, "set_preset"):
-            gate.set_preset(preset)
-        if approval is not None and hasattr(gate, "set_approval"):
-            gate.set_approval(approval)
+            try:
+                gate = sandbox.gate(self._cwd, ask=self._ask)
+            except TypeError:
+                gate = sandbox.gate(self._cwd)
+        _inherit_permission(sandbox, parent, session)
         return gate
 
     def _create_agent(
@@ -458,7 +462,7 @@ class TeamService:
                 registry=self._child_registry(),
                 options=options,
                 sink=_MemberSink(),
-                permission=self._child_permission(),
+                permission=self._child_permission(child_session),
                 cwd=str(self._cwd),
                 services=dict(self._services),
                 preset=preset,
@@ -690,6 +694,24 @@ class TeamService:
 def _provider_name(provider: Any) -> str:
     name = getattr(provider, "name", "")
     return name if isinstance(name, str) else ""
+
+
+def _inherit_permission(sandbox: Any, parent: Any, session: Any) -> None:
+    """Seed a child session with the lead's standing sandbox and approval knobs."""
+    policy_service = getattr(sandbox, "policy_service", None)
+    mode = getattr(getattr(parent, "policy", None), "mode", None)
+    if policy_service is not None and isinstance(mode, str) and mode:
+        try:
+            policy_service.set_mode(session, mode)
+        except Exception:  # noqa: BLE001, S110 - seeding must not break a spawn
+            pass
+    approval_service = getattr(sandbox, "approval_service", None)
+    approval = getattr(parent, "approval", None)
+    if approval_service is not None and isinstance(approval, str) and approval:
+        try:
+            approval_service.set_policy(session, approval)
+        except Exception:  # noqa: BLE001, S110 - seeding must not break a spawn
+            pass
 
 
 __all__ = ["TeamService"]

@@ -8,7 +8,7 @@ import re
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -53,8 +53,6 @@ class AgentConfig(BaseModel):
     # 8192 leaves room for that on DeepSeek's 8k-output models.
     maxTokens: int | None = 8192
     maxSteps: int = 100
-    permissionPreset: Literal["read-only", "workspace-write", "danger-full-access"] = "workspace-write"
-    approvalPolicy: Literal["ask", "never", "always"] = "ask"
 
 
 class Config(BaseModel):
@@ -86,8 +84,12 @@ DEFAULT_TOML = """
 provider = "local"
 model = "deepseek-v4-pro-qwen3.5-9b"
 maxTokens = 8192
-permissionPreset = "workspace-write"
-approvalPolicy = "ask"
+
+# Standing sandbox policy. The mode is one of read-only, workspace-write and
+# danger-full-access. See docs/spec/sandbox.md.
+[sandbox]
+mode = "workspace-write"
+additionalWritableRoots = []
 
 [providers.local]
 api = "openai-completions"
@@ -123,13 +125,21 @@ jitterRatio = 0.1
 [prompt]
 extension = ""
 
-# Approval hook policy consumed by the approval-policy plugin
-# (src/deeppyro/builtin/approval_policy.py): "off"/"ask" defer to
-# [agent].approvalPolicy, "allow"/"deny" answer approval/request directly for
-# the tools in hookTools (an empty list means every tool).
+# Approval policy for one-shot approvals: "ask" asks an answerer and fails
+# closed when none is available, "never" rejects every approval request.
+# hookMode/hookTools are consumed by the approval-policy plugin
+# (src/deeppyro/builtin/approval_policy.py): "off"/"ask" defer to policy,
+# "allow"/"deny" answer approval/request directly for the tools in hookTools
+# (an empty list means every tool).
 [approval]
+policy = "ask"
 hookMode = "off"
 hookTools = []
+
+# Named sandbox+approval bundles offered by /permission. See
+# docs/spec/sandbox.md.
+[permission]
+defaultPreset = "workspace-write"
 """
 
 

@@ -1,10 +1,11 @@
 """Approval modal with risk highlighting.
 
-The app opens this screen from ask_approval() and waits for one of the three
-decision constants: ALLOW_ONCE, ALLOW_ALWAYS or DENY. The screen shows the
-request kind, the tool involved, a human summary, the command or path detail,
-and a coloured risk badge. Command details that match the dangerous-command
-patterns from the sandbox gate are shown with a red DANGER badge.
+The app opens this screen from ask_approval() and waits for one of the two
+decision constants: ALLOW_ONCE or DENY. DSH approvals are allowed at most once,
+so there is no "always allow" decision. The screen shows the request kind, the
+tool involved, a human summary, the command or path detail, and a coloured risk
+badge. Command details that match the dangerous-command patterns from the
+sandbox gate are shown with a red DANGER badge.
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ from textual.widgets import Button, Static
 from deeppyro.sandbox.gate import DANGEROUS_PATTERNS
 
 ALLOW_ONCE = "once"
-ALLOW_ALWAYS = "always"
 DENY = "deny"
 
 RISK_DANGER = "danger"
@@ -79,7 +79,6 @@ class ApprovalScreen(ModalScreen[str]):
         Binding("escape", "deny", "Deny", show=False),
         Binding("n", "deny", "Deny", show=False),
         Binding("y", "allow_once", "Allow once", show=False),
-        Binding("a", "allow_always", "Always allow", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -182,7 +181,6 @@ class ApprovalScreen(ModalScreen[str]):
                 yield Static(self._detail_text(), id="approval-detail")
             with Horizontal(id="approval-buttons"):
                 yield Button("Allow once", id="allow-once", variant="success")
-                yield Button("Always allow", id="allow-always", variant="warning")
                 yield Button("Deny", id="deny", variant="error")
 
     def on_mount(self) -> None:
@@ -191,7 +189,6 @@ class ApprovalScreen(ModalScreen[str]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         decisions = {
             "allow-once": ALLOW_ONCE,
-            "allow-always": ALLOW_ALWAYS,
             "deny": DENY,
         }
         decision = decisions.get(event.button.id or "")
@@ -203,15 +200,11 @@ class ApprovalScreen(ModalScreen[str]):
     def action_allow_once(self) -> None:
         self.dismiss(ALLOW_ONCE)
 
-    def action_allow_always(self) -> None:
-        self.dismiss(ALLOW_ALWAYS)
-
     def action_deny(self) -> None:
         self.dismiss(DENY)
 
 
 __all__ = [
-    "ALLOW_ALWAYS",
     "ALLOW_ONCE",
     "DENY",
     "RISK_DANGER",

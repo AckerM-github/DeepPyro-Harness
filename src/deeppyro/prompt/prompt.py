@@ -38,6 +38,11 @@ class PromptContext:
     permission_preset: str
     approval_policy: str
     model: str
+    #: DSH sandbox/approval rubrics. They belong to the runtime snapshot, not
+    #: the stable system prompt, so the defaults keep the environment section
+    #: untouched for callers that do not build a runtime snapshot.
+    sandbox_policy_text: str = ""
+    approval_policy_text: str = ""
     instructions: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     #: When set, the core tools section only lists these directly callable
@@ -111,8 +116,6 @@ def environment_section(tools: list[ToolSchema], ctx: PromptContext) -> str:
         f"- Model: {ctx.model or 'unknown'}",
         f"- Session: {ctx.session_id}",
         f"- Started (UTC): {started.isoformat(timespec='seconds').replace('+00:00', 'Z')}",
-        f"- Permission preset: {ctx.permission_preset or 'unknown'}",
-        f"- Approval policy: {ctx.approval_policy or 'unknown'}",
     ]
     env_lines = environment_entries(ctx)
     if env_lines:

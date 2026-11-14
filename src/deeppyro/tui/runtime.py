@@ -304,6 +304,7 @@ class TuiRuntime:
             if candidate.is_dir():
                 cwd = candidate
         session = self.store.create(str(cwd), agent_preset=preset)
+        self._pin_permission(session)
         await self._session_created(session, cwd=str(cwd), preset=preset)
         return session
 
@@ -368,6 +369,7 @@ class TuiRuntime:
         self.agent_preset = preset
         self.preset_revision = None
         session = self.store.create(str(self.cwd), agent_preset=preset)
+        self._pin_permission(session)
         await self._session_created(session, cwd=str(self.cwd), preset=preset)
         await self._attach(session)
         self._record_model_selection()
@@ -378,6 +380,7 @@ class TuiRuntime:
         """Open an existing session and rebuild the agent around it."""
         self._save_projections()
         session = self.store.open(session_id)
+        self._pin_permission(session)
         selection = _recorded_model_selection(session)
         if selection is not None:
             provider_name, model_id = selection
@@ -616,6 +619,10 @@ class TuiRuntime:
             "llm",
             "hooks",
             "retryPolicy",
+            "sandbox",
+            "sandboxPolicy",
+            "approval",
+            "permissionPresets",
             "plugin_manager",
             "inspect",
             "settings",
@@ -1082,21 +1089,45 @@ class TuiRuntime:
             self.last_persist_error = None
 
     # -- policy / workspace switching -----------------------------------
-    async def set_preset(self, preset: str) -> None:
-        """Switch the sandbox preset used by subsequent tool calls."""
-        setter = getattr(self.permission, "set_preset", None)
-        if setter is None:
-            raise DeeppyroError("permission gate does not support preset switching")
-        setter(preset)
-        self._record("permission/preset", {"preset": preset})
+    def _pin_permission(self, session: Any) -> None:
+        """Seed a new session with the default permission preset and knobs."""
+        service = self._service("permissionPresets")
+        pin = getattr(service, "pin_initial", None)
+        if not callable(pin) or session is None:
+            return
+        try:
+            pin(session)
+        except Exception:  # noqa: BLE001, S110 - pinning must not brick a session
+            pass
 
-    async def set_approval(self, approval: str) -> None:
-        """Switch the approval policy used by subsequent gated actions."""
-        setter = getattr(self.permission, "set_approval", None)
-        if setter is None:
-            raise DeeppyroError("permission gate does not support approval switching")
-        setter(approval)
-        self._record("approval/policy", {"policy": approval})
+    def permission_preset(self) -> str:
+        """The current named permission preset (or "custom")."""
+        service = self._service("permissionPresets")
+        current = getattr(service, "current", None)
+        if callable(current) and self.session is not None:
+            try:
+                return str(current(self.session))
+            except Exception:
+                logger.debug("permission preset unavailable", exc_info=True)
+        return str(getattr(self.permission, "preset", "workspace-write"))
+
+    def permission_names(self) -> tuple[str, ...]:
+        service = self._service("permissionPresets")
+        names = getattr(service, "names", None)
+        if callable(names):
+            try:
+                return tuple(str(name) for name in names())
+            except Exception:
+                logger.debug("permission preset names unavailable", exc_info=True)
+        return ("read-only", "workspace-write", "danger-full-access")
+
+    async def set_permission(self, preset: str) -> str:
+        """Switch the named permission preset for the live session."""
+        service = self._service("permissionPresets")
+        apply = getattr(service, "apply", None)
+        if not callable(apply) or self.session is None:
+            raise DeeppyroError("permission presets are not available in this session")
+        return str(apply(self.session, preset))
 
     async def set_workspace(self, path: str | Path) -> Path:
         """Rebind tools and approvals to a new workspace, keeping the session."""
@@ -1106,10 +1137,7 @@ class TuiRuntime:
         kernel_app = self.kernel_app
         if kernel_app is None:
             raise DeeppyroError("cannot switch workspace after the kernel has stopped")
-        current = self.permission
-        gate = kernel_app.service("sandbox").gate(workspace, ask=self.ask)
-        gate.set_preset(str(getattr(current, "preset", "workspace-write")))
-        gate.set_approval(str(getattr(current, "approval", "ask")))
+        gate = kernel_app.service("sandbox").gate(workspace, ask=self.ask, session=self.session)
         registry = kernel_app.service("tools").registry_for(workspace)
         self.permission = gate
         self.registry = registry

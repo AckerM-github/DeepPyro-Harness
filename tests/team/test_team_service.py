@@ -74,7 +74,7 @@ async def test_spawn_creates_child_session_agent_and_records(tmp_path) -> None:
     gate = created["permission"]
     assert isinstance(gate, FakeGate)
     assert gate.preset == "danger-full-access"
-    assert gate.approval == "always"
+    assert gate.approval == "never"
     assert env.sandbox.calls[0]["workspace"] == tmp_path
     assert env.sandbox.calls[0]["ask"] == "ask-callback"
 

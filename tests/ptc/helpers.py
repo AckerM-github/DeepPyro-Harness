@@ -25,7 +25,7 @@ def make_context(
         log.append((kind, data))
 
     if permission is None:
-        permission = PermissionGate("danger-full-access", "always", cwd)
+        permission = PermissionGate("danger-full-access", "never", cwd)
     return ToolContext(
         cwd=cwd,
         session_id="session-ptc",

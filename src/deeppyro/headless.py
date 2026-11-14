@@ -39,6 +39,7 @@ from deeppyro.api import DEFAULT_PRESET_ID, PluginDependencyError
 from deeppyro.config import Config, load_config
 from deeppyro.core.errors import ConfigError, DeeppyroError
 from deeppyro.hooks import SESSION_CREATED, SESSION_DISPOSED
+from deeppyro.sandbox.types import APPROVALS, PRESETS
 
 logger = logging.getLogger(__name__)
 
@@ -454,6 +455,8 @@ class HeadlessRuntime:
     tools: Any = None
     preset: str | None = None
     preset_spec: Any = None
+    permission_mode: str | None = None
+    approval_policy: str | None = None
     _closed: bool = field(default=False, repr=False)
 
     def create_agent(self, session: Any, sink: Any, *, max_steps: int | None = None) -> Any:
@@ -482,6 +485,33 @@ class HeadlessRuntime:
             preset_revision=revision,
             services=self._plugin_services(),
         )
+
+    def pin_permission(self, session: Any) -> None:
+        """Record the standing sandbox mode, approval policy and preset on a new session."""
+        app = self.kernel_app
+        if app is None or session is None:
+            return
+        try:
+            service = app.service("permissionPresets")
+        except LookupError:
+            return
+        pin = getattr(service, "pin_initial", None)
+        if pin is None:
+            return
+        try:
+            pin(session)
+        except Exception:  # noqa: BLE001, S110 - optional service must not break headless
+            pass
+        if self.permission_mode is not None:
+            try:
+                app.service("permissionPresets").apply(session, self.permission_mode)
+            except Exception:  # noqa: BLE001, S110 - optional service must not break headless
+                pass
+        if self.approval_policy is not None:
+            try:
+                app.service("approval").set_policy(session, self.approval_policy)
+            except Exception:  # noqa: BLE001, S110 - optional service must not break headless
+                pass
 
     def bind_session(self, session: Any) -> None:
         """Bind per-session callbacks for services that record into the log."""
@@ -540,6 +570,10 @@ class HeadlessRuntime:
             "llm",
             "hooks",
             "retryPolicy",
+            "sandbox",
+            "sandboxPolicy",
+            "approval",
+            "permissionPresets",
             "plugin_manager",
             "inspect",
             "settings",
@@ -593,6 +627,8 @@ async def boot_runtime(
     provider: str | None = None,
     model: str | None = None,
     preset: str | None = None,
+    permission_mode: str | None = None,
+    approval_policy: str | None = None,
     ask: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> HeadlessRuntime:
     """Boot the kernel bundle and resolve the services needed for one turn.
@@ -603,6 +639,10 @@ async def boot_runtime(
     """
     from deeppyro.kernel import boot
 
+    if permission_mode is not None and permission_mode not in PRESETS:
+        raise ConfigError(f"invalid permission preset: {permission_mode!r}")
+    if approval_policy is not None and approval_policy not in APPROVALS:
+        raise ConfigError(f"invalid approval policy: {approval_policy!r}")
     cfg = config if config is not None else load_config()
     workspace = resolve_workspace(cwd)
     provider_name = provider or cfg.agent.provider
@@ -687,6 +727,8 @@ async def boot_runtime(
         tools=services["tools"],
         preset=preset_id,
         preset_spec=preset_spec,
+        permission_mode=permission_mode,
+        approval_policy=approval_policy,
     )
     configure_team = getattr(team, "configure", None)
     if configure_team is not None:
@@ -732,6 +774,8 @@ def run_once(
     model: str | None = None,
     provider: str | None = None,
     preset: str | None = None,
+    permission_mode: str | None = None,
+    approval_policy: str | None = None,
     json_output: bool = False,
     cwd: str | None = None,
     max_steps: int | None = None,
@@ -754,6 +798,8 @@ def run_once(
                 model=model,
                 provider=provider,
                 preset=preset,
+                permission_mode=permission_mode,
+                approval_policy=approval_policy,
                 json_output=json_output,
                 cwd=cwd,
                 max_steps=max_steps,
@@ -809,6 +855,8 @@ async def _run_async(
     model: str | None,
     provider: str | None,
     preset: str | None,
+    permission_mode: str | None,
+    approval_policy: str | None,
     json_output: bool,
     cwd: str | None,
     max_steps: int | None,
@@ -816,7 +864,15 @@ async def _run_async(
     console: Console,
 ) -> int:
     try:
-        runtime = await boot_runtime(config=config, cwd=cwd, provider=provider, model=model, preset=preset)
+        runtime = await boot_runtime(
+            config=config,
+            cwd=cwd,
+            provider=provider,
+            model=model,
+            preset=preset,
+            permission_mode=permission_mode,
+            approval_policy=approval_policy,
+        )
     except UnknownPresetError as exc:
         # A bad --preset is a usage error, not a runtime failure: no traceback,
         # no session, and a message a shell script can grep for.
@@ -834,6 +890,7 @@ async def _run_async(
     preset_id = getattr(runtime, "preset", None) or DEFAULT_PRESET_ID
     try:
         session = runtime.store.create(str(runtime.cwd), agent_preset=preset_id)
+        runtime.pin_permission(session)
         session_id = str(getattr(session, "session_id", "") or "")
         if session_id:
             await _emit_hook(

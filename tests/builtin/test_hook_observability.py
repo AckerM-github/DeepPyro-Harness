@@ -293,10 +293,8 @@ async def test_approval_gate_dispatches_asked_and_decided(caplog: pytest.LogCapt
 
     assert decision.allowed is True
     assert asked == [request]
-    assert messages(caplog, APPROVAL_ASKED) == ["hook approval/asked policy='ask' request='write'"]
-    assert messages(caplog, APPROVAL_DECIDED) == [
-        ("hook approval/decided allowed=True reason='approved by the user' via='user' request='write'")
-    ]
+    assert messages(caplog, APPROVAL_ASKED) == ["hook approval/asked reason='write a.txt'"]
+    assert messages(caplog, APPROVAL_DECIDED) == ["hook approval/decided outcome='allowed-once'"]
     assert _plugin.snapshot()[APPROVAL_ASKED] == 1
     assert _plugin.snapshot()[APPROVAL_DECIDED] == 1
 
@@ -313,17 +311,16 @@ async def test_approval_gate_records_denied_decision(caplog: pytest.LogCaptureFi
     decision = await gate.request(ApprovalRequest(kind="command", summary="rm -rf /"))
 
     assert decision.allowed is False
-    assert messages(caplog, APPROVAL_DECIDED) == [
-        ("hook approval/decided allowed=False reason='rejected by the user' via='user' request='command'")
-    ]
+    assert messages(caplog, APPROVAL_DECIDED) == ["hook approval/decided outcome='rejected'"]
 
 
-async def test_approval_gate_dispatches_decided_without_asked_for_never() -> None:
+async def test_never_policy_rejects_before_dispatch() -> None:
     plugin, hooks, _ = make_plugin()
 
     gate = PermissionGate("workspace-write", "never", "D:\\work", hooks=hooks)
     decision = await gate.request(ApprovalRequest(kind="write", summary="write a.txt"))
 
     assert decision.allowed is False
+    assert decision.reason == "approval was rejected"
     assert plugin.snapshot()[APPROVAL_ASKED] == 0
-    assert plugin.snapshot()[APPROVAL_DECIDED] == 1
+    assert plugin.snapshot()[APPROVAL_DECIDED] == 0

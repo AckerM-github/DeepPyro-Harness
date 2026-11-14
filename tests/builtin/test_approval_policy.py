@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -214,7 +215,7 @@ async def test_gate_approves_matching_tool_without_prompting(tmp_path: Path) -> 
     decision = await gate.request(make_request("write"))
 
     assert decision.allowed is True
-    assert decision.reason == "approved by approval plugin"
+    assert decision.reason == "approved for this call"
     assert asked == []
     assert gate.approvals[-1][1].allowed is True
 
@@ -231,7 +232,7 @@ async def test_gate_denies_matching_tool_without_prompting(tmp_path: Path) -> No
     decision = await gate.request(make_request("write"))
 
     assert decision.allowed is False
-    assert decision.reason == "denied by approval plugin"
+    assert decision.reason == "approval was rejected"
     assert asked == []
 
 
@@ -248,13 +249,13 @@ async def test_gate_falls_back_to_the_user_for_inactive_modes(mode: str, tmp_pat
     decision = await gate.request(make_request("write"))
 
     assert decision.allowed is True
-    assert decision.reason == "approved by the user"
+    assert decision.reason == "approved for this call"
     assert asked == [make_request("write")]
 
 
-async def test_hook_denies_a_real_write_outside_the_workspace(tmp_path: Path) -> None:
-    """The tool bridge populates ApprovalRequest.tool, so hookTools matches."""
-    _plugin, hooks, _ctx = make_plugin({"hookMode": "deny", "hookTools": ["write"]})
+async def test_a_real_write_outside_the_workspace_is_denied_without_approval(tmp_path: Path) -> None:
+    """The file policy denies out-of-bound writes; no approval prompt is raised."""
+    _plugin, hooks, _ctx = make_plugin({"hookMode": "allow", "hookTools": ["write"]})
     asked: list[ApprovalRequest] = []
 
     async def ask(request: ApprovalRequest) -> bool:
@@ -265,9 +266,13 @@ async def test_hook_denies_a_real_write_outside_the_workspace(tmp_path: Path) ->
     workspace.mkdir()
     gate = PermissionGate("workspace-write", "ask", workspace, ask=ask, hooks=hooks)
     ctx = make_context(workspace, permission=gate)
-    outside = tmp_path / "outside.txt"
+    outside = (
+        Path("C:/deeppyro-test-outside.txt")
+        if sys.platform == "win32"
+        else Path("/deeppyro-test-outside.txt")
+    )
 
-    with pytest.raises(PermissionDenied, match="denied by approval plugin"):
+    with pytest.raises(PermissionDenied, match="file access denied under workspace-write mode"):
         await WriteTool().run({"file_path": str(outside), "content": "no"}, ctx)
 
     assert asked == []
@@ -288,7 +293,7 @@ async def test_hook_denies_a_real_write_sandbox_escalation(tmp_path: Path) -> No
     gate = PermissionGate("workspace-write", "ask", workspace, ask=ask, hooks=hooks)
     ctx = make_context(workspace, permission=gate)
 
-    with pytest.raises(PermissionDenied, match="sandbox escalation denied: denied by approval plugin"):
+    with pytest.raises(PermissionDenied, match="rejected escalating this write"):
         await WriteTool().run(
             {
                 "file_path": "inside.txt",

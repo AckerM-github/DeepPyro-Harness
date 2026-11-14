@@ -24,6 +24,7 @@ from deeppyro.core.protocols import (
 )
 from deeppyro.hooks import HookService
 from deeppyro.hooks.types import AGENT_PRE_STEP, AGENT_REQUEST_ERROR
+from deeppyro.sandbox.policy import SandboxPolicy
 
 from .fakes import (
     FakePermission,
@@ -341,28 +342,22 @@ async def test_changed_runtime_context_appends_a_new_snapshot(tmp_path: Path) ->
 
     first_runtime = runtime_records()
     assert len(first_runtime) == 1
-    assert "- Permission preset: workspace-write" in first_runtime[0].data["content"][0]["text"]
+    assert "Current DSH file policy: workspace-write." in first_runtime[0].data["content"][0]["text"]
 
     permission.preset = "read-only"
+    permission.policy = SandboxPolicy("read-only", permission.policy.workspace_root)
     assert await agent.send("again") == "two"
 
     runtime = runtime_records()
     assert len(runtime) == 2
-    assert "- Permission preset: workspace-write" in runtime[0].data["content"][0]["text"]
-    assert "- Permission preset: read-only" in runtime[1].data["content"][0]["text"]
+    assert "Current DSH file policy: workspace-write." in runtime[0].data["content"][0]["text"]
+    assert "Current DSH file policy: read-only." in runtime[1].data["content"][0]["text"]
     assert runtime[1].surfaceOp == "append"
 
+    # The policy lives in the runtime-context snapshot, so the system prompt stays stable.
     systems = session.records_of("system/message")
-    assert len(systems) == 2
-    assert getattr(systems[1].surfaceOp, "op", None) == "replace"
-    assert systems[1].surfaceOp.startSeq == systems[0].seq
-    assert systems[1].surfaceOp.endSeq == systems[0].seq
-    assert systems[1].sourceEventSeqs == [systems[0].seq]
-    assert "- Permission preset: read-only" in systems[1].data["message"]["content"][0]["text"]
-
-    derived_systems = [message for message in session.derive_messages() if message.role == "system"]
-    assert len(derived_systems) == 1
-    assert "- Permission preset: read-only" in derived_systems[0].text()
+    assert len(systems) == 1
+    assert "Permission preset" not in systems[0].data["message"]["content"][0]["text"]
 
 
 async def test_assistant_message_persists_the_timed_stream(tmp_path: Path) -> None:

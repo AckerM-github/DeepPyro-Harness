@@ -304,21 +304,20 @@ class SubagentService:
                 raise SubagentError(f"unknown llm provider {provider!r}: {exc}") from exc
         raise SubagentError(f"unknown llm provider {provider!r}")
 
-    def _child_permission(self) -> Any:
+    def _child_permission(self, session: Session) -> Any:
+        """One gate per child session, inheriting the parent's current knobs."""
         sandbox = self._sandbox
         parent = self._permission
         if sandbox is None or not hasattr(sandbox, "gate"):
             return parent
         try:
-            gate = sandbox.gate(self._cwd, ask=self._ask)
+            gate = sandbox.gate(self._cwd, ask=self._ask, session=session)
         except TypeError:
-            gate = sandbox.gate(self._cwd)
-        preset = getattr(parent, "preset", None)
-        approval = getattr(parent, "approval", None)
-        if preset is not None and hasattr(gate, "set_preset"):
-            gate.set_preset(preset)
-        if approval is not None and hasattr(gate, "set_approval"):
-            gate.set_approval(approval)
+            try:
+                gate = sandbox.gate(self._cwd, ask=self._ask)
+            except TypeError:
+                gate = sandbox.gate(self._cwd)
+        _inherit_permission(sandbox, parent, session)
         return gate
 
     def _create_agent(
@@ -341,7 +340,7 @@ class SubagentService:
                 registry=filter_child_tools(self._registry),
                 options=options,
                 sink=_ChildSink(),
-                permission=self._child_permission(),
+                permission=self._child_permission(child_session),
                 cwd=str(self._cwd),
                 services=dict(self._services),
                 preset=preset,
@@ -406,6 +405,24 @@ class SubagentService:
                 "agentModel": model,
             },
         )
+
+
+def _inherit_permission(sandbox: Any, parent: Any, session: Any) -> None:
+    """Seed a child session with the parent's standing sandbox and approval knobs."""
+    policy_service = getattr(sandbox, "policy_service", None)
+    mode = getattr(getattr(parent, "policy", None), "mode", None)
+    if policy_service is not None and isinstance(mode, str) and mode:
+        try:
+            policy_service.set_mode(session, mode)
+        except Exception:  # noqa: BLE001, S110 - seeding must not break a spawn
+            pass
+    approval_service = getattr(sandbox, "approval_service", None)
+    approval = getattr(parent, "approval", None)
+    if approval_service is not None and isinstance(approval, str) and approval:
+        try:
+            approval_service.set_policy(session, approval)
+        except Exception:  # noqa: BLE001, S110 - seeding must not break a spawn
+            pass
 
 
 __all__ = ["SubagentService", "filter_child_tools"]

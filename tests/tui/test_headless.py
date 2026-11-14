@@ -113,6 +113,9 @@ class FakeRuntime:
         self.team = team
         self.closed = False
 
+    def pin_permission(self, session: Any) -> None:
+        return None
+
     def create_agent(self, session: Any, sink: Any, *, max_steps: int | None = None) -> FakeAgent:
         return self.agents.create(session=session, sink=sink, max_steps=max_steps)
 
@@ -871,3 +874,168 @@ def test_cli_forwards_the_preset_to_run_once(monkeypatch: pytest.MonkeyPatch) ->
     assert cli.main(["--headless", "hi", "--preset", "ptc"]) == 0
 
     assert seen[0]["preset"] == "ptc"
+
+
+def test_build_parser_accepts_permission_flags() -> None:
+    from deeppyro.tui.main import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["--headless", "hi", "--permission-mode", "read-only", "--approval-policy", "never"]
+    )
+    assert args.permission_mode == "read-only"
+    assert args.approval_policy == "never"
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--headless", "hi", "--permission-mode", "bogus"])
+
+
+def test_cli_forwards_the_permission_flags_to_run_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    import deeppyro.paths
+    import deeppyro.tui.main as cli
+
+    seen: list[dict[str, Any]] = []
+
+    def fake_run_once(prompt: str, **kwargs: Any) -> int:
+        seen.append({"prompt": prompt, **kwargs})
+        return 0
+
+    monkeypatch.setattr(deeppyro.paths, "migrate_legacy_layout", lambda: None)
+    monkeypatch.setattr(headless, "run_once", fake_run_once)
+
+    code = cli.main(
+        [
+            "--headless",
+            "hi",
+            "--permission-mode",
+            "danger-full-access",
+            "--approval-policy",
+            "ask",
+        ]
+    )
+
+    assert code == 0
+    assert seen[0]["permission_mode"] == "danger-full-access"
+    assert seen[0]["approval_policy"] == "ask"
+
+
+def test_run_once_forwards_permission_flags_to_boot(monkeypatch: pytest.MonkeyPatch) -> None:
+    agent = FakeAgent([{"type": "final", "text": "done"}])
+    runtime = FakeRuntime(agent)
+    seen: dict[str, Any] = {}
+
+    async def fake_boot(**kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return runtime
+
+    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
+    console, _stream = make_console()
+
+    code = headless.run_once(
+        "q",
+        permission_mode="read-only",
+        approval_policy="never",
+        console=console,
+    )
+
+    assert code == headless.EXIT_OK
+    assert seen["permission_mode"] == "read-only"
+    assert seen["approval_policy"] == "never"
+
+
+async def test_boot_runtime_rejects_unknown_permission_options(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    kernel_app = make_kernel_app(FakeLlmService())
+    patch_kernel_boot(monkeypatch, kernel_app)
+
+    with pytest.raises(ConfigError, match="invalid permission preset"):
+        await headless.boot_runtime(config=make_config(), cwd=tmp_path, permission_mode="bogus")
+    with pytest.raises(ConfigError, match="invalid approval policy"):
+        await headless.boot_runtime(config=make_config(), cwd=tmp_path, approval_policy="always")
+    assert kernel_app.stopped is False
+
+
+class _RecordingPermissionService:
+    def __init__(self) -> None:
+        self.pinned: list[Any] = []
+        self.applied: list[tuple[Any, str]] = []
+
+    def pin_initial(self, session: Any) -> str:
+        self.pinned.append(session)
+        return "workspace-write"
+
+    def apply(self, session: Any, name: str) -> str:
+        self.applied.append((session, name))
+        return name
+
+
+class _RecordingApprovalService:
+    def __init__(self) -> None:
+        self.policies: list[tuple[Any, str]] = []
+
+    def set_policy(self, session: Any, policy: str) -> None:
+        self.policies.append((session, policy))
+
+
+class _PermissionKernel:
+    def __init__(self) -> None:
+        self.permissions = _RecordingPermissionService()
+        self.approvals = _RecordingApprovalService()
+
+    def service(self, name: str) -> Any:
+        if name == "permissionPresets":
+            return self.permissions
+        if name == "approval":
+            return self.approvals
+        raise LookupError(name)
+
+
+def test_pin_permission_applies_the_cli_overrides() -> None:
+    kernel = _PermissionKernel()
+    runtime = headless.HeadlessRuntime(
+        cfg=Config(),
+        cwd=Path("D:/work"),
+        kernel_app=kernel,
+        provider_name="fake",
+        model="fake-1",
+        context_window=8192,
+        store=None,
+        provider=None,
+        registry=None,
+        permission=None,
+        agents=None,
+        permission_mode="read-only",
+        approval_policy="never",
+    )
+    session = object()
+
+    runtime.pin_permission(session)
+
+    assert kernel.permissions.pinned == [session]
+    assert kernel.permissions.applied == [(session, "read-only")]
+    assert kernel.approvals.policies == [(session, "never")]
+
+
+def test_pin_permission_without_overrides_only_pins() -> None:
+    kernel = _PermissionKernel()
+    runtime = headless.HeadlessRuntime(
+        cfg=Config(),
+        cwd=Path("D:/work"),
+        kernel_app=kernel,
+        provider_name="fake",
+        model="fake-1",
+        context_window=8192,
+        store=None,
+        provider=None,
+        registry=None,
+        permission=None,
+        agents=None,
+    )
+    session = object()
+
+    runtime.pin_permission(session)
+
+    assert kernel.permissions.pinned == [session]
+    assert kernel.permissions.applied == []
+    assert kernel.approvals.policies == []

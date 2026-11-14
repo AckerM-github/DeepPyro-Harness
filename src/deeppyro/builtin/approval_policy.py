@@ -1,8 +1,8 @@
 """Answer approval requests from configuration, before the interactive gate.
 
-approval/request is a waterfall: the sandbox asks it first and only falls back
-to the configured approval policy (ask/never/always) when the chain returns
-"ask".  This consumer maps the [approval].hookMode setting onto that vocabulary:
+approval/request is a waterfall: ApprovalService asks it first and only falls
+back to the answerer when the chain returns "ask"/"unavailable". This consumer
+maps the [approval].hookMode setting onto that vocabulary:
 
     off   (default) - never answer, defer to the approval policy
     ask             - never answer, defer to the approval policy

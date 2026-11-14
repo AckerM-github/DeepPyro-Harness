@@ -32,7 +32,6 @@ def test_build_system_prompt_mentions_environment_and_model(tmp_path: Path) -> N
     assert "win32" in prompt
     assert "test-model" in prompt
     assert "session-test" in prompt
-    assert "workspace-write" in prompt
     assert "## Operating rules" in prompt
     assert "answer directly without calling tools" in prompt
 

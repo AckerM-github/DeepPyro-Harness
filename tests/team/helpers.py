@@ -60,6 +60,10 @@ class FakeGate:
         self.preset = preset
         self.approval = approval
 
+    @property
+    def policy(self) -> Any:
+        return SimpleNamespace(mode=self.preset)
+
     def set_preset(self, preset: str) -> None:
         self.preset = preset
 
@@ -70,12 +74,16 @@ class FakeGate:
 class FakeSandbox:
     """Sandbox service double: one fake gate per call."""
 
-    def __init__(self) -> None:
+    def __init__(self, inherit: FakeGate | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
         self.gates: list[FakeGate] = []
+        self.inherit = inherit
 
-    def gate(self, workspace: Any, ask: Any = None) -> FakeGate:
-        gate = FakeGate()
+    def gate(self, workspace: Any, ask: Any = None, session: Any = None, **kwargs: Any) -> FakeGate:
+        if session is not None and self.inherit is not None:
+            gate = FakeGate(self.inherit.preset, self.inherit.approval)
+        else:
+            gate = FakeGate("danger-full-access", "never")
         self.calls.append({"workspace": Path(workspace), "ask": ask})
         self.gates.append(gate)
         return gate
@@ -111,8 +119,8 @@ def make_team(
     store = SessionStore(root=tmp_path / "sessions")
     parent = store.create(tmp_path)
     agents = agents or FakeAgents()
-    sandbox = sandbox or FakeSandbox()
-    permission = permission or FakeGate("danger-full-access", "always")
+    permission = permission or FakeGate("danger-full-access", "never")
+    sandbox = sandbox or FakeSandbox(inherit=permission)
     provider = SimpleNamespace(name="local")
     service = TeamService(
         agents=agents,

@@ -25,11 +25,10 @@ from textual.widgets import Footer, Header
 
 from deeppyro import __version__
 from deeppyro.api import DEFAULT_PRESET_ID
-from deeppyro.sandbox.types import APPROVALS, PRESETS
 from deeppyro.tui.commands import dispatch, help_text, live_commands
 from deeppyro.tui.format import context_percent, short_session_id
 from deeppyro.tui.history import is_ptc_mode_message, process_map, reasoning_from_session
-from deeppyro.tui.screens.approval import ALLOW_ALWAYS, ApprovalScreen
+from deeppyro.tui.screens.approval import ALLOW_ONCE, ApprovalScreen
 from deeppyro.tui.screens.hook_trace import (
     EMPTY_TEXT as HOOK_TRACE_EMPTY_TEXT,
 )
@@ -427,14 +426,7 @@ class DeepPyroApp(App[None]):
             decision = await self.push_screen_wait(ApprovalScreen(request))
         except Exception:  # noqa: BLE001 - outside a worker there is no modal
             return False
-        if decision == ALLOW_ALWAYS:
-            permission = getattr(self.runtime, "permission", None)
-            setter = getattr(permission, "set_approval", None)
-            if setter is not None:
-                setter("always")
-            self.notify("approval policy: always")
-            self.refresh_status()
-        return decision in (ALLOW_ALWAYS, "once")
+        return decision in (ALLOW_ONCE, "once")
 
     # -- questions -------------------------------------------------------
     async def ask_question(self, request: AskRequest) -> list[Answer]:
@@ -512,7 +504,7 @@ class DeepPyroApp(App[None]):
             cached_tokens=usage["cached"],
             context_window=window,
             phase=self._phase,
-            preset=self._current_preset(),
+            preset=self._current_permission(),
             approval=self._current_approval(),
             context_tokens=context_used,
         )
@@ -597,22 +589,32 @@ class DeepPyroApp(App[None]):
         except Exception:  # noqa: BLE001 - status display must never fail
             return "default"
 
-    def _current_preset(self) -> str:
-        permission = getattr(self.runtime, "permission", None)
+    def _current_permission(self) -> str:
+        runtime = self.runtime
+        reader = getattr(runtime, "permission_preset", None)
+        if callable(reader):
+            try:
+                return str(reader())
+            except Exception:
+                self.log.debug("permission preset unavailable", exc_info=True)
+        permission = getattr(runtime, "permission", None)
         return str(getattr(permission, "preset", "workspace-write"))
 
     def _current_approval(self) -> str:
         permission = getattr(self.runtime, "permission", None)
         return str(getattr(permission, "approval", "ask"))
 
-    async def policy_command(self, argument: str) -> None:
-        """Show or switch the sandbox permission preset (/policy)."""
-        presets = [str(item) for item in PRESETS]
+    async def permission_command(self, argument: str) -> None:
+        """Show or switch the permission preset (/permission)."""
+        names_reader = getattr(self.runtime, "permission_names", None)
+        presets = list(names_reader()) if callable(names_reader) else []
+        if not presets:
+            presets = ["read-only", "workspace-write", "danger-full-access"]
         if not argument:
             if self._working:
-                self.notify("cannot change policy during a running turn", severity="warning")
+                self.notify("cannot change permission during a running turn", severity="warning")
                 return
-            current = self._current_preset()
+            current = self._current_permission()
             choice = await self._pick(
                 "Select permission preset",
                 [(item, item, "current" if item == current else "") for item in presets],
@@ -620,7 +622,7 @@ class DeepPyroApp(App[None]):
             if choice is None:
                 self.conversation.add_info(f"current permission preset: {current}")
                 self.conversation.add_info("available: " + ", ".join(presets))
-                self.conversation.add_info("use /policy <preset>")
+                self.conversation.add_info("use /permission <preset>")
                 return
             argument = choice
         if argument not in presets:
@@ -628,32 +630,7 @@ class DeepPyroApp(App[None]):
                 f"unknown permission preset: {argument} (choose from {', '.join(presets)})"
             )
             return
-        await self._apply_preset(argument)
-
-    async def approval_command(self, argument: str) -> None:
-        """Show or switch the approval policy (/approval)."""
-        approvals = [str(item) for item in APPROVALS]
-        if not argument:
-            if self._working:
-                self.notify("cannot change approval during a running turn", severity="warning")
-                return
-            current = self._current_approval()
-            choice = await self._pick(
-                "Select approval policy",
-                [(item, item, "current" if item == current else "") for item in approvals],
-            )
-            if choice is None:
-                self.conversation.add_info(f"current approval policy: {current}")
-                self.conversation.add_info("available: " + ", ".join(approvals))
-                self.conversation.add_info("use /approval <policy>")
-                return
-            argument = choice
-        if argument not in approvals:
-            self.conversation.add_error(
-                f"unknown approval policy: {argument} (choose from {', '.join(approvals)})"
-            )
-            return
-        await self._apply_approval(argument)
+        await self._apply_permission(argument)
 
     async def cwd_command(self, argument: str) -> None:
         """Show or switch the workspace directory (/cwd)."""
@@ -685,31 +662,17 @@ class DeepPyroApp(App[None]):
             argument = path
         await self._apply_workspace(argument)
 
-    async def _apply_preset(self, preset: str) -> None:
+    async def _apply_permission(self, preset: str) -> None:
         if self._working:
-            self.notify("cannot change policy during a running turn", severity="warning")
+            self.notify("cannot change permission during a running turn", severity="warning")
             self.refresh_status()
             return
         try:
-            await self.runtime.set_preset(preset)
+            selected = await self.runtime.set_permission(preset)
         except Exception as exc:  # noqa: BLE001 - surface, then resync the view
-            self.notify(f"policy switch failed: {exc}", severity="error")
+            self.notify(f"permission switch failed: {exc}", severity="error")
         else:
-            self.notify(f"permission preset: {preset}")
-        finally:
-            self.refresh_status()
-
-    async def _apply_approval(self, approval: str) -> None:
-        if self._working:
-            self.notify("cannot change approval during a running turn", severity="warning")
-            self.refresh_status()
-            return
-        try:
-            await self.runtime.set_approval(approval)
-        except Exception as exc:  # noqa: BLE001
-            self.notify(f"approval switch failed: {exc}", severity="error")
-        else:
-            self.notify(f"approval policy: {approval}")
+            self.notify(f"permission preset: {selected}")
         finally:
             self.refresh_status()
 
@@ -748,7 +711,7 @@ class DeepPyroApp(App[None]):
             f"{self._agent_presentation()} presentation · {self._agent_mode()} mode)  ·  "
             "/model and /provider switch the model; /preset switches the agent preset"
         )
-        conversation.add_info("/policy, /approval and /cwd change the session settings")
+        conversation.add_info("/permission and /cwd change the session settings")
         conversation.add_info("Type a message. /help lists commands. Ctrl+C interrupts, Ctrl+D quits.")
 
     def _render_history(self) -> None:
@@ -1149,7 +1112,10 @@ class DeepPyroApp(App[None]):
         session = getattr(runtime, "session", None)
         records = len(getattr(session, "records", []) or [])
         permission = getattr(runtime, "permission", None)
-        policy = f"{getattr(permission, 'preset', 'n/a')} · {getattr(permission, 'approval', 'n/a')}"
+        sandbox_mode = getattr(getattr(permission, "policy", None), "mode", None)
+        policy = self._current_permission()
+        if sandbox_mode:
+            policy = f"{policy} · sandbox {sandbox_mode}"
         has_key = getattr(runtime, "has_api_key", None)
         key_state = "n/a"
         if callable(has_key):

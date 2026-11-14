@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
 
 from deeppyro.core.errors import PermissionDenied, ToolError
@@ -127,43 +130,34 @@ async def test_write_is_denied_in_read_only_mode(workspace) -> None:  # type: ig
     assert not (workspace / "x.txt").exists()
 
 
-async def test_write_outside_workspace_requires_approval(tmp_path) -> None:  # type: ignore[no-untyped-def]
+async def test_write_outside_workspace_is_denied_with_escalation_guidance(tmp_path) -> None:  # type: ignore[no-untyped-def]
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    asked: list[ApprovalRequest] = []
-
-    async def grant(req: ApprovalRequest) -> bool:
-        asked.append(req)
-        return True
-
-    ctx = make_context(workspace, permission=PermissionGate("workspace-write", "ask", workspace, ask=grant))
-    outside = tmp_path / "outside.txt"
-    result = await WriteTool().run({"file_path": str(outside), "content": "ok"}, ctx)
-    assert result.is_error is False
-    assert outside.read_text() == "ok"
-    assert asked[0].kind == "write-outside-workspace"
-    assert asked[0].tool == "write"
-
-    async def deny(req: ApprovalRequest) -> bool:
-        return False
-
-    ctx_deny = make_context(
-        workspace, permission=PermissionGate("workspace-write", "ask", workspace, ask=deny)
+    outside = (
+        Path("C:/deeppyro-test-outside.txt")
+        if sys.platform == "win32"
+        else Path("/deeppyro-test-outside.txt")
     )
-    with pytest.raises(PermissionDenied, match="rejected by the user"):
-        await WriteTool().run({"file_path": str(outside), "content": "no"}, ctx_deny)
+    ctx = make_context(workspace, permission=PermissionGate("workspace-write", "never", workspace))
+    with pytest.raises(PermissionDenied, match="file access denied under workspace-write mode") as caught:
+        await WriteTool().run({"file_path": str(outside), "content": "no"}, ctx)
+    text = str(caught.value)
+    assert "[sandbox: file access denied under workspace-write mode]" in text
+    assert "[sandbox: escalation available" in text
+    assert not outside.exists()
 
 
-async def test_write_escalation_requires_justification(tmp_path) -> None:  # type: ignore[no-untyped-def]
+async def test_write_escalation_requires_justification_and_a_wider_target(tmp_path) -> None:  # type: ignore[no-untyped-def]
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    ctx = make_context(workspace, permission=PermissionGate("workspace-write", "always", workspace))
-    with pytest.raises(ToolError, match="justification is required"):
+    ctx = make_context(workspace, permission=PermissionGate("workspace-write", "never", workspace))
+    with pytest.raises(ToolError, match="requires a justification"):
         await WriteTool().run(
             {"file_path": "x.txt", "content": "x", "sandbox_permissions": "danger-full-access"},
             ctx,
         )
-    with pytest.raises(ToolError, match="not wider"):
+    danger_ctx = make_context(workspace, permission=PermissionGate("danger-full-access", "never", workspace))
+    with pytest.raises(ToolError, match="not strictly wider"):
         await WriteTool().run(
             {
                 "file_path": "x.txt",
@@ -171,19 +165,19 @@ async def test_write_escalation_requires_justification(tmp_path) -> None:  # typ
                 "sandbox_permissions": "workspace-write",
                 "justification": "x",
             },
+            danger_ctx,
+        )
+    with pytest.raises(PermissionDenied, match="rejected escalating this write"):
+        await WriteTool().run(
+            {
+                "file_path": "x.txt",
+                "content": "x",
+                "sandbox_permissions": "danger-full-access",
+                "justification": "need full access for this file",
+            },
             ctx,
         )
-    result = await WriteTool().run(
-        {
-            "file_path": "x.txt",
-            "content": "x",
-            "sandbox_permissions": "danger-full-access",
-            "justification": "need full access for this file",
-        },
-        ctx,
-    )
-    assert result.is_error is False
-    assert (workspace / "x.txt").read_text() == "x"
+    assert not (workspace / "x.txt").exists()
 
 
 async def test_write_escalation_request_carries_the_tool_name(tmp_path) -> None:  # type: ignore[no-untyped-def]

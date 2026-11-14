@@ -17,10 +17,21 @@ from typing import Any
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
+from deeppyro.sandbox.policy import SandboxPolicy
+from deeppyro.sandbox.provider import (
+    WIDER_MODES,
+    RunnerFailureRule,
+    SandboxUnavailableError,
+    classify_runner_failure,
+    escalation_hint_marker,
+    matches_denial,
+    sandbox_denial_marker,
+)
+from deeppyro.sandbox.types import Preset
 from deeppyro.tools.args import optional_bool, optional_int, optional_str, require_str
 from deeppyro.tools.base import BaseTool, make_parameters, sandbox_properties
 from deeppyro.tools.paths import resolve_path
-from deeppyro.tools.permissions import check_command
+from deeppyro.tools.permissions import check_command, gate_for
 
 DEFAULT_TIMEOUT_MS = 120_000
 MAX_TIMEOUT_MS = 600_000
@@ -33,6 +44,64 @@ class _ShellTool(BaseTool):
 
     def argv(self, command: str) -> list[str]:  # pragma: no cover - overridden
         raise NotImplementedError
+
+    def _confine(
+        self, argv: list[str], ctx: ToolContext, mode: Preset
+    ) -> tuple[list[str], str, tuple[str, ...], tuple[RunnerFailureRule, ...], Path | None]:
+        """Run the command through the sandbox provider; fail closed."""
+        sandbox = (ctx.services or {}).get("sandbox")
+        gate = gate_for(ctx)
+        policy = gate.policy
+        if mode != policy.mode:
+            policy = SandboxPolicy(
+                mode=mode,
+                workspace_root=policy.workspace_root,
+                additional_writable_roots=policy.additional_writable_roots,
+            )
+        if sandbox is None or not callable(getattr(sandbox, "confine", None)):
+            return list(argv), "none", (), (), None
+        try:
+            confinement = sandbox.confine(argv, policy, signal=ctx.cancel)
+        except SandboxUnavailableError as exc:
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            raise ToolError(f"cannot confine the command: {exc}") from exc
+        return (
+            list(confinement.argv),
+            str(getattr(confinement, "enforcement", "none")),
+            tuple(getattr(confinement, "denial_signatures", ()) or ()),
+            tuple(getattr(confinement, "runner_failure_rules", ()) or ()),
+            getattr(confinement, "temp_root", None),
+        )
+
+    @staticmethod
+    def _sandbox_note(
+        text: str,
+        mode: Preset,
+        signatures: tuple[str, ...],
+        rules: tuple[RunnerFailureRule, ...],
+        exit_code: int | None,
+    ) -> tuple[str, bool, bool]:
+        """Append the DSH sandbox notice; return (text, denied, runner_failed)."""
+        runner_failed = classify_runner_failure(exit_code, text, rules) is not None
+        if runner_failed:
+            notice = (
+                f"[sandbox: the sandbox runner itself failed under {mode} mode — the command did not run; "
+                "this is a sandbox problem, not a command failure]"
+            )
+            return f"{text}\n\n{notice}" if text else notice, False, True
+        if not text or not signatures or not matches_denial(text, signatures):
+            return text, False, False
+        notice = sandbox_denial_marker(mode)
+        if mode in WIDER_MODES:
+            notice += "\n" + escalation_hint_marker("command")
+        return f"{text}\n\n{notice}", True, False
+
+    @staticmethod
+    def _cleanup_temp(temp_root: Path | None) -> None:
+        """Remove the private per-call temp root the runner was given."""
+        if temp_root is not None:
+            shutil.rmtree(temp_root, ignore_errors=True)
 
     async def _spawn(self, argv: list[str], cwd: Path) -> asyncio.subprocess.Process:
         """Start one shell process with stderr merged into stdout."""
@@ -54,6 +123,12 @@ class _ShellTool(BaseTool):
         argv: list[str],
         cwd: Path,
         ctx: ToolContext,
+        *,
+        mode: Preset,
+        enforcement: str,
+        denial_signatures: tuple[str, ...],
+        runner_rules: tuple[RunnerFailureRule, ...],
+        temp_root: Path | None,
     ) -> ToolResult:
         """Admit a real background job and return its id immediately."""
         jobs = (ctx.services or {}).get("jobs")
@@ -63,6 +138,7 @@ class _ShellTool(BaseTool):
             )
 
         async def runner(handle: Any) -> int | None:
+            chunks: list[str] = []
             process = await self._spawn(argv, cwd)
             try:
                 assert process.stdout is not None
@@ -70,14 +146,24 @@ class _ShellTool(BaseTool):
                     chunk = await process.stdout.read(65536)
                     if not chunk:
                         break
-                    handle.write(chunk.decode("utf-8", errors="replace").replace("\r\n", "\n"))
-                return await process.wait()
+                    text = chunk.decode("utf-8", errors="replace").replace("\r\n", "\n")
+                    chunks.append(text)
+                    handle.write(text)
+                exit_code = await process.wait()
+                annotated, _denied, _failed = self._sandbox_note(
+                    "".join(chunks).rstrip("\n"), mode, denial_signatures, runner_rules, exit_code
+                )
+                if annotated != "".join(chunks).rstrip("\n"):
+                    handle.write(annotated[len("".join(chunks).rstrip("\n")) :] + "\n")
+                return exit_code
             except asyncio.CancelledError:
                 with contextlib.suppress(ProcessLookupError):
                     process.kill()
                 with contextlib.suppress(Exception):
                     await process.wait()
                 raise
+            finally:
+                self._cleanup_temp(temp_root)
 
         handle = jobs.start(
             self.name,
@@ -89,7 +175,11 @@ class _ShellTool(BaseTool):
         )
         return ToolResult(
             text=f"started background job {handle.id}",
-            meta={"jobId": handle.id, "kind": self.name},
+            meta={
+                "jobId": handle.id,
+                "kind": self.name,
+                "sandbox": {"mode": mode, "enforcement": enforcement},
+            },
         )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -97,15 +187,31 @@ class _ShellTool(BaseTool):
         timeout_ms = optional_int(args, "timeoutMs", DEFAULT_TIMEOUT_MS, minimum=1, maximum=MAX_TIMEOUT_MS)
         background = optional_bool(args, "run_in_background", False)
         workdir_arg = optional_str(args, "workdir")
-        await check_command(ctx, args, command, tool=self.name)
+        mode = await check_command(ctx, args, command, tool=self.name)
         cwd = resolve_path(Path(ctx.cwd), workdir_arg) if workdir_arg else Path(ctx.cwd).resolve(strict=False)
         if not cwd.is_dir():
             raise ToolError(f"workdir is not a directory: {cwd}")
-        argv = self.argv(command)
+        argv, enforcement, denial_signatures, runner_rules, temp_root = self._confine(
+            self.argv(command), ctx, mode
+        )
         if background:
-            return await self._run_background(command, argv, cwd, ctx)
+            return await self._run_background(
+                command,
+                argv,
+                cwd,
+                ctx,
+                mode=mode,
+                enforcement=enforcement,
+                denial_signatures=denial_signatures,
+                runner_rules=runner_rules,
+                temp_root=temp_root,
+            )
         started = time.monotonic()
-        process = await self._spawn(argv, cwd)
+        try:
+            process = await self._spawn(argv, cwd)
+        except BaseException:
+            self._cleanup_temp(temp_root)
+            raise
         try:
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout_ms / 1000)
         except TimeoutError:
@@ -114,13 +220,27 @@ class _ShellTool(BaseTool):
             with contextlib.suppress(Exception):
                 await process.wait()
             raise ToolError(f"command timed out after {timeout_ms}ms and was killed: {command}") from None
+        finally:
+            self._cleanup_temp(temp_root)
         duration_ms = int((time.monotonic() - started) * 1000)
         exit_code = process.returncode or 0
         text = (stdout or b"").decode("utf-8", errors="replace").replace("\r\n", "\n").rstrip("\n")
         if exit_code != 0:
             text = f"{text}\n\n[exit code: {exit_code}]" if text else f"[exit code: {exit_code}]"
+        text, denied, runner_failed = self._sandbox_note(
+            text, mode, denial_signatures, runner_rules, exit_code
+        )
+        facts: dict[str, Any] = {"mode": mode, "enforcement": enforcement, "denied": denied}
+        if runner_failed:
+            facts["runnerFailed"] = True
         return ToolResult(
-            text=text, meta={"exitCode": exit_code, "durationMs": duration_ms, "workdir": str(cwd)}
+            text=text,
+            meta={
+                "exitCode": exit_code,
+                "durationMs": duration_ms,
+                "workdir": str(cwd),
+                "sandbox": facts,
+            },
         )
 
 

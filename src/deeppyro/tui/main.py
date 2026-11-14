@@ -11,6 +11,8 @@ import argparse
 import sys
 from collections.abc import Sequence
 
+from deeppyro.sandbox.types import APPROVALS, PRESETS
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -26,6 +28,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--preset",
         default=None,
         help="agent preset id: standard, ptc, minimal, cordis",
+    )
+    parser.add_argument(
+        "--permission-mode",
+        default=None,
+        choices=PRESETS,
+        help="permission preset for this run: read-only, workspace-write, danger-full-access",
+    )
+    parser.add_argument(
+        "--approval-policy",
+        default=None,
+        choices=APPROVALS,
+        help="approval policy for this run: ask or never",
     )
     parser.add_argument("--cwd", default=None, help="workspace directory")
     parser.add_argument("--max-steps", type=int, default=None, help="tool steps per turn")
@@ -72,6 +86,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         model=args.model,
         provider=args.provider,
         preset=args.preset,
+        permission_mode=args.permission_mode,
+        approval_policy=args.approval_policy,
         json_output=bool(args.json),
         cwd=args.cwd,
         max_steps=args.max_steps,

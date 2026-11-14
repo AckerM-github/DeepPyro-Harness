@@ -226,8 +226,11 @@ class FakePermission:
     """Structural stand-in for deeppyro.sandbox.PermissionGate."""
 
     def __init__(self, preset: str = "workspace-write", approval: str = "ask") -> None:
+        from deeppyro.sandbox.policy import SandboxPolicy
+
         self.preset = preset
         self.approval = approval
+        self.policy = SandboxPolicy(preset, Path.cwd())  # type: ignore[arg-type]
 
 
 @dataclass

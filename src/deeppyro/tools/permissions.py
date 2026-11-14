@@ -1,8 +1,10 @@
-"""Bridge between tools and the sandbox permission gate.
+"""Bridge between tools and the DSH sandbox services.
 
-Tools get the gate through `ToolContext.permission`. Sessions that do not
-configure one fall back to a permissive gate (the session layer decides
-whether a gate exists at all); the built-in tool tests use an explicit gate.
+The gate still owns the small synchronous check API, but the DSH-aligned flow is:
+try the operation under the current mode, and only after the sandbox actually
+denied it may the model retry once with sandbox_permissions + justification.
+The retry is approved through the approval service; the escalated mode applies
+to exactly that one call.
 """
 
 from __future__ import annotations
@@ -12,7 +14,14 @@ from typing import Any
 
 from deeppyro.core.errors import PermissionDenied, ToolError
 from deeppyro.core.protocols import ToolContext
-from deeppyro.sandbox import ApprovalRequest, Decision, PermissionGate
+from deeppyro.sandbox import ApprovalRequest, PermissionGate
+from deeppyro.sandbox.policy import SandboxPolicy, is_path_under, writable_roots
+from deeppyro.sandbox.provider import (
+    WIDER_MODES,
+    escalation_hint_marker,
+    sandbox_denial_marker,
+    validate_escalation_args,
+)
 from deeppyro.sandbox.types import Preset
 
 
@@ -20,46 +29,51 @@ def gate_for(ctx: ToolContext) -> PermissionGate:
     """Return the context's gate or a permissive fallback gate."""
     gate = getattr(ctx, "permission", None)
     if gate is None:
-        return PermissionGate("danger-full-access", "always", Path(ctx.cwd))
+        return PermissionGate("danger-full-access", "never", Path(ctx.cwd))
     return gate  # type: ignore[return-value]
 
 
-def _deny(decision: Decision, action: str) -> PermissionDenied:
-    reason = decision.reason or "denied by the permission gate"
-    return PermissionDenied(f"{action} denied: {reason}")
+async def prepare_escalation(
+    ctx: ToolContext,
+    args: dict[str, Any],
+    *,
+    subject: str,
+    tool: str | None = None,
+) -> Preset:
+    """Validate and approve a one-shot sandbox_permissions retry.
 
-
-def _effective_preset(gate: PermissionGate, args: dict[str, Any]) -> Preset:
-    """Validate a one-shot escalation request and return the mode to use."""
-    requested = args.get("sandbox_permissions")
-    if requested is None:
-        return gate.preset
-    if not isinstance(requested, str):
-        raise ToolError("sandbox_permissions must be a string")
-    justification = args.get("justification")
-    if not isinstance(justification, str) or not justification.strip():
-        raise ToolError("justification is required when sandbox_permissions is set")
+    Returns the mode this one call should use. The current mode is returned when
+    no escalation was requested (or when the target equals the current mode,
+    which DSH treats as a no-op rather than an approval prompt).
+    """
+    gate = gate_for(ctx)
+    try:
+        requested, justification = validate_escalation_args(args)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    current = gate.policy.mode
+    if requested is None or requested == current:
+        return current
     try:
         gate.validate_escalation(requested)
     except Exception as exc:
         raise ToolError(str(exc)) from exc
-    return requested  # type: ignore[return-value]
-
-
-async def _approve_escalation(
-    gate: PermissionGate, ctx: ToolContext, args: dict[str, Any], tool: str | None
-) -> bool:
-    """Ask for approval of a one-shot escalation; return True when one happened."""
-    requested = args.get("sandbox_permissions")
-    if requested is None:
-        return False
-    justification = str(args.get("justification") or "")
-    summary = f"Allow this {args.get('_action', 'operation')} to run with {requested} for one call?"
-    req = ApprovalRequest(kind="sandbox-escalation", summary=summary, detail=justification, tool=tool)
-    decision = await gate.request(req)
+    request = ApprovalRequest(
+        kind="sandbox-escalation",
+        summary=f'Allow this {subject} to run with "{requested}" for one call?',
+        detail=justification or "",
+        tool=tool,
+        reason=f"escalate sandbox to {requested}: {justification or ''}".strip(),
+    )
+    decision = await gate.request(request)
     if not decision.allowed:
-        raise PermissionDenied(f"sandbox escalation denied: {decision.reason}")
-    return True
+        if decision.reason == "approval was cancelled":
+            raise PermissionDenied(f'approval for escalating to "{requested}" was cancelled')
+        raise PermissionDenied(
+            f'the user rejected escalating this {subject} to "{requested}"; it stays denied, '
+            "so stop and explain instead of working around it"
+        )
+    return requested  # type: ignore[return-value]
 
 
 async def check_write(
@@ -70,68 +84,56 @@ async def check_write(
     action: str = "write",
     tool: str | None = None,
 ) -> None:
-    """Authorize a write to `path` (honouring a one-shot escalation).
-
-    `tool` is the calling tool's name; it is recorded on every approval
-    request so [approval].hookTools can match by tool name.  None means the
-    caller did not identify itself.
-    """
+    """Authorize a write strictly by the DSH file policy (no prompt)."""
     gate = gate_for(ctx)
-    _effective_preset(gate, args)
-    escalated = await _approve_escalation(gate, ctx, args, tool)
-    if escalated:
+    mode = await prepare_escalation(ctx, args, subject="write", tool=tool)
+    policy = gate.policy
+    if mode != policy.mode:
+        policy = SandboxPolicy(mode=mode, workspace_root=policy.workspace_root)
+    decision = _check_write_with(policy, path)
+    if decision is True:
         return
-    decision = gate.check_write(path)
-    if decision.allowed:
-        return
-    if decision.needs_approval:
-        approved = await gate.request(
-            ApprovalRequest(
-                kind="write-outside-workspace",
-                summary="Allow this write outside the workspace?",
-                detail=str(path),
-                tool=tool,
-            )
-        )
-        if approved.allowed:
-            return
-        raise PermissionDenied(f"{action} denied: {approved.reason}")
-    raise _deny(decision, action)
+    raise PermissionDenied(_denial_message(action, decision, policy.mode))
 
 
 async def check_command(
     ctx: ToolContext, args: dict[str, Any], command: str, *, tool: str | None = None
-) -> None:
-    """Authorize a shell command (honouring a one-shot escalation).
+) -> Preset:
+    """Return the sandbox mode this shell call must run under.
 
-    `tool` is the calling tool's name, recorded on approval requests for
-    [approval].hookTools matching.
+    Commands are not pre-approved: the OS sandbox either confines them or the
+    provider fails closed. Only an explicit escalation needs approval here.
     """
-    gate = gate_for(ctx)
-    _effective_preset(gate, args)
-    escalated = await _approve_escalation(gate, ctx, args, tool)
-    if escalated:
-        return
-    decision = gate.check_command(command)
-    if decision.allowed:
-        return
-    if decision.needs_approval:
-        approved = await gate.request(
-            ApprovalRequest(
-                kind="command-approval",
-                summary="Allow this shell command?",
-                detail=command,
-                tool=tool,
-            )
-        )
-        if approved.allowed:
-            return
-        raise PermissionDenied(f"command denied: {approved.reason}")
-    raise _deny(decision, "command")
+    return await prepare_escalation(ctx, args, subject="command", tool=tool)
 
 
 def check_read(ctx: ToolContext, path: Path) -> None:
-    """Authorize a read (all presets allow reads)."""
+    """Authorize a read (all modes allow reads)."""
     decision = gate_for(ctx).check_read(path)
     if not decision.allowed:
-        raise _deny(decision, "read")
+        raise PermissionDenied(decision.reason or "read denied")
+
+
+def _check_write_with(policy: SandboxPolicy, path: Path) -> bool | str:
+    """True when allowed, else the DSH denial sentence."""
+    target = path.expanduser().resolve(strict=False)
+    if policy.mode == "danger-full-access":
+        return True
+    if policy.mode == "read-only":
+        return f'cannot write "{target}": file access denied under read-only mode'
+    if any(is_path_under(target, root) for root in writable_roots(policy)):
+        return True
+    return f'cannot write "{target}": file access denied under workspace-write mode'
+
+
+def _denial_message(action: str, reason: str | bool, mode: str) -> str:
+    text = reason if isinstance(reason, str) else f"{action} denied"
+    marker = sandbox_denial_marker(mode)
+    hint = ""
+    if mode in WIDER_MODES:
+        subject = action if action in ("write", "command") else "operation"
+        hint = "\n" + escalation_hint_marker(subject)
+    return f"{action} denied: {text}\n{marker}{hint}"
+
+
+__all__ = ["check_command", "check_read", "check_write", "gate_for", "prepare_escalation"]

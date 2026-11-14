@@ -7,12 +7,12 @@ from typing import Any
 
 import pytest
 
-from deeppyro.core.errors import PermissionDenied, ToolError
+from deeppyro.core.errors import ToolError
 from deeppyro.jobs import JobsService
 from deeppyro.sandbox import PermissionGate
 from deeppyro.tools import PwshTool
 from deeppyro.tools.builtin.jobs import JobKillTool, JobOutputTool
-from tests.tools.helpers import make_context
+from tests.tools.helpers import ConfiningSandbox, make_context
 
 
 def jobs_context(
@@ -111,16 +111,54 @@ async def test_background_requires_the_jobs_service(workspace) -> None:  # type:
         )
 
 
-async def test_background_is_denied_in_read_only_mode(workspace) -> None:  # type: ignore[no-untyped-def]
+async def test_background_runs_in_read_only_mode_through_the_runner(workspace) -> None:  # type: ignore[no-untyped-def]
     service = JobsService()
     gate = PermissionGate("read-only", "never", workspace)
-    ctx = jobs_context(workspace, service, permission=gate)
-    with pytest.raises(PermissionDenied, match="read-only"):
-        await PwshTool().run(
-            {"description": "Background", "command": "Write-Output 1", "run_in_background": True},
-            ctx,
-        )
-    assert service.list() == []
+    sandbox = ConfiningSandbox()
+    ctx = make_context(workspace, permission=gate, services={"jobs": service, "sandbox": sandbox})
+    started = await PwshTool().run(
+        {"description": "Background", "command": "Write-Output 1", "run_in_background": True},
+        ctx,
+    )
+    job_id = started.meta["jobId"]
+    settled = await service.wait(job_id, 15)
+    assert settled is not None and settled.status == "completed"
+    assert [policy.mode for policy in sandbox.policies] == ["read-only"]
+
+
+async def test_background_marks_a_sandbox_denial(workspace) -> None:  # type: ignore[no-untyped-def]
+    service = JobsService()
+    gate = PermissionGate("workspace-write", "never", workspace)
+    sandbox = ConfiningSandbox(denial_signatures=("access is denied",))
+    ctx = make_context(workspace, permission=gate, services={"jobs": service, "sandbox": sandbox})
+    started = await PwshTool().run(
+        {
+            "description": "Denied in the background",
+            "command": "Write-Output 'access is denied'",
+            "run_in_background": True,
+        },
+        ctx,
+    )
+    settled = await service.wait(started.meta["jobId"], 15)
+    assert settled is not None and settled.status == "completed"
+    assert "access is denied" in settled.output
+    assert "[sandbox: file access denied under workspace-write mode]" in settled.output
+    assert "[sandbox: escalation available" in settled.output
+
+
+async def test_background_removes_the_private_temp_root(workspace, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    service = JobsService()
+    temp_root = tmp_path / "background-sandbox-temp"
+    temp_root.mkdir()
+    sandbox = ConfiningSandbox(temp_root=temp_root)
+    ctx = make_context(workspace, services={"jobs": service, "sandbox": sandbox})
+    started = await PwshTool().run(
+        {"description": "Background temp", "command": "Write-Output 1", "run_in_background": True},
+        ctx,
+    )
+    settled = await service.wait(started.meta["jobId"], 15)
+    assert settled is not None and settled.status == "completed"
+    assert not temp_root.exists()
 
 
 async def test_foreground_pwsh_still_returns_inline_output(workspace) -> None:  # type: ignore[no-untyped-def]

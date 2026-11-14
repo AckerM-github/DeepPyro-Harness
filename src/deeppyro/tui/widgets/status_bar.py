@@ -1,8 +1,8 @@
 """One-line status bar: session, model, tokens, context, policy, and phase.
 
-The permission preset and approval policy are shown here because they are
-switched with the /policy and /approval slash commands; the workspace path is
-shown by /status and /cwd.
+The permission preset and its effective approval policy are shown here because
+they are switched together with /permission; the workspace path is shown by
+/status and /cwd.
 """
 
 from __future__ import annotations

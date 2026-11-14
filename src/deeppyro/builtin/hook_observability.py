@@ -59,7 +59,9 @@ _FIELD_ORDER = (
     "phase",
     "tool",
     "callId",
+    "toolName",
     "name",
+    "outcome",
     "allowed",
     "reason",
     "via",
@@ -81,6 +83,8 @@ def _describe(payload: Mapping[str, Any]) -> str:
         if key not in payload:
             continue
         value = payload[key]
+        if value is None:
+            continue
         if key == "request":
             rendered = repr(getattr(value, "kind", type(value).__name__))
         elif key == "frame":

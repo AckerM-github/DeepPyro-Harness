@@ -98,6 +98,7 @@ from deeppyro.prompt.projection import (
     SystemPromptProjection,
 )
 from deeppyro.prompt.runtime_context import render_runtime_context, runtime_context_sections
+from deeppyro.sandbox.policy import approval_policy_text, sandbox_policy_text
 from deeppyro.session.image_projection import IMAGE_OFFLOAD_EVENT
 
 logger = logging.getLogger(__name__)
@@ -263,6 +264,12 @@ class AgentSession:
         self._options = options
         self._sink = sink
         self._permission = permission
+        # Bind the gate to this session so the standing sandbox mode and
+        # approval policy resolve from the session's own log (permission/preset,
+        # sandbox/mode, approval/policy records).
+        bind_session = getattr(permission, "bind_session", None)
+        if callable(bind_session):
+            bind_session(session)
         self._cwd = Path(cwd)
         self._services = dict(services or {})
         # ToolContext.services always exposes the live session so tools that need
@@ -1307,6 +1314,8 @@ class AgentSession:
             permission_preset=self._permission_preset(),
             approval_policy=self._approval_policy(),
             model=self._model,
+            sandbox_policy_text=self._sandbox_policy_text(),
+            approval_policy_text=self._approval_policy_text(),
             instructions=list(self._instructions),
             env={},
             direct_tool_names=tuple(self._surface.names()),
@@ -1396,6 +1405,21 @@ class AgentSession:
         if self._options.approval_policy:
             return self._options.approval_policy
         return str(getattr(self._permission, "approval", "") or "ask")
+
+    def _sandbox_policy_text(self) -> str:
+        """The DSH runtime-context paragraph for the standing file policy."""
+        policy = getattr(self._permission, "policy", None)
+        if policy is None:
+            return ""
+        try:
+            return sandbox_policy_text(policy)
+        except Exception:  # pragma: no cover - defensive for custom gates
+            logger.warning("could not render the sandbox policy text", exc_info=True)
+            return ""
+
+    def _approval_policy_text(self) -> str:
+        """The DSH runtime-context paragraph for the standing approval policy."""
+        return approval_policy_text(self._approval_policy())
 
     def _append_user_message(self, message: Message) -> None:
         # user/message stores the wire message directly (fixtures shape); the

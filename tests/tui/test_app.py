@@ -254,11 +254,15 @@ class FakeRuntime:
         workspaces = [str(Path("D:/work")), str(Path("D:/other"))]
         return workspaces[:limit]
 
-    async def set_preset(self, preset: str) -> None:
-        self.permission.set_preset(preset)
+    def permission_preset(self) -> str:
+        return self.permission.preset
 
-    async def set_approval(self, approval: str) -> None:
-        self.permission.set_approval(approval)
+    def permission_names(self) -> list[str]:
+        return ["read-only", "workspace-write", "danger-full-access"]
+
+    async def set_permission(self, preset: str) -> str:
+        self.permission.set_preset(preset)
+        return preset
 
     async def set_workspace(self, path: Any) -> Path:
         workspace = Path(path)
@@ -504,25 +508,20 @@ async def _submit(app: Any, pilot: Any, text: str) -> None:
     await pilot.pause(0.05)
 
 
-async def test_policy_and_approval_commands_switch_session_settings() -> None:
+async def test_permission_command_switches_session_settings() -> None:
     app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
-        await _submit(app, pilot, "/policy read-only")
+        await _submit(app, pilot, "/permission read-only")
         for _ in range(40):
             await pilot.pause(0.05)
             if app.runtime.permission.preset == "read-only":
                 break
         assert app.runtime.permission.preset == "read-only"
-        await _submit(app, pilot, "/approval never")
-        for _ in range(40):
-            await pilot.pause(0.05)
-            if app.runtime.permission.approval == "never":
-                break
-        assert app.runtime.permission.approval == "never"
+        assert app.runtime.permission.approval == "ask"
 
 
-async def test_policy_command_without_argument_uses_picker(monkeypatch: Any) -> None:
+async def test_permission_command_without_argument_uses_picker(monkeypatch: Any) -> None:
     picked: list[tuple[str, list[tuple[str, str, str]]]] = []
 
     async def fake_pick(title: str, items: list[tuple[str, str, str]]) -> str:
@@ -533,7 +532,7 @@ async def test_policy_command_without_argument_uses_picker(monkeypatch: Any) -> 
     async with app.run_test(size=(120, 30)) as pilot:
         await pilot.pause()
         monkeypatch.setattr(app, "_pick", fake_pick)
-        await _submit(app, pilot, "/policy")
+        await _submit(app, pilot, "/permission")
         for _ in range(40):
             await pilot.pause(0.05)
             if app.runtime.permission.preset == "read-only":

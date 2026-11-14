@@ -27,15 +27,32 @@ def make_context(tmp_path: Path, **overrides: object) -> PromptContext:
 
 
 def test_runtime_context_sections_include_runtime_facts(tmp_path: Path) -> None:
-    sections = runtime_context_sections(make_context(tmp_path))
-    assert [section["name"] for section in sections] == ["runtime"]
+    sections = runtime_context_sections(
+        make_context(
+            tmp_path,
+            sandbox_policy_text="Current DSH file policy: workspace-write.",
+            approval_policy_text="Approval prompts are enabled.",
+        )
+    )
+    assert [section["name"] for section in sections] == [
+        "runtime",
+        "sandbox:policy",
+        "approval:policy",
+    ]
     text = sections[0]["text"]
     assert str(tmp_path) in text
     assert "win32" in text
     assert "deepseek-v4-pro" in text
     assert "session-runtime" in text
-    assert "workspace-write" in text
-    assert "ask" in text
+    assert "workspace-write" not in text
+    assert "ask" not in text
+    assert sections[1]["text"] == "Current DSH file policy: workspace-write."
+    assert sections[2]["text"] == "Approval prompts are enabled."
+
+
+def test_runtime_context_omits_absent_policy_paragraphs(tmp_path: Path) -> None:
+    sections = runtime_context_sections(make_context(tmp_path))
+    assert [section["name"] for section in sections] == ["runtime"]
 
 
 def test_render_runtime_context_prefixes_snapshot_header(tmp_path: Path) -> None:
