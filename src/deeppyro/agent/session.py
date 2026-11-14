@@ -77,11 +77,16 @@ from deeppyro.core.protocols import (
 from deeppyro.core.wire import Message, ReasoningPart, TextPart, ToolCallPart
 from deeppyro.hooks.types import (
     AGENT_ASSISTANT_STREAM,
+    AGENT_ERROR,
     AGENT_PRE_STEP,
     AGENT_REQUEST,
     AGENT_REQUEST_ERROR,
     AGENT_STATUS,
     AGENT_TURN_STOPPING,
+    LLM_STREAM,
+    MODEL_SELECTION,
+    SYSTEM_PROMPT_ASSEMBLE,
+    TOOL_CALL,
 )
 from deeppyro.prompt import PromptContext, build_system_prompt, collect_instructions
 from deeppyro.prompt.projection import (
@@ -287,6 +292,9 @@ class AgentSession:
         self._undispatched_calls: list[ToolCallDraft] = []
         # callId -> seq of the tool/call record, so abort results can reference it.
         self._call_seqs: dict[str, int] = {}
+        # Which lifecycle boundary raised the current failure: "request" while
+        # the provider streams, "tool" while a batch runs, "turn" otherwise.
+        self._failure_phase = "turn"
         self.compactor = compactor or Compactor(
             provider=provider,
             model=self._model,
@@ -317,6 +325,11 @@ class AgentSession:
     @property
     def inbox(self) -> Inbox:
         return self._inbox
+
+    @property
+    def session_id(self) -> str:
+        """The durable session id (the default hook dispatch scope key)."""
+        return self._session.session_id
 
     # -- public API --------------------------------------------------------
     async def send(self, text: str) -> str:
@@ -427,7 +440,21 @@ class AgentSession:
         hooks = self._hooks
         if hooks is None or not hooks.has(AGENT_STATUS):
             return
-        await hooks.emit(AGENT_STATUS, {"status": phase})
+        await hooks.emit(AGENT_STATUS, {"status": phase}, scope=self._hook_scope())
+
+    def _hook_scope(self) -> dict[str, Any]:
+        """The dispatch scope for hook calls made by this agent.
+
+        The session id isolates concurrent sessions (a lead and its subagents);
+        the preset id lets plugins target a whole agent mode without knowing
+        which session is running.  The preset attribute is attached by the
+        agents service right after construction, so it is read lazily.
+        """
+        scope: dict[str, Any] = {"session": self.session_id}
+        preset = getattr(self, "preset", None)
+        if isinstance(preset, str) and preset:
+            scope["preset"] = preset
+        return scope
 
     # -- turn orchestration ------------------------------------------------
     async def _run_turn(self) -> str:
@@ -446,7 +473,7 @@ class AgentSession:
             raise
         except LlmError as exc:
             if self._turn_open:
-                await self._failure_turn(exc)
+                await self._failure_turn(exc, phase="request")
             raise
         except AbortedError:
             if self._turn_open:
@@ -454,7 +481,7 @@ class AgentSession:
             raise
         except Exception as exc:
             if self._turn_open:
-                await self._failure_turn(exc)
+                await self._failure_turn(exc, phase=self._failure_phase)
             raise
 
     def _prepare_step_state(self) -> None:
@@ -466,6 +493,7 @@ class AgentSession:
         self._pending_calls = []
         self._undispatched_calls = []
         self._call_seqs = {}
+        self._failure_phase = "turn"
 
     async def _turn_body(self, turn: int) -> str:
         claimed = self._inbox.claim(TARGET_NEXT_TURN, turn)
@@ -474,7 +502,13 @@ class AgentSession:
             return ""
         admitted = list(claimed)
         starts_series = True
+        pre_step_installed = self._hooks is not None and self._hooks.has(AGENT_PRE_STEP)
         decision = await self._pre_step_hook(turn, claimed)
+        if decision is None and pre_step_installed:
+            # A listener neither continued the chain nor returned a decision:
+            # the dispatch is vetoed, so the built-in step entry never runs.
+            await self._blocked_turn(turn, "agent/pre-step hook vetoed the turn")
+            return ""
         if decision is not None:
             kind = decision.get("kind")
             if kind == "reject":
@@ -510,7 +544,11 @@ class AgentSession:
             self._prepare_step_state()
             first = step == 1
             step_messages = admitted if first else self._inbox.claim(TARGET_NEXT_STEP, turn)
-            self._commit_system_prompt(turn, step, starts_series=starts_series and first)
+            # The selection is adopted before the prompt and the request are built,
+            # so the system prompt, request/header, request/context and the actual
+            # request all describe the same model.
+            await self._select_model(turn, step)
+            await self._commit_system_prompt(turn, step, starts_series=starts_series and first)
             for message in step_messages:
                 self._append_user_message(message)
             self._commit_runtime_context(turn, step)
@@ -519,6 +557,7 @@ class AgentSession:
             await self._maybe_compact()
             request = self._build_request(self._plan_request_images())
             request = await self._request_hook(request, turn, step)
+            self._failure_phase = "request"
             accumulator, finish = await self._stream_step(request, turn, step)
             last_text = accumulator.text_value() or last_text
 
@@ -559,7 +598,9 @@ class AgentSession:
 
             calls = accumulator.ordered_calls()
             if calls:
+                self._failure_phase = "tool"
                 await self._run_tools(turn, step, calls)
+                self._failure_phase = "turn"
                 self._close_step()
                 continue
             self._close_step()
@@ -583,6 +624,7 @@ class AgentSession:
                 "signal": self._cancel_event,
                 "finalText": final_text,
             },
+            scope=self._hook_scope(),
         )
         return not self._inbox.next_step
 
@@ -601,7 +643,9 @@ class AgentSession:
             "tools": [schema.model_dump() for schema in self._registry.schemas()],
         }
         fallback = {"kind": "enter", "messages": _dump_messages(claimed)}
-        result = await hooks.waterfall(AGENT_PRE_STEP, payload, fallback=dict(fallback))
+        result = await hooks.waterfall(
+            AGENT_PRE_STEP, payload, fallback=dict(fallback), scope=self._hook_scope()
+        )
         if result is None:
             return None
         if not isinstance(result, Mapping):
@@ -638,7 +682,9 @@ class AgentSession:
             "step": step,
             "signal": self._cancel_event,
         }
-        result = await hooks.waterfall(AGENT_REQUEST, payload, fallback=dict(controls))
+        result = await hooks.waterfall(
+            AGENT_REQUEST, payload, fallback=dict(controls), scope=self._hook_scope()
+        )
         if result is None or result is request:
             return request
         if isinstance(result, LlmRequest):
@@ -681,13 +727,66 @@ class AgentSession:
             "retryPolicy": self._retry_policy,
             "signal": self._cancel_event,
         }
-        return await hooks.waterfall(AGENT_REQUEST_ERROR, payload, fallback=lambda: None)
+        return await hooks.waterfall(
+            AGENT_REQUEST_ERROR, payload, fallback=lambda: None, scope=self._hook_scope()
+        )
+
+    async def _select_model(self, turn: int, step: int) -> str:
+        """Run model/selection and adopt the chosen model for this request.
+
+        The waterfall gets the current route and a fallback that returns it
+        unchanged.  A listener may return a {provider, model} mapping; only the
+        model may change, because the provider is the adapter bound to this
+        session.  Unknown keys are ignored so a listener may echo richer
+        selection data.
+        """
+        hooks = self._hooks
+        if hooks is None or not hooks.has(MODEL_SELECTION):
+            return self._model
+        provider = self._provider.name
+        fallback = {"provider": provider, "model": self._model}
+        payload = {
+            "agent": self,
+            "turn": turn,
+            "step": step,
+            "provider": provider,
+            "model": self._model,
+        }
+        result = await hooks.waterfall(
+            MODEL_SELECTION, payload, fallback=lambda: dict(fallback), scope=self._hook_scope()
+        )
+        if result is None:
+            return self._model
+        if not isinstance(result, Mapping):
+            raise SessionError(f"model/selection hook must return a mapping, got {type(result).__name__}")
+        selected_provider = result.get("provider", provider)
+        if selected_provider != provider:
+            raise SessionError("model/selection hook may not change the provider")
+        model = result.get("model", self._model)
+        if not isinstance(model, str) or not model:
+            raise SessionError(f"model/selection hook returned an invalid model: {model!r}")
+        self._model = model
+        return model
 
     async def _stream_frame(self, frame: dict[str, Any]) -> None:
         hooks = self._hooks
-        if hooks is None or not hooks.has(AGENT_ASSISTANT_STREAM):
+        if hooks is None:
             return
-        await hooks.emit(AGENT_ASSISTANT_STREAM, {"frame": frame})
+        # agent/assistant-stream feeds the UI; llm/stream is the plugin view of
+        # the same frames and carries the route that produced them.
+        if hooks.has(AGENT_ASSISTANT_STREAM):
+            await hooks.emit(AGENT_ASSISTANT_STREAM, {"frame": frame}, scope=self._hook_scope())
+        if hooks.has(LLM_STREAM):
+            await hooks.emit(
+                LLM_STREAM,
+                {
+                    "agent": self,
+                    "frame": frame,
+                    "provider": self._provider.name,
+                    "model": self._model,
+                },
+                scope=self._hook_scope(),
+            )
 
     # -- images ------------------------------------------------------------
     def _image_budget(self) -> Any:
@@ -972,6 +1071,32 @@ class AgentSession:
         )
         return seq
 
+    async def _emit_tool_call_events(
+        self, requests: list[Any], seqs: list[int | None], turn: int, step: int
+    ) -> None:
+        """Emit tool/call for each call whose tool/call record was appended.
+
+        The tools pipeline does this for the normal batch path; this mirror keeps
+        the standalone fallback batch behaviour identical.
+        """
+        hooks = self._hooks
+        if hooks is None or not hooks.has(TOOL_CALL):
+            return
+        for request, seq in zip(requests, seqs):
+            if seq is None:
+                continue
+            await hooks.emit(
+                TOOL_CALL,
+                {
+                    "agent": self,
+                    "callId": request.call_id,
+                    "name": request.name,
+                    "turn": turn,
+                    "step": step,
+                },
+                scope=self._hook_scope(),
+            )
+
     async def _execute_batch(self, requests: list[Any], turn: int, step: int) -> list[Any]:
         try:
             from deeppyro.tools.pipeline import run_tool_batch
@@ -1008,6 +1133,9 @@ class AgentSession:
             )
             for request in requests
         ]
+        # The records above are durable now, so listeners may act on them before
+        # any tool actually runs (same contract as the tools pipeline).
+        await self._emit_tool_call_events(requests, seqs, turn, step)
 
         async def run_one(index: int, request: Any) -> _BatchOutcome:
             call_seq = seqs[index]
@@ -1122,14 +1250,45 @@ class AgentSession:
             direct_tool_names=tuple(self._surface.names()),
         )
 
-    def _commit_system_prompt(self, turn: int, step: int, *, starts_series: bool) -> None:
+    async def _commit_system_prompt(self, turn: int, step: int, *, starts_series: bool) -> None:
         records = list(self._records())
-        rendered = self._prompt_builder(self._registry.schemas(), self._prompt_context())
+        schemas = self._registry.schemas()
+        rendered = self._prompt_builder(schemas, self._prompt_context())
         if not isinstance(rendered, str):
             raise SessionError(f"prompt builder returned {type(rendered).__name__}, expected str")
+        rendered = await self._assemble_system_prompt(turn, step, rendered, schemas)
         projection = SystemPromptProjection(records)
         for update in projection.project(rendered, in_history=True, starts_series=starts_series):
             self._commit_projection("system/message", update, turn, step)
+
+    async def _assemble_system_prompt(self, turn: int, step: int, rendered: str, schemas: list[Any]) -> str:
+        """Let system-prompt/assemble rewrite the rendered prompt text.
+
+        The waterfall fallback returns the prompt unchanged, so listeners that
+        only observe do not affect the result.  A non-string result is a
+        contract violation: the projection persists text, not a structure.
+        """
+        hooks = self._hooks
+        if hooks is None or not hooks.has(SYSTEM_PROMPT_ASSEMBLE):
+            return rendered
+        payload = {
+            "agent": self,
+            "turn": turn,
+            "step": step,
+            "prompt": rendered,
+            "tools": [schema.model_dump() for schema in schemas],
+            "signal": None,
+        }
+        result = await hooks.waterfall(
+            SYSTEM_PROMPT_ASSEMBLE, payload, fallback=lambda: rendered, scope=self._hook_scope()
+        )
+        if result is None:
+            # A listener that vetoes the dispatch suppresses the rewrite; the
+            # built-in rendered prompt stays in place.
+            return rendered
+        if not isinstance(result, str):
+            raise SessionError(f"system-prompt/assemble hook returned {type(result).__name__}, expected str")
+        return result
 
     def _commit_runtime_context(self, turn: int, step: int) -> None:
         records = list(self._records())
@@ -1433,7 +1592,7 @@ class AgentSession:
         await self._close_turn({"kind": "aborted", "reason": {"kind": reason_kind}}, final_text=None)
         return text
 
-    async def _failure_turn(self, exc: BaseException) -> None:
+    async def _failure_turn(self, exc: BaseException, *, phase: str = "turn") -> None:
         """Record a failed turn after the assistant message (or attempt) is known."""
         if not self._turn_open:
             return
@@ -1444,12 +1603,20 @@ class AgentSession:
         elif not self._assistant_appended and not self._attempt_appended:
             self._append_assistant_attempt(self._turn, self._step)
         self._emit({"type": "error", "message": str(exc)})
+        await self._emit_agent_error(exc, phase)
         self._close_step()
         error: dict[str, Any] = {"message": str(exc)}
         code = getattr(exc, "code", None)
         if code is not None:
             error["code"] = code
         await self._close_turn({"kind": "error", "error": error}, final_text=None)
+
+    async def _emit_agent_error(self, exc: BaseException, phase: str) -> None:
+        """Publish one agent/error for a failed turn (never for cancellation)."""
+        hooks = self._hooks
+        if hooks is None or not hooks.has(AGENT_ERROR):
+            return
+        await hooks.emit(AGENT_ERROR, {"agent": self, "error": exc, "phase": phase}, scope=self._hook_scope())
 
     # -- compaction --------------------------------------------------------
     async def _maybe_compact(self) -> None:

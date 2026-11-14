@@ -17,7 +17,9 @@ normalized like tool failures, except cancellation. The optional log callback
 is invoked once per request, in request order, before any pre-execute hook, so
 that a caller can append the tool/call record and return its event seq. That
 seq is exposed on ToolOutcome.call_seq and is intended for
-tool/result.sourceEventSeqs.
+tool/result.sourceEventSeqs. Once every call record is durable, the pipeline
+emits the tool/call hook for each recorded call before any tool runs, so
+listeners observe exactly the calls whose records exist.
 
 Post-execute accept semantics: content replaces ToolResult.text; value is
 carried as ToolResult.meta["value"] because the frozen core ToolResult has no
@@ -39,7 +41,7 @@ from typing import Any
 
 from deeppyro.core.errors import AbortedError, PermissionDenied, ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.hooks import TOOLS_EXECUTE, TOOLS_POST_EXECUTE, TOOLS_PRE_EXECUTE
+from deeppyro.hooks import TOOL_CALL, TOOLS_EXECUTE, TOOLS_POST_EXECUTE, TOOLS_PRE_EXECUTE
 from deeppyro.tools.registry import ToolRegistry
 from deeppyro.tools.spill import (
     default_spill_dir,
@@ -130,6 +132,40 @@ def _hook_fields(agent: Any | None, tool_set: Sequence[str] | None) -> dict[str,
     return fields
 
 
+def _hook_scope(agent: Any | None) -> dict[str, Any] | None:
+    """Derive the hook dispatch scope from the agent that owns the call.
+
+    Sessions expose their durable id; preset is attached by the agents service
+    (and may be absent for bare agents), so it is only added when present.
+    """
+    if agent is None:
+        return None
+    session_id = getattr(agent, "session_id", None)
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    scope: dict[str, Any] = {"session": session_id}
+    preset = getattr(agent, "preset", None)
+    if isinstance(preset, str) and preset:
+        scope["preset"] = preset
+    return scope
+
+
+def _scoped(
+    dispatch: Callable[..., Any],
+    name: str,
+    *args: Any,
+    scope: dict[str, Any] | None,
+) -> Any:
+    """Call a hook dispatcher with a dispatch scope when it supports one."""
+    if scope is None:
+        return dispatch(name, *args)
+    try:
+        return dispatch(name, *args, scope=scope)
+    except TypeError:
+        # Minimal duck-typed hook objects (tests, embedders) predate scopes.
+        return dispatch(name, *args)
+
+
 def _decision_reason(decision: dict[str, Any], default: str) -> str:
     reason = decision.get("reason")
     if reason is None:
@@ -171,13 +207,15 @@ async def _waterfall(
     name: str,
     payload: dict[str, Any],
     fallback: Fallback,
+    *,
+    scope: dict[str, Any] | None = None,
 ) -> Any:
     """Invoke a duck-typed async waterfall, tolerating a sync return value."""
     waterfall = getattr(hooks, "waterfall", None) if hooks is not None else None
     if not callable(waterfall):
         outcome = fallback()
     else:
-        outcome = waterfall(name, payload, fallback)
+        outcome = _scoped(waterfall, name, payload, fallback, scope=scope)
     if inspect.isawaitable(outcome):
         outcome = await outcome
     return outcome
@@ -205,7 +243,7 @@ async def _pre_execute(
     async def fallback(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"kind": "allow"}
 
-    decision = await _waterfall(hooks, TOOLS_PRE_EXECUTE, payload, fallback)
+    decision = await _waterfall(hooks, TOOLS_PRE_EXECUTE, payload, fallback, scope=_hook_scope(agent))
     if not isinstance(decision, dict):
         raise ToolError(f"tools/pre-execute must return a decision object, not {type(decision).__name__}")
     kind = decision.get("kind")
@@ -260,7 +298,7 @@ async def _execute(
             outcome = await outcome
         return outcome
 
-    decision = await _waterfall(hooks, TOOLS_EXECUTE, payload, fallback)
+    decision = await _waterfall(hooks, TOOLS_EXECUTE, payload, fallback, scope=_hook_scope(agent))
     if isinstance(decision, ToolResult):
         return decision
     if isinstance(decision, dict):
@@ -294,7 +332,7 @@ async def _post_execute(
     async def fallback(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"kind": "accept"}
 
-    decision = await _waterfall(hooks, TOOLS_POST_EXECUTE, payload, fallback)
+    decision = await _waterfall(hooks, TOOLS_POST_EXECUTE, payload, fallback, scope=_hook_scope(agent))
     if not isinstance(decision, dict):
         raise ToolError(f"tools/post-execute must return a decision object, not {type(decision).__name__}")
     kind = decision.get("kind")
@@ -408,6 +446,42 @@ def _collect_call_seqs(
     return seqs, failures
 
 
+async def _emit_call_events(
+    hooks: Any,
+    requests: list[ToolCallRequest],
+    call_seqs: list[int | None],
+    *,
+    turn: int | None,
+    step: int | None,
+    agent: Any | None,
+) -> None:
+    """Emit tool/call for every call whose record was appended, before dispatch."""
+    emit = getattr(hooks, "emit", None) if hooks is not None else None
+    if not callable(emit):
+        return
+    has = getattr(hooks, "has", None)
+    if callable(has) and not has(TOOL_CALL):
+        return
+    scope = _hook_scope(agent)
+    for request, seq in zip(requests, call_seqs):
+        if seq is None:
+            continue
+        outcome = _scoped(
+            emit,
+            TOOL_CALL,
+            {
+                "agent": agent,
+                "callId": request.call_id,
+                "name": request.name,
+                "turn": turn,
+                "step": step,
+            },
+            scope=scope,
+        )
+        if inspect.isawaitable(outcome):
+            await outcome
+
+
 async def run_tool_call(
     request: ToolCallRequest,
     *,
@@ -496,6 +570,7 @@ async def run_tool_batch(
     outcomes: list[ToolOutcome | None] = [None] * len(requests)
     inflight: list[asyncio.Task[None]] = []
     call_seqs, log_failures = _collect_call_seqs(requests, log=log, turn=turn, step=step)
+    await _emit_call_events(hooks, requests, call_seqs, turn=turn, step=step, agent=agent)
 
     async def run_one(index: int, request: ToolCallRequest) -> None:
         ctx = ctx_factory(request)
