@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from deeppyro.api import CHILD_DISABLED_TOOLS
+from deeppyro.api import CHILD_DISABLED_TOOLS, DEFAULT_PRESET_ID
 from deeppyro.core.ids import new_session_id, now_ms
 from deeppyro.core.wire import SessionHeader
 from deeppyro.session.layout import flat_session_path
@@ -40,7 +40,7 @@ from deeppyro.team.types import (
 )
 from deeppyro.tools.registry import ToolRegistry
 
-_DEFAULT_PRESET = "default"
+_DEFAULT_PRESET = DEFAULT_PRESET_ID
 _DEFAULT_CONTEXT_WINDOW = 32768
 _DEFAULT_OWNER = "lead"
 

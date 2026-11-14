@@ -22,6 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="NDJSON events instead of rich output")
     parser.add_argument("--provider", default=None, help="provider name from the config")
     parser.add_argument("--model", default=None, help="model id override")
+    parser.add_argument(
+        "--preset",
+        default=None,
+        help="agent preset id: standard, ptc, minimal, cordis",
+    )
     parser.add_argument("--cwd", default=None, help="workspace directory")
     parser.add_argument("--max-steps", type=int, default=None, help="tool steps per turn")
     parser.add_argument("--version", action="store_true", help="print the version and exit")
@@ -66,6 +71,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prompt,
         model=args.model,
         provider=args.provider,
+        preset=args.preset,
         json_output=bool(args.json),
         cwd=args.cwd,
         max_steps=args.max_steps,

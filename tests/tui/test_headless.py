@@ -5,12 +5,14 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from rich.console import Console
 
 from deeppyro import headless
+from deeppyro.api import PluginDependencyError
 from deeppyro.config import AgentConfig, Config, ModelConfig, ProviderConfig
 from deeppyro.core.errors import ConfigError, DeeppyroError
 from deeppyro.hooks import SESSION_CREATED, SESSION_DISPOSED, HookService
@@ -50,9 +52,11 @@ class FakeAgent:
 class FakeStore:
     def __init__(self) -> None:
         self.created: list[str] = []
+        self.agent_presets: list[str | None] = []
 
-    def create(self, cwd: str) -> FakeSession:
+    def create(self, cwd: str, *, agent_preset: str | None = None) -> FakeSession:
         self.created.append(cwd)
+        self.agent_presets.append(agent_preset)
         return FakeSession()
 
 
@@ -90,11 +94,19 @@ class FakeTeam:
 
 
 class FakeRuntime:
-    def __init__(self, agent: FakeAgent, *, jobs: Any = None, team: Any = None) -> None:
+    def __init__(
+        self,
+        agent: FakeAgent,
+        *,
+        jobs: Any = None,
+        team: Any = None,
+        preset: str | None = "standard",
+    ) -> None:
         self.cwd = Path("D:/work")
         self.provider_name = "fake"
         self.model = "fake-1"
         self.context_window = 8192
+        self.preset = preset
         self.store = FakeStore()
         self.agents = FakeAgents(agent)
         self.jobs = jobs
@@ -400,8 +412,41 @@ class FakeSandbox:
 
 
 class FakeToolService:
-    def registry_for(self, workspace: Path) -> object:
+    def __init__(self) -> None:
+        self.registry_calls: list[tuple[Path, dict[str, Any]]] = []
+
+    def registry_for(self, workspace: Path, **kwargs: Any) -> object:
+        self.registry_calls.append((workspace, kwargs))
         return object()
+
+
+class FakePresets:
+    """Preset registry double: standard + ptc with the legacy 'default' alias."""
+
+    def __init__(self) -> None:
+        self.ensured: list[tuple[str, int | None]] = []
+        self._specs = {
+            "standard": SimpleNamespace(id="standard", revision=0, plugins=()),
+            "ptc": SimpleNamespace(id="ptc", revision=2, plugins=()),
+        }
+
+    def canonical(self, preset_id: str | None) -> str | None:
+        if not preset_id or not preset_id.strip():
+            return None
+        wanted = preset_id.strip()
+        return "standard" if wanted == "default" else wanted
+
+    def resolve(self, preset_id: str | None = None, *, revision: int | None = None) -> Any:
+        wanted = self.canonical(preset_id) or "standard"
+        try:
+            return self._specs[wanted]
+        except KeyError:
+            raise PluginDependencyError(f"unknown agent preset: {wanted!r}") from None
+
+    async def ensure(self, preset_id: str | None = None, *, revision: int | None = None) -> Any:
+        spec = self.resolve(preset_id, revision=revision)
+        self.ensured.append((str(spec.id), revision))
+        return spec
 
 
 class FakeKernelApp:
@@ -429,14 +474,20 @@ def make_config(*, models: list[ModelConfig] | None = None, agent_model: str = "
     )
 
 
-def make_kernel_app(llm: FakeLlmService) -> FakeKernelApp:
+def make_kernel_app(
+    llm: FakeLlmService,
+    *,
+    tools: FakeToolService | None = None,
+    presets: FakePresets | None = None,
+) -> FakeKernelApp:
     return FakeKernelApp(
         {
             "llm": llm,
             "sessions": type("Sessions", (), {"store": object()})(),
             "sandbox": FakeSandbox(),
-            "tools": FakeToolService(),
+            "tools": tools or FakeToolService(),
             "agents": RecordingAgents(),
+            "presets": presets or FakePresets(),
         }
     )
 
@@ -603,7 +654,7 @@ def test_run_once_emits_session_created_then_disposed(monkeypatch: pytest.Monkey
 
     assert headless.run_once("q", console=console) == headless.EXIT_OK
 
-    assert created == [{"sessionId": FakeSession.session_id, "cwd": str(runtime.cwd), "preset": None}]
+    assert created == [{"sessionId": FakeSession.session_id, "cwd": str(runtime.cwd), "preset": "standard"}]
     assert disposed == [{"sessionId": FakeSession.session_id}]
     assert runtime.order == ["created", "disposed", "aclose"]
 
@@ -635,3 +686,188 @@ def test_run_once_survives_failing_session_hook_listener(monkeypatch: pytest.Mon
 
     assert headless.run_once("q", console=console) == headless.EXIT_OK
     assert runtime.closed is True
+
+
+# --------------------------------------------------------------------------
+# agent preset selection (task-73)
+# --------------------------------------------------------------------------
+
+
+def test_run_once_defaults_to_the_standard_preset(monkeypatch: pytest.MonkeyPatch) -> None:
+    hooks = HookService()
+    runtime = FakeHookedRuntime(FakeAgent([{"type": "final", "text": "done"}]), hooks)
+    created, _disposed = record_hooks(hooks, [])
+    patch_runtime(monkeypatch, runtime)
+    console, _stream = make_console()
+
+    assert headless.run_once("q", console=console) == headless.EXIT_OK
+
+    assert runtime.store.agent_presets == ["standard"]
+    assert created[0]["preset"] == "standard"
+
+
+def test_run_once_forwards_an_explicit_preset(monkeypatch: pytest.MonkeyPatch) -> None:
+    agent = FakeAgent([{"type": "final", "text": "done"}])
+    runtime = FakeRuntime(agent, preset="ptc")
+    seen: dict[str, Any] = {}
+
+    async def fake_boot(**kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return runtime
+
+    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
+    console, _stream = make_console()
+
+    assert headless.run_once("q", preset="ptc", console=console) == headless.EXIT_OK
+
+    assert seen["preset"] == "ptc"
+    assert runtime.store.agent_presets == ["ptc"]
+
+
+def test_run_once_reports_an_unknown_preset_on_stderr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def fake_boot(**kwargs: Any) -> Any:
+        raise headless.UnknownPresetError("unknown agent preset: 'ghost'")
+
+    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
+    console, stream = make_console()
+
+    assert headless.run_once("q", preset="ghost", console=console) == headless.EXIT_USAGE
+
+    captured = capsys.readouterr()
+    assert "unknown agent preset" in captured.err
+    assert captured.out == ""
+    assert stream.getvalue() == ""
+
+
+def test_run_once_json_unknown_preset_writes_no_events(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def fake_boot(**kwargs: Any) -> Any:
+        raise headless.UnknownPresetError("unknown agent preset: 'ghost'")
+
+    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
+    console, _stream = make_console()
+
+    assert headless.run_once("q", preset="ghost", json_output=True, console=console) == headless.EXIT_USAGE
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unknown agent preset" in captured.err
+
+
+def test_create_agent_uses_a_preset_scoped_registry() -> None:
+    agents = RecordingAgents()
+    tools = FakeToolService()
+    spec = SimpleNamespace(id="ptc", revision=2)
+    runtime = headless.HeadlessRuntime(
+        cfg=headless.Config(),
+        cwd=Path("D:/work"),
+        kernel_app=None,
+        provider_name="fake",
+        model="fake-1",
+        context_window=8192,
+        store=FakeStore(),
+        provider=object(),
+        registry=object(),
+        permission=object(),
+        agents=agents,
+        tools=tools,
+        preset="ptc",
+        preset_spec=spec,
+    )
+
+    runtime.create_agent(FakeSession(), sink=object())
+
+    assert Path(tools.registry_calls[0][0]) == Path("D:/work")
+    assert tools.registry_calls[0][1] == {"scope": "ptc", "revision": 2}
+    assert agents.created[-1]["preset"] == "ptc"
+    assert agents.created[-1]["preset_revision"] == 2
+
+
+async def test_boot_runtime_resolves_and_ensures_the_requested_preset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tools = FakeToolService()
+    presets = FakePresets()
+    kernel_app = make_kernel_app(FakeLlmService(), tools=tools, presets=presets)
+    patch_kernel_boot(monkeypatch, kernel_app)
+
+    runtime = await headless.boot_runtime(config=make_config(), cwd=tmp_path, preset="ptc")
+    try:
+        assert runtime.preset == "ptc"
+        assert runtime.preset_spec.revision == 2
+        assert presets.ensured == [("ptc", 2)]
+        runtime.create_agent(FakeSession(), sink=object())
+        assert tools.registry_calls[-1][1] == {"scope": "ptc", "revision": 2}
+    finally:
+        await runtime.aclose()
+
+
+async def test_boot_runtime_defaults_to_the_standard_preset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tools = FakeToolService()
+    presets = FakePresets()
+    kernel_app = make_kernel_app(FakeLlmService(), tools=tools, presets=presets)
+    patch_kernel_boot(monkeypatch, kernel_app)
+
+    runtime = await headless.boot_runtime(config=make_config(), cwd=tmp_path)
+    try:
+        assert runtime.preset == "standard"
+        assert runtime.preset_spec.revision == 0
+        runtime.create_agent(FakeSession(), sink=object())
+        assert tools.registry_calls[-1][1] == {"scope": "standard", "revision": 0}
+    finally:
+        await runtime.aclose()
+
+
+async def test_boot_runtime_maps_the_legacy_default_alias(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    kernel_app = make_kernel_app(FakeLlmService())
+    patch_kernel_boot(monkeypatch, kernel_app)
+
+    runtime = await headless.boot_runtime(config=make_config(), cwd=tmp_path, preset="default")
+    try:
+        assert runtime.preset == "standard"
+    finally:
+        await runtime.aclose()
+
+
+async def test_boot_runtime_rejects_an_unknown_preset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    kernel_app = make_kernel_app(FakeLlmService())
+    patch_kernel_boot(monkeypatch, kernel_app)
+
+    with pytest.raises(headless.UnknownPresetError, match="unknown agent preset"):
+        await headless.boot_runtime(config=make_config(), cwd=tmp_path, preset="ghost")
+    assert kernel_app.stopped is True
+
+
+def test_build_parser_accepts_preset() -> None:
+    from deeppyro.tui.main import build_parser
+
+    parser = build_parser()
+    assert parser.parse_args(["--headless", "hi"]).preset is None
+    assert parser.parse_args(["--headless", "hi", "--preset", "ptc"]).preset == "ptc"
+
+
+def test_cli_forwards_the_preset_to_run_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    import deeppyro.paths
+    import deeppyro.tui.main as cli
+
+    seen: list[dict[str, Any]] = []
+
+    def fake_run_once(prompt: str, **kwargs: Any) -> int:
+        seen.append({"prompt": prompt, **kwargs})
+        return 0
+
+    monkeypatch.setattr(deeppyro.paths, "migrate_legacy_layout", lambda: None)
+    monkeypatch.setattr(headless, "run_once", fake_run_once)
+
+    assert cli.main(["--headless", "hi", "--preset", "ptc"]) == 0
+
+    assert seen[0]["preset"] == "ptc"

@@ -35,6 +35,7 @@ from typing import Any, TextIO
 from rich.console import Console
 from rich.text import Text
 
+from deeppyro.api import DEFAULT_PRESET_ID, PluginDependencyError
 from deeppyro.config import Config, load_config
 from deeppyro.core.errors import ConfigError, DeeppyroError
 from deeppyro.hooks import SESSION_CREATED, SESSION_DISPOSED
@@ -49,6 +50,10 @@ EXIT_INTERRUPTED = 130
 DEFAULT_CONTEXT_WINDOW = 32768
 THINKING_MARKER = "· thinking"
 USAGE_KEYS = ("input", "output", "cached")
+
+
+class UnknownPresetError(ConfigError):
+    """A requested agent preset id is not registered in this build."""
 
 
 # --------------------------------------------------------------------------
@@ -141,6 +146,24 @@ def _resolve_model(
             raise ConfigError(f"unknown provider: {exc.args[0]}") from exc
         return resolved
     return ""
+
+
+def _resolve_preset(presets: Any, requested: str | None) -> tuple[str, Any]:
+    """Canonicalize and resolve one agent preset, defaulting to the standard one.
+
+    Returns the canonical preset id and the resolved spec (None when the booted
+    bundle carries no presets service, e.g. a minimal test bundle). An unknown
+    id surfaces as UnknownPresetError, which the one-shot entry point reports as
+    a usage error on stderr instead of a traceback.
+    """
+    if presets is None:
+        return (requested or "").strip() or DEFAULT_PRESET_ID, None
+    canonical = presets.canonical(requested) or DEFAULT_PRESET_ID
+    try:
+        spec = presets.resolve(canonical)
+    except PluginDependencyError as exc:
+        raise UnknownPresetError(str(exc)) from exc
+    return str(getattr(spec, "id", "") or canonical), spec
 
 
 def _configured_model(provider_cfg: Any, model_id: str) -> bool:
@@ -428,6 +451,9 @@ class HeadlessRuntime:
     working_directory: Any = None
     user_questions: Any = None
     projections: Any = None
+    tools: Any = None
+    preset: str | None = None
+    preset_spec: Any = None
     _closed: bool = field(default=False, repr=False)
 
     def create_agent(self, session: Any, sink: Any, *, max_steps: int | None = None) -> Any:
@@ -438,14 +464,22 @@ class HeadlessRuntime:
         if max_steps is not None:
             overrides["max_steps"] = max_steps
         options = self.agents.options(**overrides)
+        preset_id = self.preset or DEFAULT_PRESET_ID
+        revision = getattr(self.preset_spec, "revision", None)
+        registry = self.registry
+        scoped = getattr(self.tools, "registry_for", None)
+        if callable(scoped):
+            registry = scoped(str(self.cwd), scope=preset_id, revision=revision)
         return self.agents.create(
             session=session,
             provider=self.provider,
-            registry=self.registry,
+            registry=registry,
             options=options,
             sink=sink,
             permission=self.permission,
             cwd=str(self.cwd),
+            preset=preset_id,
+            preset_revision=revision,
             services=self._plugin_services(),
         )
 
@@ -558,9 +592,15 @@ async def boot_runtime(
     cwd: str | Path | None = None,
     provider: str | None = None,
     model: str | None = None,
+    preset: str | None = None,
     ask: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> HeadlessRuntime:
-    """Boot the kernel bundle and resolve the services needed for one turn."""
+    """Boot the kernel bundle and resolve the services needed for one turn.
+
+    An explicit agent preset is canonicalized and resolved here, before any
+    session exists, so an unknown id fails the boot cleanly; plugin realms of
+    the selected revision are materialized before an agent can be created.
+    """
     from deeppyro.kernel import boot
 
     cfg = config if config is not None else load_config()
@@ -585,6 +625,14 @@ async def boot_runtime(
         )
         registry = services["tools"].registry_for(workspace)
         permission = services["sandbox"].gate(workspace, ask=ask or _denying_ask)
+        try:
+            presets_service = kernel_app.service("presets")
+        except LookupError:
+            presets_service = None
+        preset_id, preset_spec = _resolve_preset(presets_service, preset)
+        ensure = getattr(presets_service, "ensure", None)
+        if preset_spec is not None and callable(ensure):
+            await await_maybe(ensure(preset_spec.id, revision=getattr(preset_spec, "revision", None)))
     except BaseException:
         await await_maybe(kernel_app.stop())
         raise
@@ -636,6 +684,9 @@ async def boot_runtime(
         working_directory=working_directory,
         user_questions=user_questions,
         projections=projections,
+        tools=services["tools"],
+        preset=preset_id,
+        preset_spec=preset_spec,
     )
     configure_team = getattr(team, "configure", None)
     if configure_team is not None:
@@ -680,6 +731,7 @@ def run_once(
     *,
     model: str | None = None,
     provider: str | None = None,
+    preset: str | None = None,
     json_output: bool = False,
     cwd: str | None = None,
     max_steps: int | None = None,
@@ -701,6 +753,7 @@ def run_once(
                 text,
                 model=model,
                 provider=provider,
+                preset=preset,
                 json_output=json_output,
                 cwd=cwd,
                 max_steps=max_steps,
@@ -755,6 +808,7 @@ async def _run_async(
     *,
     model: str | None,
     provider: str | None,
+    preset: str | None,
     json_output: bool,
     cwd: str | None,
     max_steps: int | None,
@@ -762,7 +816,12 @@ async def _run_async(
     console: Console,
 ) -> int:
     try:
-        runtime = await boot_runtime(config=config, cwd=cwd, provider=provider, model=model)
+        runtime = await boot_runtime(config=config, cwd=cwd, provider=provider, model=model, preset=preset)
+    except UnknownPresetError as exc:
+        # A bad --preset is a usage error, not a runtime failure: no traceback,
+        # no session, and a message a shell script can grep for.
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
     except ConfigError as exc:
         console.print(f"error: {exc}", style="bold red")
         return EXIT_USAGE
@@ -772,14 +831,15 @@ async def _run_async(
 
     sink: Any = JsonLinesSink() if json_output else RichSink(console)
     session_id: str | None = None
+    preset_id = getattr(runtime, "preset", None) or DEFAULT_PRESET_ID
     try:
-        session = runtime.store.create(str(runtime.cwd))
+        session = runtime.store.create(str(runtime.cwd), agent_preset=preset_id)
         session_id = str(getattr(session, "session_id", "") or "")
         if session_id:
             await _emit_hook(
                 runtime,
                 SESSION_CREATED,
-                {"sessionId": session_id, "cwd": str(runtime.cwd), "preset": None},
+                {"sessionId": session_id, "cwd": str(runtime.cwd), "preset": preset_id},
             )
         session_label = session_id.removeprefix("session-")[:8]
         sink.emit({"type": "session", "sessionId": session_id})
@@ -856,6 +916,7 @@ __all__ = [
     "HeadlessRuntime",
     "JsonLinesSink",
     "RichSink",
+    "UnknownPresetError",
     "boot_runtime",
     "compact_text",
     "read_stdin_prompt",
