@@ -1,8 +1,10 @@
 # tools/spec/ptc.md — Python PTC（run_code 呈现模式）
 
 > 状态：与 DSH 的 PTC 架构对齐（呈现模式 `native`/`ptc`、自动 Python SDK、`run_code` 保留工具、
-> 内层工具走完整流水线、执行器并发与额度、runtime seam、失败分类）。默认 `mode = "native"`，
-> 因此默认行为与没有 PTC 时完全一致；只有 `[ptc].mode = "ptc"` 才切换到程序化工具调用。
+> 内层工具走完整流水线、执行器并发与额度、runtime seam、失败分类）。默认是 `native` 呈现，
+> 因此默认行为与没有 PTC 时完全一致。启用方式有两种：**推荐**在会话里 `/preset ptc`
+> （per-session agent preset，见 `docs/spec/agent-presets.md` §2），或全局配置
+> `[ptc].mode = "ptc"`（所有会话）。
 >
 > 对齐范围：`dsh-tools` 的呈现模式、`dsh-tool-executor-ptc` 的 SDK 渲染与配额语义、
 > `dsh-ptc-runtime` 的 resolve/run seam 与失败分类。SDK 文本由 DSH 源码生成的 6 个 golden
@@ -19,6 +21,11 @@
 
 `ptc` 模式下 “模型写程序 → 程序调工具 → 只把程序输出回模型上下文” 是核心收益：一次模型响应可以
 完成多步工具编排，中间结果不进入对话历史。
+
+呈现模式由 agent preset 的 `presentation` 字段决定：内置 preset `ptc` 的
+`presentation = "ptc"`，在会话里 `/preset ptc` 即可，无需改配置，也不影响其他会话。全局
+`[ptc].mode = "ptc"` 保留给「所有会话都用 PTC」的宿主：它让默认模式（`standard`/旧 `default`）
+preset 也使用 `run_code`-only 呈现，但对 `minimal`/`cordis` 等没有 `run_code` 的 preset 不生效。
 
 ### 1.2 程序化调用的语义
 
@@ -52,7 +59,7 @@
 | `src/deeppyro/ptc/executor.py` | `NestedDispatcher`：binding 生成、单次调用流水线、并发/额度、dispatch 记录 |
 | `src/deeppyro/ptc/tool.py` | `RunCodeTool`（模型可见工具） |
 | `src/deeppyro/ptc/sdk.py` | `render_tools_sdk`：从 `ToolSchema` 生成 Python SDK 提示词段 |
-| `src/deeppyro/builtin/ptc.py` | `PtcPlugin`：提供 `ptc` 服务；`mode = "ptc"` 时注册 `run_code` 与两个提示词段 |
+| `src/deeppyro/builtin/ptc.py` | `PtcPlugin`：提供 `ptc` 服务；全局 `mode = "ptc"` 时注册全局 `run_code` 与两个提示词段，`mode = "native"` 时以 `scope="ptc"` 注册（供 `ptc` preset 使用） |
 
 公开入口（`deeppyro.ptc` re-export 全部）：
 
@@ -84,7 +91,8 @@ camelCase（DSH 形态）与 snake_case 别名，未知键抛 `ConfigError`。
 
 | 键（camel / snake） | 默认 | 语义 |
 | --- | --- | --- |
-| `mode` | `"native"` | `native` 或 `ptc`；决定呈现模式。 |
+| `mode` | `"native"` | `native` 或 `ptc`；决定**全局**呈现模式。`preset ptc` 的呈现由 preset 的
+  `presentation` 字段决定，不受此值影响（全局 `ptc` 时 `standard` 也走 PTC）。 |
 | `enabled` | 由 mode 派生 | 旧布尔开关，仅在未写 `mode` 时生效（`enabled=true` → `ptc`）。 |
 | `executionMode` / `execution_mode` | `"per-call"` | 目前只接受 `per-call`。 |
 | `timeoutMs` / `timeout_ms` | `120000` | 默认程序超时（毫秒），正整数，按 `maxTimeoutMs` 截断。 |
@@ -112,15 +120,20 @@ maxSubCallsPerMinute = 1024
 `ptc` 模式只收窄**模型直接可见的 surface**，不改变以下三处的全量工具来源：
 
 1. `AgentsPlugin.create` 构造 `AgentSession` 时传 `surface_registry`：
-   - 条件：`ptc` 服务 `mode == "ptc"`、agent preset 的 `mode == default`、registry 里有 `run_code`。
+   - 主条件：agent preset 的 `presentation == "ptc"`（即内置 `ptc` preset）；此时 registry 必须含
+     `run_code`，否则抛 `PluginDependencyError`。
+   - 兼容条件（旧全局开关）：`ptc` 服务 `mode == "ptc"`、preset 的 `mode == default`、registry 里
+     有 `run_code`。
    - 结果：`registry.without([除 run_code 外的全部工具])`；否则为 `None`（= 原生 surface）。
-   - Team preset 保持原生 surface（Lead 必须能直接调用 `team_*` 编排成员）。
+   - Team mode 永远保持原生 surface（Lead 必须能直接调用 `team_*` 编排成员）。
 2. `AgentSession` 用 surface 构建：`LlmRequest.tools`、`tool/call` 分组、`run_tool_batch` 的 registry、
    request header 的 `tools`，以及 `_prompt_context().direct_tool_names`。
 3. `PromptContext.direct_tool_names` 只影响核心 `## Tools` 段（order 40）的列表；
    `tools:sdk` 段仍拿到**全量** schema（SDK 要声明所有可编程工具）。
 
-`PtcPlugin` 在 `mode = "ptc"` 时注册两个提示词段：
+`PtcPlugin` 注册两个提示词段。全局 `[ptc].mode = "ptc"` 时它们作为全局 contribution；默认
+`mode = "native"` 时，`run_code` 工具与这两段都以 `scope = PTC_PRESET_ID` 注册，因此只对 `ptc`
+preset 的 agent 可见，其他 preset 的工具集与系统提示词完全不变：
 
 | section | order | 内容 |
 | --- | --- | --- |
@@ -129,6 +142,7 @@ maxSubCallsPerMinute = 1024
 
 于是 `ptc` 模式下的系统提示词是：核心 identity/environment/instructions（10/20/30）→
 只列 `run_code` 的 `## Tools`（40）→ “只能直接调 run_code”（41）→ Python SDK（42）→ rules（50）。
+preset `ptc` 与全局 `[ptc].mode = "ptc"` 走同一条装配路径，只是贡献的 scope 不同。
 
 ## 5. Python SDK 渲染器（`ptc/sdk.py`）
 
@@ -384,9 +398,9 @@ uv run ruff format --check src/deeppyro/ptc src/deeppyro/builtin/ptc.py tests/pt
   并发上限、非并行屏障、额度（总次数 + 分钟窗口）、图片 deferred、排除工具。
 - `tests/ptc/test_tool.py`：schema/flags、服务缺失、read-only、成功/空输出/logs-only、
   失败文本与 Captured output、超时参数。
-- `tests/ptc/test_plugin.py`：`native` 不注册任何工具/prompt、`ptc` 注册 `run_code` 与两个
-  section、SDK 段过滤 run_code 与嵌套排除项、bundle 行与 kernel `[ptc]` 合并/覆盖、
-  legacy `enabled` 映射、未知键。
+- `tests/ptc/test_plugin.py`：`native` 不注册全局工具/prompt、但以 `scope="ptc"` 注册 `run_code`
+  与两个 section；`ptc` 全局注册；SDK 段过滤 run_code 与嵌套排除项；bundle 行与 kernel `[ptc]`
+  合并/覆盖；legacy `enabled` 映射；未知键。
 - `tests/ptc/test_records.py`：`tool/ptc-dispatch*` 在 `RECORD_TYPES` 且不在 `SURFACE_EVENTS`；
   写真实 `Session` 后 `derive_messages()` 为空。
 - `tests/agent/test_ptc_surface.py`（6）：原生 surface 全工具、PTC surface 仅 run_code

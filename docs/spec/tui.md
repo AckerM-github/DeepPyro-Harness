@@ -17,7 +17,7 @@
 
 | 文件 | 职责 | 所有者 |
 | --- | --- | --- |
-| main.py | argparse 入口 dpyro；--version/--headless/--json/--provider/--model/--cwd/--max-steps | Lead |
+| main.py | argparse 入口 dpyro；--version/--headless/--json/--provider/--model/--preset/--cwd/--max-steps | Lead |
 | app.py | DeepPyroApp：compose 布局、事件分发、turn 生命周期、快捷键、命令处理方法 | Lead |
 | runtime.py | TuiRuntime：boot 内核服务（含 kernel/presets）、创建/切换会话、按 preset revision 重建 AgentSession、compact_now、close | Lead |
 | sink.py | TuiSink：EventSink 实现，累计 usage/final/error 并转发 dict 事件 | Lead |
@@ -55,7 +55,7 @@
 1. dpyro（无参数）→ main.main → DeepPyroApp(cwd/provider/model 可选)。
 2. App.on_mount：先 push_screen(SplashScreen(...), callback=重新聚焦输入框)，再 await TuiRuntime.boot(sink=app.sink, ask=app.ask_approval)。
 3. SplashScreen：内容按 40ms/行逐行揭示（宽 >= 72 且高 >= 24 用 22 行大字标，否则退化为单行字标），**揭示完成后一直停留，直到用户按任意键才进入主界面**（不自动关闭）；boot 完成后 App 调 set_runtime 回填 provider/model/cwd；boot 失败时立即关闭 splash 并显示错误。
-4. TuiRuntime.boot：load_config → resolve_workspace → 校验 provider/model → kernel.boot（core bundle 21 行，首行 kernel 运行时）→ 取 llm.provider、tools.registry_for(workspace)、sandbox.gate(workspace, ask=ask)、activity/jobs/team/subagent 服务，并把 kernel/plugin_manager/inspect/settings/jobs/team/subagent 服务一并注入 AgentSession.services → presets.ensure_all() 物化全部 preset revision → 为 team 与 subagent 服务 configure + bind_session → new_session()。
+4. TuiRuntime.boot：load_config → resolve_workspace → 校验 provider/model → kernel.boot（core bundle 39 行，首行 kernel 运行时）→ 取 llm.provider、tools.registry_for(workspace)、sandbox.gate(workspace, ask=ask)、activity/jobs/team/subagent 服务，并把 kernel/plugin_manager/inspect/settings/jobs/team/subagent 服务一并注入 AgentSession.services → presets.ensure_all() 物化全部 preset revision → 为 team 与 subagent 服务 configure + bind_session → new_session()。
 5. new_session：preset_revision 清空 → SessionStore.create → _attach（agents.options(model=, context_window=) → agents.create(..., preset=, preset_revision=)）→ 写 model/selection（初始 provider/model）→ 写 agent-preset/selected（含 revision）→ AgentSession；open_session 先按日志最后一条 model/selection 恢复 provider/model（provider 不存在时忽略），再从 header 的 agentPreset 与日志里的 agent-preset/selected revision 恢复固定 revision，revision 已被删除时回退 latest。
 6. 失败：conversation.add_error(failed to start: ...)，App 仍可退出。
 7. App.on_unmount：await runtime.close()（kernel_app.stop 逆序释放插件）；幂等。
@@ -94,7 +94,7 @@
 | /resume [id 或序号] | 恢复最近会话；无参打开选择器 |
 | /provider [name] | 查看/切换 LLM provider；无参打开选择器（缺失 API key 会标注）；切换后重建 provider 与 AgentSession，写 model/selection 并持久化到 config [agent] |
 | /model [id] | 切换模型；支持跨 provider 的 provider/model 形式；无参打开选择器（多 provider 时值为 provider/model）；写 model/selection 并持久化 |
-| /preset [id] | 切换 agent preset（按会话组合工具/提示词与 agent mode）；无参打开选择器。选择器与参数只列出可见 preset；`/preset team` 会被拒绝并提示用 `/team on`。切换只在空闲时允许 |
+| /preset [id] | 切换 agent preset（`standard` / `ptc` / `minimal` / `cordis`，按会话组合工具面、提示词、呈现模式与 agent mode）；无参打开选择器（英文 display name + id + presentation + 描述，当前项标记 current）。选择器与参数只列出可见 preset，`team` 隐藏；`/preset team` 会被拒绝并提示用 `/team on`。切换只在空闲时允许，不重启进程、历史连续 |
 | /policy [preset] | 查看/切换权限预设（read-only / workspace-write / danger-full-access）；无参打开选择器；写 permission/preset 记录 |
 | /approval [policy] | 查看/切换审批策略（ask / never / always）；无参打开选择器；写 approval/policy 记录 |
 | /cwd [path] | 查看/切换工作目录；无参打开选择器（当前 + 最近会话目录 + 自定义路径模态）；写 working-directory/change 记录 |
@@ -138,7 +138,9 @@
 - 后台任务：JobsPanelScreen 只读展示 jobs 服务快照（超长输出由 job_output 工具按 head/tail 预览）；/jobs 与活动栏 jobs 段等价。
 - Hook 决策链：/hooks 从当前会话日志取 hook/invoked 与 hook/result 记录并配对（优先 SessionQuery.hook_trace，退化到 records 过滤），显示最近 50 条；热 hook 不落盘所以不出现，approval/* 与 session 生命周期 hook 无 agent 同样不出现；无记录时显示 "no hook activity yet"。
 - 团队：TeamPanelScreen 展示成员与任务，TaskBoardScreen 按 pending → in_progress → completed 排序；/team 无参打开团队面板，/team board 打开任务板；活动栏 agents 段打开团队面板。/team on 在当前会话进入 Team 模式（Lead 获得 `team_*`、收起 `subagent`），/team off 回到进入前的 preset；有 live 成员（spawning/running/idle）时拒绝离开并列出成员。default 模式且无成员/任务时 /team 提示用 /team on 显式开启 Team 模式。
-- agent mode：内置 preset `default`（mode default、可见）与 `team`（mode team、hidden，仅由 /team on 进入）。default 模式注入 host-wide `subagent` 工具（一次性子会话委派）；team 模式只给 Lead 注入 `team_*` 工具并隐藏 `subagent`；Team 成员子会话两者都没有（防嵌套）。欢迎页与 /status 显示 `agent preset X (mode Y)`，状态栏标题在 team 模式追加 ` · team`。
+- agent preset：可见的内置 preset 为 `standard`（默认，native 呈现）、`ptc`（PTC 呈现）、`minimal`（仅平台 shell + 极简提示词）、`cordis`（standard + 插件创作工具 + cordis 指南）；`team` 仍是 hidden，只由 /team on 进入。旧 id `default` 作为 `standard` 的别名继续可解析（会话 header/记录里的 legacy 值会在打开会话时归一）。欢迎页与 /status 显示 `agent preset Display Name (presentation · mode mode)`；状态栏标题在 team 模式追加 ` · team`。
+- agent mode：default 模式注入 host-wide `subagent` 工具（一次性子会话委派）；team 模式只给 Lead 注入 `team_*` 工具并隐藏 `subagent`；Team 成员子会话两者都没有（防嵌套）。
+- preset 的 `presentation` 决定模型直接看到的工具面：`native` 暴露全部工具，`ptc` 只暴露 `run_code` 并注入 Python SDK（见 ptc.md §4）。`minimal` 只注册平台 shell（Windows `pwsh`、其他平台 `bash`）、只渲染 minimal persona/tools/rules 三段提示词并关闭 runtime context。
 - 插件对话行：handle_event 在 status 事件后调用 apply_conversation_slots，插件按 predicate 匹配事件并追加自定义行（只追加、宿主不重放历史）。
 - 插件面板：/panel 从 slots 的 PANEL 槽位取工厂，打开 PluginPanelScreen（表格/自定义 widget 二选一）。
 - agent preset：会话创建时把 preset id 写进 session header 的 agentPreset；之后每次创建/切换都向
@@ -161,7 +163,7 @@
 - 回归红线：不得再次出现 widget 方法名为 _render（Textual 私有名，会把 Widget._render 顶掉导致 render_strips 崩溃）。
 - 所有 widget 刷新只允许在 Textual 事件循环线程内；后台线程只允许 put_message/post_message。
 - 插件槽位测试：tests/tui/test_slots.py（注册表排序/去重/dispose、theme/locale）与 test_plugin_slots.py（状态栏、对话行、面板宿主）、test_ui_package.py（ui.toml 声明式包、坏 entry 隔离）；跨层集成在 tests/integration/test_plugin_services.py。
-- preset/team 切换测试：tests/tui/test_runtime_presets.py（记录与 resume、team previous 恢复、原子切换与回滚、busy/隐藏 preset/live 成员守卫、revision 失效回退）、tests/tui/test_app.py（/preset team 拒绝、/team on/off）。
+- preset/team 切换测试：tests/tui/test_runtime_presets.py（记录与 resume、legacy `default` 归一、team previous 恢复、原子切换与回滚、busy/隐藏 preset/live 成员守卫、revision 失效回退、canonical scope 的 registry）、tests/tui/test_app.py（四 preset 列表/选择、presentation 提示、`/preset team` 拒绝、`/team on/off`）、tests/integration/test_preset_modes.py（真实 bundle 的四种 preset 工具面与提示词）。
 - provider/model 接线测试：tests/tui/test_runtime_models.py（set_provider/set_model、model/selection 记录、resume 恢复、_resolve_model 不跨 provider 泄漏、持久化失败兜底、team attach/shutdown）与 tests/test_config.py（save_agent_selection 注释保留/原子写/校验）。
 - 活动/过程/任务/团队 UI 测试：tests/tui/test_activity_bar.py、test_plan_screen.py、test_agent_process.py、test_thinking_screen.py、test_jobs_screen.py、test_team_screen.py；对话过程接线在 tests/tui/test_conversation.py 与 test_app.py；history 重建在 tests/tui/test_history.py，activity 投影在 tests/builtin/test_activity.py。
 

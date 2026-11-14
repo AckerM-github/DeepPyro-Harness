@@ -179,7 +179,7 @@ async def run_tool_batch(requests: list[ToolCallRequest], *, registry: ToolRegis
 内置工具清单（语义对齐 DSH，用 fixtures 里真实 tool/call 参数与 tool/result 文本校准）：
 `read`（offset/limit，行号输出）、`write`、`edit`（old/new 字面替换，唯一匹配）、`glob`、`grep`（ripgrep 不可用则纯 Python 回退）、`pwsh`（Windows）/ `bash`、`web_search`、`web_fetch`、`todo_write`、`present`。
 每个工具：`name/description/parameters(JSON Schema)/parallel_safe` + `async run(args, ctx) -> ToolResult`。
-`run_code` 由 `ptc` 行提供（仅 `[ptc].mode = "ptc"` 时注册；`reserved_tool=True`，参数 `code`/`description` 必填 + 可选 `timeoutMs`；ptc 模式下它是模型唯一直接可见的工具）。
+`run_code` 由 `ptc` 行提供：`[ptc].mode = "ptc"` 时全局注册；默认 native 下以 `scope="ptc"` 注册，供 `ptc` agent preset 使用（`reserved_tool=True`，参数 `code`/`description` 必填 + 可选 `timeoutMs`；presentation=ptc 时它是模型唯一直接可见的工具）。
 
 sandbox：
 ```python
@@ -219,7 +219,7 @@ class PromptContext:
     permission_preset: str; approval_policy: str; model: str
     instructions: list[str] = field(default_factory=list)   # AGENTS.md 等
     env: dict[str, str] = field(default_factory=dict)
-    # 非 None 时核心 tools 段只列这些“可直接调用”的工具；PTC 模式传 ("run_code",)
+    # 非 None 时核心 tools 段只列这些“可直接调用”的工具；PTC preset 的 surface 传 ("run_code",)
     # （tools:sdk 段仍收到全量 schema）
     direct_tool_names: tuple[str, ...] | None = None
 
@@ -396,17 +396,18 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 | `hook-journal` | `builtin.hook_journal` | 无新服务（critical=false）；把非热且带 agent 的 dispatch 记为 `hook/invoked`/`hook/result`（形状见 session.md §4.2），`records_written` 计数；写失败隔离 |
 | `jobs` | `builtin.jobs` | `jobs`：`.start(...)`、`.get/.list/.output/.wait/.kill/.cancel_owner/.cancel_all`；`job_output/job_kill/job_list` 工具 |
 | `plugin-tools` | `tools.builtin.plugin_tools` | 5 个 `plugin_*` 工具（manager/inspect/settings/create_bundle 等） |
-| `presets` | `builtin.presets` | `presets`：`.add`、`.resolve(id)`、`.resolve_revision(id, revision)`、`.ensure(..., revision=...)`、`.ensure_all()`、`.revisions()`、`.all()`、`.ids()`；内置 `default`（mode default）与 `team`（mode team）不占 host revision |
+| `presets` | `builtin.presets` | `presets`：`.add`、`.resolve(id)`、`.resolve_revision(id, revision)`、`.ensure(..., revision=...)`、`.ensure_all()`、`.revisions()`、`.all()`、`.ids()`、`.canonical(id)`；内置 `standard`（默认，mode default）与 `team`（mode team，hidden）revision 0、不占 host revision；旧 id `default` 作为 `standard` 别名经 `canonical` 归一 |
+| `agent-presets` | `builtin.agent_presets` | 无新服务：注册 `ptc`（presentation ptc）、`minimal`（仅平台 shell、极简提示词、无 runtime context）、`cordis`（standard 工具 + 插件创作工具 + cordis 指南）三个 preset，以及 `minimal-persona`(5)/`cordis-guide`(60) 两个提示词段（见 `docs/spec/agent-presets.md`） |
 | `prompt` | `builtin.prompt_service` | `prompt`：`.add_section(..., scope=None, revision=...)`、`.sections(...)`、`.build(tools, prompt_context, scope=None, revision=...)` |
 | `prompt-core` | `builtin.prompt_core` | 5 个核心提示词段（order 10/20/30/40/50） |
 | `prompt-extension` | `builtin.prompt_extension` | 无新服务（critical=false）：后置 `system-prompt/assemble` 消费者，读 `[prompt].extension` 追加文本；默认空=不改变行为 |
 | `approval-policy` | `builtin.approval_policy` | 无新服务（critical=false）：`approval/request` 消费者，读 `[approval].hookMode`（off/ask/allow/deny）与 `hookTools`，返回 allow/deny 或续链 |
-| `ptc` | `builtin.ptc` | `ptc`（critical=false，默认 `mode="native"`）：`.run(spec, bindings=..., ctx=...)`、`.resolve(request, cwd=...)`、`.mode/.language/.program_format/.sandbox_mode/.execution_instructions/.config/.timeout`；`mode="ptc"` 时注册 `run_code`（reserved_tool）与 `tools:ptc-only`(41)/`tools:sdk`(42) 两个提示词段 |
+| `ptc` | `builtin.ptc` | `ptc`（critical=false，默认 `mode="native"`）：`.run(spec, bindings=..., ctx=...)`、`.resolve(request, cwd=...)`、`.mode/.language/.program_format/.sandbox_mode/.execution_instructions/.config/.timeout`；`mode="ptc"` 时全局注册 `run_code`（reserved_tool）与 `tools:ptc-only`(41)/`tools:sdk`(42)，native 时以 `scope="ptc"` 注册同样三样供 ptc preset；presentation=ptc 的 agent 由 AgentsService 把 surface 收窄到 `run_code` |
 | `memory` | `builtin.memory` | `memory`（critical=false）：`.entries/.snapshot/.remember/.replace/.forget/.status`；`mnemon_runtime_memory` 工具（tools 缺失时降级为仅提示词段）；提示词段 `memory-runtime` order 12 |
 | `skills` | `builtin.skills` | `skills`（critical=false）：`.registry`（list/get/snapshot/render_catalog）；`skill` 工具；提示词段 `skills` order 35 |
 | `commands` | `builtin.commands` | `commands`：`.add`、`.all()`、`.resolve()`、`.invoke()` |
 | `commands-builtin` | `builtin.commands_builtin` | 20 个内置 slash 命令（含 `/provider`、`/model`、`/preset`、`/policy`、`/approval`、`/cwd`、`/plan`、`/jobs`、`/team`、`/thinking`、`/hooks`、`/panel`） |
-| `agents` | `builtin.agents` | `agents`：`.create(..., preset=None, preset_revision=None, registry=None)`、`.options(**overrides)` |
+| `agents` | `builtin.agents` | `agents`：`.create(..., preset=None, preset_revision=None, registry=None)`、`.options(**overrides)`；按 preset spec 过滤 registry（`tools` allowlist / `tools_exclude`）、决定 surface（`presentation="ptc"` → 仅 `run_code`）、提示词段 allowlist（`prompt_sections`）与 runtime context 开关，并把 `agent.presentation`/`preset`/`preset_revision`/`preset_spec` 挂到会话 |
 | `team` | `builtin.team` | `team`：`.configure(...)`、`.bind_session`、`.spawn/.send/.wait/.cancel`、任务板 `.create_task/.update_task`；9 个 `team_*` 工具（scope=`team`） |
 | `subagent` | `builtin.subagent` | `subagent`：`.configure(...)`、`.bind_session`、`.run(prompt, ...)->SubagentResult`；1 个 host-wide `subagent` 工具（team preset 下由 AgentsService 过滤） |
 | `activity` | `builtin.activity` | `activity`：`.state`、`.refresh(session)`、`.subscribe(listener)`；投影 todo/job/team/subagent/plan 记录 |
@@ -440,8 +441,9 @@ await app.stop()                           # 逆序 dispose
 - `tests/tui/test_commands.py`：插件贡献的 slash 命令进入 TUI 实时命令表并被执行。
 - `tests/integration/test_plugin_services.py`：D 层四个工具经 `ToolContext.services` 取内核服务并真实执行；外部 bundle 注册 TUI 槽位后在 `slots` 服务可见。
 - `tests/tui/test_slots.py`/`test_plugin_slots.py`/`test_ui_package.py`：槽位注册、排序、去重、状态栏渲染、面板打开、ui.toml 声明式 UI 包。
-- `tests/builtin/test_preset_revisions.py`：preset revision 不可变注册、realm 物化、按 revision 过滤工具/提示词。
-- `tests/tui/test_runtime_presets.py`：TUI new_session/resume/preset 切换的 revision 固定与回退。
+- `tests/builtin/test_preset_revisions.py`：preset revision 不可变注册、realm 物化、按 revision 过滤工具/提示词；`test_agent_preset_filters.py` 覆盖 allowlist/denylist、presentation surface、prompt_sections allowlist 与 runtime_context 开关。
+- `tests/tui/test_runtime_presets.py`：TUI new_session/resume/preset 切换的 revision 固定与回退、legacy `default` 归一。
+- `tests/integration/test_preset_modes.py`：真实 core bundle 的四个 preset（工具面、presentation、提示词段、runtime context）与 `default` 别名。
 - `tests/plugins/test_template.py`：`plugin_create` 模板脚手架与 `PluginManager.create_bundle`。
 - `tests/jobs/`、`tests/tools/test_shell_jobs.py`：jobs 服务生命周期、job 记录形状、后台 shell、job 工具。
 - `tests/team/`：spawn/send/wait/cancel、任务板迁移、team/subagent 记录、9 个工具。
