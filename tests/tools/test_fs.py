@@ -142,6 +142,7 @@ async def test_write_outside_workspace_requires_approval(tmp_path) -> None:  # t
     assert result.is_error is False
     assert outside.read_text() == "ok"
     assert asked[0].kind == "write-outside-workspace"
+    assert asked[0].tool == "write"
 
     async def deny(req: ApprovalRequest) -> bool:
         return False
@@ -183,6 +184,31 @@ async def test_write_escalation_requires_justification(tmp_path) -> None:  # typ
     )
     assert result.is_error is False
     assert (workspace / "x.txt").read_text() == "x"
+
+
+async def test_write_escalation_request_carries_the_tool_name(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    asked: list[ApprovalRequest] = []
+
+    async def grant(req: ApprovalRequest) -> bool:
+        asked.append(req)
+        return True
+
+    ctx = make_context(workspace, permission=PermissionGate("workspace-write", "ask", workspace, ask=grant))
+    result = await WriteTool().run(
+        {
+            "file_path": "inside.txt",
+            "content": "ok",
+            "sandbox_permissions": "danger-full-access",
+            "justification": "need one-shot escalation",
+        },
+        ctx,
+    )
+    assert result.is_error is False
+    assert [req.kind for req in asked] == ["sandbox-escalation"]
+    assert asked[0].tool == "write"
+    assert (workspace / "inside.txt").read_text() == "ok"
 
 
 async def test_edit_replaces_unique_string(workspace) -> None:  # type: ignore[no-untyped-def]

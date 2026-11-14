@@ -30,6 +30,7 @@ EXPECTED_NAMES = [
     "jobs",
     "team",
     "thinking",
+    "hooks",
     "compact",
     "clear",
     "plugins",
@@ -155,7 +156,7 @@ def test_candidates_filter_by_name_and_alias() -> None:
     assert candidates("") == COMMANDS
     assert candidates("/") == COMMANDS
     assert [command.name for command in candidates("he")] == ["help"]
-    assert [command.name for command in candidates("h")] == ["help"]
+    assert [command.name for command in candidates("h")] == ["help", "hooks"]
     assert [command.name for command in candidates("?")] == ["help"]
     assert [command.name for command in candidates("q")] == ["exit"]
     assert [command.name for command in candidates("ex")] == ["exit"]

@@ -97,7 +97,7 @@ class _ShellTool(BaseTool):
         timeout_ms = optional_int(args, "timeoutMs", DEFAULT_TIMEOUT_MS, minimum=1, maximum=MAX_TIMEOUT_MS)
         background = optional_bool(args, "run_in_background", False)
         workdir_arg = optional_str(args, "workdir")
-        await check_command(ctx, args, command)
+        await check_command(ctx, args, command, tool=self.name)
         cwd = resolve_path(Path(ctx.cwd), workdir_arg) if workdir_arg else Path(ctx.cwd).resolve(strict=False)
         if not cwd.is_dir():
             raise ToolError(f"workdir is not a directory: {cwd}")

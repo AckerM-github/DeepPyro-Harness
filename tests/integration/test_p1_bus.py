@@ -40,11 +40,13 @@ def make_agent(
     *,
     hooks: HookService,
     registry: FakeRegistry | None = None,
+    sink: RecordingSink | None = None,
 ) -> tuple[FakeSessionLog, ScriptedProvider, AgentSession]:
     """Build a real agent loop over the in-memory fakes with a shared hook service."""
     session = FakeSessionLog(cwd=tmp_path)
     provider = ScriptedProvider(script)
-    sink = RecordingSink(session)
+    if sink is None:
+        sink = RecordingSink(session)
     agent = AgentSession(
         session=session,
         provider=provider,

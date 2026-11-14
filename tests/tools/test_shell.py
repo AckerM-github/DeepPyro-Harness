@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from deeppyro.core.errors import PermissionDenied, ToolError
-from deeppyro.sandbox import PermissionGate
+from deeppyro.sandbox import ApprovalRequest, PermissionGate
 from deeppyro.tools import BashTool, PwshTool
 from tests.tools.helpers import make_context
 
@@ -98,6 +98,28 @@ async def test_pwsh_escalation_requires_justification(workspace) -> None:  # typ
             },
             ctx,
         )
+
+
+async def test_pwsh_command_approval_request_carries_the_tool_name(workspace) -> None:  # type: ignore[no-untyped-def]
+    asked: list[ApprovalRequest] = []
+
+    async def grant(req: ApprovalRequest) -> bool:
+        asked.append(req)
+        return True
+
+    gate = PermissionGate("workspace-write", "ask", workspace, ask=grant)
+    result = await PwshTool().run(
+        {
+            "description": "Escalate",
+            "command": "Write-Output 1",
+            "sandbox_permissions": "danger-full-access",
+            "justification": "need one-shot escalation",
+        },
+        make_context(workspace, permission=gate),
+    )
+    assert result.is_error is False
+    assert [req.kind for req in asked] == ["sandbox-escalation"]
+    assert asked[0].tool == "pwsh"
 
 
 async def test_bash_runs_command_when_available(workspace) -> None:  # type: ignore[no-untyped-def]

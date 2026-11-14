@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -29,6 +29,13 @@ from deeppyro.tui.commands import dispatch, help_text, live_commands
 from deeppyro.tui.format import context_percent, short_session_id
 from deeppyro.tui.history import is_ptc_mode_message, process_map, reasoning_from_session
 from deeppyro.tui.screens.approval import ALLOW_ALWAYS, ApprovalScreen
+from deeppyro.tui.screens.hook_trace import (
+    EMPTY_TEXT as HOOK_TRACE_EMPTY_TEXT,
+)
+from deeppyro.tui.screens.hook_trace import (
+    HookTraceScreen,
+    hook_trace_line,
+)
 from deeppyro.tui.screens.jobs import JobsPanelScreen
 from deeppyro.tui.screens.path_prompt import PathPromptScreen
 from deeppyro.tui.screens.picker import PickerScreen
@@ -58,6 +65,50 @@ RuntimeFactory = Callable[["DeepPyroApp"], Awaitable[Any]]
 #: Sentinel returned by the /cwd picker when the user wants a free-text path.
 CUSTOM_WORKSPACE = "\x00custom-workspace"
 CUSTOM_WORKSPACE_LABEL = "Enter path..."
+
+#: How many paired hook decisions the /hooks viewer reads and shows.
+HOOK_TRACE_LIMIT = 50
+
+#: Session record types that bracket one hook invocation.
+_HOOK_INVOKED_RECORD = "hook/invoked"
+_HOOK_RESULT_RECORD = "hook/result"
+
+
+def _record_field(record: Any, name: str) -> Any:
+    """Read a session record field from a mapping or an object."""
+    if isinstance(record, Mapping):
+        return record.get(name)
+    return getattr(record, name, None)
+
+
+def _normalize_hook_rows(rows: Any) -> list[dict[str, Any]]:
+    """Keep the mapping rows of a SessionQuery.hook_trace result."""
+    if not isinstance(rows, (list, tuple)):
+        return []
+    return [dict(row) for row in rows if isinstance(row, Mapping)]
+
+
+def _hook_rows_from_records(session: Any) -> list[dict[str, Any]]:
+    """Pair hook records from raw session records, newest last."""
+    records = getattr(session, "records", None)
+    if not isinstance(records, (list, tuple)):
+        return []
+    pending: list[dict[str, Any]] = []
+    for record in records:
+        record_type = _record_field(record, "type")
+        data = _record_field(record, "data")
+        if not isinstance(data, Mapping):
+            continue
+        hook = str(data.get("hook") or "")
+        mode = str(data.get("mode") or "")
+        if record_type == _HOOK_INVOKED_RECORD:
+            pending.append({"hook": hook, "mode": mode, "invoked": dict(data), "result": None})
+        elif record_type == _HOOK_RESULT_RECORD:
+            for row in reversed(pending):
+                if row["result"] is None and row["hook"] == hook:
+                    row["result"] = dict(data)
+                    break
+    return pending[-HOOK_TRACE_LIMIT:]
 
 
 class DeepPyroApp(App[None]):
@@ -1212,6 +1263,61 @@ class DeepPyroApp(App[None]):
             self.conversation.add_info(
                 f"reasoning available: {len(turns)} turn(s), {steps} step(s) (use /thinking)"
             )
+
+    def _session_query(self) -> Any:
+        """The session-query service, when the kernel provides one."""
+        runtime = self.runtime
+        if runtime is None:
+            return None
+        query = getattr(runtime, "session_query", None)
+        if query is not None:
+            return query
+        kernel_app = getattr(runtime, "kernel_app", None)
+        service = getattr(kernel_app, "service", None)
+        if not callable(service):
+            return None
+        try:
+            return service("session_query")
+        except Exception:  # noqa: BLE001 - the service is optional
+            return None
+
+    async def _hook_rows(self) -> list[dict[str, Any]]:
+        """Paired hook rows for the current session, newest last."""
+        runtime = self.runtime
+        session = getattr(runtime, "session", None) if runtime is not None else None
+        trace = getattr(session, "hook_trace", None)
+        if callable(trace):
+            try:
+                rows = trace(limit=HOOK_TRACE_LIMIT)
+                if inspect.isawaitable(rows):
+                    rows = await rows
+                return _normalize_hook_rows(rows)
+            except Exception:  # noqa: BLE001, S110 - fall back to the raw records
+                pass
+        session_id = str(getattr(session, "session_id", "") or "")
+        query = self._session_query()
+        trace = getattr(query, "hook_trace", None)
+        if callable(trace) and session_id:
+            try:
+                rows = trace(session_id, limit=HOOK_TRACE_LIMIT)
+                if inspect.isawaitable(rows):
+                    rows = await rows
+                return _normalize_hook_rows(rows)
+            except Exception:  # noqa: BLE001, S110 - fall back to the raw records
+                pass
+        return _hook_rows_from_records(session)
+
+    async def hooks_command(self, argument: str = "") -> None:
+        """Open the recent hook decisions of the current session (/hooks)."""
+        rows = await self._hook_rows()
+        if not rows:
+            self.conversation.add_info(HOOK_TRACE_EMPTY_TEXT)
+            return
+        try:
+            await self.push_screen_wait(HookTraceScreen(rows))
+        except Exception:  # noqa: BLE001 - outside a worker there is no modal
+            for row in rows:
+                self.conversation.add_info(hook_trace_line(row))
 
     async def compact(self) -> None:
         if self._working:

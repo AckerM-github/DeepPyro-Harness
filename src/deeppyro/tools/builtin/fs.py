@@ -127,7 +127,7 @@ class WriteTool(BaseTool):
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         path = resolve_path(Path(ctx.cwd), require_str(args, "file_path"))
         content = require_str(args, "content", allow_empty=True)
-        await check_write(ctx, args, path, action="write")
+        await check_write(ctx, args, path, action="write", tool=self.name)
         if path.is_dir():
             raise ToolError(f'cannot write "{path}": not a regular file')
         existed = path.exists()
@@ -174,7 +174,7 @@ class EditTool(BaseTool):
         old_string = require_str(args, "old_string")
         new_string = require_str(args, "new_string", allow_empty=True)
         replace_all = optional_bool(args, "replace_all", False)
-        await check_write(ctx, args, path, action="edit")
+        await check_write(ctx, args, path, action="edit", tool=self.name)
         if path.is_dir():
             raise ToolError(f'cannot edit "{path}": not a regular file')
         if not path.exists():

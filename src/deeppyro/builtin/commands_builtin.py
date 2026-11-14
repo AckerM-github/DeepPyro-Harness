@@ -85,6 +85,7 @@ _ROWS: tuple[tuple[str, tuple[str, ...], str, str, str, bool], ...] = (
         "thinking_command",
         True,
     ),
+    ("hooks", (), "show recent hook decisions", "/hooks", "hooks_command", False),
     ("compact", (), "compact the conversation now", "/compact", "compact", False),
     ("clear", (), "clear the conversation view", "/clear", "clear_conversation", False),
     ("plugins", (), "list loaded plugins", "/plugins", "show_plugins", False),

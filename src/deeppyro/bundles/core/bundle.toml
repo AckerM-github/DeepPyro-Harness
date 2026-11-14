@@ -74,6 +74,20 @@ plugin = "deeppyro.builtin.llm_retry:LlmRetryPlugin"
 id = "hook-observability"
 plugin = "deeppyro.builtin.hook_observability:HookObservabilityPlugin"
 
+# The kernel-facing half of the hook bus: forwards dispatches to cordis events
+# (hook/invoked, hook/result) so plugins can observe without registering hooks.
+[[plugins]]
+id = "hook-bridge"
+plugin = "deeppyro.builtin.hook_bridge:HookBridgePlugin"
+critical = false
+
+# The session-facing half of the hook bus: journals hook records into the
+# executing agent's session log and the live event sink.
+[[plugins]]
+id = "hook-journal"
+plugin = "deeppyro.builtin.hook_journal:HookJournalPlugin"
+critical = false
+
 [[plugins]]
 id = "jobs"
 plugin = "deeppyro.builtin.jobs:JobsPlugin"
@@ -93,6 +107,18 @@ plugin = "deeppyro.builtin.prompt_service:PromptPlugin"
 [[plugins]]
 id = "prompt-core"
 plugin = "deeppyro.builtin.prompt_core:PromptCorePlugin"
+
+# In-tree consumers of the hook bus (P2-2): a prompt text extension and a
+# configurable approval policy. Both are inert by default; see docs/spec/hooks.md.
+[[plugins]]
+id = "prompt-extension"
+plugin = "deeppyro.builtin.prompt_extension:PromptExtensionPlugin"
+critical = false
+
+[[plugins]]
+id = "approval-policy"
+plugin = "deeppyro.builtin.approval_policy:ApprovalPolicyPlugin"
+critical = false
 
 # PTC registers prompt sections in ptc mode, so it must mount after prompt-core.
 [[plugins]]

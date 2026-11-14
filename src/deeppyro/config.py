@@ -116,6 +116,20 @@ maxRetries = 5
 initialDelayMs = 500
 maxDelayMs = 10000
 jitterRatio = 0.1
+
+# Text appended to the assembled system prompt by the prompt-extension plugin
+# (src/deeppyro/builtin/prompt_extension.py). Empty text keeps the prompt
+# unchanged.
+[prompt]
+extension = ""
+
+# Approval hook policy consumed by the approval-policy plugin
+# (src/deeppyro/builtin/approval_policy.py): "off"/"ask" defer to
+# [agent].approvalPolicy, "allow"/"deny" answer approval/request directly for
+# the tools in hookTools (an empty list means every tool).
+[approval]
+hookMode = "off"
+hookTools = []
 """
 
 

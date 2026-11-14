@@ -46,25 +46,39 @@ def _effective_preset(gate: PermissionGate, args: dict[str, Any]) -> Preset:
     return requested  # type: ignore[return-value]
 
 
-async def _approve_escalation(gate: PermissionGate, ctx: ToolContext, args: dict[str, Any]) -> bool:
+async def _approve_escalation(
+    gate: PermissionGate, ctx: ToolContext, args: dict[str, Any], tool: str | None
+) -> bool:
     """Ask for approval of a one-shot escalation; return True when one happened."""
     requested = args.get("sandbox_permissions")
     if requested is None:
         return False
     justification = str(args.get("justification") or "")
     summary = f"Allow this {args.get('_action', 'operation')} to run with {requested} for one call?"
-    req = ApprovalRequest(kind="sandbox-escalation", summary=summary, detail=justification)
+    req = ApprovalRequest(kind="sandbox-escalation", summary=summary, detail=justification, tool=tool)
     decision = await gate.request(req)
     if not decision.allowed:
         raise PermissionDenied(f"sandbox escalation denied: {decision.reason}")
     return True
 
 
-async def check_write(ctx: ToolContext, args: dict[str, Any], path: Path, *, action: str = "write") -> None:
-    """Authorize a write to `path` (honouring a one-shot escalation)."""
+async def check_write(
+    ctx: ToolContext,
+    args: dict[str, Any],
+    path: Path,
+    *,
+    action: str = "write",
+    tool: str | None = None,
+) -> None:
+    """Authorize a write to `path` (honouring a one-shot escalation).
+
+    `tool` is the calling tool's name; it is recorded on every approval
+    request so [approval].hookTools can match by tool name.  None means the
+    caller did not identify itself.
+    """
     gate = gate_for(ctx)
     _effective_preset(gate, args)
-    escalated = await _approve_escalation(gate, ctx, args)
+    escalated = await _approve_escalation(gate, ctx, args, tool)
     if escalated:
         return
     decision = gate.check_write(path)
@@ -76,6 +90,7 @@ async def check_write(ctx: ToolContext, args: dict[str, Any], path: Path, *, act
                 kind="write-outside-workspace",
                 summary="Allow this write outside the workspace?",
                 detail=str(path),
+                tool=tool,
             )
         )
         if approved.allowed:
@@ -84,11 +99,17 @@ async def check_write(ctx: ToolContext, args: dict[str, Any], path: Path, *, act
     raise _deny(decision, action)
 
 
-async def check_command(ctx: ToolContext, args: dict[str, Any], command: str) -> None:
-    """Authorize a shell command (honouring a one-shot escalation)."""
+async def check_command(
+    ctx: ToolContext, args: dict[str, Any], command: str, *, tool: str | None = None
+) -> None:
+    """Authorize a shell command (honouring a one-shot escalation).
+
+    `tool` is the calling tool's name, recorded on approval requests for
+    [approval].hookTools matching.
+    """
     gate = gate_for(ctx)
     _effective_preset(gate, args)
-    escalated = await _approve_escalation(gate, ctx, args)
+    escalated = await _approve_escalation(gate, ctx, args, tool)
     if escalated:
         return
     decision = gate.check_command(command)
@@ -100,6 +121,7 @@ async def check_command(ctx: ToolContext, args: dict[str, Any], command: str) ->
                 kind="command-approval",
                 summary="Allow this shell command?",
                 detail=command,
+                tool=tool,
             )
         )
         if approved.allowed:
