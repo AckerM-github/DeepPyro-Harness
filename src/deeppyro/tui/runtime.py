@@ -28,6 +28,7 @@ from typing import Any
 from deeppyro.api import (
     AGENT_MODE_DEFAULT,
     AGENT_MODE_TEAM,
+    AGENT_PRESENTATION_NATIVE,
     DEFAULT_PRESET_ID,
     TEAM_PRESET_ID,
     PluginDependencyError,
@@ -363,9 +364,11 @@ class TuiRuntime:
     async def new_session(self) -> Any:
         """Create a fresh durable session and rebuild the agent."""
         self._save_projections()
+        preset = self._canonical_preset(self.agent_preset) or DEFAULT_PRESET_ID
+        self.agent_preset = preset
         self.preset_revision = None
-        session = self.store.create(str(self.cwd), agent_preset=self.agent_preset)
-        await self._session_created(session, cwd=str(self.cwd), preset=self.agent_preset)
+        session = self.store.create(str(self.cwd), agent_preset=preset)
+        await self._session_created(session, cwd=str(self.cwd), preset=preset)
         await self._attach(session)
         self._record_model_selection()
         self._record_preset()
@@ -387,12 +390,17 @@ class TuiRuntime:
                     )
                 except Exception:  # noqa: BLE001, S110 - resume must not brick the UI
                     pass
-        header_preset = str(getattr(session.header, "agentPreset", "") or "").strip() or DEFAULT_PRESET_ID
+        header_preset = (
+            self._canonical_preset(getattr(session.header, "agentPreset", "")) or DEFAULT_PRESET_ID
+        )
         recorded = _recorded_preset(session)
-        preset = recorded[0] if recorded is not None and recorded[0] else header_preset
+        recorded_preset = (
+            self._canonical_preset(recorded[0]) if recorded is not None and recorded[0] else None
+        )
+        preset = recorded_preset or header_preset
         revision = recorded[1] if recorded is not None else None
-        previous = recorded[2] if recorded is not None else None
-        self.agent_preset = preset or header_preset
+        previous = self._canonical_preset(recorded[2]) if recorded is not None and recorded[2] else None
+        self.agent_preset = preset
         self.preset_revision = revision
         if self.agent_preset == TEAM_PRESET_ID:
             fallback = header_preset if header_preset != TEAM_PRESET_ID else DEFAULT_PRESET_ID
@@ -544,18 +552,62 @@ class TuiRuntime:
         except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
             pass
 
+    def _canonical_preset(self, preset: Any) -> str | None:
+        """Normalize a preset id through the presets service aliases."""
+        value = str(preset or "").strip()
+        if not value:
+            return None
+        service = self._service("presets")
+        canonical = getattr(service, "canonical", None)
+        if callable(canonical):
+            try:
+                normalized = canonical(value)
+            except Exception:  # noqa: BLE001 - normalization is best effort
+                return value
+            return str(normalized).strip() if normalized else None
+        return value
+
+    def _agent_preset_spec(self) -> Any | None:
+        """Resolve the active preset spec (None when the service is unavailable)."""
+        service = self._service("presets")
+        resolver = getattr(service, "resolve", None)
+        if not callable(resolver):
+            return None
+        try:
+            return resolver(self.agent_preset, revision=self.preset_revision)
+        except Exception:  # noqa: BLE001 - status display must never fail
+            return None
+
     @property
     def agent_mode(self) -> str:
         """Mode of the active agent preset ("default" or "team")."""
-        service = self._service("presets")
-        resolver = getattr(service, "resolve", None)
-        spec: Any = None
-        if callable(resolver):
-            try:
-                spec = resolver(self.agent_preset, revision=self.preset_revision)
-            except Exception:  # noqa: BLE001 - status display must never fail
-                spec = None
+        spec = self._agent_preset_spec()
         return str(getattr(spec, "mode", "default") or "default")
+
+    @property
+    def agent_presentation(self) -> str:
+        """Tool presentation of the active agent ("native" or "ptc")."""
+        presentation = str(getattr(self.agent, "presentation", "") or "").strip()
+        if presentation:
+            return presentation
+        spec = self._agent_preset_spec()
+        presentation = str(getattr(spec, "presentation", "") or "").strip()
+        return presentation or AGENT_PRESENTATION_NATIVE
+
+    @property
+    def agent_preset_display(self) -> str:
+        """Human display name of the active preset (name, else id)."""
+        spec = self._agent_preset_spec()
+        display_name = getattr(spec, "display_name", None)
+        if callable(display_name):
+            try:
+                value = str(display_name() or "").strip()
+            except Exception:  # noqa: BLE001 - display must never fail
+                value = ""
+            if value:
+                return value
+        name = str(getattr(spec, "name", "") or "").strip()
+        return name or self.agent_preset
 
     def _plugin_services(self) -> dict[str, Any]:
         """Plugin services the agent tools read from ToolContext.services."""
@@ -623,8 +675,9 @@ class TuiRuntime:
         registry_for = getattr(service, "registry_for", None)
         if registry_for is None:
             return self.registry
+        scope = self._canonical_preset(self.agent_preset) or DEFAULT_PRESET_ID
         try:
-            return registry_for(Path(workspace), scope=self.agent_preset)
+            return registry_for(Path(workspace), scope=scope)
         except TypeError:
             return registry_for(Path(workspace))
 
@@ -655,18 +708,20 @@ class TuiRuntime:
         service = self._service("presets")
         if service is None:
             raise DeeppyroError("agent presets are not available in this bundle")
-        wanted = (preset or "").strip()
-        spec = self._resolve_preset(service, wanted)
+        wanted = self._canonical_preset(preset)
+        spec = self._resolve_preset(service, wanted or "")
+        spec_id = self._canonical_preset(spec.id) or str(spec.id)
         mode = str(getattr(spec, "mode", AGENT_MODE_DEFAULT) or AGENT_MODE_DEFAULT)
-        if mode == AGENT_MODE_TEAM or spec.id == TEAM_PRESET_ID or getattr(spec, "hidden", False):
+        if mode == AGENT_MODE_TEAM or spec_id == TEAM_PRESET_ID or getattr(spec, "hidden", False):
             raise DeeppyroError("team mode is enabled with /team on, not /preset")
         if self.busy:
             raise DeeppyroError("cannot switch agent preset while a turn is running")
-        if spec.id == self.agent_preset and self.preset_revision is None:
-            return spec.id
-        await self._switch_preset(spec.id, None)
+        current = self._canonical_preset(self.agent_preset) or DEFAULT_PRESET_ID
+        if spec_id == current and self.preset_revision is None:
+            return spec_id
+        await self._switch_preset(spec_id, None)
         self._record_preset()
-        return spec.id
+        return spec_id
 
     async def set_team_mode(self, enabled: bool) -> str:
         """Enter or leave explicit team mode on the current session.
@@ -726,11 +781,12 @@ class TuiRuntime:
         if service is None:
             raise DeeppyroError("agent presets are not available in this bundle")
         spec = self._resolve_preset(service, preset_id)
+        preset_id = self._canonical_preset(spec.id) or str(spec.id)
         old_preset = self.agent_preset
         old_revision = self.preset_revision
         old_agent = self.agent
-        await self._ensure_preset(spec.id, revision)
-        self.agent_preset = spec.id
+        await self._ensure_preset(preset_id, revision)
+        self.agent_preset = preset_id
         self.preset_revision = revision
         if self.session is None:
             return
@@ -1090,16 +1146,18 @@ class TuiRuntime:
         service = self._service("presets")
         ensure = getattr(service, "ensure", None)
         if callable(ensure):
-            await await_maybe(ensure(preset_id, revision=revision))
+            canonical = self._canonical_preset(preset_id) or preset_id
+            await await_maybe(ensure(canonical, revision=revision))
 
     def _record_preset(self) -> None:
         """Persist the pinned preset revision so a resume reproduces it."""
         mode = self.agent_mode
-        data: dict[str, Any] = {"preset": self.agent_preset, "mode": mode}
+        preset = self._canonical_preset(self.agent_preset) or DEFAULT_PRESET_ID
+        data: dict[str, Any] = {"preset": preset, "mode": mode}
         if self.preset_revision is not None:
             data["revision"] = self.preset_revision
         if mode == AGENT_MODE_TEAM:
-            data["previous"] = self.team_previous_preset
+            data["previous"] = self._canonical_preset(self.team_previous_preset) or DEFAULT_PRESET_ID
         self._record("agent-preset/selected", data)
 
     def _record_model_selection(self) -> None:

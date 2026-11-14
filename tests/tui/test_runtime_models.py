@@ -298,7 +298,7 @@ async def test_attach_configures_and_binds_the_team_service() -> None:
     assert configure["cwd"] == Path("D:/work")
     assert configure["model"] == "local-model"
     assert configure["context_window"] == 32768
-    assert configure["preset"] == "default"
+    assert configure["preset"] == "standard"
     assert team.bound == [session]
 
 
@@ -349,7 +349,7 @@ async def test_attach_configures_and_binds_the_subagent_service() -> None:
     configure = subagent.configures[0]
     assert configure["cwd"] == Path("D:/work")
     assert configure["model"] == "local-model"
-    assert configure["preset"] == "default"
+    assert configure["preset"] == "standard"
     assert configure["services"]["llm"].provider("local") == "provider:local"
     assert subagent.bound == [session]
 

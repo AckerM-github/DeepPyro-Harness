@@ -222,7 +222,7 @@ class FakeRuntime:
         self.session: FakeSession | None = FakeSession()
         self.session_query: Any = None
         self.kernel_app = None
-        self.agent_preset = "default"
+        self.agent_preset = "standard"
         self.agent_mode = "default"
 
     @property

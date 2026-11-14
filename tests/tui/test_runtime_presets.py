@@ -14,7 +14,7 @@ from deeppyro.tui.runtime import TuiRuntime
 
 
 class FakeSession:
-    def __init__(self, preset: str = "default") -> None:
+    def __init__(self, preset: str = "standard") -> None:
         self.header = SimpleNamespace(agentPreset=preset)
         self.records: list[Any] = []
         self.session_id = "session-test"
@@ -29,7 +29,7 @@ class FakeStore:
         self.opened = opened
 
     def create(self, cwd: str, *, agent_preset: str | None = None) -> FakeSession:
-        session = FakeSession(agent_preset or "default")
+        session = FakeSession(agent_preset or "standard")
         self.created.append(session)
         return session
 
@@ -46,28 +46,42 @@ class FakePreset:
         preset_id: str,
         *,
         name: str = "",
+        description: str = "",
         mode: str = "default",
         hidden: bool = False,
+        presentation: str = "native",
     ) -> None:
         self.id = preset_id
         self.name = name or preset_id
-        self.description = ""
+        self.description = description
         self.mode = mode
         self.hidden = hidden
+        self.presentation = presentation
+
+    def display_name(self) -> str:
+        return self.name or self.id
 
 
 class FakePresets:
     def __init__(self, specs: list[FakePreset] | None = None) -> None:
         self.specs = specs or [
-            FakePreset("default", name="Default"),
-            FakePreset("reviewer", name="Reviewer"),
+            FakePreset("standard", name="Standard", description="host-wide tools"),
+            FakePreset("ptc", name="PTC", description="run_code-only", presentation="ptc"),
+            FakePreset("minimal", name="Minimal", description="small surface"),
+            FakePreset("cordis", name="Cordis", description="cordis prompt"),
             FakePreset("team", name="Team", mode="team", hidden=True),
         ]
         self.ensured: list[tuple[str, int | None]] = []
         self.all_count = 0
 
+    def canonical(self, preset_id: str | None) -> str | None:
+        value = str(preset_id or "").strip()
+        if not value:
+            return None
+        return "standard" if value == "default" else value
+
     def resolve(self, preset_id: str | None = None, *, revision: int | None = None) -> FakePreset:
-        wanted = preset_id or "default"
+        wanted = self.canonical(preset_id) or "standard"
         for spec in self.specs:
             if spec.id == wanted:
                 return spec
@@ -89,8 +103,9 @@ class FakePresets:
 
 
 class FakeAgent:
-    def __init__(self, revision: int | None) -> None:
+    def __init__(self, revision: int | None, *, presentation: str = "native") -> None:
         self.preset_revision = revision
+        self.presentation = presentation
         self.closed = False
 
     async def aclose(self) -> None:
@@ -107,7 +122,11 @@ class FakeAgents:
     def create(self, **kwargs: Any) -> FakeAgent:
         self.calls.append(kwargs)
         revision = kwargs.get("preset_revision")
-        return FakeAgent(revision)
+        return FakeAgent(revision, presentation=_presentation_for(kwargs.get("preset")))
+
+
+def _presentation_for(preset: Any) -> str:
+    return "ptc" if str(preset or "") == "ptc" else "native"
 
 
 class FakeKernelApp:
@@ -152,22 +171,25 @@ async def test_new_session_records_the_pinned_preset_revision() -> None:
     assert presets.all_count == 1
     revision = agents.calls[0]["preset_revision"]
     assert revision is None
+    assert agents.calls[0]["preset"] == "standard"
+    assert runtime.agent_preset == "standard"
+    assert runtime.agent_preset_display == "Standard"
+    assert runtime.agent_presentation == "native"
+    assert session.header.agentPreset == "standard"
     assert session.records[-1].type == "agent-preset/selected"
-    assert session.records[-1].data == {"preset": "default", "mode": "default"}
+    assert session.records[-1].data == {"preset": "standard", "mode": "default"}
 
 
 @pytest.mark.asyncio
 async def test_open_session_pins_the_recorded_revision() -> None:
-    opened = FakeSession("reviewer")
-    opened.records = [
-        SimpleNamespace(type="agent-preset/selected", data={"preset": "reviewer", "revision": 7})
-    ]
+    opened = FakeSession("ptc")
+    opened.records = [SimpleNamespace(type="agent-preset/selected", data={"preset": "ptc", "revision": 7})]
     presets = FakePresets()
     agents = FakeAgents()
 
     def create(**kwargs: Any) -> FakeAgent:
         agents.calls.append(kwargs)
-        return FakeAgent(7)
+        return FakeAgent(7, presentation="ptc")
 
     agents.create = create  # type: ignore[method-assign]
     runtime = make_runtime(store=FakeStore(opened), presets=presets, agents=agents)
@@ -175,18 +197,19 @@ async def test_open_session_pins_the_recorded_revision() -> None:
     session = await runtime.open_session("session-test")
 
     assert session is opened
-    assert presets.ensured == [("reviewer", 7)]
+    assert presets.ensured == [("ptc", 7)]
     assert agents.calls[0]["preset_revision"] == 7
+    assert agents.calls[0]["preset"] == "ptc"
     assert runtime.preset_revision == 7
-    assert runtime.agent_preset == "reviewer"
+    assert runtime.agent_preset == "ptc"
+    assert runtime.agent_presentation == "ptc"
+    assert runtime.agent_preset_display == "PTC"
 
 
 @pytest.mark.asyncio
 async def test_open_session_falls_back_when_the_revision_is_gone() -> None:
-    opened = FakeSession("reviewer")
-    opened.records = [
-        SimpleNamespace(type="agent-preset/selected", data={"preset": "reviewer", "revision": 7})
-    ]
+    opened = FakeSession("ptc")
+    opened.records = [SimpleNamespace(type="agent-preset/selected", data={"preset": "ptc", "revision": 7})]
     presets = FakePresets()
     agents = FakeAgents()
 
@@ -194,16 +217,17 @@ async def test_open_session_falls_back_when_the_revision_is_gone() -> None:
         if kwargs.get("preset_revision") is not None:
             raise PluginDependencyError("unknown revision")
         agents.calls.append(kwargs)
-        return FakeAgent(11)
+        return FakeAgent(11, presentation="ptc")
 
     agents.create = create  # type: ignore[method-assign]
     runtime = make_runtime(store=FakeStore(opened), presets=presets, agents=agents)
 
     await runtime.open_session("session-test")
 
-    assert presets.ensured == [("reviewer", 7), ("reviewer", None)]
+    assert presets.ensured == [("ptc", 7), ("ptc", None)]
     assert agents.calls[0]["preset_revision"] is None
     assert runtime.preset_revision == 11
+    assert runtime.agent_preset == "ptc"
 
 
 @pytest.mark.asyncio
@@ -220,13 +244,16 @@ async def test_set_agent_preset_materializes_and_records_the_latest_revision() -
     service = FakePresets()
     runtime.kernel_app._services["presets"] = service
 
-    agents.create = lambda **kwargs: FakeAgent(11)  # type: ignore[method-assign]
-    switched = await runtime.set_agent_preset("reviewer")
+    agents.create = lambda **kwargs: FakeAgent(11, presentation="ptc")  # type: ignore[method-assign]
+    switched = await runtime.set_agent_preset("ptc")
 
-    assert switched == "reviewer"
-    assert service.ensured == [("reviewer", None)]
+    assert switched == "ptc"
+    assert service.ensured == [("ptc", None)]
+    assert runtime.agent_preset == "ptc"
+    assert runtime.agent_presentation == "ptc"
+    assert runtime.agent_preset_display == "PTC"
     assert session.records[-1].type == "agent-preset/selected"
-    assert session.records[-1].data == {"preset": "reviewer", "mode": "default", "revision": 11}
+    assert session.records[-1].data == {"preset": "ptc", "mode": "default", "revision": 11}
     assert previous.closed is True
 
 
@@ -234,7 +261,7 @@ async def test_set_agent_preset_materializes_and_records_the_latest_revision() -
 async def test_visible_presets_hide_team_from_the_picker() -> None:
     runtime = make_runtime(store=FakeStore(FakeSession()), presets=FakePresets(), agents=FakeAgents())
 
-    assert [spec.id for spec in runtime.presets] == ["default", "reviewer"]
+    assert [spec.id for spec in runtime.presets] == ["standard", "ptc", "minimal", "cordis"]
 
 
 @pytest.mark.asyncio
@@ -258,16 +285,16 @@ async def test_team_mode_switches_and_records_the_previous_preset() -> None:
     assert selected == "team"
     assert runtime.agent_preset == "team"
     assert runtime.agent_mode == "team"
-    assert runtime.team_previous_preset == "default"
+    assert runtime.team_previous_preset == "standard"
     assert previous.closed is True
-    assert session.records[-1].data == {"preset": "team", "mode": "team", "previous": "default"}
+    assert session.records[-1].data == {"preset": "team", "mode": "team", "previous": "standard"}
 
     restored = await runtime.set_team_mode(False)
 
-    assert restored == "default"
-    assert runtime.agent_preset == "default"
+    assert restored == "standard"
+    assert runtime.agent_preset == "standard"
     assert runtime.agent_mode == "default"
-    assert session.records[-1].data == {"preset": "default", "mode": "default"}
+    assert session.records[-1].data == {"preset": "standard", "mode": "default"}
 
 
 @pytest.mark.asyncio
@@ -293,7 +320,7 @@ async def test_open_session_restores_team_mode_and_its_previous_preset() -> None
     opened.records = [
         SimpleNamespace(
             type="agent-preset/selected",
-            data={"preset": "team", "mode": "team", "previous": "reviewer"},
+            data={"preset": "team", "mode": "team", "previous": "ptc"},
         )
     ]
     presets = FakePresets()
@@ -304,7 +331,7 @@ async def test_open_session_restores_team_mode_and_its_previous_preset() -> None
     assert presets.ensured == [("team", None)]
     assert runtime.agent_preset == "team"
     assert runtime.agent_mode == "team"
-    assert runtime.team_previous_preset == "reviewer"
+    assert runtime.team_previous_preset == "ptc"
 
 
 @pytest.mark.asyncio
@@ -330,9 +357,9 @@ async def test_switch_preset_rolls_back_when_agent_creation_fails() -> None:
     records = len(runtime.session.records)
 
     with pytest.raises(RuntimeError, match="agent creation failed"):
-        await runtime.set_agent_preset("reviewer")
+        await runtime.set_agent_preset("ptc")
 
-    assert runtime.agent_preset == "default"
+    assert runtime.agent_preset == "standard"
     assert runtime.preset_revision is None
     assert runtime.agent is old_agent
     assert old_agent is not None and not old_agent.closed
@@ -345,15 +372,101 @@ async def test_team_off_restores_the_previous_custom_preset() -> None:
     runtime = make_runtime(store=FakeStore(FakeSession()), presets=FakePresets(), agents=FakeAgents())
     runtime.session = session
     runtime.agent = FakeAgent(0)
-    runtime.agent_preset = "reviewer"
+    runtime.agent_preset = "ptc"
 
     await runtime.set_team_mode(True)
 
-    assert runtime.team_previous_preset == "reviewer"
-    assert session.records[-1].data == {"preset": "team", "mode": "team", "previous": "reviewer"}
+    assert runtime.team_previous_preset == "ptc"
+    assert session.records[-1].data == {"preset": "team", "mode": "team", "previous": "ptc"}
 
     restored = await runtime.set_team_mode(False)
 
-    assert restored == "reviewer"
-    assert runtime.agent_preset == "reviewer"
-    assert session.records[-1].data == {"preset": "reviewer", "mode": "default"}
+    assert restored == "ptc"
+    assert runtime.agent_preset == "ptc"
+    assert session.records[-1].data == {"preset": "ptc", "mode": "default"}
+
+
+@pytest.mark.asyncio
+async def test_open_session_normalizes_the_legacy_default_preset() -> None:
+    opened = FakeSession("default")
+    opened.records = [SimpleNamespace(type="agent-preset/selected", data={"preset": "default"})]
+    presets = FakePresets()
+    runtime = make_runtime(store=FakeStore(opened), presets=presets, agents=FakeAgents())
+
+    await runtime.open_session("session-test")
+
+    assert runtime.agent_preset == "standard"
+    assert runtime.agent_presentation == "native"
+    assert runtime.agent_preset_display == "Standard"
+    assert presets.ensured == [("standard", None)]
+
+
+@pytest.mark.asyncio
+async def test_open_session_normalizes_a_legacy_header_without_records() -> None:
+    opened = FakeSession("default")
+    runtime = make_runtime(store=FakeStore(opened), presets=FakePresets(), agents=FakeAgents())
+
+    await runtime.open_session("session-test")
+
+    assert runtime.agent_preset == "standard"
+
+
+@pytest.mark.asyncio
+async def test_agent_presentation_falls_back_to_the_resolved_spec() -> None:
+    runtime = make_runtime(store=FakeStore(FakeSession()), presets=FakePresets(), agents=FakeAgents())
+    runtime.agent = None
+
+    runtime.agent_preset = "ptc"
+    assert runtime.agent_presentation == "ptc"
+
+    runtime.agent_preset = "standard"
+    assert runtime.agent_presentation == "native"
+
+
+@pytest.mark.asyncio
+async def test_scoped_registry_uses_the_canonical_preset_scope() -> None:
+    scopes: list[Any] = []
+    runtime = make_runtime(store=FakeStore(FakeSession()), presets=FakePresets(), agents=FakeAgents())
+
+    def registry_for(cwd: Path, scope: str | None = None) -> object:
+        scopes.append(scope)
+        return object()
+
+    runtime.kernel_app._services["tools"] = SimpleNamespace(registry_for=registry_for)
+    runtime.agent_preset = "default"
+
+    runtime._scoped_registry("D:/work")
+
+    assert scopes == ["standard"]
+
+
+@pytest.mark.asyncio
+async def test_set_agent_preset_accepts_the_legacy_default_alias() -> None:
+    session = FakeSession()
+    presets = FakePresets()
+    agents = FakeAgents()
+    runtime = make_runtime(store=FakeStore(FakeSession()), presets=presets, agents=agents)
+    runtime.session = session
+    runtime.agent = FakeAgent(0)
+    runtime.agent_preset = "ptc"
+
+    switched = await runtime.set_agent_preset("default")
+
+    assert switched == "standard"
+    assert runtime.agent_preset == "standard"
+    assert session.records[-1].data == {"preset": "standard", "mode": "default"}
+
+
+@pytest.mark.asyncio
+async def test_set_agent_preset_same_canonical_id_is_a_no_op() -> None:
+    runtime = make_runtime(store=FakeStore(FakeSession()), presets=FakePresets(), agents=FakeAgents())
+    runtime.session = FakeSession()
+    runtime.agent = FakeAgent(0)
+    runtime.agent_preset = "standard"
+    runtime.preset_revision = None
+
+    switched = await runtime.set_agent_preset("default")
+
+    assert switched == "standard"
+    assert runtime.agent_preset == "standard"
+    assert runtime.session.records == []

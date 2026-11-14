@@ -82,10 +82,20 @@ class FakeSessionInfo:
 
 
 class FakePreset:
-    def __init__(self, preset_id: str, name: str, description: str = "") -> None:
+    def __init__(
+        self,
+        preset_id: str,
+        name: str,
+        description: str = "",
+        presentation: str = "native",
+    ) -> None:
         self.id = preset_id
         self.name = name
         self.description = description
+        self.presentation = presentation
+
+    def display_name(self) -> str:
+        return self.name or self.id
 
 
 class FakeJob:
@@ -148,9 +158,9 @@ class FakeRuntime:
         self.kernel_app = None
         self.closed = False
         self.opened_sessions: list[str] = []
-        self.agent_preset = "default"
+        self.agent_preset = "standard"
         self.agent_mode = "default"
-        self.team_previous_preset = "default"
+        self.team_previous_preset = "standard"
         self.jobs = FakeJobs()
         self.team = FakeTeam()
 
@@ -161,6 +171,21 @@ class FakeRuntime:
     @property
     def busy(self) -> bool:
         return self.agent.busy
+
+    @property
+    def agent_presentation(self) -> str:
+        return "ptc" if self.agent_preset == "ptc" else "native"
+
+    @property
+    def agent_preset_display(self) -> str:
+        names = {
+            "standard": "Standard",
+            "ptc": "PTC",
+            "minimal": "Minimal",
+            "cordis": "Cordis",
+            "team": "Team",
+        }
+        return names.get(self.agent_preset, self.agent_preset)
 
     async def new_session(self) -> Any:
         self.session = FakeSession()
@@ -191,7 +216,12 @@ class FakeRuntime:
         return [(name, model) for name, models in self.PROVIDER_MODELS.items() for model in models]
 
     def presets(self) -> list[Any]:
-        return [FakePreset("default", "Default"), FakePreset("reviewer", "Reviewer", "review only")]
+        return [
+            FakePreset("standard", "Standard", "host-wide tools", presentation="native"),
+            FakePreset("ptc", "PTC", "run_code-only", presentation="ptc"),
+            FakePreset("minimal", "Minimal", "small surface", presentation="native"),
+            FakePreset("cordis", "Cordis", "cordis prompt", presentation="native"),
+        ]
 
     async def set_agent_preset(self, preset: str) -> str:
         if preset == "team":
@@ -254,6 +284,14 @@ class FakeRuntime:
 
 async def _make_runtime(app: DeepPyroApp) -> FakeRuntime:
     return FakeRuntime(app)
+
+
+def _info_texts(app: DeepPyroApp) -> list[str]:
+    texts: list[str] = []
+    for widget in app.query(".system-block"):
+        content = getattr(widget, "content", "")
+        texts.append(str(getattr(content, "plain", content)))
+    return texts
 
 
 class _FakeKernel:
@@ -385,10 +423,12 @@ async def test_preset_command_switches_the_agent_preset() -> None:
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         prompt = app.query_one(PromptArea)
-        prompt.text = "/preset reviewer"
+        prompt.text = "/preset ptc"
         await pilot.press("enter")
         await pilot.pause(0.3)
-        assert app.runtime.agent_preset == "reviewer"
+        assert app.runtime.agent_preset == "ptc"
+        texts = _info_texts(app)
+        assert any("switched to PTC (ptc) · ptc presentation · default mode" in text for text in texts), texts
 
 
 async def test_preset_without_argument_uses_picker(monkeypatch: Any) -> None:
@@ -398,11 +438,15 @@ async def test_preset_without_argument_uses_picker(monkeypatch: Any) -> None:
 
         async def fake_pick(title: str, items: Any) -> str:
             assert title == "Select agent preset"
-            return "reviewer"
+            assert [item[0] for item in items] == ["standard", "ptc", "minimal", "cordis"]
+            assert items[0][1] == "Standard  (native · default mode)"
+            assert items[1][1] == "PTC  (ptc · default mode)"
+            assert items[0][2].startswith("(current) ")
+            return "ptc"
 
         monkeypatch.setattr(app, "_pick", fake_pick)
         await app.preset_command("")
-        assert app.runtime.agent_preset == "reviewer"
+        assert app.runtime.agent_preset == "ptc"
 
 
 async def test_ctrl_c_clears_the_composer_when_idle() -> None:
@@ -726,7 +770,7 @@ async def test_preset_command_rejects_the_hidden_team_preset() -> None:
     async with app.run_test(size=(110, 32)) as pilot:
         await pilot.pause()
         await app.preset_command("team")
-        assert app.runtime.agent_preset == "default"
+        assert app.runtime.agent_preset == "standard"
         assert app.runtime.agent_mode == "default"
 
 
@@ -751,7 +795,7 @@ async def test_team_on_and_off_toggle_the_current_session_mode() -> None:
         app.runtime.team.members = list  # type: ignore[method-assign]
         await app.team_command("off")
         assert app.runtime.agent_mode == "default"
-        assert app.runtime.agent_preset == "default"
+        assert app.runtime.agent_preset == "standard"
 
 
 async def test_scheduled_message_renders_and_clears_busy_state() -> None:
@@ -776,3 +820,30 @@ async def test_scheduled_message_renders_and_clears_busy_state() -> None:
         assert waits == [1]
         assert app._working is False
         assert app._phase == "idle"
+
+
+async def test_preset_listing_shows_english_names_and_presentation() -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(110, 32)) as pilot:
+        await pilot.pause()
+        app._report_agent_presets()
+        await pilot.pause(0.1)
+        texts = _info_texts(app)
+        assert any("standard  Standard  native tools" in text for text in texts), texts
+        assert any("ptc  PTC  ptc tools" in text for text in texts), texts
+        assert any("(current)" in text for text in texts), texts
+        assert any("use /preset <id>" in text for text in texts), texts
+
+
+async def test_status_and_welcome_show_the_agent_preset_presentation() -> None:
+    app = DeepPyroApp(runtime_factory=_make_runtime, splash=False)
+    async with app.run_test(size=(110, 32)) as pilot:
+        await pilot.pause()
+        app.show_status()
+        app._render_welcome()
+        await pilot.pause(0.1)
+        texts = _info_texts(app)
+        assert any("preset   Standard  (native · default mode)" in text for text in texts), texts
+        assert any(
+            "agent preset Standard (standard · native presentation · default mode)" in text for text in texts
+        ), texts

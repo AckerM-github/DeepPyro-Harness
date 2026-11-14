@@ -24,6 +24,7 @@ from textual.binding import Binding
 from textual.widgets import Footer, Header
 
 from deeppyro import __version__
+from deeppyro.api import DEFAULT_PRESET_ID
 from deeppyro.sandbox.types import APPROVALS, PRESETS
 from deeppyro.tui.commands import dispatch, help_text, live_commands
 from deeppyro.tui.format import context_percent, short_session_id
@@ -567,7 +568,27 @@ class DeepPyroApp(App[None]):
 
     # -- policy / approval / workspace commands --------------------------
     def _agent_preset(self) -> str:
-        return str(getattr(self.runtime, "agent_preset", "default") or "default")
+        return str(getattr(self.runtime, "agent_preset", DEFAULT_PRESET_ID) or DEFAULT_PRESET_ID)
+
+    def _agent_presentation(self) -> str:
+        """Tool presentation of the active agent preset (native or ptc)."""
+        value = getattr(self.runtime, "agent_presentation", "")
+        if callable(value):
+            try:
+                value = value()
+            except Exception:  # noqa: BLE001 - status display must never fail
+                value = ""
+        return str(value or "native")
+
+    def _agent_preset_display(self) -> str:
+        """Display name of the active agent preset, falling back to its id."""
+        value = getattr(self.runtime, "agent_preset_display", "")
+        if callable(value):
+            try:
+                value = value()
+            except Exception:  # noqa: BLE001 - status display must never fail
+                value = ""
+        return str(value or "") or self._agent_preset()
 
     def _agent_mode(self) -> str:
         reader = getattr(self.runtime, "agent_mode", "default")
@@ -722,9 +743,10 @@ class DeepPyroApp(App[None]):
         conversation = self.conversation
         conversation.add_info("DeepPyro Harness — python core, terminal UI")
         conversation.add_info(
-            f"{runtime.provider_name}/{runtime.model}  ·  agent preset {self._agent_preset()}"
-            f" ({self._agent_mode()} mode)  ·  /model and /provider switch the model;"
-            " /preset switches the agent preset"
+            f"{runtime.provider_name}/{runtime.model}  ·  agent preset "
+            f"{self._agent_preset_display()} ({self._agent_preset()} · "
+            f"{self._agent_presentation()} presentation · {self._agent_mode()} mode)  ·  "
+            "/model and /provider switch the model; /preset switches the agent preset"
         )
         conversation.add_info("/policy, /approval and /cwd change the session settings")
         conversation.add_info("Type a message. /help lists commands. Ctrl+C interrupts, Ctrl+D quits.")
@@ -1035,36 +1057,71 @@ class DeepPyroApp(App[None]):
                 return []
         return list(value or [])
 
+    def _agent_preset_summary(self, spec: Any) -> tuple[str, str, str, str, str]:
+        """Preset fields used by /preset: (id, name, presentation, mode, description)."""
+        preset_id = str(getattr(spec, "id", "") or "")
+        display_name = getattr(spec, "display_name", None)
+        name = ""
+        if callable(display_name):
+            try:
+                name = str(display_name() or "").strip()
+            except Exception:  # noqa: BLE001 - a broken spec must not hide the list
+                name = ""
+        name = name or str(getattr(spec, "name", "") or "").strip() or preset_id
+        presentation = str(getattr(spec, "presentation", "") or "native")
+        mode = str(getattr(spec, "mode", "") or "default")
+        description = str(getattr(spec, "description", "") or "")
+        return preset_id, name, presentation, mode, description
+
+    def _agent_preset_items(self) -> list[tuple[str, str, str]]:
+        """Picker rows: value, display label with presentation, description."""
+        items: list[tuple[str, str, str]] = []
+        current = self._agent_preset()
+        for spec in self._preset_specs():
+            preset_id, name, presentation, mode, description = self._agent_preset_summary(spec)
+            label = f"{name}  ({presentation} · {mode} mode)"
+            marker = "(current) " if preset_id == current else ""
+            items.append((preset_id, label, marker + description))
+        return items
+
+    def _agent_preset_lines(self) -> list[str]:
+        """Text rows for /preset, e.g. standard  Standard  native tools · ..."""
+        lines: list[str] = []
+        current = self._agent_preset()
+        for spec in self._preset_specs():
+            preset_id, name, presentation, _mode, description = self._agent_preset_summary(spec)
+            line = f"{preset_id}  {name}  {presentation} tools"
+            if description:
+                line += f" · {description}"
+            if preset_id == current:
+                line += "  (current)"
+            lines.append(line)
+        return lines
+
+    def _report_agent_presets(self) -> None:
+        lines = self._agent_preset_lines()
+        if lines:
+            self.conversation.add_info("agent presets:")
+            for line in lines:
+                self.conversation.add_info(line)
+        else:
+            self.conversation.add_info(f"current agent preset: {self._agent_preset()}")
+        self.conversation.add_info("use /preset <id>")
+
     async def preset_command(self, argument: str) -> None:
         presets = self._preset_specs()
-        current = str(getattr(self.runtime, "agent_preset", "default") or "default")
         if self._working:
             self.notify("cannot switch agent preset during a turn", severity="warning")
             return
         if not argument:
             if len(presets) > 1:
-                items: list[tuple[str, str, str]] = []
-                for spec in presets:
-                    preset_id = str(getattr(spec, "id", "") or "")
-                    label = str(getattr(spec, "name", "") or preset_id)
-                    note = "current" if preset_id == current else str(getattr(spec, "description", "") or "")
-                    items.append((preset_id, label, note))
-                choice = await self._pick("Select agent preset", items)
+                choice = await self._pick("Select agent preset", self._agent_preset_items())
                 if choice is None:
-                    self.conversation.add_info(f"current preset: {current}")
-                    self.conversation.add_info(
-                        "available: " + ", ".join(str(getattr(s, "id", "")) for s in presets)
-                    )
-                    self.conversation.add_info("use /preset <id>")
+                    self._report_agent_presets()
                     return
                 argument = choice
             else:
-                self.conversation.add_info(f"current preset: {current}")
-                if presets:
-                    self.conversation.add_info(
-                        "available: " + ", ".join(str(getattr(s, "id", "")) for s in presets)
-                    )
-                self.conversation.add_info("use /preset <id>")
+                self._report_agent_presets()
                 return
         try:
             selected = await self.runtime.set_agent_preset(argument)
@@ -1072,8 +1129,18 @@ class DeepPyroApp(App[None]):
             self.conversation.add_error(f"preset switch failed: {exc}")
             return
         mode = self._agent_mode()
-        hint = "team tools enabled for the lead" if mode == "team" else "subagent delegation enabled"
-        self.conversation.add_info(f"agent preset switched to {selected} · {mode} mode ({hint})")
+        presentation = self._agent_presentation()
+        display = self._agent_preset_display()
+        if presentation == "ptc":
+            hint = "run_code-only tool presentation"
+        elif mode == "team":
+            hint = "team tools enabled for the lead"
+        else:
+            hint = "subagent delegation enabled"
+        self.conversation.add_info(
+            f"agent preset switched to {display} ({selected}) · "
+            f"{presentation} presentation · {mode} mode ({hint})"
+        )
         self.refresh_status()
 
     def show_status(self) -> None:
@@ -1096,7 +1163,7 @@ class DeepPyroApp(App[None]):
             "providers " + ", ".join(self._provider_names()),
             f"model    {runtime.provider_name}/{runtime.model}",
             f"cwd      {runtime.cwd}",
-            f"preset   {self._agent_preset()}  ({self._agent_mode()} mode)",
+            f"preset   {self._agent_preset_display()}  ({self._agent_presentation()} · {self._agent_mode()} mode)",
             f"policy   {policy}",
             f"tokens   input {usage['input']}  output {usage['output']}  cached {usage['cached']}",
             f"context  {context_percent(self._context_used, runtime.context_window)}% of {runtime.context_window}",

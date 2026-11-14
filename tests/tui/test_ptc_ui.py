@@ -296,7 +296,7 @@ class FakeRuntime:
         self.context_window = 8192
         self.permission = FakePermission()
         self.session = FakeHistorySession()
-        self.agent_preset = "default"
+        self.agent_preset = "standard"
         self.agent_mode = "default"
         self.agent = None
 

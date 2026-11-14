@@ -13,7 +13,7 @@ from deeppyro.tui.runtime import TuiRuntime
 
 
 class FakeSession:
-    def __init__(self, session_id: str, preset: str = "default") -> None:
+    def __init__(self, session_id: str, preset: str = "standard") -> None:
         self.session_id = session_id
         self.header = SimpleNamespace(agentPreset=preset)
         self.records: list[Any] = []
@@ -28,7 +28,7 @@ class FakeStore:
         self._next = 1
 
     def create(self, cwd: str, *, agent_preset: str | None = None) -> FakeSession:
-        session = FakeSession(f"session-{self._next}", agent_preset or "default")
+        session = FakeSession(f"session-{self._next}", agent_preset or "standard")
         self._next += 1
         self.sessions.append(session)
         return session
@@ -113,7 +113,7 @@ async def test_new_session_emits_session_created() -> None:
     session = await runtime.new_session()
 
     assert len(store.sessions) == 1
-    assert events == [{"sessionId": "session-1", "cwd": str(runtime.cwd), "preset": "default"}]
+    assert events == [{"sessionId": "session-1", "cwd": str(runtime.cwd), "preset": "standard"}]
     assert runtime._created_sessions == {"session-1"}
     assert session.session_id == "session-1"
 
