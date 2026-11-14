@@ -21,9 +21,11 @@ from __future__ import annotations
 import json
 import pathlib
 from collections.abc import Callable, Collection
+from typing import Any
 
 from deeppyro.core.errors import SessionError
 from deeppyro.core.wire import LogRecord, Message
+from deeppyro.hooks.records import INVOKED_RECORD_TYPE, RESULT_RECORD_TYPE
 from deeppyro.session import (
     KNOWN_EVENT_TYPES,
     LOG_SUFFIXES,
@@ -235,6 +237,58 @@ class SessionQuery:
             raise _invalid("event_filter must be an EventFilter")
         session = self._session(session_id)
         return [record for record in session.records if event_matches(record, event_filter)]
+
+    # -- hooks -------------------------------------------------------------
+
+    def hook_trace(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Pair hook journal records into invocation/result traces.
+
+        The hook journal appends one `hook/invoked` record per dispatch and one
+        `hook/result` record when the dispatch settles.  Records are paired in seq
+        order: a result belongs to the most recent still-unpaired invocation of
+        the same hook name, so two overlapping dispatches of one hook never take
+        each other's result.  An invocation that never settled (for example a
+        crashed or still-running turn) keeps `result=None`; a result without a
+        preceding invocation is ignored.
+
+        Only the last *limit* invocations are returned, oldest first.
+
+        Args:
+            session_id: the persisted (or live) session id to read.
+            limit: maximum number of invocation pairs to return (at least 1).
+
+        Returns:
+            Dicts with `hook`, `mode`, `invoked` and `result` keys; the invoked and
+            result values are copies of the persisted record data.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            raise _invalid("limit must be a positive integer")
+        pairs: list[dict[str, Any]] = []
+        matched: list[bool] = []
+        for record in self._session(session_id).records:
+            if record.type == INVOKED_RECORD_TYPE:
+                data = dict(record.data)
+                pairs.append(
+                    {
+                        "hook": data.get("hook"),
+                        "mode": data.get("mode"),
+                        "invoked": data,
+                        "result": None,
+                    }
+                )
+                matched.append(False)
+                continue
+            if record.type != RESULT_RECORD_TYPE:
+                continue
+            result = dict(record.data)
+            hook = result.get("hook")
+            for index in range(len(pairs) - 1, -1, -1):
+                if matched[index] or pairs[index]["hook"] != hook:
+                    continue
+                pairs[index]["result"] = result
+                matched[index] = True
+                break
+        return pairs[-limit:]
 
     # -- tracing -----------------------------------------------------------
 

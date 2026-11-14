@@ -58,6 +58,13 @@ scoped listener when every key/value pair of the listener scope is also present
 in M (listener.scope is a subset of M). The filter is applied after the
 registration snapshot and before the mode runs, so filtered-out listeners do
 not affect order, results, or error aggregation.
+
+Observers
+---------
+add_observer registers a synchronous callback that receives a frozen
+HookObservation before ("invoked") and after ("resolved") every dispatch.
+Observations are emitted after payload freezing and are not part of the
+listener chain; observer exceptions are logged and isolated.
 """
 
 from __future__ import annotations
@@ -65,6 +72,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -74,7 +82,7 @@ from deeppyro.hooks.types import HOOK_NAMES, HookPayload
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["HookAggregateError", "HookService"]
+__all__ = ["HookAggregateError", "HookObservation", "HookService"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +92,26 @@ class _Listener:
     handler: Callable[..., Any]
     scope: Mapping[str, Any] | None
     global_: bool
+
+
+@dataclass(frozen=True, slots=True)
+class HookObservation:
+    """One dispatch lifecycle event delivered to observers.
+
+    kind is "invoked" before the mode runs or "resolved" from the dispatch
+    finally clause. payload is the frozen mapping the listeners received,
+    scope is the normalized dispatch scope, and result/error describe the
+    outcome (result is None for emit and parallel).
+    """
+
+    kind: str
+    hook: str
+    mode: str
+    scope: Mapping[str, Any] | None
+    payload: Mapping[str, Any]
+    result: Any = None
+    error: BaseException | None = None
+    duration_ms: float = 0.0
 
 
 class HookAggregateError(Exception):
@@ -102,6 +130,7 @@ class HookService:
     def __init__(self) -> None:
         """Create an empty service with a listener list for every known hook."""
         self._listeners: dict[str, list[_Listener]] = {name: [] for name in HOOK_NAMES}
+        self._observers: list[Callable[[HookObservation], None]] = []
 
     # -- registration ------------------------------------------------------
     def on(
@@ -165,6 +194,43 @@ class HookService:
         """Return all registered handlers for the name, ignoring scope filters."""
         return tuple(entry.handler for entry in self._listeners.get(name, ()))
 
+    def add_observer(self, observer: Callable[[HookObservation], None]) -> Callable[[], None]:
+        """Register a dispatch observer and return an idempotent disposer.
+
+        Every dispatch delivers exactly one invoked observation before its
+        listeners run and one resolved observation from its finally clause.
+        Observer failures are logged with logger.exception and cannot change
+        the dispatch result. An observer added or disposed while a dispatch is
+        running only affects later notifications.
+        """
+        if not callable(observer):
+            raise TypeError("hook observer must be callable")
+        self._observers.append(observer)
+        disposed = False
+
+        def dispose() -> None:
+            nonlocal disposed
+            if disposed:
+                return
+            disposed = True
+            for index, current in enumerate(self._observers):
+                if current is observer:
+                    del self._observers[index]
+                    return
+
+        return dispose
+
+    @property
+    def observed(self) -> bool:
+        """Return True when at least one dispatch observer is registered.
+
+        Dispatch call sites that skip work when no listener is registered should
+        still dispatch while observed is True: the journal and the cordis bridge
+        can only record fallback and veto decisions when the hook runs at all.
+        Hot hooks stay listener-gated because they fire once per model frame.
+        """
+        return bool(self._observers)
+
     # -- dispatch ----------------------------------------------------------
     async def waterfall(
         self,
@@ -177,7 +243,18 @@ class HookService:
         """Run the waterfall chain; a handler that returns None without next() vetoes it."""
         handlers = self._dispatch_handlers(name, scope)
         frozen = _freeze(payload)
-        return await self._waterfall(handlers, 0, frozen, fallback, name)
+        frozen_scope = _normalize_scope(scope)
+        started = self._begin(name, "waterfall", frozen, frozen_scope)
+        result: Any = None
+        error: BaseException | None = None
+        try:
+            result = await self._waterfall(handlers, 0, frozen, fallback, name)
+            return result
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            self._end(name, "waterfall", frozen, frozen_scope, result, error, started)
 
     async def serial(
         self,
@@ -189,12 +266,22 @@ class HookService:
         """Run every matching handler in order and collect their return values."""
         handlers = self._dispatch_handlers(name, scope)
         frozen = _freeze(payload)
+        frozen_scope = _normalize_scope(scope)
+        started = self._begin(name, "serial", frozen, frozen_scope)
         results: list[Any] = []
-        for handler in handlers:
-            if _cancelled(frozen):
-                break
-            results.append(await _invoke(handler, frozen))
-        return results
+        error: BaseException | None = None
+        try:
+            for handler in handlers:
+                if _cancelled(frozen):
+                    break
+                results.append(await _invoke(handler, frozen))
+            return results
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            result = None if error is not None else results
+            self._end(name, "serial", frozen, frozen_scope, result, error, started)
 
     async def emit(
         self,
@@ -206,14 +293,24 @@ class HookService:
         """Run every matching handler in order, logging and isolating handler failures."""
         handlers = self._dispatch_handlers(name, scope)
         frozen = _freeze(payload)
-        for handler in handlers:
-            if _cancelled(frozen):
-                break
-            try:
-                await _invoke(handler, frozen)
-            except Exception:
-                # Emit isolates every listener failure by design.
-                logger.exception("hook handler for %r failed", name)
+        frozen_scope = _normalize_scope(scope)
+        started = self._begin(name, "emit", frozen, frozen_scope)
+        error: BaseException | None = None
+        try:
+            for handler in handlers:
+                if _cancelled(frozen):
+                    break
+                try:
+                    await _invoke(handler, frozen)
+                except Exception:
+                    # Emit isolates every listener failure by design.
+                    logger.exception("hook handler for %r failed", name)
+            return
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            self._end(name, "emit", frozen, frozen_scope, None, error, started)
 
     async def bail(
         self,
@@ -225,13 +322,24 @@ class HookService:
         """Stop at the first matching handler returning a bailed value (not None/False)."""
         handlers = self._dispatch_handlers(name, scope)
         frozen = _freeze(payload)
-        for handler in handlers:
-            if _cancelled(frozen):
-                return None
-            result = await _invoke(handler, frozen)
-            if _is_bailed(result):
-                return result
-        return None
+        frozen_scope = _normalize_scope(scope)
+        started = self._begin(name, "bail", frozen, frozen_scope)
+        result: Any = None
+        error: BaseException | None = None
+        try:
+            for handler in handlers:
+                if _cancelled(frozen):
+                    return None
+                result = await _invoke(handler, frozen)
+                if _is_bailed(result):
+                    return result
+            return None
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            resolved = None if error is not None else result
+            self._end(name, "bail", frozen, frozen_scope, resolved, error, started)
 
     async def parallel(
         self,
@@ -243,18 +351,78 @@ class HookService:
         """Run matching handlers concurrently and aggregate failures into HookAggregateError."""
         handlers = self._dispatch_handlers(name, scope)
         frozen = _freeze(payload)
-        if _cancelled(frozen):
+        frozen_scope = _normalize_scope(scope)
+        started = self._begin(name, "parallel", frozen, frozen_scope)
+        error: BaseException | None = None
+        try:
+            if _cancelled(frozen):
+                return
+            results = await asyncio.gather(
+                *(_invoke(handler, frozen) for handler in handlers),
+                return_exceptions=True,
+            )
+            errors = tuple(result for result in results if isinstance(result, BaseException))
+            if errors:
+                raise HookAggregateError(errors, name) from errors[0]
             return
-        results = await asyncio.gather(
-            *(_invoke(handler, frozen) for handler in handlers),
-            return_exceptions=True,
-        )
-        errors = tuple(result for result in results if isinstance(result, BaseException))
-        if errors:
-            raise HookAggregateError(errors, name) from errors[0]
-        return
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            self._end(name, "parallel", frozen, frozen_scope, None, error, started)
 
     # -- internals ---------------------------------------------------------
+    def _begin(
+        self,
+        name: str,
+        mode: str,
+        payload: Mapping[str, Any],
+        scope: Mapping[str, Any] | None,
+    ) -> float:
+        """Notify observers that a dispatch is starting; return its start time."""
+        self._notify(
+            HookObservation(
+                kind="invoked",
+                hook=name,
+                mode=mode,
+                scope=scope,
+                payload=payload,
+            )
+        )
+        return time.monotonic()
+
+    def _end(
+        self,
+        name: str,
+        mode: str,
+        payload: Mapping[str, Any],
+        scope: Mapping[str, Any] | None,
+        result: Any,
+        error: BaseException | None,
+        started: float,
+    ) -> None:
+        """Notify observers that a dispatch finished, including its duration."""
+        self._notify(
+            HookObservation(
+                kind="resolved",
+                hook=name,
+                mode=mode,
+                scope=scope,
+                payload=payload,
+                result=result,
+                error=error,
+                duration_ms=(time.monotonic() - started) * 1000.0,
+            )
+        )
+
+    def _notify(self, observation: HookObservation) -> None:
+        """Deliver one observation, isolating observer failures from dispatch."""
+        for observer in tuple(self._observers):
+            try:
+                observer(observation)
+            except Exception:
+                logger.exception("hook observer for %r failed", observation.hook)
+
     def _registration_list(self, name: str) -> list[_Listener]:
         if name not in HOOK_NAMES:
             raise ValueError(_unknown_name_message(name))

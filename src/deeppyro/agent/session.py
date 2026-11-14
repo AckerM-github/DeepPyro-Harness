@@ -9,6 +9,8 @@ Public entry points:
   step boundary; :meth:`AgentSession.wait_for_idle` waits for the driver.
 * :meth:`AgentSession.interrupt` cancels the running turn and (by default)
   clears the pending inbox.
+* :meth:`AgentSession.record_hook_event` persists one hook journal record and
+  mirrors it to the live sink (durable record first, event second).
 
 A turn is driven by inbox claims, mirroring the reference loop:
 
@@ -75,6 +77,7 @@ from deeppyro.core.protocols import (
     Usage,
 )
 from deeppyro.core.wire import Message, ReasoningPart, TextPart, ToolCallPart
+from deeppyro.hooks.records import INVOKED_RECORD_TYPE, RESULT_RECORD_TYPE
 from deeppyro.hooks.types import (
     AGENT_ASSISTANT_STREAM,
     AGENT_ERROR,
@@ -98,6 +101,9 @@ from deeppyro.prompt.runtime_context import render_runtime_context, runtime_cont
 from deeppyro.session.image_projection import IMAGE_OFFLOAD_EVENT
 
 logger = logging.getLogger(__name__)
+
+#: The only record types :meth:`AgentSession.record_hook_event` may append.
+HOOK_RECORD_TYPES = frozenset({INVOKED_RECORD_TYPE, RESULT_RECORD_TYPE})
 
 #: Tool-abort codes persisted in tool/result.data.error (reference pipeline).
 TOOL_ABORTED = "ABORTED"
@@ -378,6 +384,37 @@ class AgentSession:
             except (TimeoutError, asyncio.CancelledError):
                 pass
 
+    def record_hook_event(self, record_type: str, data: Mapping[str, Any]) -> int:
+        """Persist one hook observation and publish it to the live sink.
+
+        The hook journal observes every hook dispatch and calls this for each
+        one; the durable record is appended before the event reaches the sink,
+        so a replayed log and the live NDJSON/TUI stream agree.
+
+        Only the two hook record types are accepted.  They are plain, non-surface
+        records: derivation, the canonical surface fold and compaction never see
+        them, so journaling cannot change what the model saw.
+
+        Args:
+            record_type: `hook/invoked` or `hook/result`.
+            data: the observation payload (already shaped by the journal).
+
+        Returns:
+            The seq of the appended record.
+
+        Raises:
+            SessionError: when *record_type* is not a hook record type.
+        """
+        if record_type not in HOOK_RECORD_TYPES:
+            expected = ", ".join(sorted(HOOK_RECORD_TYPES))
+            raise SessionError(f"record_hook_event only accepts {expected}, got {record_type!r}")
+        payload = dict(data)
+        seq = self._append(record_type, payload)
+        event: dict[str, Any] = {"type": record_type, "seq": seq}
+        event.update(payload)
+        self._emit(event)
+        return seq
+
     # -- driver ------------------------------------------------------------
     def _enqueue(
         self,
@@ -437,10 +474,10 @@ class AgentSession:
         if self._phase == phase:
             return
         self._phase = phase
-        hooks = self._hooks
-        if hooks is None or not hooks.has(AGENT_STATUS):
+        if not self._hook_enabled(AGENT_STATUS):
             return
-        await hooks.emit(AGENT_STATUS, {"status": phase}, scope=self._hook_scope())
+        assert self._hooks is not None
+        await self._hooks.emit(AGENT_STATUS, {"status": phase}, scope=self._hook_scope())
 
     def _hook_scope(self) -> dict[str, Any]:
         """The dispatch scope for hook calls made by this agent.
@@ -455,6 +492,20 @@ class AgentSession:
         if isinstance(preset, str) and preset:
             scope["preset"] = preset
         return scope
+
+    def _hook_enabled(self, name: str) -> bool:
+        """Return True when dispatching name can reach a listener or an observer.
+
+        A dispatch without listeners is skipped as a fast path, but registered
+        hook observers (the P2 hook journal and bridge) must still see the
+        dispatch so fallback and veto decisions are replayable from the log.
+        """
+        hooks = self._hooks
+        if hooks is None:
+            return False
+        if hooks.has(name):
+            return True
+        return bool(getattr(hooks, "observed", False))
 
     # -- turn orchestration ------------------------------------------------
     async def _run_turn(self) -> str:
@@ -502,7 +553,7 @@ class AgentSession:
             return ""
         admitted = list(claimed)
         starts_series = True
-        pre_step_installed = self._hooks is not None and self._hooks.has(AGENT_PRE_STEP)
+        pre_step_installed = self._hook_enabled(AGENT_PRE_STEP)
         decision = await self._pre_step_hook(turn, claimed)
         if decision is None and pre_step_installed:
             # A listener neither continued the chain nor returned a decision:
@@ -613,9 +664,10 @@ class AgentSession:
 
     async def _should_stop(self, turn: int, final_text: str) -> bool:
         """Run the turn-stopping hook; return False when a listener steered."""
-        hooks = self._hooks
-        if hooks is None or not hooks.has(AGENT_TURN_STOPPING):
+        if not self._hook_enabled(AGENT_TURN_STOPPING):
             return True
+        hooks = self._hooks
+        assert hooks is not None
         await hooks.serial(
             AGENT_TURN_STOPPING,
             {
@@ -630,9 +682,10 @@ class AgentSession:
 
     # -- hooks -------------------------------------------------------------
     async def _pre_step_hook(self, turn: int, claimed: list[Message]) -> dict[str, Any] | None:
-        hooks = self._hooks
-        if hooks is None or not hooks.has(AGENT_PRE_STEP):
+        if not self._hook_enabled(AGENT_PRE_STEP):
             return None
+        hooks = self._hooks
+        assert hooks is not None
         payload = {
             "agent": self,
             "messages": [*self._derive_messages(), *claimed],
@@ -664,9 +717,10 @@ class AgentSession:
         return admitted
 
     async def _request_hook(self, request: LlmRequest, turn: int, step: int) -> LlmRequest:
-        hooks = self._hooks
-        if hooks is None or not hooks.has(AGENT_REQUEST):
+        if not self._hook_enabled(AGENT_REQUEST):
             return request
+        hooks = self._hooks
+        assert hooks is not None
         controls: dict[str, Any] = {
             "provider": request.provider,
             "model": request.model,
@@ -715,9 +769,10 @@ class AgentSession:
         )
 
     async def _request_error_hook(self, turn: int, step: int, failure: dict[str, Any]) -> Any:
-        hooks = self._hooks
-        if hooks is None or not hooks.has(AGENT_REQUEST_ERROR):
+        if not self._hook_enabled(AGENT_REQUEST_ERROR):
             return None
+        hooks = self._hooks
+        assert hooks is not None
         payload = {
             "agent": self,
             "turn": turn,
@@ -740,9 +795,10 @@ class AgentSession:
         session.  Unknown keys are ignored so a listener may echo richer
         selection data.
         """
-        hooks = self._hooks
-        if hooks is None or not hooks.has(MODEL_SELECTION):
+        if not self._hook_enabled(MODEL_SELECTION):
             return self._model
+        hooks = self._hooks
+        assert hooks is not None
         provider = self._provider.name
         fallback = {"provider": provider, "model": self._model}
         payload = {
@@ -1079,9 +1135,10 @@ class AgentSession:
         The tools pipeline does this for the normal batch path; this mirror keeps
         the standalone fallback batch behaviour identical.
         """
-        hooks = self._hooks
-        if hooks is None or not hooks.has(TOOL_CALL):
+        if not self._hook_enabled(TOOL_CALL):
             return
+        hooks = self._hooks
+        assert hooks is not None
         for request, seq in zip(requests, seqs):
             if seq is None:
                 continue
@@ -1268,9 +1325,10 @@ class AgentSession:
         only observe do not affect the result.  A non-string result is a
         contract violation: the projection persists text, not a structure.
         """
-        hooks = self._hooks
-        if hooks is None or not hooks.has(SYSTEM_PROMPT_ASSEMBLE):
+        if not self._hook_enabled(SYSTEM_PROMPT_ASSEMBLE):
             return rendered
+        hooks = self._hooks
+        assert hooks is not None
         payload = {
             "agent": self,
             "turn": turn,
@@ -1613,9 +1671,10 @@ class AgentSession:
 
     async def _emit_agent_error(self, exc: BaseException, phase: str) -> None:
         """Publish one agent/error for a failed turn (never for cancellation)."""
-        hooks = self._hooks
-        if hooks is None or not hooks.has(AGENT_ERROR):
+        if not self._hook_enabled(AGENT_ERROR):
             return
+        hooks = self._hooks
+        assert hooks is not None
         await hooks.emit(AGENT_ERROR, {"agent": self, "error": exc, "phase": phase}, scope=self._hook_scope())
 
     # -- compaction --------------------------------------------------------

@@ -210,7 +210,7 @@ class PermissionGate:
 
     async def _ask_hook(self, req: ApprovalRequest) -> str:
         hooks = self._hooks
-        if hooks is None or not hooks.has(APPROVAL_REQUEST):
+        if hooks is None or not (hooks.has(APPROVAL_REQUEST) or bool(getattr(hooks, "observed", False))):
             return "ask"
         payload = {
             "request": req,
@@ -249,7 +249,7 @@ class PermissionGate:
 
     async def _emit(self, name: str, payload: dict[str, Any]) -> None:
         hooks = self._hooks
-        if hooks is None or not hooks.has(name):
+        if hooks is None or not (hooks.has(name) or bool(getattr(hooks, "observed", False))):
             return
         try:
             await hooks.emit(name, payload)

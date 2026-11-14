@@ -7,7 +7,7 @@ deeppyro.hooks.types; docs/spec/hooks.md is the contract for call sites.
 
 from __future__ import annotations
 
-from .service import HookAggregateError, HookService
+from .service import HookAggregateError, HookObservation, HookService
 from .types import (
     AGENT_ASSISTANT_STREAM,
     AGENT_ERROR,
@@ -63,6 +63,7 @@ __all__ = [
     "HookDisposer",
     "HookHandler",
     "HookNext",
+    "HookObservation",
     "HookPayload",
     "HookService",
     "SerialHandler",

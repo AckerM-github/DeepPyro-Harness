@@ -79,6 +79,9 @@ class SessionQueryPlugin(Service):
     def trace_event(self, session_id: str, seq: int) -> list[Any]:
         return self.query.trace_event(session_id, seq)
 
+    def hook_trace(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        return self.query.hook_trace(session_id, limit)
+
 
 def _global_config(ctx: Any) -> Any:
     try:

@@ -106,6 +106,22 @@ def test_plugin_delegates_reads(tmp_path: pathlib.Path) -> None:
     assert plugin.trace_session("session-plugin").ancestors == []
 
 
+def test_plugin_delegates_hook_trace(tmp_path: pathlib.Path) -> None:
+    store = tmp_store(tmp_path)
+    new_session(
+        store,
+        [
+            {"type": "hook/invoked", "data": {"hook": "llm/stream", "mode": "waterfall"}},
+            {"type": "hook/result", "data": {"hook": "llm/stream", "mode": "waterfall", "ok": True}},
+        ],
+        session_id="session-plugin-hooks",
+    )
+    plugin = _mount(store)
+    trace = plugin.hook_trace("session-plugin-hooks")
+    assert [pair["hook"] for pair in trace] == ["llm/stream"]
+    assert trace[0]["result"]["ok"] is True
+
+
 async def test_kernel_mounts_service(tmp_path: pathlib.Path) -> None:
     pytest.importorskip("deeppyro.builtin")
     from deeppyro.config import Config

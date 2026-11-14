@@ -460,7 +460,8 @@ async def _emit_call_events(
     if not callable(emit):
         return
     has = getattr(hooks, "has", None)
-    if callable(has) and not has(TOOL_CALL):
+    observed = bool(getattr(hooks, "observed", False))
+    if callable(has) and not (has(TOOL_CALL) or observed):
         return
     scope = _hook_scope(agent)
     for request, seq in zip(requests, call_seqs):
