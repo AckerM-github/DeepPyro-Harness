@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 from deeppyro.agent import AgentOptions, AgentSession
 from deeppyro.api import (
+    AGENT_MODE_DEFAULT,
     AGENT_MODE_TEAM,
     TEAM_MODE_DISABLED_TOOLS,
     TEAM_TOOL_NAMES,
@@ -26,6 +27,7 @@ class AgentsPlugin(Service):
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
+        self._ctx = ctx
         cfg = ctx.service("config").value
         self._agent_config = cfg.agent
         self._prompt_service = ctx.service("prompt")
@@ -87,6 +89,7 @@ class AgentsPlugin(Service):
                 revision=spec.revision,
             )
 
+        surface = self._surface_registry(registry, spec)
         agent = AgentSession(
             session=session,
             provider=provider,
@@ -97,7 +100,10 @@ class AgentsPlugin(Service):
             cwd=cwd,
             services=services,
             prompt_builder=build_prompt,
+            surface_registry=surface,
         )
+        # Kept for tests and hosts that inspect what the model was offered.
+        agent.surface_registry = surface
         agent.preset = spec.id
         agent.preset_revision = spec.revision
         agent.preset_spec = spec
@@ -120,6 +126,32 @@ class AgentsPlugin(Service):
                 "pass registry= explicitly"
             )
         return self._tools.registry_for(str(cwd), scope=spec.id, revision=spec.revision)
+
+    def _surface_registry(self, registry: Any, spec: Any) -> Any:
+        """Return the model-facing registry for this agent, or None for all tools.
+
+        PTC mode presents exactly one direct tool (run_code); every other tool is
+        reached from inside the program.  The full registry still backs the
+        nested dispatcher, the system prompt's tools:sdk section and this
+        service, so only the request surface is narrowed here.  Team presets
+        keep the native surface: they orchestrate members through team_* tools
+        that the model itself has to call.
+        """
+        if registry is None:
+            return None
+        ptc = self._ctx.get("ptc") if hasattr(self._ctx, "get") else None
+        if ptc is None or getattr(ptc, "mode", "native") != "ptc":
+            return None
+        if getattr(spec, "mode", AGENT_MODE_DEFAULT) != AGENT_MODE_DEFAULT:
+            return None
+        names = getattr(registry, "names", None)
+        without = getattr(registry, "without", None)
+        if not callable(names) or not callable(without):
+            return None
+        registered = list(names())
+        if "run_code" not in registered:
+            return None
+        return without([name for name in registered if name != "run_code"])
 
     def _filter_registry(self, registry: Any, spec: Any) -> Any:
         """Drop tools the preset's agent mode must not expose.

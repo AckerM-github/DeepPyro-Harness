@@ -40,7 +40,11 @@ async def test_dispatch_records_do_not_appear_in_derived_messages(tmp_path: Path
         services={"ptc": PtcRuntime(), "tool_registry": ToolRegistry([EchoTool()])},
     )
     ctx.log = lambda kind, data: session.append(kind, data)
-    result = await RunCodeTool().run({"program": "return await echo(value='x')"}, ctx)
+    result = await RunCodeTool().run(
+        {"code": "return await tools.echo({'value': 'x'})", "description": "echo"},
+        ctx,
+    )
     assert result.is_error is False
+    assert result.text == "echo:x"
     assert [record.type for record in session.records] == ["tool/ptc-dispatch-start", "tool/ptc-dispatch"]
     assert session.derive_messages() == []

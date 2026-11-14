@@ -27,7 +27,7 @@ from deeppyro import __version__
 from deeppyro.sandbox.types import APPROVALS, PRESETS
 from deeppyro.tui.commands import dispatch, help_text, live_commands
 from deeppyro.tui.format import context_percent, short_session_id
-from deeppyro.tui.history import process_map, reasoning_from_session
+from deeppyro.tui.history import is_ptc_mode_message, process_map, reasoning_from_session
 from deeppyro.tui.screens.approval import ALLOW_ALWAYS, ApprovalScreen
 from deeppyro.tui.screens.jobs import JobsPanelScreen
 from deeppyro.tui.screens.path_prompt import PathPromptScreen
@@ -695,6 +695,12 @@ class DeepPyroApp(App[None]):
             role = str(getattr(message, "role", "") or "")
             text = message.text() if hasattr(message, "text") else ""
             if role == "user":
+                if is_ptc_mode_message(message):
+                    # PTC image context is recorded as a user message but was
+                    # never typed by the user. Skip the bubble and the turn
+                    # counter so replayed process blocks keep their recorded
+                    # turn numbers.
+                    continue
                 turn_number += 1
                 conversation.add_user(text)
                 # Replay the collapsed thinking and tool lines for this turn.

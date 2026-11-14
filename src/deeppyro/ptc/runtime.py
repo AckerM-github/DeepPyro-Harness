@@ -123,6 +123,35 @@ class PtcRuntime:
         """The DSH-shaped timeout descriptor."""
         return self.config.timeout
 
+    @property
+    def mode(self) -> str:
+        """The configured presentation mode: "native" or "ptc"."""
+        return self.config.mode
+
+    @property
+    def language(self) -> str:
+        """The PTC program language."""
+        return "python"
+
+    @property
+    def program_format(self) -> str:
+        """The format of the program source accepted by run_code."""
+        return "python"
+
+    @property
+    def sandbox_mode(self) -> None:
+        """PTC has no OS-level sandbox policy of its own."""
+        return None
+
+    @property
+    def execution_instructions(self) -> str:
+        """Short execution-model note appended to the run_code description."""
+        return (
+            "Programs run in a fresh CPython process started with -I -S. The working directory is "
+            "fixed to the Session's current directory. Inside a program only tools and ToolCallError "
+            "are bound; call a tool as await tools.name(args)."
+        )
+
     def resolve(self, request: Mapping[str, Any] | PtcRunSpec, *, cwd: Path | None = None) -> PtcRunSpec:
         """Build a run spec from model arguments.
 

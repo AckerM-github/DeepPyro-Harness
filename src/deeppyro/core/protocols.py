@@ -27,6 +27,9 @@ class ToolSchema(WireModel):
     name: str
     description: str = ""
     parameters: dict[str, Any] = Field(default_factory=dict)
+    # Optional typed result schema used by the PTC SDK renderer; never sent to
+    # the model as part of the tool declaration itself.
+    output: dict[str, Any] | None = None
 
 
 class LlmRequest(WireModel):

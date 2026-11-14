@@ -8,8 +8,12 @@ and the history replay performed by /resume. No new storage format is needed.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+#: User-message source kind used by the PTC transport for image attachments.
+PTC_MODE_SOURCE_KIND = "ptc-mode"
 
 
 @dataclass(slots=True)
@@ -50,6 +54,41 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def source_kind(source: Any) -> str:
+    """Return the kind of a wire message source, or an empty string.
+
+    Session records carry the source as a plain mapping; hand-built objects and
+    test doubles may expose the same field as an attribute. Anything else is
+    treated as having no source.
+    """
+    if source is None:
+        return ""
+    if isinstance(source, Mapping):
+        kind = source.get("kind")
+    else:
+        kind = getattr(source, "kind", None)
+    return str(kind or "").strip()
+
+
+def is_ptc_mode_source(source: Any) -> bool:
+    """True when a source marks an internal PTC-mode user message.
+
+    The PTC transport surfaces image parts as a user message whose source kind
+    is ptc-mode. Those messages are model context, not something the user typed,
+    so the UI skips them while the durable log keeps them untouched.
+    """
+    return source_kind(source) == PTC_MODE_SOURCE_KIND
+
+
+def is_ptc_mode_message(message: Any) -> bool:
+    """True when a Message (object or mapping) carries a PTC-mode source."""
+    if message is None:
+        return False
+    if isinstance(message, Mapping):
+        return is_ptc_mode_source(message.get("source"))
+    return is_ptc_mode_source(getattr(message, "source", None))
 
 
 def _part_text(part: Any) -> str:
@@ -300,14 +339,18 @@ def process_map(session: Any) -> dict[int, TurnProcess]:
 
 
 __all__ = [
+    "PTC_MODE_SOURCE_KIND",
     "ProcessEntry",
     "ReasoningStep",
     "TurnProcess",
     "TurnReasoning",
     "TurnTool",
+    "is_ptc_mode_message",
+    "is_ptc_mode_source",
     "process_map",
     "processes_from_session",
     "reasoning_from_session",
     "reasoning_map",
     "reasoning_text",
+    "source_kind",
 ]

@@ -42,11 +42,6 @@ id = "tools-builtin"
 plugin = "deeppyro.builtin.tools:BuiltinToolsPlugin"
 
 [[plugins]]
-id = "ptc"
-plugin = "deeppyro.builtin.ptc:PtcPlugin"
-critical = false
-
-[[plugins]]
 id = "compress"
 plugin = "deeppyro.builtin.compress:CompressPlugin"
 
@@ -90,6 +85,12 @@ plugin = "deeppyro.builtin.prompt_service:PromptPlugin"
 [[plugins]]
 id = "prompt-core"
 plugin = "deeppyro.builtin.prompt_core:PromptCorePlugin"
+
+# PTC registers prompt sections in ptc mode, so it must mount after prompt-core.
+[[plugins]]
+id = "ptc"
+plugin = "deeppyro.builtin.ptc:PtcPlugin"
+critical = false
 
 [[plugins]]
 id = "memory"

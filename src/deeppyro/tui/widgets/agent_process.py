@@ -34,7 +34,12 @@ from textual.widgets import Static
 from deeppyro.tui.format import compact_text
 from deeppyro.tui.history import ReasoningStep, TurnReasoning
 from deeppyro.tui.widgets.thinking import STREAMING_LINE_CHARS, latest_sentence
-from deeppyro.tui.widgets.tool_card import clean_result_text, summarize_arguments
+from deeppyro.tui.widgets.tool_card import (
+    RUN_CODE_NAME,
+    clean_result_text,
+    run_code_detail,
+    summarize_arguments,
+)
 
 #: Header and step lines are clipped to one terminal line.
 MAX_LINE_CHARS = 120
@@ -190,11 +195,15 @@ class ToolProcessLine(Vertical):
 
     def _build_detail(self) -> Text:
         text = Text()
-        args = compact_text(
-            _pretty_arguments(self.arguments),
-            max_lines=DETAIL_ARG_LINES,
-            max_chars=DETAIL_ARG_CHARS,
-        )
+        args = ""
+        if self.tool_name.strip().lower() == RUN_CODE_NAME:
+            args = run_code_detail(self.arguments)
+        if not args:
+            args = compact_text(
+                _pretty_arguments(self.arguments),
+                max_lines=DETAIL_ARG_LINES,
+                max_chars=DETAIL_ARG_CHARS,
+            )
         if args:
             text.append("arguments\n", style="bold")
             text.append(args, style="dim")

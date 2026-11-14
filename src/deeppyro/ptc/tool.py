@@ -5,50 +5,82 @@ from __future__ import annotations
 import json
 from typing import Any, ClassVar
 
-from deeppyro.core.errors import AbortedError, PermissionDenied, ToolError
-from deeppyro.core.ids import new_call_id
+from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.tools.args import optional_int, require_str
 from deeppyro.tools.base import BaseTool, make_parameters
 from deeppyro.tools.permissions import gate_for
+from deeppyro.tools.registry import ToolRegistry
 
+from .executor import NESTED_EXCLUDED_TOOLS, NestedDispatcher
 from .runtime import PtcRuntime
-from .types import PtcBindingError
+from .types import PtcFailure
 
 RUN_CODE_NAME = "run_code"
-#: Tools that must not be callable through the nested binding transport.
-NESTED_EXCLUDED_TOOLS = frozenset({RUN_CODE_NAME, "ask_user_question"})
+
+_DESCRIPTION_PREFIX = (
+    "Execute a Python program against the available tools. Takes two required arguments: "
+    "`code`, the program to execute, and `description`, a short summary of what the "
+    "program does. Call tools as `await tools.name(args)` per the declarations in the system "
+    "prompt. Curate the program output. Image-bearing subtool results are attached after the run."
+)
+_DEFAULT_EXECUTION_INSTRUCTIONS = (
+    "Programs run in a fresh CPython process started with -I -S. The working directory is fixed to "
+    "the Session's current directory. Inside a program only tools and ToolCallError are bound; call "
+    "a tool as await tools.name(args)."
+)
+_DESCRIPTION_SUFFIX = (
+    " Each program starts in the Session's current directory. Running programs keep their initial directory."
+)
+
+
+def _tool_description(runtime: PtcRuntime | None) -> str:
+    instructions = getattr(runtime, "execution_instructions", None)
+    if not isinstance(instructions, str) or not instructions:
+        instructions = _DEFAULT_EXECUTION_INSTRUCTIONS
+    return f"{_DESCRIPTION_PREFIX} {instructions}{_DESCRIPTION_SUFFIX}"
 
 
 class RunCodeTool(BaseTool):
     """Execute a Python program with async bindings to the session's tools."""
 
     name = RUN_CODE_NAME
-    description = (
-        "Run a Python program in a fresh isolated Python process. The program is an async function "
-        "body: use await to call the session's available tools by name, and return a JSON value. "
-        "Print output is captured. Use this to combine tool calls and process their results in code."
-    )
-    parameters: ClassVar[dict[str, Any]] = make_parameters(
-        {
-            "program": {
-                "type": "string",
-                "description": "Python source. The function body may use top-level await and return.",
-            },
-            "timeoutMs": {
-                "type": "integer",
-                "description": "Timeout for the whole program, including nested tool calls.",
-                "minimum": 1,
-            },
-        },
-        required=["program"],
-        additional_properties=False,
-    )
+    parameters: ClassVar[dict[str, Any]] = {}
     parallel_safe = False
     reserved_tool = True
 
+    def __init__(self, runtime: PtcRuntime | None = None) -> None:
+        self.runtime = runtime
+        self.description = _tool_description(runtime)
+        properties: dict[str, Any] = {
+            "code": {
+                "type": "string",
+                "description": "The Python program to execute. Top-level await and return are supported.",
+            },
+            "description": {
+                "type": "string",
+                "description": "A short summary of what the program does.",
+            },
+        }
+        timeout = getattr(runtime, "timeout", None)
+        if timeout:
+            properties["timeoutMs"] = {
+                "type": "number",
+                "description": "Timeout for the whole program, including nested tool calls.",
+                "minimum": 1,
+                "maximum": timeout.get("maxMs"),
+            }
+        self.parameters = make_parameters(
+            properties,
+            required=["code", "description"],
+            additional_properties=False,
+        )
+
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        program = require_str(args, "program", allow_empty=True)
+        code = require_str(args, "code", allow_empty=True)
+        description = require_str(args, "description", allow_empty=True)
+        if not description.strip():
+            raise ToolError("invalid description: expected a non-empty string")
         gate = gate_for(ctx)
         if getattr(gate, "preset", "") == "read-only":
             return ToolResult(
@@ -56,136 +88,77 @@ class RunCodeTool(BaseTool):
                 is_error=True,
                 meta={"kind": "sandbox-unavailable"},
             )
-        runtime = (ctx.services or {}).get("ptc")
-        if runtime is None:
-            raise ToolError("PTC runtime is not available in this session")
-        if not isinstance(runtime, PtcRuntime) and not hasattr(runtime, "run"):
-            raise ToolError("PTC runtime is not available in this session")
+        runtime = self._runtime(ctx)
         config = getattr(runtime, "config", None)
         default_timeout = getattr(config, "timeout_ms", 120_000)
         max_timeout = getattr(config, "max_timeout_ms", 600_000)
-        timeout_ms = optional_int(
-            args,
-            "timeoutMs",
-            default_timeout,
-            minimum=1,
-            maximum=max_timeout,
-        )
+        timeout_ms = optional_int(args, "timeoutMs", default_timeout, minimum=1, maximum=max_timeout)
         registry = (ctx.services or {}).get("tool_registry")
-        bindings: dict[str, Any] = {}
-        if registry is not None:
-            for name in registry.names():
-                if name in NESTED_EXCLUDED_TOOLS:
-                    continue
-                bindings[name] = self._binding(name, registry, ctx)
-        request = {"program": program, "timeoutMs": timeout_ms}
+        if registry is None:
+            registry = ToolRegistry()
+        dispatcher = NestedDispatcher(
+            root_call_id=ctx.call_id,
+            registry=registry,
+            ctx=ctx,
+            hooks=(ctx.services or {}).get("hooks"),
+            max_parallel_sub_calls=getattr(config, "max_parallel_sub_calls", 10),
+            max_sub_calls_per_minute=getattr(config, "max_sub_calls_per_minute", 1024),
+            timeout_ms=timeout_ms,
+        )
         try:
-            spec = runtime.resolve(request, cwd=ctx.cwd)
-        except Exception as exc:
-            # resolve() reports configuration errors; surface them as tool errors.
+            spec = runtime.resolve({"program": code, "timeoutMs": timeout_ms}, cwd=ctx.cwd)
+        except Exception as exc:  # resolve() reports configuration errors
             raise ToolError(f"invalid run_code arguments: {exc}") from exc
-        result = await runtime.run(spec, bindings=bindings, ctx=ctx)
+        result = await runtime.run(spec, bindings=dispatcher.bindings, ctx=ctx)
         logs = "".join(result.logs).rstrip("\n")
-        if result.failure is not None:
-            text = f"Error: code run failed ({result.failure.kind}): {result.failure.message}"
-            if logs:
-                text += "\n\nCaptured output:\n" + logs
-            return ToolResult(
-                text=text,
-                is_error=True,
-                meta={
-                    "kind": result.failure.kind,
-                    "sandbox": dict(result.sandbox),
-                    "logs": logs,
-                },
-            )
-        parts: list[str] = []
-        if logs:
-            parts.append(logs)
+        failure = dispatcher.fatal or result.failure
+        if failure is not None:
+            return self._failure_result(failure, logs, result.sandbox)
+        rendered = self._success_text(logs, result.value)
+        meta: dict[str, Any] = {
+            "logs": logs,
+            "sandbox": dict(result.sandbox),
+        }
         if result.value is not None:
-            parts.append(json.dumps(result.value, ensure_ascii=False))
-        text = "\n\n".join(parts) if parts else "(run_code completed with no output)"
+            meta["result"] = result.value
+        return ToolResult(
+            text=rendered,
+            meta=meta,
+            parts=list(dispatcher.deferred_parts),
+        )
+
+    def _runtime(self, ctx: ToolContext) -> PtcRuntime:
+        runtime = self.runtime or (ctx.services or {}).get("ptc")
+        if runtime is None or not hasattr(runtime, "run"):
+            raise ToolError("PTC runtime is not available in this session")
+        return runtime
+
+    @staticmethod
+    def _success_text(logs: str, value: Any) -> str:
+        pieces: list[str] = []
+        if logs:
+            pieces.append(logs)
+        if value is not None:
+            if isinstance(value, str):
+                pieces.append(value)
+            else:
+                pieces.append(json.dumps(value, indent=2, ensure_ascii=False))
+        return "\n\n".join(pieces) if pieces else "(run_code completed with no output)"
+
+    @staticmethod
+    def _failure_result(failure: PtcFailure, logs: str, sandbox: dict[str, Any]) -> ToolResult:
+        text = f"Error: code run failed ({failure.kind}): {failure.message}"
+        if logs:
+            text += "\n\nCaptured output:\n" + logs
         return ToolResult(
             text=text,
+            is_error=True,
             meta={
-                "sandbox": dict(result.sandbox),
+                "kind": failure.kind,
+                "sandbox": dict(sandbox),
                 "logs": logs,
-                "value": result.value,
             },
         )
-
-    @staticmethod
-    def _binding(name: str, registry: Any, parent: ToolContext) -> Any:
-        async def binding(arguments: dict[str, Any]) -> str:
-            return await RunCodeTool._dispatch(name, arguments, registry, parent)
-
-        binding.__name__ = name
-        return binding
-
-    @staticmethod
-    async def _dispatch(name: str, arguments: dict[str, Any], registry: Any, parent: ToolContext) -> str:
-        sub_call_id = new_call_id()
-        parent.log(
-            "tool/ptc-dispatch-start",
-            {
-                "rootCallId": parent.call_id,
-                "parentCallId": parent.call_id,
-                "subCallId": sub_call_id,
-                "name": name,
-                "arguments": dict(arguments),
-            },
-        )
-        result: ToolResult | None = None
-        error_info: dict[str, str] | None = None
-        try:
-            if parent.cancel.is_set():
-                raise AbortedError("run_code was aborted")
-            tool = registry.get(name)
-            if tool is None:
-                raise ToolError(f'unknown tool "{name}"')
-            sub_context = ToolContext(
-                cwd=parent.cwd,
-                session_id=parent.session_id,
-                turn=parent.turn,
-                step=parent.step,
-                call_id=sub_call_id,
-                cancel=parent.cancel,
-                log=parent.log,
-                permission=parent.permission,
-                services=parent.services,
-            )
-            result = await tool.run(arguments, sub_context)
-            if not isinstance(result, ToolResult):
-                raise ToolError(f"tool {name!r} returned an invalid result")
-        except Exception as exc:  # noqa: BLE001 - every nested failure becomes a structured result
-            code = "PERMISSION_DENIED" if isinstance(exc, PermissionDenied) else "TOOL_ERROR"
-            error_info = {"name": type(exc).__name__, "code": code, "reason": str(exc)}
-            result = ToolResult(text=f"Error: {exc}", is_error=True, meta={"error": error_info})
-        assert result is not None
-        dispatch: dict[str, Any] = {
-            "rootCallId": parent.call_id,
-            "parentCallId": parent.call_id,
-            "subCallId": sub_call_id,
-            "name": name,
-            "arguments": dict(arguments),
-            "isError": result.is_error,
-            "content": [{"type": "text", "text": result.text}],
-        }
-        if result.meta:
-            dispatch["meta"] = dict(result.meta)
-        if error_info is not None:
-            dispatch["error"] = error_info
-        parent.log("tool/ptc-dispatch", dispatch)
-        if result.is_error:
-            reason = result.text
-            reason = reason.removeprefix("Error: ")
-            code = (
-                "PERMISSION_DENIED"
-                if error_info and error_info.get("code") == "PERMISSION_DENIED"
-                else "TOOL_ERROR"
-            )
-            raise PtcBindingError(name, code, reason)
-        return result.text
 
 
 __all__ = ["NESTED_EXCLUDED_TOOLS", "RUN_CODE_NAME", "RunCodeTool"]

@@ -75,6 +75,11 @@ def _error_result(message: str, *, meta: dict[str, Any] | None = None) -> ToolRe
     return ToolResult(text=f"Error: {message}", is_error=True, meta=meta)
 
 
+def _error_meta(exc: BaseException, code: str) -> dict[str, str]:
+    """Structured metadata for a nested call failure (not shown to the model)."""
+    return {"code": code, "errorClass": type(exc).__name__}
+
+
 def _decode_arguments(raw: str, name: str) -> dict[str, Any]:
     try:
         decoded = json.loads(raw) if raw and raw.strip() else {}
@@ -344,6 +349,69 @@ def _collect_call_seqs(
                 f"log() must return an integer tool/call seq, not {type(seq).__name__}"
             )
     return seqs, failures
+
+
+async def run_tool_call(
+    request: ToolCallRequest,
+    *,
+    registry: ToolRegistry,
+    ctx_factory: Callable[[ToolCallRequest], ToolContext],
+    hooks: Any | None = None,
+    turn: int | None = None,
+    step: int | None = None,
+) -> ToolOutcome:
+    """Run exactly one tool call through the normal pre/execute/post pipeline.
+
+    This is the single-call entry point used by nested transports (PTC).  It
+    does not append a tool/call record and never raises for tool failures:
+    unknown tools, malformed arguments, permission denials, and tool exceptions
+    are all converted to an error result.  Only cancellation propagates.
+    """
+    ctx = ctx_factory(request)
+    started = time.monotonic()
+    call = _call_payload(request)
+    tool = registry.get(request.name)
+    result: ToolResult
+    if tool is None:
+        result = _error_result(f'unknown tool "{request.name}"', meta={"code": "UNKNOWN_TOOL"})
+    else:
+        try:
+            args = _decode_arguments(request.arguments, request.name)
+            if hooks is None:
+                result = await tool.run(args, ctx)
+                if not isinstance(result, ToolResult):
+                    raise ToolError(f"tool {request.name!r} returned {type(result).__name__}, not ToolResult")
+            else:
+                result = await _run_hooked(
+                    hooks,
+                    tool,
+                    args,
+                    ctx,
+                    request,
+                    call,
+                    turn,
+                    step,
+                    None,
+                )
+        except asyncio.CancelledError:
+            raise
+        except PermissionDenied as exc:
+            result = _error_result(str(exc), meta=_error_meta(exc, "PERMISSION_DENIED"))
+        except AbortedError as exc:
+            result = _error_result(str(exc), meta=_error_meta(exc, "ABORTED"))
+        except ToolError as exc:
+            result = _error_result(str(exc), meta=_error_meta(exc, "TOOL_ERROR"))
+        except Exception as exc:  # noqa: BLE001 - a nested tool bug must not kill the program
+            result = _error_result(
+                f"tool {request.name!r} failed: {exc}",
+                meta={"code": "TOOL_ERROR", "traceback": traceback.format_exc()},
+            )
+    return ToolOutcome(
+        call_id=request.call_id,
+        name=request.name,
+        result=_retain_output(result, ctx, request.name),
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
 
 
 async def run_tool_batch(

@@ -28,6 +28,10 @@ PtcFailureKind = Literal[
     "sandbox-unavailable",
 ]
 
+PtcMode = Literal["native", "ptc"]
+
+PTC_MODES: frozenset[str] = frozenset({"native", "ptc"})
+
 PTC_FAILURE_KINDS: frozenset[str] = frozenset(
     {
         "exception",
@@ -46,6 +50,8 @@ DEFAULT_MAX_TIMEOUT_MS = 600_000
 DEFAULT_MAX_OUTPUT_BYTES = 67_108_864
 DEFAULT_MAX_PENDING_CALLS = 128
 DEFAULT_GRACE_MS = 3_000
+DEFAULT_MAX_PARALLEL_SUB_CALLS = 10
+DEFAULT_MAX_SUB_CALLS_PER_MINUTE = 1_024
 
 SANDBOX_UNAVAILABLE_MESSAGE = "the Python PTC runtime has no OS-level sandbox policy"
 
@@ -168,12 +174,15 @@ class PtcConfig:
     """
 
     enabled: bool = False
+    mode: PtcMode = "native"
     execution_mode: str = "per-call"
     timeout_ms: int = DEFAULT_TIMEOUT_MS
     max_timeout_ms: int = DEFAULT_MAX_TIMEOUT_MS
     max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES
     max_pending_calls: int = DEFAULT_MAX_PENDING_CALLS
     grace_ms: int = DEFAULT_GRACE_MS
+    max_parallel_sub_calls: int = DEFAULT_MAX_PARALLEL_SUB_CALLS
+    max_sub_calls_per_minute: int = DEFAULT_MAX_SUB_CALLS_PER_MINUTE
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any] | Any | None = None) -> PtcConfig:
@@ -186,6 +195,11 @@ class PtcConfig:
         table = _require_table(mapping, name="configuration")
         known = {
             "enabled",
+            "mode",
+            "maxParallelSubCalls",
+            "max_parallel_sub_calls",
+            "maxSubCallsPerMinute",
+            "max_sub_calls_per_minute",
             "executionMode",
             "execution_mode",
             "timeoutMs",
@@ -204,7 +218,17 @@ class PtcConfig:
             raise ConfigError(f"ptc: unknown configuration key {min(unexpected)!r}")
 
         enabled_value = table.get("enabled", False)
-        enabled = _as_bool(enabled_value, name="enabled")
+        raw_enabled = _as_bool(enabled_value, name="enabled")
+        explicit_mode = table.get("mode")
+        if explicit_mode is None:
+            # Backwards compatibility: the old boolean feature flag selected the
+            # mode.  An explicit mode always wins over enabled.
+            mode: PtcMode = "ptc" if raw_enabled else "native"
+        else:
+            if not isinstance(explicit_mode, str) or explicit_mode not in PTC_MODES:
+                raise ConfigError("ptc: mode must be 'native' or 'ptc'")
+            mode = explicit_mode  # type: ignore[assignment]
+        enabled = mode == "ptc"
         execution_mode = _pick(table, "executionMode", "execution_mode") or "per-call"
         if not isinstance(execution_mode, str) or execution_mode != "per-call":
             raise ConfigError("ptc: executionMode must be 'per-call'")
@@ -233,14 +257,31 @@ class PtcConfig:
         if grace_value is None and "graceMs" not in table and "grace_ms" not in table:
             grace_value = DEFAULT_GRACE_MS
         grace_ms = _non_negative_int(grace_value, name="graceMs")
+
+        parallel_value = _pick(table, "maxParallelSubCalls", "max_parallel_sub_calls")
+        if parallel_value is None and not (
+            "maxParallelSubCalls" in table or "max_parallel_sub_calls" in table
+        ):
+            parallel_value = DEFAULT_MAX_PARALLEL_SUB_CALLS
+        max_parallel_sub_calls = _positive_int(parallel_value, name="maxParallelSubCalls")
+
+        rate_value = _pick(table, "maxSubCallsPerMinute", "max_sub_calls_per_minute")
+        if rate_value is None and not (
+            "maxSubCallsPerMinute" in table or "max_sub_calls_per_minute" in table
+        ):
+            rate_value = DEFAULT_MAX_SUB_CALLS_PER_MINUTE
+        max_sub_calls_per_minute = _positive_int(rate_value, name="maxSubCallsPerMinute")
         return cls(
             enabled=enabled,
+            mode=mode,
             execution_mode=execution_mode,
             timeout_ms=timeout_ms,
             max_timeout_ms=max_timeout_ms,
             max_output_bytes=max_output_bytes,
             max_pending_calls=max_pending_calls,
             grace_ms=grace_ms,
+            max_parallel_sub_calls=max_parallel_sub_calls,
+            max_sub_calls_per_minute=max_sub_calls_per_minute,
         )
 
     @property
@@ -251,27 +292,34 @@ class PtcConfig:
     def to_dict(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
+            "mode": self.mode,
             "executionMode": self.execution_mode,
             "timeoutMs": self.timeout_ms,
             "maxTimeoutMs": self.max_timeout_ms,
             "maxOutputBytes": self.max_output_bytes,
             "maxPendingCalls": self.max_pending_calls,
             "graceMs": self.grace_ms,
+            "maxParallelSubCalls": self.max_parallel_sub_calls,
+            "maxSubCallsPerMinute": self.max_sub_calls_per_minute,
         }
 
 
 __all__ = [
     "DEFAULT_GRACE_MS",
     "DEFAULT_MAX_OUTPUT_BYTES",
+    "DEFAULT_MAX_PARALLEL_SUB_CALLS",
     "DEFAULT_MAX_PENDING_CALLS",
+    "DEFAULT_MAX_SUB_CALLS_PER_MINUTE",
     "DEFAULT_MAX_TIMEOUT_MS",
     "DEFAULT_TIMEOUT_MS",
     "PTC_FAILURE_KINDS",
+    "PTC_MODES",
     "SANDBOX_UNAVAILABLE_MESSAGE",
     "PtcBindingError",
     "PtcConfig",
     "PtcFailure",
     "PtcFailureKind",
+    "PtcMode",
     "PtcRunResult",
     "PtcRunSpec",
 ]

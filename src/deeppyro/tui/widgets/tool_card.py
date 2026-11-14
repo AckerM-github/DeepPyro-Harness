@@ -24,6 +24,10 @@ _DIFF_TOOLS = frozenset({"write", "edit", "multi_edit", "multiedit", "apply_patc
 _MAX_DIFF_LINES = 3
 #: Maximum characters per diff line before truncating.
 _MAX_DIFF_CHARS = 110
+#: Reserved PTC transport tool: its arguments carry a description and Python code.
+RUN_CODE_NAME = "run_code"
+#: Expanded run_code detail shows at most this many code lines.
+RUN_CODE_DETAIL_LINES = 20
 
 
 def parse_arguments(arguments: str | dict[str, Any] | None) -> dict[str, Any]:
@@ -56,9 +60,53 @@ def _first_value(args: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
+def _run_code_fields(arguments: str | dict[str, Any] | None) -> tuple[str, str]:
+    """Return (description, code) from run_code arguments.
+
+    The PTC transport names the program field "code"; older records and the
+    current model-facing schema use "program", so both are accepted. The
+    description is what the model wrote to explain the call; it is the only
+    part shown on the collapsed tool line.
+    """
+    args = parse_arguments(arguments)
+    description = str(args.get("description") or "").strip()
+    code = args.get("code")
+    if code in (None, ""):
+        code = args.get("program")
+    source = "" if code in (None, "") else str(code).strip("\n")
+    return description, source
+
+
+def run_code_detail(arguments: str | dict[str, Any] | None) -> str:
+    """Return the expanded argument text for a run_code call.
+
+    The description is shown in full. The program source is capped to the first
+    RUN_CODE_DETAIL_LINES lines plus a counter for the rest, so a long program
+    never floods the transcript. An empty string means the caller should fall
+    back to the generic pretty-printed arguments.
+    """
+    description, source = _run_code_fields(arguments)
+    blocks: list[str] = []
+    if description:
+        blocks.append("description: " + description)
+    if source:
+        lines = source.splitlines()
+        shown = lines[:RUN_CODE_DETAIL_LINES]
+        remaining = len(lines) - len(shown)
+        code_block = "\n".join(["code (" + str(len(lines)) + " lines):", *shown])
+        if remaining > 0:
+            code_block += "\n... " + str(remaining) + " more lines"
+        blocks.append(code_block)
+    return "\n".join(blocks)
+
+
 def summarize_arguments(name: str, arguments: str | dict[str, Any] | None) -> str:
     """Return a one-line summary of a tool call: path, command or short JSON."""
     tool = (name or "tool").strip().lower()
+    if tool == RUN_CODE_NAME:
+        description, _ = _run_code_fields(arguments)
+        if description:
+            return compact_text(description, max_lines=1, max_chars=80)
     args = parse_arguments(arguments)
     if args:
         path = _first_value(args, ("path", "file_path", "filePath", "file", "filename"))
@@ -162,8 +210,11 @@ def clean_result_text(text: str) -> str:
 
 
 __all__ = [
+    "RUN_CODE_DETAIL_LINES",
+    "RUN_CODE_NAME",
     "clean_result_text",
     "diff_preview_lines",
     "parse_arguments",
+    "run_code_detail",
     "summarize_arguments",
 ]

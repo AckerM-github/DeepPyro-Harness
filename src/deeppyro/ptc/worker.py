@@ -15,8 +15,9 @@ Wire protocol (one JSON object per line, UTF-8):
   stdout -> {"kind": "error", "errorKind": "exception", "message": "..."}
 
 The program is compiled as the body of an async function, so it may use
-top-level await and return.  Tool bindings are exposed as async functions with
-the tool name and as entries of a "bindings" mapping.
+top-level await and return.  Tool bindings are reachable only through the
+"tools" object: tools.name(args) and tools["name"](args) are async and return
+the tool result.  Program failures surface as PtcToolCallError.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ class PtcToolCallError(Exception):
     def __init__(self, name: str, code: str, reason: str = "") -> None:
         super().__init__(reason or code)
         self.name = name
+        self.toolName = name
         self.code = code
         self.reason = reason
 
@@ -190,6 +192,27 @@ def _normalize_json(value: Any, _seen: set[int] | None = None) -> Any:
     raise OutputLimitError(f"the return value is not JSON serializable: {type(value).__name__}")
 
 
+class _ToolsProxy:
+    """The only tool surface bound into a program's namespace.
+
+    Attribute access and item access both produce an async binding, so programs
+    can write either tools.read({...}) or tools["read"]({...}).
+    """
+
+    def __init__(self, program: _Program) -> None:
+        self._program = program
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        return self._program._make_binding(name)
+
+    def __getitem__(self, name: str) -> Any:
+        if not isinstance(name, str):
+            raise TypeError("tool name must be a string")
+        return self._program._make_binding(name)
+
+
 class _Program:
     def __init__(self, protocol: _Protocol, program: str, binding_names: list[str]) -> None:
         self._protocol = protocol
@@ -260,11 +283,11 @@ class _Program:
         loop = asyncio.get_running_loop()
         reader = _Reader(loop, self.on_frame, self.on_eof)
         reader.start()
-        namespace: dict[str, Any] = {"__name__": "__ptc_program__", "bindings": {}}
-        for name in self._binding_names:
-            function = self._make_binding(name)
-            namespace[name] = function
-            namespace["bindings"][name] = function
+        namespace: dict[str, Any] = {
+            "__name__": "__ptc_program__",
+            "tools": _ToolsProxy(self),
+            "ToolCallError": PtcToolCallError,
+        }
         body = self._program if self._program.strip() else "pass"
         source = "async def __ptc_main__():\n" + textwrap_indent(body, "    ")
         code = compile(source, "<run_code>", "exec")

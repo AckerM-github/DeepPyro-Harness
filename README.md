@@ -49,9 +49,10 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   提示词目录段）、runtime memory（`mnemon_runtime_memory` 工具，USER.md/MEMORY.md 投影，
   容量硬上限）、图片附件（Pillow 校验/归一化 + inline 预算 + `image/offload` 投影）、
   per-session 投影注册表与 checkpoint sidecar、Anthropic Messages provider 与模型目录发现
-  （`/model` 候选合并配置模型与远端目录，contextWindow 自动回退）、PTC `run_code`
-  （默认关闭的 Python 程序化工具调用：程序内 `await` 当前 session 的工具，内层调用只写
-  `tool/ptc-dispatch*` 日志、不进模型可见 surface）。
+  （`/model` 候选合并配置模型与远端目录，contextWindow 自动回退）、PTC 呈现模式
+  （默认 `[ptc].mode = "native"`；设为 `ptc` 后模型只直接看到保留工具 `run_code`，提示词自动
+  生成 Python SDK，程序内 `await tools.<name>(args)` 走完整工具管线，内层调用只写
+  `tool/ptc-dispatch*` 日志、不进模型可见 surface；额度/并发见 `docs/spec/ptc.md`）。
 - **运行时自扩展**：`/plugins` 界面与 `plugin_manager` / `plugin_inspect` /
   `settings_read` / `settings_write` / `plugin_create` 五个工具让 agent 自己安装/脚手架
   外部 bundle、启停插件、读改插件配置、查看 live 组合（安装/脚手架会执行或生成第三方代码，
@@ -92,7 +93,8 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
       session/  session.v4 日志：模型、append 校验、derive、fork、store
       llm/      provider 适配层（OpenAI-compatible SSE、Anthropic Messages）、模型目录、图片预算、重试
       tools/    工具注册表、执行流水线、内置工具
-      ptc/      最小 Python PTC transport（run_code 保留工具、worker 协议、内层 dispatch，默认关闭）
+      ptc/      Python PTC 呈现模式（run_code 保留工具、自动 Python SDK、worker 协议、
+                内层 dispatch 并发/额度、runtime seam；默认 native）
       sandbox/  权限预设 / 策略闸门
       prompt/   系统提示词与运行时上下文装配
       agent/    turn/step 循环、inbox、事件流

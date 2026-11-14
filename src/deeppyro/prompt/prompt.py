@@ -40,6 +40,10 @@ class PromptContext:
     model: str
     instructions: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    #: When set, the core tools section only lists these directly callable
+    #: tools; PTC mode passes ("run_code",) because every other tool is
+    #: reached from inside the program.
+    direct_tool_names: tuple[str, ...] | None = None
 
 
 def _read_instruction_file(path: Path, *, max_chars: int) -> str:
@@ -131,6 +135,9 @@ def instructions_section(tools: list[ToolSchema], ctx: PromptContext) -> str:
 
 
 def tools_section(tools: list[ToolSchema], ctx: PromptContext) -> str:
+    if ctx.direct_tool_names is not None:
+        direct = set(ctx.direct_tool_names)
+        tools = [schema for schema in tools if schema.name in direct]
     if not tools:
         return "## Tools\n\nNo tools are currently registered. Answer directly."
     blocks = [

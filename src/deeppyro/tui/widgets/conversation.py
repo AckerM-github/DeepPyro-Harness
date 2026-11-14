@@ -17,13 +17,14 @@ a session rebuilds the same collapsed blocks through add_history_process.
 from __future__ import annotations
 
 import time
+from typing import Any
 
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import ScrollableContainer, Vertical
 from textual.widgets import Markdown, Static
 
-from deeppyro.tui.history import TurnProcess, TurnReasoning
+from deeppyro.tui.history import TurnProcess, TurnReasoning, is_ptc_mode_source
 from deeppyro.tui.widgets.agent_process import AgentProcess
 
 STREAM_REFRESH_SECONDS = 0.06
@@ -99,7 +100,16 @@ class ConversationView(ScrollableContainer):
         self._turn_has_assistant = False
 
     # -- user / info ----------------------------------------------------
-    def add_user(self, text: str) -> None:
+    def add_user(self, text: str, *, source: Any = None) -> None:
+        """Mount a user block unless the message is PTC-mode model context.
+
+        PTC image results are recorded as user messages with source kind
+        ptc-mode. They still belong to the model's context and to the durable
+        session log, but the user did not type them, so the transcript skips
+        them here as well as during history replay.
+        """
+        if is_ptc_mode_source(source):
+            return
         self._finish_process()
         block = Vertical(
             Static("You", classes="block-label"),

@@ -52,6 +52,7 @@ class ToolRegistry:
                     name=tool.name,
                     description=tool.description,
                     parameters=tool.parameters,
+                    output=getattr(tool, "output_schema", None),
                 )
             )
         return schemas

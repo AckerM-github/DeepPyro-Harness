@@ -1,18 +1,29 @@
-"""Kernel plugin that exposes the Python PTC runtime and, when enabled, run_code.
+"""Kernel plugin that exposes the Python PTC runtime and the run_code mode.
 
-The plugin is intentionally inert by default: the "ptc" service is always
-provided so a host can inspect configuration, but the run_code tool is only
-registered when [ptc].enabled is true.  This keeps the model-facing tool list
-unchanged unless the feature is explicitly turned on.
+The "ptc" service is always provided so a host can inspect configuration, but
+the run_code tool and the PTC prompt sections are only registered when
+[ptc].mode is "ptc".  This keeps the model-facing tool list and prompt unchanged
+unless programmatic tool calling is explicitly selected.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar
 
 from deeppyro.api import Plugin
-from deeppyro.ptc import PtcConfig, PtcRuntime, RunCodeTool
+from deeppyro.core.protocols import ToolSchema
+from deeppyro.ptc import NESTED_EXCLUDED_TOOLS, RUN_CODE_NAME, PtcConfig, PtcRuntime, RunCodeTool
+from deeppyro.ptc.sdk import render_tools_sdk
+
+PTC_ONLY_SECTION = "tools:ptc-only"
+PTC_SDK_SECTION = "tools:sdk"
+PTC_ONLY_ORDER = 41
+PTC_SDK_ORDER = 42
+PTC_ONLY_INSTRUCTION = (
+    "`run_code` is the only tool you can call directly — a tool call naming any other tool "
+    "fails. Reach every tool the SDK declares below from inside the program."
+)
 
 
 def _ptc_config(ctx: Any, row_config: Any) -> dict[str, Any]:
@@ -38,13 +49,13 @@ def _ptc_config(ctx: Any, row_config: Any) -> dict[str, Any]:
 
 
 class PtcPlugin(Plugin):
-    """Provides the "ptc" service and conditionally registers run_code."""
+    """Provides the "ptc" service and, in ptc mode, run_code + SDK prompt."""
 
     provide = "ptc"
     plugin_id = "ptc"
     version = "0.1.0"
-    description = "Python programmatic tool calling (run_code, opt-in)"
-    inject: ClassVar[list[str]] = ["config", "tools"]
+    description = "Python programmatic tool calling (run_code)"
+    inject: ClassVar[list[str]] = ["config", "tools", "prompt"]
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
@@ -53,8 +64,35 @@ class PtcPlugin(Plugin):
 
     def setup(self, ctx: Any, config: Any) -> None:
         ctx.provide("ptc", self.service)
-        if self.config.enabled:
-            ctx.register_tool(lambda _cfg, _workspace: [RunCodeTool()])
+        if self.config.mode != "ptc":
+            return
+        ctx.register_tool(lambda _cfg, _workspace: [RunCodeTool(self.service)])
+        ctx.register_prompt_section(PTC_ONLY_SECTION, PTC_ONLY_ORDER, self._render_ptc_only)
+        ctx.register_prompt_section(PTC_SDK_SECTION, PTC_SDK_ORDER, self._render_sdk)
+
+    @staticmethod
+    def _render_ptc_only(tools: Any, prompt_context: Any) -> str:
+        return PTC_ONLY_INSTRUCTION
+
+    def _render_sdk(self, tools: Any, prompt_context: Any) -> str:
+        try:
+            visible: Sequence[ToolSchema] = [
+                schema
+                for schema in tools
+                if schema.name != RUN_CODE_NAME and schema.name not in NESTED_EXCLUDED_TOOLS
+            ]
+            ordered = sorted(visible, key=lambda schema: schema.name)
+            return render_tools_sdk(ordered)
+        except Exception as exc:  # noqa: BLE001 - prompt assembly must never fail
+            self.ctx.logger.warning(f"ptc SDK prompt section failed: {exc}")
+            return ""
 
 
-__all__ = ["PtcPlugin"]
+__all__ = [
+    "PTC_ONLY_INSTRUCTION",
+    "PTC_ONLY_ORDER",
+    "PTC_ONLY_SECTION",
+    "PTC_SDK_ORDER",
+    "PTC_SDK_SECTION",
+    "PtcPlugin",
+]

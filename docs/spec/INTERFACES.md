@@ -141,7 +141,9 @@ class ToolRegistry:
     def __init__(self, tools: Iterable[Tool] = ()) -> None
     def register(self, tool: Tool) -> None     # 未标记 reserved_tool 的保留名抛 ToolError
     def get(self, name: str) -> Tool | None
-    def schemas(self) -> list[ToolSchema]      # 按注册顺序，稳定排序
+    def schemas(self) -> list[ToolSchema]      # 按注册顺序；ToolSchema.output 来自 BaseTool.output_schema
+    def names(self) -> list[str]               # 按注册顺序的工具名
+    def without(self, names: Iterable[str]) -> ToolRegistry  # 非破坏性裁剪副本（PTC surface / 子 agent）
 
 def builtin_tools(cfg: Config, workspace: Path) -> list[Tool]
 
@@ -169,12 +171,12 @@ async def run_tool_batch(requests: list[ToolCallRequest], *, registry: ToolRegis
 - 未知工具、参数 JSON 解析失败、`PermissionDenied`、`ToolError` 都转换为 `ToolResult(is_error=True, text=...)`，绝不抛出（除非 `CancelledError`）。
 - 输出截断：单结果 `max_output_chars=30000`（超出保留头尾，中间写 `... [truncated N chars] ...`，并把完整输出落盘到 `services["spill_dir"]`，路径写进 meta.spillPath）。
 - 可选 `hooks` 会触发 `tools/pre-execute` / `tools/execute` / `tools/post-execute`（契约见 `docs/spec/hooks.md`）；`log` 在 pre-execute 之前按请求顺序为每个调用写 `tool/call` 并返回 seq，seq 通过 `ToolOutcome.call_seq` 暴露给 `tool/result.sourceEventSeqs`。
-- `run_code` 是 PTC transport 的**保留工具名**（`RESERVED_TOOL_NAMES`）：普通工具注册/遮蔽该名字会抛 `ToolError`；只有 `reserved_tool=True` 的 transport 对象可以注册（见 `docs/spec/ptc.md`）。
+- `run_code` 是 PTC 呈现模式的**保留工具名**（`RESERVED_TOOL_NAMES`）：普通工具注册/遮蔽该名字会抛 `ToolError`；只有 `reserved_tool=True` 的 transport 对象可以注册（见 `docs/spec/ptc.md`）。
 
 内置工具清单（语义对齐 DSH，用 fixtures 里真实 tool/call 参数与 tool/result 文本校准）：
 `read`（offset/limit，行号输出）、`write`、`edit`（old/new 字面替换，唯一匹配）、`glob`、`grep`（ripgrep 不可用则纯 Python 回退）、`pwsh`（Windows）/ `bash`、`web_search`、`web_fetch`、`todo_write`、`present`。
 每个工具：`name/description/parameters(JSON Schema)/parallel_safe` + `async run(args, ctx) -> ToolResult`。
-`run_code` 由 `ptc` 行提供（默认关闭；`reserved_tool=True`，schema 只有 `program` + 可选 `timeoutMs`）。
+`run_code` 由 `ptc` 行提供（仅 `[ptc].mode = "ptc"` 时注册；`reserved_tool=True`，参数 `code`/`description` 必填 + 可选 `timeoutMs`；ptc 模式下它是模型唯一直接可见的工具）。
 
 sandbox：
 ```python
@@ -214,6 +216,9 @@ class PromptContext:
     permission_preset: str; approval_policy: str; model: str
     instructions: list[str] = field(default_factory=list)   # AGENTS.md 等
     env: dict[str, str] = field(default_factory=dict)
+    # 非 None 时核心 tools 段只列这些“可直接调用”的工具；PTC 模式传 ("run_code",)
+    # （tools:sdk 段仍收到全量 schema）
+    direct_tool_names: tuple[str, ...] | None = None
 
 def build_system_prompt(tools: list[ToolSchema], ctx: PromptContext) -> str
 
@@ -376,7 +381,7 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 | `sandbox` | `builtin.sandbox` | `sandbox`：`.gate(workspace, ask=None)` |
 | `tools` | `builtin.tools` | `tools`：`.add(factory, scope=..., revision=...)`、`.registry_for(workspace, scope=None, revision=None)` |
 | `tools-builtin` | `builtin.tools` | 内置工具（read/write/edit/glob/grep/pwsh|bash/web_search/web_fetch/todo_write/present 等） |
-| `ptc` | `builtin.ptc` | `ptc`（critical=false，默认关闭）：`.run(spec, bindings=..., ctx=...)`、`.resolve(request, cwd=...)`、`.config/.timeout`；`[ptc].enabled=true` 时注册 `run_code`（reserved_tool） |
+| `ptc` | `builtin.ptc` | `ptc`（critical=false，默认 `mode="native"`）：`.run(spec, bindings=..., ctx=...)`、`.resolve(request, cwd=...)`、`.mode/.language/.program_format/.sandbox_mode/.execution_instructions/.config/.timeout`；`mode="ptc"` 时注册 `run_code`（reserved_tool）与 `tools:ptc-only`(41)/`tools:sdk`(42) 两个提示词段 |
 | `compress` | `builtin.compress` | 无服务；注册 `compress`、`search_context`、`decompress` 三个工具（BlockStore/RefStore 侧车文件） |
 | `schedule` | `builtin.schedule` | `schedule`（critical=false）：`.configure_host/.start/.stop/.create/.list/.view/.update/.delete/.tick`；`schedule` 工具 + 提示词段 |
 | `working-directory` | `builtin.working_directory` | `working_directory`：`.bind/.unbind/.get/.ensure/.set/.context_text`；`working_directory` 工具 |
@@ -436,7 +441,7 @@ await app.stop()                           # 逆序 dispose
 - `tests/compact/`：compress 工具解析/事务性 block 写入、refs 固化、`search_context`/`decompress` 工具。
 - `tests/working_directory/`：服务 bind/set/ensure 与 `working_directory` 工具。
 - `tests/user_questions/`：问题解析/校验、`ask_user_question` 工具输出与 handler 串行。
-- `tests/ptc/`：worker 协议、成功/异常/超时/取消/worker-exit/坏输出/输出上限、binding dispatch、`run_code` schema 与 read-only、默认关闭与配置合并、`tool/ptc-dispatch*` 不进 surface。
+- `tests/ptc/`：worker 协议、成功/异常/超时/取消/worker-exit/坏输出/输出上限、binding dispatch 与并发/额度、`run_code` schema 与 read-only、native/ptc 注册与配置合并、`tool/ptc-dispatch*` 不进 surface、SDK 渲染器对 DSH golden 的逐字节对照。另见 `tests/agent/test_ptc_surface.py`（surface 收窄/图片消息）、`tests/prompt/test_prompt_direct_tools.py`、`tests/tui/test_ptc_ui.py`。
 - `tests/attachments/`：图片校验/归一化/限额/错误码、manifest 与 `attachments` 服务。
 - `tests/agent/test_images.py`、`tests/agent/test_agent_images.py`：请求侧图片规划（surface seq 配对、附件展开、预算触发的 oldest-prefix `image/offload`、日志只存 refs）。
 - `tests/llm/test_image_budget.py`、`tests/llm/test_messages.py`：inline/files 预算算法、`image_part_url` 的 attachments resolver 与 data URL 编码。

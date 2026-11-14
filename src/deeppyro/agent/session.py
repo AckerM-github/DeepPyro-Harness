@@ -225,10 +225,17 @@ class AgentSession:
         services: dict[str, Any] | None = None,
         compactor: Compactor | None = None,
         prompt_builder: Any | None = None,
+        surface_registry: Any | None = None,
     ) -> None:
         self._session = session
         self._provider = provider
         self._registry = registry
+        # The surface registry is what the model is offered directly; PTC mode
+        # narrows it to run_code while the full registry stays available to the
+        # nested dispatcher and to the system prompt (tools:sdk).
+        self._surface = surface_registry if surface_registry is not None else registry
+        #: The registry this session was asked to present (None means native).
+        self.surface_registry = surface_registry
         self._options = options
         self._sink = sink
         self._permission = permission
@@ -702,7 +709,7 @@ class AgentSession:
             model=self._model,
             messages=messages,
             system=None,
-            tools=self._registry.schemas(),
+            tools=self._surface.schemas(),
             max_tokens=self._options.max_tokens,
             temperature=self._options.temperature,
             context_window=self._options.context_window,
@@ -879,7 +886,7 @@ class AgentSession:
         groups: list[list[ToolCallDraft]] = []
         current: list[ToolCallDraft] = []
         for call in calls:
-            tool = self._registry.get(call.name)
+            tool = self._surface.get(call.name)
             parallel = True if tool is None else bool(getattr(tool, "parallel_safe", False))
             if parallel:
                 current.append(call)
@@ -953,7 +960,7 @@ class AgentSession:
         try:
             return await run_tool_batch(
                 requests,
-                registry=self._registry,
+                registry=self._surface,
                 ctx_factory=factory,
                 hooks=self._hooks,
                 turn=turn,
@@ -978,7 +985,7 @@ class AgentSession:
 
         async def run_one(index: int, request: Any) -> _BatchOutcome:
             call_seq = seqs[index]
-            tool = self._registry.get(request.name)
+            tool = self._surface.get(request.name)
             if tool is None:
                 return _BatchOutcome(
                     request.call_id,
@@ -1086,6 +1093,7 @@ class AgentSession:
             model=self._model,
             instructions=list(self._instructions),
             env={},
+            direct_tool_names=tuple(self._surface.names()),
         )
 
     def _commit_system_prompt(self, turn: int, step: int, *, starts_series: bool) -> None:
@@ -1149,7 +1157,9 @@ class AgentSession:
 
     def _write_request_records(self, turn: int, step: int, *, starts_series: bool) -> None:
         records = list(self._records())
-        tools = [schema.model_dump() for schema in self._registry.schemas()]
+        # The request header mirrors the request the model actually sees, so it
+        # uses the surface registry rather than every registered tool.
+        tools = [schema.model_dump() for schema in self._surface.schemas()]
         previous = latest_header(records)
         plan = plan_header(
             records,
@@ -1264,7 +1274,30 @@ class AgentSession:
                 "text": result.text,
             }
         )
+        self._append_tool_result_images(result)
         return seq
+
+    def _append_tool_result_images(self, result: ToolResult) -> None:
+        """Surface non-text tool result parts as a follow-up user message.
+
+        Image parts cannot live in the tool message without changing its wire
+        shape (and therefore the wire contract of tool/result records), so the
+        PTC presentation layer hands them to the model in a separate user
+        message.  It participates in the normal surface fold like any other
+        user message.
+        """
+        images = [
+            dict(part) for part in result.parts if isinstance(part, Mapping) and part.get("type") == "image"
+        ]
+        if not images:
+            return
+        message = Message(
+            role="user",
+            content=images,
+            id=new_message_id(),
+            source={"kind": "ptc-mode"},
+        )
+        self._append_user_message(message)
 
     def _append_assistant_attempt(self, turn: int, step: int) -> None:
         chunks = self._stream.snapshot() if self._stream is not None else []

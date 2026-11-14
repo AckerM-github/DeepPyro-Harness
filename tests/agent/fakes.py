@@ -195,6 +195,13 @@ class FakeRegistry:
             for tool in self._tools.values()
         ]
 
+    def names(self) -> list[str]:
+        return list(self._tools)
+
+    def without(self, names: Any) -> FakeRegistry:
+        excluded = set(names)
+        return FakeRegistry([tool for name, tool in self._tools.items() if name not in excluded])
+
 
 class RecordingSink:
     """An EventSink that remembers events and the log length at emit time."""

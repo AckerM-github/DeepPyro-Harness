@@ -87,7 +87,7 @@ async def test_binding_success(tmp_path: Path) -> None:
         assert args == {"file_path": "a.txt"}
         return "file-content"
 
-    program = "text = await read(file_path='a.txt')\nreturn text\n"
+    program = "text = await tools.read({'file_path': 'a.txt'})\nreturn text\n"
     result = await runtime.run(
         run_spec(program, tmp_path), bindings={"read": read}, ctx=make_context(tmp_path)
     )
@@ -101,7 +101,7 @@ async def test_binding_exception_is_catchable(tmp_path: Path) -> None:
     async def explode(args: dict[str, object]) -> str:
         raise PtcBindingError("explode", "TOOL_ERROR", "kaput")
 
-    program = "try:\n    await explode()\nexcept Exception as exc:\n    return {'caught': str(exc)}\n"
+    program = "try:\n    await tools.explode()\nexcept Exception as exc:\n    return {'caught': str(exc)}\n"
     result = await runtime.run(
         run_spec(program, tmp_path), bindings={"explode": explode}, ctx=make_context(tmp_path)
     )
@@ -278,9 +278,7 @@ async def test_max_pending_calls_limits_concurrency(tmp_path: Path) -> None:
             active -= 1
         return str(args.get("i"))
 
-    program = (
-        "import asyncio\nresults = await asyncio.gather(*[slow(i=i) for i in range(6)])\nreturn results\n"
-    )
+    program = "import asyncio\nresults = await asyncio.gather(*[tools.slow({'i': i}) for i in range(6)])\nreturn results\n"
     result = await runtime.run(
         run_spec(program, tmp_path, timeout_ms=20_000), bindings={"slow": slow}, ctx=make_context(tmp_path)
     )
@@ -389,3 +387,58 @@ def test_registry_accepts_reserved_run_code() -> None:
 
     registry = ToolRegistry([RunCodeTool()])
     assert registry.names() == ["run_code"]
+
+
+def test_config_mode_and_quota_settings() -> None:
+    default = PtcConfig()
+    assert default.mode == "native"
+    assert default.max_parallel_sub_calls == 10
+    assert default.max_sub_calls_per_minute == 1_024
+
+    parsed = PtcConfig.from_mapping(
+        {
+            "mode": "ptc",
+            "maxParallelSubCalls": 3,
+            "max_sub_calls_per_minute": 50,
+        }
+    )
+    assert parsed.mode == "ptc"
+    assert parsed.enabled is True
+    assert parsed.max_parallel_sub_calls == 3
+    assert parsed.max_sub_calls_per_minute == 50
+    assert PtcConfig.from_mapping({"mode": "native", "enabled": True}).enabled is False
+    assert PtcConfig.from_mapping({"enabled": False}).mode == "native"
+    assert PtcConfig.from_mapping({"enabled": True}).mode == "ptc"
+
+
+def test_config_rejects_invalid_mode_and_quota() -> None:
+    with pytest.raises(ConfigError) as info:
+        PtcConfig.from_mapping({"mode": "shell"})
+    assert "mode" in str(info.value)
+    for mapping, needle in (
+        ({"mode": "ptc", "maxParallelSubCalls": 0}, "maxParallelSubCalls"),
+        ({"mode": "ptc", "maxParallelSubCalls": True}, "maxParallelSubCalls"),
+        ({"mode": "ptc", "maxSubCallsPerMinute": 0}, "maxSubCallsPerMinute"),
+        ({"mode": "ptc", "maxSubCallsPerMinute": "fast"}, "maxSubCallsPerMinute"),
+    ):
+        with pytest.raises(ConfigError) as info:
+            PtcConfig.from_mapping(mapping)
+        assert needle in str(info.value)
+
+
+def test_config_to_dict_includes_mode_and_limits() -> None:
+    payload = PtcConfig.from_mapping({"mode": "ptc", "maxParallelSubCalls": 4}).to_dict()
+    assert payload["mode"] == "ptc"
+    assert payload["maxParallelSubCalls"] == 4
+    assert payload["maxSubCallsPerMinute"] == 1_024
+
+
+def test_runtime_presentation_properties() -> None:
+    runtime = PtcRuntime(PtcConfig.from_mapping({"mode": "ptc"}))
+    assert runtime.mode == "ptc"
+    assert runtime.language == "python"
+    assert runtime.program_format == "python"
+    assert runtime.sandbox_mode is None
+    instructions = runtime.execution_instructions
+    assert "-I -S" in instructions
+    assert "tools.name" in instructions

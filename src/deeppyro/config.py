@@ -100,6 +100,12 @@ api = "openai-completions"
 baseURL = "https://api.deepseek.com/v1"
 apiKeyEnv = "DEEPSEEK_API_KEY"
 models = [{ id = "deepseek-chat", contextWindow = 65536 }]
+
+# Programmatic tool calling. "native" exposes every tool directly; "ptc" exposes
+# only run_code plus a generated Python SDK, and programs call the other tools
+# through async bindings. See docs/spec/ptc.md.
+[ptc]
+mode = "native"
 """
 
 

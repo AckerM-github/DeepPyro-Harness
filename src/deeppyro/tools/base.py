@@ -19,6 +19,8 @@ class BaseTool:
     description: ClassVar[str] = ""
     parallel_safe: ClassVar[bool] = True
     parameters: ClassVar[dict[str, Any]] = {}
+    #: Optional JSON schema for the tool's result, used by the PTC SDK renderer.
+    output_schema: ClassVar[dict[str, Any] | None] = None
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__} name={self.name!r} parallel_safe={self.parallel_safe}>"
