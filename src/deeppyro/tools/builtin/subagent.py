@@ -1,14 +1,17 @@
-"""Agent-facing tool for the default subagent layer.
+"""Agent-facing tools for the default subagent layer.
 
-The single subagent tool resolves the subagent service from
-ToolContext.services, so the runtime decides which sessions may delegate.  A
-run is one-shot: the tool waits for the child agent's final reply and returns
-it; no background handle is exposed.  Starting a child agent executes model
-work in a separate session and therefore requires human approval.
+The subagent tool resolves the subagent service from ToolContext.services, so
+the runtime decides which sessions may delegate.  subagent runs synchronously:
+it waits for the child agent's final reply and returns it.  subagent_fork starts
+from the parent's last completed turn and runs in the background: it returns an
+activation immediately and the parent receives a settlement notice when the
+child finishes.  Starting a child agent executes model work in a separate
+session and therefore requires human approval.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from deeppyro.core.errors import ToolError
@@ -112,9 +115,66 @@ class SubagentTool(BaseTool):
         )
 
 
+class SubagentForkTool(BaseTool):
+    """Fork the parent session into a background child agent."""
+
+    name = "subagent_fork"
+    description = (
+        "Fork the current conversation into a child agent that runs in the background. The fork "
+        "inherits exactly the parent turns that were already completed: it does not see the current "
+        "unfinished turn. This call returns immediately with an activation handle (the child session "
+        "id); when the child finishes, the parent receives a settlement notice with the child's "
+        "closing message. Provider, model, and preset are inherited from the parent and cannot be "
+        "overridden."
+    )
+    parallel_safe = False
+    parameters = make_parameters(
+        {
+            "prompt": {
+                "type": "string",
+                "description": "self-contained task for the forked child agent",
+            },
+            "description": {
+                "type": "string",
+                "description": "short description of the delegated work",
+            },
+            "name": {
+                "type": "string",
+                "description": "optional child label (defaults to a generated subagent-N name)",
+            },
+        },
+        required=["prompt", "description"],
+    )
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        service = _subagent(ctx)
+        prompt = _required(args, "prompt")
+        description = _required(args, "description")
+        try:
+            activation = await service.start(
+                prompt,
+                description=description,
+                name=_optional(args, "name"),
+                mode="fork",
+            )
+        except Exception as exc:  # noqa: BLE001 - surface as a tool error result
+            return ToolResult(text=f"subagent fork failed: {exc}", is_error=True)
+        return ToolResult(
+            text=json.dumps(
+                {"kind": "activation", "subagentId": activation.child_id},
+                ensure_ascii=False,
+            ),
+            meta={
+                "childSessionId": activation.child_id,
+                "label": activation.label,
+                "mode": "fork",
+            },
+        )
+
+
 def subagent_tools() -> list[BaseTool]:
     """Return the agent-facing tools of the default subagent layer."""
-    return [SubagentTool()]
+    return [SubagentTool(), SubagentForkTool()]
 
 
-__all__ = ["SubagentTool", "subagent_tools"]
+__all__ = ["SubagentForkTool", "SubagentTool", "subagent_tools"]

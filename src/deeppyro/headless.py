@@ -473,7 +473,7 @@ class HeadlessRuntime:
         scoped = getattr(self.tools, "registry_for", None)
         if callable(scoped):
             registry = scoped(str(self.cwd), scope=preset_id, revision=revision)
-        return self.agents.create(
+        agent = self.agents.create(
             session=session,
             provider=self.provider,
             registry=registry,
@@ -485,6 +485,13 @@ class HeadlessRuntime:
             preset_revision=revision,
             services=self._plugin_services(),
         )
+        bind_parent = getattr(self.subagent, "bind_parent", None)
+        if bind_parent is not None:
+            try:
+                bind_parent(agent)
+            except Exception:  # noqa: BLE001, S110 - the optional subagent service must not break headless
+                pass
+        return agent
 
     def pin_permission(self, session: Any) -> None:
         """Record the standing sandbox mode, approval policy and preset on a new session."""

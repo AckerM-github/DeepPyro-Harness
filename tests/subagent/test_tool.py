@@ -57,7 +57,7 @@ def test_tool_definition() -> None:
 def test_tools_factory() -> None:
     tools = subagent_tools()
 
-    assert [tool.name for tool in tools] == ["subagent"]
+    assert [tool.name for tool in tools] == ["subagent", "subagent_fork"]
     assert all(tool.parallel_safe is False for tool in tools)
 
 

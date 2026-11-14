@@ -70,6 +70,21 @@ class SessionStore:
         writer.write_new_session(path, header, [])
         return Session(path=path, header=header, records=[])
 
+    def create_with_seed(self, header: SessionHeader, events: Sequence[Mapping[str, Any]]) -> Session:
+        """Create a session from a fork seed (copied parent events plus closers).
+
+        The public counterpart of the internal fork path: callers that already
+        built a SessionHeader and a seed event list can materialize a session
+        without going through SessionStore.create/ForkSession helpers.
+        """
+        if not isinstance(header, SessionHeader):
+            raise SessionError("session header must be a SessionHeader")
+        if not isinstance(header.id, str) or not header.id:
+            raise SessionError("session id must be a non-empty string")
+        if not isinstance(events, Sequence) or isinstance(events, (str, bytes, bytearray)):
+            raise SessionError("session seed events must be a sequence of event mappings")
+        return self._create_with_seed(header, events)
+
     def open(self, session_id: str) -> Session:
         """Open one session by id, accepting plain and zstd logs."""
         if not isinstance(session_id, str) or not session_id:

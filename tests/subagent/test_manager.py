@@ -32,8 +32,9 @@ async def test_run_returns_reply_and_creates_child_session(tmp_path) -> None:
     assert result.is_error is False
     assert result.error == ""
     assert result.label == "subagent-1"
-    assert result.child_id.startswith("subagent-")
-    assert len(result.child_id) == len("subagent-") + 12
+    assert result.mode == "spawn"
+    assert result.child_id == result.session_id
+    assert result.child_id.startswith("session-")
     assert result.provider == "local"
     assert result.model == "parent-model"
     assert result.session_id
@@ -110,6 +111,9 @@ async def test_parent_gets_catalog_and_descriptor_records(tmp_path) -> None:
             "agentModel": "parent-model",
         }
     ]
+    # DSH authority: the descriptor is also written to the child session.
+    child_descriptor = records(child, "subagent/descriptor")
+    assert child_descriptor == descriptor
 
 
 async def test_child_registry_prefers_without(tmp_path) -> None:

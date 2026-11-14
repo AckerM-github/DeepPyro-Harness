@@ -289,3 +289,56 @@ def test_layout_encoding() -> None:
     assert layout.log_filename(zstd=True) == "session.v4.jsonl.zstd"
     assert layout.is_log_file(pathlib.Path("a.jsonl.zstd")) is True
     assert layout.is_log_file(pathlib.Path("a.txt")) is False
+
+
+def test_create_with_seed_materializes_events_and_header(tmp_path: pathlib.Path) -> None:
+    store = _new_store(tmp_path)
+    header = support.header(
+        "session-seeded",
+        parentSession="session-parent",
+        isSeeded=True,
+        delegationDepth=1,
+        origin="subagent",
+        agentPreset="default",
+    )
+    events = [
+        support.event("turn/start", 0, {"turn": 1}),
+        support.event("turn/end", 1, {"turn": 1}),
+        support.event("session/end-seed", 2, {"inherited": True}),
+    ]
+
+    session = store.create_with_seed(header, events)
+
+    assert session.session_id == "session-seeded"
+    assert [record.type for record in session.records] == [
+        "turn/start",
+        "turn/end",
+        "session/end-seed",
+    ]
+    assert [record.seq for record in session.records] == [0, 1, 2]
+    reopened = store.open("session-seeded")
+    assert reopened.header.parentSession == "session-parent"
+    assert reopened.header.origin == "subagent"
+    assert reopened.header.delegationDepth == 1
+    assert [record.type for record in reopened.records] == [
+        "turn/start",
+        "turn/end",
+        "session/end-seed",
+    ]
+
+    with pytest.raises(SessionError, match="already exists"):
+        store.create_with_seed(header, events)
+
+
+def test_create_with_seed_rejects_bad_arguments(tmp_path: pathlib.Path) -> None:
+    store = _new_store(tmp_path)
+    header = support.header("session-seeded")
+
+    with pytest.raises(SessionError, match="SessionHeader"):
+        store.create_with_seed({"id": "session-seeded"}, [])  # type: ignore[arg-type]
+    with pytest.raises(SessionError, match="non-empty string"):
+        store.create_with_seed(support.header(""), [])
+    with pytest.raises(SessionError, match="sequence"):
+        store.create_with_seed(header, "not events")  # type: ignore[arg-type]
+    with pytest.raises(SessionError, match="sequence"):
+        store.create_with_seed(header, b"not events")  # type: ignore[arg-type]

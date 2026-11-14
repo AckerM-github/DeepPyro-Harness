@@ -63,9 +63,9 @@ def test_plugin_provides_service_and_registers_tool() -> None:
     factory, scope = ctx.tool_factories[0]
     assert scope is None
     tools = factory(None, "C:/work")
-    assert [tool.name for tool in tools] == ["subagent"]
+    assert [tool.name for tool in tools] == ["subagent", "subagent_fork"]
     assert all(tool.parallel_safe is False for tool in tools)
-    assert [tool.name for tool in subagent_tools()] == ["subagent"]
+    assert [tool.name for tool in subagent_tools()] == ["subagent", "subagent_fork"]
 
 
 def test_plugin_target_is_importable() -> None:

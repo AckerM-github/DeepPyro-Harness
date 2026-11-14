@@ -194,7 +194,7 @@ TEAM_TOOL_NAMES: tuple[str, ...] = (
 )
 
 #: Tools contributed by the built-in subagent plugin.
-SUBAGENT_TOOL_NAMES: tuple[str, ...] = ("subagent",)
+SUBAGENT_TOOL_NAMES: tuple[str, ...] = ("subagent", "subagent_fork")
 
 #: Tools contributed by the built-in schedule plugin.
 SCHEDULE_TOOL_NAMES: tuple[str, ...] = ("schedule",)

@@ -591,7 +591,7 @@ async def test_agent_mode_filters_delegation_tools(tmp_path: Path) -> None:
         assert "subagent" not in team_agent._registry
 
         default_agent = make_agent(None)
-        assert set(default_agent._registry.names()) == {"subagent", "read"}
+        assert set(default_agent._registry.names()) == {*SUBAGENT_TOOL_NAMES, "read"}
         assert not set(TEAM_TOOL_NAMES) & set(default_agent._registry.names())
 
         # Filtering never mutates the caller's registry.
