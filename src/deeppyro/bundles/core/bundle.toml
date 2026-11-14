@@ -71,6 +71,10 @@ id = "llm-retry"
 plugin = "deeppyro.builtin.llm_retry:LlmRetryPlugin"
 
 [[plugins]]
+id = "hook-observability"
+plugin = "deeppyro.builtin.hook_observability:HookObservabilityPlugin"
+
+[[plugins]]
 id = "jobs"
 plugin = "deeppyro.builtin.jobs:JobsPlugin"
 

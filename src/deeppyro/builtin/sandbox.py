@@ -32,7 +32,15 @@ class SandboxPlugin(Service):
         ask: Callable[[Any], Awaitable[bool] | bool] | None = None,
     ) -> PermissionGate:
         """Create a gate rooted at workspace (a fresh gate per call)."""
-        return PermissionGate(self._preset, self._approval, Path(workspace), ask=ask)
+        # The hooks service loads after the sandbox, so resolve it lazily here
+        # instead of injecting it (an absent service is fine: no hooks).
+        return PermissionGate(
+            self._preset,
+            self._approval,
+            Path(workspace),
+            ask=ask,
+            hooks=self.ctx.get("hooks"),
+        )
 
     @property
     def preset(self) -> str:

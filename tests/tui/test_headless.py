@@ -13,6 +13,7 @@ from rich.console import Console
 from deeppyro import headless
 from deeppyro.config import AgentConfig, Config, ModelConfig, ProviderConfig
 from deeppyro.core.errors import ConfigError, DeeppyroError
+from deeppyro.hooks import SESSION_CREATED, SESSION_DISPOSED, HookService
 from deeppyro.llm import LlmRequestError, ModelInfo
 from deeppyro.llm.errors import CODE_TRANSPORT
 
@@ -556,3 +557,81 @@ async def test_boot_runtime_default_model_never_queries_the_catalog(
         assert llm.calls == []
     finally:
         await runtime.aclose()
+
+
+# --------------------------------------------------------------------------
+# session lifecycle hooks (task-63)
+# --------------------------------------------------------------------------
+
+
+class FakeHookedRuntime(FakeRuntime):
+    """FakeRuntime plus a kernel app exposing the hooks service."""
+
+    def __init__(self, agent: FakeAgent, hooks: HookService) -> None:
+        super().__init__(agent)
+        self.kernel_app = FakeKernelApp({"hooks": hooks})
+        self.order: list[str] = []
+
+    async def aclose(self) -> None:
+        self.order.append("aclose")
+        await super().aclose()
+
+
+def record_hooks(hooks: HookService, order: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    created: list[dict[str, Any]] = []
+    disposed: list[dict[str, Any]] = []
+
+    def on_created(payload: dict[str, Any]) -> None:
+        created.append(dict(payload))
+        order.append("created")
+
+    def on_disposed(payload: dict[str, Any]) -> None:
+        disposed.append(dict(payload))
+        order.append("disposed")
+
+    hooks.on(SESSION_CREATED, on_created)
+    hooks.on(SESSION_DISPOSED, on_disposed)
+    return created, disposed
+
+
+def test_run_once_emits_session_created_then_disposed(monkeypatch: pytest.MonkeyPatch) -> None:
+    hooks = HookService()
+    runtime = FakeHookedRuntime(FakeAgent([{"type": "final", "text": "done"}]), hooks)
+    created, disposed = record_hooks(hooks, runtime.order)
+    patch_runtime(monkeypatch, runtime)
+    console, _stream = make_console()
+
+    assert headless.run_once("q", console=console) == headless.EXIT_OK
+
+    assert created == [{"sessionId": FakeSession.session_id, "cwd": str(runtime.cwd), "preset": None}]
+    assert disposed == [{"sessionId": FakeSession.session_id}]
+    assert runtime.order == ["created", "disposed", "aclose"]
+
+
+def test_run_once_emits_disposed_on_agent_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    hooks = HookService()
+    runtime = FakeHookedRuntime(FakeAgent([], fail=True), hooks)
+    created, disposed = record_hooks(hooks, runtime.order)
+    patch_runtime(monkeypatch, runtime)
+    console, _stream = make_console()
+
+    assert headless.run_once("q", console=console) == headless.EXIT_ERROR
+
+    assert len(created) == 1
+    assert disposed == [{"sessionId": FakeSession.session_id}]
+
+
+def test_run_once_survives_failing_session_hook_listener(monkeypatch: pytest.MonkeyPatch) -> None:
+    hooks = HookService()
+
+    def explode(payload: dict[str, Any]) -> None:
+        raise RuntimeError("listener broke")
+
+    hooks.on(SESSION_CREATED, explode)
+    hooks.on(SESSION_DISPOSED, explode)
+    runtime = FakeHookedRuntime(FakeAgent([{"type": "final", "text": "done"}]), hooks)
+    patch_runtime(monkeypatch, runtime)
+    console, _stream = make_console()
+
+    assert headless.run_once("q", console=console) == headless.EXIT_OK
+    assert runtime.closed is True

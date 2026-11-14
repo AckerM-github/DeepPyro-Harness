@@ -34,6 +34,7 @@ from deeppyro.api import (
 )
 from deeppyro.config import Config, load_config, save_agent_selection
 from deeppyro.core.errors import ConfigError, DeeppyroError
+from deeppyro.hooks import SESSION_CREATED, SESSION_DISPOSED
 from deeppyro.schedule import DeliveryReceipt, NewOnceTarget, NewTarget, SessionTarget
 from deeppyro.schedule.timeutil import format_instant
 from deeppyro.team.types import LIVE_PHASES
@@ -124,6 +125,7 @@ class TuiRuntime:
     _catalog: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
     _schedule_tasks: set[asyncio.Task[Any]] = field(default_factory=set, repr=False)
     _schedule_once: dict[str, str] = field(default_factory=dict, repr=False)
+    _created_sessions: set[str] = field(default_factory=set, repr=False)
     _closed: bool = field(default=False, repr=False)
 
     # -- construction ---------------------------------------------------
@@ -300,7 +302,9 @@ class TuiRuntime:
                 candidate = self.cwd
             if candidate.is_dir():
                 cwd = candidate
-        return self.store.create(str(cwd), agent_preset=preset)
+        session = self.store.create(str(cwd), agent_preset=preset)
+        await self._session_created(session, cwd=str(cwd), preset=preset)
+        return session
 
     async def create_schedule_agent(self, session: Any, *, preset: str) -> Any:
         """Build a silent agent for a scheduled turn."""
@@ -361,6 +365,7 @@ class TuiRuntime:
         self._save_projections()
         self.preset_revision = None
         session = self.store.create(str(self.cwd), agent_preset=self.agent_preset)
+        await self._session_created(session, cwd=str(self.cwd), preset=self.agent_preset)
         await self._attach(session)
         self._record_model_selection()
         self._record_preset()
@@ -585,6 +590,30 @@ class TuiRuntime:
             return app.service(name)
         except LookupError:
             return None
+
+    async def _session_created(self, session: Any, *, cwd: str, preset: str | None) -> None:
+        session_id = str(getattr(session, "session_id", "") or "")
+        if not session_id:
+            return
+        self._created_sessions.add(session_id)
+        await self._emit_hook(SESSION_CREATED, {"sessionId": session_id, "cwd": cwd, "preset": preset})
+
+    async def _dispose_sessions(self) -> None:
+        # Sorted so shutdown is deterministic even though the set does not keep
+        # insertion order.
+        session_ids = sorted(self._created_sessions)
+        self._created_sessions.clear()
+        for session_id in session_ids:
+            await self._emit_hook(SESSION_DISPOSED, {"sessionId": session_id})
+
+    async def _emit_hook(self, name: str, payload: dict[str, Any]) -> None:
+        hooks = self._service("hooks")
+        if hooks is None or not hooks.has(name):
+            return
+        try:
+            await hooks.emit(name, payload)
+        except Exception:
+            logger.exception("hook %r dispatch failed", name)
 
     def _scoped_registry(self, workspace: Any) -> Any:
         """Tools registry narrowed to contributions visible to the preset."""
@@ -1133,6 +1162,7 @@ class TuiRuntime:
         if self._closed:
             return
         self._closed = True
+        await self._dispose_sessions()
         await self.stop_schedule()
         self._save_projections()
         jobs = self.jobs

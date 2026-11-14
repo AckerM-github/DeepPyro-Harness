@@ -9,11 +9,14 @@ callback decide.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
-from deeppyro.core.errors import ConfigError
+from deeppyro.core.errors import ConfigError, SessionError
+from deeppyro.hooks.types import APPROVAL_ASKED, APPROVAL_DECIDED, APPROVAL_REQUEST
 from deeppyro.sandbox.types import (
     APPROVALS,
     PRESETS,
@@ -26,6 +29,10 @@ from deeppyro.sandbox.types import (
 # Commands that can destroy data outside the current task. Under
 # `workspace-write` they require an explicit approval; `read-only` rejects
 # every command and `danger-full-access` lets the preset itself decide.
+_APPROVAL_OUTCOMES = ("allow", "deny", "ask", "cancel")
+
+logger = logging.getLogger(__name__)
+
 DANGEROUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("recursive force delete", re.compile(r"\brm\s+-[a-z]*(?:rf|fr)[a-z]*\b", re.IGNORECASE)),
     (
@@ -69,6 +76,8 @@ class PermissionGate:
         approval: Approval,
         workspace: Path,
         ask: Callable[[ApprovalRequest], Awaitable[bool]] | None = None,
+        *,
+        hooks: Any | None = None,
     ) -> None:
         if preset not in PRESETS:
             raise ConfigError(f"invalid permission preset: {preset!r}")
@@ -78,6 +87,10 @@ class PermissionGate:
         self._approval: Approval = approval
         self._workspace = Path(workspace).expanduser().resolve(strict=False)
         self._ask = ask
+        # Attached lazily by the sandbox plugin (hooks load after sandbox, so
+        # the gate cannot inject the service). Observability only: a hook that
+        # fails must never change the decision.
+        self._hooks = hooks
         # Every decision handed to an approval callback, kept for the session
         # log / UI. Not part of the frozen interface but cheap and useful.
         self.approvals: list[tuple[ApprovalRequest, Decision]] = []
@@ -169,26 +182,79 @@ class PermissionGate:
     # -- approvals ---------------------------------------------------------
 
     async def request(self, req: ApprovalRequest) -> Decision:
-        """Resolve one approval request according to the approval policy."""
-        if self._approval == "never":
-            decision = Decision(False, reason="approval policy is never")
-        elif self._approval == "always":
-            decision = Decision(True, reason="approval policy is always")
-        elif self._ask is None:
-            decision = Decision(False, reason="no interactive approval handler is available")
-        else:
-            try:
-                granted = bool(await self._ask(req))
-            except Exception as exc:  # noqa: BLE001 - a user callback must not crash the turn
-                decision = Decision(False, reason=f"approval handler failed: {exc}")
-            else:
-                decision = (
-                    Decision(True, reason="approved by the user")
-                    if granted
-                    else Decision(False, reason="rejected by the user")
-                )
+        """Resolve one approval request.
+
+        When a hook service is attached the ``approval/request`` waterfall may
+        decide first (``allow``/``deny``/``ask``/``cancel``); ``ask`` falls
+        through to the policy below. ``approval/asked`` is emitted right before
+        the interactive handler runs and ``approval/decided`` after every
+        resolution, including ones refused without asking.
+        """
+        decision, via = await self._resolve(req)
         self.approvals.append((req, decision))
+        await self._emit(
+            APPROVAL_DECIDED,
+            {"request": req, "allowed": decision.allowed, "reason": decision.reason, "via": via},
+        )
         return decision
+
+    async def _resolve(self, req: ApprovalRequest) -> tuple[Decision, str]:
+        outcome = await self._ask_hook(req)
+        if outcome == "allow":
+            return Decision(True, reason="approved by approval plugin"), "hook"
+        if outcome == "deny":
+            return Decision(False, reason="denied by approval plugin"), "hook"
+        if outcome == "cancel":
+            return Decision(False, reason="approval canceled"), "hook"
+        return await self._policy(req)
+
+    async def _ask_hook(self, req: ApprovalRequest) -> str:
+        hooks = self._hooks
+        if hooks is None or not hooks.has(APPROVAL_REQUEST):
+            return "ask"
+        payload = {
+            "request": req,
+            "preset": self._preset,
+            "policy": self._approval,
+            "agent": None,
+            "signal": None,
+        }
+        outcome = await hooks.waterfall(APPROVAL_REQUEST, payload, fallback="ask")
+        if outcome is None:
+            # A listener that vetoes the dispatch does not decide: fall back to
+            # the configured policy instead of failing the tool call.
+            outcome = "ask"
+        if not isinstance(outcome, str) or outcome not in _APPROVAL_OUTCOMES:
+            raise SessionError(
+                f"approval/request listener returned {outcome!r}; "
+                "expected one of 'allow', 'deny', 'ask', 'cancel'"
+            )
+        return outcome
+
+    async def _policy(self, req: ApprovalRequest) -> tuple[Decision, str]:
+        if self._approval == "never":
+            return Decision(False, reason="approval policy is never"), "policy"
+        if self._approval == "always":
+            return Decision(True, reason="approval policy is always"), "policy"
+        if self._ask is None:
+            return Decision(False, reason="no interactive approval handler is available"), "policy"
+        await self._emit(APPROVAL_ASKED, {"request": req, "policy": self._approval})
+        try:
+            granted = bool(await self._ask(req))
+        except Exception as exc:  # noqa: BLE001 - a user callback must not crash the turn
+            return Decision(False, reason=f"approval handler failed: {exc}"), "user"
+        if granted:
+            return Decision(True, reason="approved by the user"), "user"
+        return Decision(False, reason="rejected by the user"), "user"
+
+    async def _emit(self, name: str, payload: dict[str, Any]) -> None:
+        hooks = self._hooks
+        if hooks is None or not hooks.has(name):
+            return
+        try:
+            await hooks.emit(name, payload)
+        except Exception:
+            logger.exception("hook %r failed while dispatching an approval event", name)
 
     # -- internals ---------------------------------------------------------
 

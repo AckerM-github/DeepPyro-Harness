@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import sys
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -36,6 +37,9 @@ from rich.text import Text
 
 from deeppyro.config import Config, load_config
 from deeppyro.core.errors import ConfigError, DeeppyroError
+from deeppyro.hooks import SESSION_CREATED, SESSION_DISPOSED
+
+logger = logging.getLogger(__name__)
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -723,6 +727,29 @@ async def _cancel_jobs(runtime: HeadlessRuntime, session_id: str) -> int:
         return 0
 
 
+def _hooks_service(runtime: Any) -> Any | None:
+    """Resolve the kernel hook service, tolerating runtimes without a kernel."""
+    app = getattr(runtime, "kernel_app", None)
+    service = getattr(app, "service", None)
+    if service is None:
+        return None
+    try:
+        return service("hooks")
+    except LookupError:
+        return None
+
+
+async def _emit_hook(runtime: Any, name: str, payload: dict[str, Any]) -> None:
+    """Emit one session-lifecycle hook; observability must never break a run."""
+    hooks = _hooks_service(runtime)
+    if hooks is None or not hooks.has(name):
+        return
+    try:
+        await hooks.emit(name, payload)
+    except Exception:
+        logger.exception("hook %r dispatch failed", name)
+
+
 async def _run_async(
     text: str,
     *,
@@ -744,9 +771,16 @@ async def _run_async(
         return EXIT_ERROR
 
     sink: Any = JsonLinesSink() if json_output else RichSink(console)
+    session_id: str | None = None
     try:
         session = runtime.store.create(str(runtime.cwd))
         session_id = str(getattr(session, "session_id", "") or "")
+        if session_id:
+            await _emit_hook(
+                runtime,
+                SESSION_CREATED,
+                {"sessionId": session_id, "cwd": str(runtime.cwd), "preset": None},
+            )
         session_label = session_id.removeprefix("session-")[:8]
         sink.emit({"type": "session", "sessionId": session_id})
         if not json_output:
@@ -809,6 +843,8 @@ async def _run_async(
         console.print(f"error: {exc}", style="bold red")
         return EXIT_ERROR
     finally:
+        if session_id:
+            await _emit_hook(runtime, SESSION_DISPOSED, {"sessionId": session_id})
         await runtime.aclose()
 
 

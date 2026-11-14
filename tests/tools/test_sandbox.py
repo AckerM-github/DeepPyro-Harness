@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+
 import pytest
 
-from deeppyro.core.errors import ConfigError
+from deeppyro.core.errors import ConfigError, SessionError
+from deeppyro.hooks import (
+    APPROVAL_ASKED,
+    APPROVAL_DECIDED,
+    APPROVAL_REQUEST,
+    HookService,
+)
 from deeppyro.sandbox import ApprovalRequest, PermissionGate
 
 
@@ -142,3 +150,146 @@ def test_validate_escalation_only_moves_wider(tmp_path) -> None:  # type: ignore
         gate.validate_escalation("bogus")
     read_only = PermissionGate("read-only", "ask", tmp_path)
     read_only.validate_escalation("workspace-write")
+
+
+# --------------------------------------------------------------------------
+# approval hooks (task-63)
+# --------------------------------------------------------------------------
+
+
+def _hook_service() -> HookService:
+    return HookService()
+
+
+async def test_approval_request_hook_allow_short_circuits_policy(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    hooks = _hook_service()
+    seen: list[dict[str, object]] = []
+
+    async def allow(payload: dict[str, object], next_step) -> str:  # type: ignore[no-untyped-def]
+        seen.append(dict(payload))
+        return "allow"
+
+    hooks.on(APPROVAL_REQUEST, allow)
+    called: list[ApprovalRequest] = []
+
+    async def grant(req: ApprovalRequest) -> bool:
+        called.append(req)
+        return False
+
+    gate = PermissionGate("workspace-write", "ask", tmp_path, ask=grant, hooks=hooks)
+    req = ApprovalRequest(kind="command", summary="run it")
+    decision = await gate.request(req)
+
+    assert decision.allowed is True
+    assert decision.reason == "approved by approval plugin"
+    assert called == []
+    assert gate.approvals == [(req, decision)]
+    assert seen[0]["preset"] == "workspace-write"
+    assert seen[0]["policy"] == "ask"
+    assert seen[0]["agent"] is None
+    assert seen[0]["signal"] is None
+
+
+@pytest.mark.parametrize(
+    ("outcome", "allowed", "reason"),
+    [
+        ("deny", False, "denied by approval plugin"),
+        ("cancel", False, "approval canceled"),
+    ],
+)
+async def test_approval_request_hook_deny_and_cancel(tmp_path, outcome, allowed, reason) -> None:  # type: ignore[no-untyped-def]
+    hooks = _hook_service()
+    hooks.on(APPROVAL_REQUEST, lambda payload, next_step: outcome)
+    gate = PermissionGate("workspace-write", "always", tmp_path, hooks=hooks)
+    decision = await gate.request(ApprovalRequest(kind="x", summary="y"))
+    assert decision.allowed is allowed
+    assert decision.reason == reason
+
+
+async def test_approval_request_hook_ask_falls_through_to_policy(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    hooks = _hook_service()
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def relay(payload, next_step):  # type: ignore[no-untyped-def]
+        return await next_step()
+
+    hooks.on(APPROVAL_REQUEST, relay)
+    hooks.on(APPROVAL_ASKED, lambda payload: events.append(("asked", dict(payload))))
+    hooks.on(APPROVAL_DECIDED, lambda payload: events.append(("decided", dict(payload))))
+    requested: list[ApprovalRequest] = []
+
+    async def grant(req: ApprovalRequest) -> bool:
+        requested.append(req)
+        return True
+
+    gate = PermissionGate("workspace-write", "ask", tmp_path, ask=grant, hooks=hooks)
+    decision = await gate.request(ApprovalRequest(kind="x", summary="y"))
+
+    assert decision.allowed is True
+    assert decision.reason == "approved by the user"
+    assert requested == [ApprovalRequest(kind="x", summary="y")]
+    assert [name for name, _ in events] == ["asked", "decided"]
+    assert events[0][1]["policy"] == "ask"
+    assert events[1][1]["via"] == "user"
+    assert events[1][1]["allowed"] is True
+
+
+async def test_approval_asked_is_not_emitted_for_never_or_always(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    hooks = _hook_service()
+    events: list[tuple[str, dict[str, object]]] = []
+    hooks.on(APPROVAL_ASKED, lambda payload: events.append(("asked", dict(payload))))
+    hooks.on(APPROVAL_DECIDED, lambda payload: events.append(("decided", dict(payload))))
+
+    never = PermissionGate("workspace-write", "never", tmp_path, hooks=hooks)
+    always = PermissionGate("workspace-write", "always", tmp_path, hooks=hooks)
+    await never.request(ApprovalRequest(kind="x", summary="y"))
+    await always.request(ApprovalRequest(kind="x", summary="y"))
+
+    assert [name for name, _ in events] == ["decided", "decided"]
+    assert [event[1]["via"] for event in events] == ["policy", "policy"]
+
+
+async def test_approval_request_invalid_outcome_is_a_session_error(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    hooks = _hook_service()
+    hooks.on(APPROVAL_REQUEST, lambda payload, next_step: "maybe")
+    gate = PermissionGate("workspace-write", "ask", tmp_path, hooks=hooks)
+    with pytest.raises(SessionError, match="expected one of"):
+        await gate.request(ApprovalRequest(kind="x", summary="y"))
+    assert gate.approvals == []
+
+
+async def test_approval_hook_payload_is_frozen(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    hooks = _hook_service()
+    captured: list[object] = []
+
+    def observe(payload, next_step):  # type: ignore[no-untyped-def]
+        captured.append(payload)
+        return "ask"
+
+    hooks.on(APPROVAL_REQUEST, observe)
+    gate = PermissionGate("workspace-write", "never", tmp_path, hooks=hooks)
+    await gate.request(ApprovalRequest(kind="x", summary="y"))
+
+    assert isinstance(captured[0], MappingProxyType)
+    with pytest.raises(TypeError):
+        captured[0]["agent"] = object()  # type: ignore[index]
+
+
+async def test_approval_decided_listener_failure_does_not_change_decision(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    hooks = _hook_service()
+
+    def explode(payload) -> None:  # type: ignore[no-untyped-def]
+        raise RuntimeError("logger broke")
+
+    hooks.on(APPROVAL_DECIDED, explode)
+    gate = PermissionGate("workspace-write", "always", tmp_path, hooks=hooks)
+    decision = await gate.request(ApprovalRequest(kind="x", summary="y"))
+    assert decision.allowed is True
+
+
+async def test_approval_without_matching_listener_keeps_policy(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    hooks = _hook_service()
+    gate = PermissionGate("workspace-write", "ask", tmp_path, hooks=hooks)
+    decision = await gate.request(ApprovalRequest(kind="x", summary="y"))
+    assert decision.allowed is False
+    assert "no interactive approval handler" in decision.reason
