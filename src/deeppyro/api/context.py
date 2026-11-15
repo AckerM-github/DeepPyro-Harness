@@ -226,10 +226,11 @@ class PluginContext:
 
     def _bus(self) -> Any | None:
         """The kernel event bus, when this context can reach it."""
-        bus = self.get("hooks")
-        if bus is None or not callable(getattr(bus, "on", None)):
-            return None
-        return bus
+        for name in ("bus", "hooks"):
+            bus = self.get(name)
+            if bus is not None and callable(getattr(bus, "on", None)):
+                return bus
+        return None
 
     def emit(self, *args: Any) -> Any:
         return self._raw.emit(*args)

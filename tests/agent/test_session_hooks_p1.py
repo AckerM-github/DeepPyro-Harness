@@ -225,7 +225,7 @@ async def test_tool_call_is_a_session_record_not_a_bus_event(tmp_path: Path) -> 
     assert len(tool.calls) == 1
 
     for name in (TOOL_CALL, MODEL_SELECTION):
-        with pytest.raises(ValueError, match="unknown hook"):
+        with pytest.raises(ValueError, match="retired from the bus"):
             hooks.on(name, lambda payload: None)
 
 

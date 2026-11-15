@@ -40,6 +40,13 @@ ten names are declared constants whose call sites belong to later layers.
 
 ## 2. Service API
 
+`HookService` is a facade over `deeppyro.core.bus.EventBus`: the registry,
+scope filtering, payload freezing, observers, and the five dispatch modes all
+live in the bus, and `HooksPlugin` provides that same bus as service `bus`.
+The facade only adds the name policy (which hooks still exist). `ctx.on()`
+prefers `bus`, so a plugin subscription and an in-tree `hooks.on()` share one
+table -- see `docs/spec/events.md` §7.
+
 Module: src/deeppyro/hooks/service.py. Exports:
 deeppyro.hooks.HookService and deeppyro.hooks.HookAggregateError.
 

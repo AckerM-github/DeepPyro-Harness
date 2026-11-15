@@ -89,3 +89,24 @@ Ordering is registration order, `prepend=True` runs first, `once=True` disposes
 before its handler runs, a scoped listener only sees dispatches whose scope
 contains every pair, `global_=True` bypasses filtering, and a disposer takes
 effect for the next dispatch.
+
+## 7. Transport vs catalogue
+
+Three pieces, three jobs:
+
+| piece | knows | does not know |
+| --- | --- | --- |
+| `core/event_catalog.py` | every DSH bus name + evidence | what deeppyro emits |
+| `core/events.py` | which names exist, their mode, their producer | how a dispatch runs |
+| `core/bus.py` (`EventBus`) | listener registry, scope filter, freezing, observers, five modes | any event name |
+
+`HookService` is a facade over the very same `EventBus`: it forwards
+registration and dispatch and adds the one policy that belongs to hooks rather
+than to the bus -- which names may still be registered. Retired names fail with a
+message naming their replacement; the bus itself is name-agnostic, which is what
+lets the kernel journal, prompt assembly, and plugins share one registry.
+
+`HooksPlugin` provides both services (`bus` and `hooks`) from one instance, and
+`PluginContext.on()` prefers `bus`, so a plugin subscription and a hook
+subscription land in the same table. `tests/integration/test_single_bus.py`
+pins that: a subscription through either door is dispatched through the other.
