@@ -85,6 +85,14 @@ _ROWS: tuple[tuple[str, tuple[str, ...], str, str, str, bool], ...] = (
     ("cwd", ("workspace",), "show or switch the workspace", "/cwd [path]", "cwd_command", True),
     ("status", (), "show session and runtime details", "/status", "show_status", False),
     ("plan", (), "show the current todo plan", "/plan", "plan_command", False),
+    (
+        "goal",
+        (),
+        "show or manage the current goal",
+        "/goal [<objective>|clear|edit <objective>|pause|resume|complete]",
+        "goal_command",
+        True,
+    ),
     ("jobs", (), "list background jobs", "/jobs", "jobs_command", False),
     (
         "team",

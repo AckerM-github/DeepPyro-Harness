@@ -6,8 +6,14 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from deeppyro.api import Plugin
-from deeppyro.goal import GoalService
-from deeppyro.tools.builtin.goal import GoalTool
+from deeppyro.goal import DEFAULT_MAX_GOAL_ROUNDS, GoalService
+from deeppyro.tools.builtin.goal import (
+    DEFAULT_BLOCKED_AFTER_CONSECUTIVE_ROUNDS,
+    CreateGoalTool,
+    GetGoalTool,
+    GoalTool,
+    UpdateGoalTool,
+)
 
 
 def _service_config(config: Any) -> Any:
@@ -24,18 +30,50 @@ def _service_config(config: Any) -> Any:
     return config
 
 
+def _positive_int(config: Any, keys: tuple[str, ...], fallback: int, *, label: str) -> int:
+    """Read one ``[goal]`` positive integer, refusing anything else at boot."""
+    value: Any = None
+    for key in keys:
+        if isinstance(config, Mapping) and key in config:
+            value = config[key]
+            break
+        if config is not None and hasattr(config, key):
+            value = getattr(config, key)
+            break
+    if value is None:
+        return fallback
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"[goal] {label} must be a positive integer, got {value!r}")
+    if value <= 0:
+        raise ValueError(f"[goal] {label} must be a positive integer, got {value!r}")
+    return value
+
+
 class GoalPlugin(Plugin):
-    """Expose the goal service, its tool and the prompt line."""
+    """Expose the goal service, its tools and the prompt line."""
 
     provide = "goal"
     plugin_id = "goal"
-    version = "0.1.0"
-    description = "per-session goal record, tool and prompt line"
+    version = "0.2.0"
+    description = "per-session goal record, goal tools and prompt line"
     inject: ClassVar[list[str]] = ["sessions", "tools", "prompt"]
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
-        self.service = GoalService(_service_config(config))
+        table = _service_config(config)
+        self.service = GoalService(table)
+        self.max_goal_rounds = _positive_int(
+            table,
+            ("maxGoalRounds", "max_goal_rounds"),
+            DEFAULT_MAX_GOAL_ROUNDS,
+            label="maxGoalRounds",
+        )
+        self.blocked_after = _positive_int(
+            table,
+            ("blockedAfterConsecutiveRounds", "blocked_after_consecutive_rounds"),
+            DEFAULT_BLOCKED_AFTER_CONSECUTIVE_ROUNDS,
+            label="blockedAfterConsecutiveRounds",
+        )
 
     def _bus(self, ctx: Any) -> Any | None:
         try:
@@ -64,12 +102,21 @@ class GoalPlugin(Plugin):
             return ""
         return f"## Goal\n\nThe user's goal for this session: {goal}"
 
+    def goal_tools(self) -> list[Any]:
+        """The tools this plugin registers (the shell stays for one minor)."""
+        return [
+            GetGoalTool(),
+            CreateGoalTool(),
+            UpdateGoalTool(blocked_after=self.blocked_after),
+            GoalTool(),
+        ]
+
     def setup(self, ctx: Any, config: Any) -> None:
         bus = self._bus(ctx)
         self.service.configure(emit=bus.emit if bus is not None else None, load=self._load)
         ctx.effect(lambda: self.service.configure(load=None), "goal: session loader")
         ctx.provide("goal", self.service)
-        ctx.register_tool(lambda _cfg, _workspace: [GoalTool()])
+        ctx.register_tool(lambda _cfg, _workspace: self.goal_tools())
         ctx.register_prompt_section("goal", 35, self._render)
 
 

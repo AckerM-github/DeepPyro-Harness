@@ -25,6 +25,7 @@ from textual.widgets import Footer, Header
 
 from deeppyro import __version__
 from deeppyro.api import DEFAULT_PRESET_ID
+from deeppyro.goal import GoalError
 from deeppyro.session.metadata import record_archive, record_title
 from deeppyro.tui.commands import dispatch, help_text, live_commands
 from deeppyro.tui.format import context_percent, short_session_id
@@ -47,7 +48,14 @@ from deeppyro.tui.screens.slot_screen import open_slot_screen
 from deeppyro.tui.screens.splash import SplashScreen
 from deeppyro.tui.screens.team import TaskBoardScreen, TeamPanelScreen
 from deeppyro.tui.screens.thinking import ThinkingScreen
-from deeppyro.tui.session_view import listing_lines, matches, picker_items
+from deeppyro.tui.session_view import (
+    GOAL_USAGE,
+    goal_lines,
+    goal_summary_line,
+    listing_lines,
+    matches,
+    picker_items,
+)
 from deeppyro.tui.sink import TuiSink
 from deeppyro.tui.slots import (
     SCREEN,
@@ -94,6 +102,37 @@ def _record_field(record: Any, name: str) -> Any:
     if isinstance(record, Mapping):
         return record.get(name)
     return getattr(record, name, None)
+
+
+def _goal_service(runtime: Any) -> Any | None:
+    """Resolve the optional goal service from the booted runtime."""
+    if runtime is None:
+        return None
+    direct = getattr(runtime, "goal", None)
+    if direct is not None:
+        return direct
+    resolver = getattr(runtime, "_service", None)
+    if callable(resolver):
+        try:
+            service = resolver("goal")
+        except Exception:  # noqa: BLE001 - the service is optional
+            service = None
+        if service is not None:
+            return service
+    kernel_app = getattr(runtime, "kernel_app", None)
+    resolve = getattr(kernel_app, "service", None)
+    if not callable(resolve):
+        return None
+    try:
+        return resolve("goal")
+    except Exception:  # noqa: BLE001 - the service is optional
+        return None
+
+
+def _emit_goal(conversation: ConversationView, view: Any) -> None:
+    """Write the fixed `/goal` block into the conversation."""
+    for line in goal_lines(view):
+        conversation.add_info(line)
 
 
 def _normalize_hook_rows(rows: Any) -> list[dict[str, Any]]:
@@ -1367,6 +1406,16 @@ class DeepPyroApp(App[None]):
             f"records  {records}  turns {getattr(session, 'turn_count', lambda: 0)()}",
             f"phase    {self._phase}",
         ]
+        goal_view = None
+        goal_service = _goal_service(runtime)
+        if goal_service is not None:
+            try:
+                goal_view = goal_service.view(session)
+            except Exception:  # noqa: BLE001 - /status must never fail
+                goal_view = None
+        summary = goal_summary_line(goal_view)
+        if summary:
+            lines.append(summary)
         for line in lines:
             self.conversation.add_info(line)
 
@@ -1385,6 +1434,82 @@ class DeepPyroApp(App[None]):
     async def plan_command(self, argument: str = "") -> None:
         """Open the plan viewer (/plan)."""
         await self._open_plan()
+
+    async def goal_command(self, argument: str = "") -> None:
+        """Show or manage the current session goal (/goal)."""
+        runtime = getattr(self, "runtime", None)
+        service = _goal_service(runtime)
+        session = getattr(runtime, "session", None)
+        if service is None:
+            self.conversation.add_error("goal service is not available in this session")
+            return
+        if session is None:
+            self.conversation.add_error("no active session")
+            return
+        try:
+            view = service.view(session)
+        except Exception as exc:  # noqa: BLE001 - reading a goal must not break the UI
+            self.conversation.add_error(f"could not read the goal: {exc}")
+            return
+        raw = (argument or "").strip()
+        if not raw:
+            _emit_goal(self.conversation, view)
+            return
+        verb, _, rest = raw.partition(" ")
+        verb = verb.lower()
+        rest = rest.strip()
+        if verb not in {"edit", "pause", "resume", "complete", "clear"}:
+            verb, rest = "", raw
+        if verb == "edit":
+            if not rest:
+                self.conversation.add_info(GOAL_USAGE)
+                return
+            if view is None:
+                _emit_goal(self.conversation, view)
+                return
+        elif verb:
+            if rest:
+                self.conversation.add_info(GOAL_USAGE)
+                return
+            if view is None:
+                _emit_goal(self.conversation, view)
+                return
+        try:
+            if verb == "edit" and view is not None:
+                view = await service.edit(session, view.ref, objective=rest)
+            elif verb == "pause" and view is not None:
+                view = await service.pause(session, view.ref)
+            elif verb == "resume" and view is not None:
+                view = await service.resume(session, view.ref)
+                service.arm(session)
+            elif verb == "complete" and view is not None:
+                view = await service.complete(session, view.ref)
+            elif verb == "clear" and view is not None:
+                await service.clear(session, view.ref)
+                self.conversation.add_info("Goal cleared.")
+                self.refresh_status()
+                return
+            else:
+                view = await service.create(session, raw)
+        except GoalError as exc:
+            if exc.code == "GOAL_ALREADY_EXISTS":
+                current = service.view(session)
+                goal = getattr(current, "goal", None)
+                phase = str(getattr(goal, "phase", "active"))
+                self.conversation.add_error(
+                    f"A goal is already {phase}. Use /goal edit <objective> to change it "
+                    "or /goal clear before replacing it."
+                )
+            elif exc.code == "GOAL_NOT_FOUND":
+                _emit_goal(self.conversation, None)
+            else:
+                self.conversation.add_error(str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - command errors stay in the log
+            self.conversation.add_error(f"goal command failed: {exc}")
+            return
+        _emit_goal(self.conversation, view)
+        self.refresh_status()
 
     def _job_rows(self) -> list[Any]:
         """Background jobs from the activity projection, else the live service."""

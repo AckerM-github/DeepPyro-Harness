@@ -299,6 +299,7 @@ class AgentSession:
         self._turn_open = False
         self._step_open = False
         self._turn = 0
+        self._turn_conclusion: dict[str, Any] | None = None
         self._step = 0
         self._acc: StreamAccumulator | None = None
         self._stream: AssistantStreamAccumulator | None = None
@@ -537,6 +538,7 @@ class AgentSession:
         turn = self._count_turns() + 1
         self._turn = turn
         self._step = 0
+        self._turn_conclusion = None
         self._append("turn/start", {"turn": turn})
         self._turn_open = True
         self._prepare_step_state()
@@ -685,6 +687,10 @@ class AgentSession:
                 await self._run_tools(turn, step, calls)
                 self._failure_phase = "turn"
                 self._close_step()
+                conclusion = self._take_turn_conclusion()
+                if conclusion is not None:
+                    await self._close_turn(conclusion, final_text=last_text)
+                    return last_text
                 continue
             self._close_step()
             if self._inbox.next_step:
@@ -1084,6 +1090,24 @@ class AgentSession:
                     return Path(current)
         return self._cwd
 
+    def _request_turn_conclusion(self, reason: dict[str, Any]) -> None:
+        """Ask the loop to close the turn after the running tool batch.
+
+        The first request wins: a second tool in the same batch cannot change
+        why the turn ended.
+        """
+        if not isinstance(reason, dict) or not reason.get("kind"):
+            raise ValueError("turn conclusion needs a kind")
+        if self._turn_conclusion is not None:
+            logger.warning("ignoring a second turn conclusion request")
+            return
+        self._turn_conclusion = dict(reason)
+
+    def _take_turn_conclusion(self) -> dict[str, Any] | None:
+        reason = self._turn_conclusion
+        self._turn_conclusion = None
+        return reason
+
     def _tool_context(self, call_id: str, turn: int, step: int) -> ToolContext:
         return ToolContext(
             cwd=self._current_cwd(),
@@ -1096,6 +1120,7 @@ class AgentSession:
             permission=self._permission,
             services=self._services,
             agent=self,
+            conclude_turn=self._request_turn_conclusion,
         )
 
     def _tool_log(self, record_type: str, data: dict[str, Any]) -> int:
@@ -1270,6 +1295,50 @@ class AgentSession:
     def _records(self) -> list[Any]:
         records = getattr(self._session, "records", None)
         return records if isinstance(records, list) else []
+
+    def current_turn_records(self) -> list[Any]:
+        """The records appended by the open turn, in order (empty when idle)."""
+        records = self._records()
+        start = None
+        for index, record in enumerate(records):
+            if getattr(record, "type", None) != "turn/start":
+                continue
+            data = getattr(record, "data", None) or {}
+            if data.get("turn") == self._turn:
+                start = index
+                end = len(records)
+                for later in range(index + 1, len(records)):
+                    if getattr(records[later], "type", None) == "turn/start":
+                        end = later
+                        break
+                return list(records[start:end])
+        return [] if start is None else list(records[start:])
+
+    def current_turn_human_input(self) -> bool:
+        """Did a human speak in the open turn?"""
+        for record in self.current_turn_records():
+            if getattr(record, "type", None) != "user/message":
+                continue
+            data = getattr(record, "data", None) or {}
+            source = data.get("source") or {}
+            if isinstance(source, dict) and source.get("kind") == "user":
+                return True
+        return False
+
+    def current_turn_goal_round(self) -> dict[str, Any] | None:
+        """The goal round that admitted this turn, if any."""
+        for record in self.current_turn_records():
+            if getattr(record, "type", None) != "user/message":
+                continue
+            data = getattr(record, "data", None) or {}
+            source = data.get("source") or {}
+            if isinstance(source, dict) and source.get("kind") == "goal":
+                return {
+                    "goalId": source.get("goalId"),
+                    "revision": source.get("revision"),
+                    "round": source.get("round"),
+                }
+        return None
 
     def _derive_messages(self) -> list[Message]:
         derive = getattr(self._session, "derive_messages", None)

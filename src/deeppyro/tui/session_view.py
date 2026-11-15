@@ -106,3 +106,55 @@ def matches(info: Any, query: str) -> bool:
         str(getattr(info, "cwd", "") or ""),
     )
     return any(needle in value.lower() for value in haystacks)
+
+
+#: Canonical `/goal` usage line, shared by the command and its tests.
+GOAL_USAGE = "/goal [<objective>|clear|edit <objective>|pause|resume|complete]"
+
+
+def goal_hint(view: Any) -> str:
+    """The next useful `/goal` invocations for the current phase/activation."""
+    goal = getattr(view, "goal", None)
+    if goal is None:
+        return GOAL_USAGE
+    phase = str(getattr(goal, "phase", "active"))
+    activation = str(getattr(view, "activation", "disarmed"))
+    if phase == "active":
+        verb = "pause" if activation == "armed" else "resume"
+        return f"/goal edit <objective>, /goal {verb}, /goal clear"
+    if phase in {"paused", "blocked"}:
+        return "/goal edit <objective>, /goal resume, /goal clear"
+    return "/goal <objective>, /goal clear"
+
+
+def goal_lines(view: Any) -> list[str]:
+    """Fixed multi-line rendering of one goal view (or the empty state)."""
+    goal = getattr(view, "goal", None)
+    if goal is None:
+        return ["No goal is currently set.", GOAL_USAGE]
+    phase = str(getattr(goal, "phase", "active"))
+    lines = [
+        f"Goal: {getattr(goal, 'objective', '')}",
+        f"Status: {phase}",
+        f"Rounds: {getattr(view, 'rounds_started', 0)}/{getattr(goal, 'max_goal_rounds', 0)}",
+        f"Activation: {getattr(view, 'activation', 'disarmed')}",
+    ]
+    reason = getattr(goal, "blocked_reason", None)
+    if phase == "blocked" and reason is not None:
+        lines.append(f"Blocker: {getattr(reason, 'code', '')}: {getattr(reason, 'message', '')}")
+    lines.append(f"Commands: {goal_hint(view)}")
+    return lines
+
+
+def goal_summary_line(view: Any) -> str:
+    """One-line goal summary for `/status`; empty when no goal is set."""
+    goal = getattr(view, "goal", None)
+    if goal is None:
+        return ""
+    phase = str(getattr(goal, "phase", "active"))
+    activation = str(getattr(view, "activation", "disarmed"))
+    rounds = f"{getattr(view, 'rounds_started', 0)}/{getattr(goal, 'max_goal_rounds', 0)}"
+    objective = " ".join(str(getattr(goal, "objective", "")).split())
+    if len(objective) > 60:
+        objective = objective[:59].rstrip() + "…"
+    return f"goal     {phase} {rounds} {activation} · {objective}"

@@ -30,6 +30,7 @@ EXPECTED_NAMES = [
     "cwd",
     "status",
     "plan",
+    "goal",
     "jobs",
     "team",
     "thinking",

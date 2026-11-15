@@ -160,6 +160,10 @@ class ToolContext:
     # the AgentSession executing this call, attached by the agent loop; tools
     # that need the open turn (goal tools) read it instead of guessing
     agent: Any | None = None
+    # End the turn once this tool batch returns, instead of asking the model for
+    # another step.  The argument is the turn/end reason, e.g.
+    # {"kind": "completed"}; goal tools use it after complete/blocked.
+    conclude_turn: Callable[[dict[str, Any]], None] | None = None
 
 
 @runtime_checkable
