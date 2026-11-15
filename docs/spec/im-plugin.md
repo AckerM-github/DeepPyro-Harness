@@ -39,3 +39,20 @@ means a frozen exe can still load them, and the dependency set (`websockets`,
 4. Credentials are only exercised by unit tests so far. A real Discord token
    or a QQ scan is required before either channel can be called production
    ready.
+
+## Operating rules
+
+Three rules that cost real debugging time, recorded so they are not rediscovered.
+
+1. **One dpyro_im serve per bot token.** Discord allows a single gateway session per
+   bot; a second process takes the session over, the first receives op 9 and closes with
+   4000 Invalid session, and the account looks offline from the Discord client. Before
+   starting a gateway, check for another python -m dpyro_im serve on the same machine.
+2. **Discord needs the MESSAGE_CONTENT privileged intent.** GET /applications/@me
+   reports it as lags & (1 << 18); while it is off the gateway still delivers
+   MESSAGE_CREATE, but content is empty, so the adapter drops every message as
+   text-less. The bot page in the Developer Portal has the switch.
+3. **IM session titles keep the platform prefix and the fallback writer owns them.**
+   dpyro-im records QQ C2C · 6A14 · 你好 style titles on the first turn, so the
+   session-title gist plugin sees an existing title and (by design) never overwrites an
+   IM session. Gists are a TUI affordance; IM titles carry the conversation identity.
