@@ -70,3 +70,22 @@ kernel plumbing, not domain events: they stay inside the vendored cordis port an
 are not part of this table. Session records (`turn/end`, `tool/call`, …) are also
 absent: they are durable log entries, and `session/archived`-style additions must
 be written with `ignorable=True` rather than registered here.
+
+## 6. Real consumers
+
+The bus is not a single-consumer pipe: six in-tree subscribers prove it, and
+`tests/integration/test_bus_consumers.py` pins the ordering rules.
+
+| subscriber | name(s) | kind |
+| --- | --- | --- |
+| `builtin/hook_journal.py` | every dispatch | observer (`hook/invoked` + `hook/result`) |
+| `builtin/hook_observability.py` | 6 curated names | logging |
+| `builtin/approval_policy.py` | `approval/request` | waterfall |
+| `builtin/prompt_extension.py` | `system-prompt/assemble` | waterfall |
+| `builtin/llm_retry.py` | `agent/request-error` | emit listener |
+| `builtin/session_title.py` | `agent/turn-stopping` | serial |
+
+Ordering is registration order, `prepend=True` runs first, `once=True` disposes
+before its handler runs, a scoped listener only sees dispatches whose scope
+contains every pair, `global_=True` bypasses filtering, and a disposer takes
+effect for the next dispatch.
