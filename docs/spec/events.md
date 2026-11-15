@@ -164,7 +164,7 @@ call site that proves it:
 | `team` | 2 | team members land in `team/` state files, no events yet |
 | `schedule` | 3 | the scheduler fires jobs, not events |
 | `compaction` | 4 | compaction is a record, its lifecycle is silent |
-| `goal` | 2 | `goal/changed` is implemented (`goal` tool + prompt line); activation waits |
+| `goal` | 2 | **both implemented** in M5: `goal/changed` and `goal/activation-changed` (section 11) |
 | `workspace` | 3 | `workspace/changed` is implemented for cwd moves; the rest wait |
 | `jobs` | 1 | job bookkeeping is polled, not published |
 | `fs` | 5 | file watching is not implemented |
@@ -182,3 +182,26 @@ call site that proves it:
 `spill` and `attachment` are absent from the DSH catalogue, so nothing is
 declared for them: an empty namespace would be a shell, and the brief forbids
 shells.
+
+## 11. The goal bus contract (M5)
+
+Two names carry the goal state machine:
+
+| name | mode | producer | payload |
+| --- | --- | --- | --- |
+| `goal/changed` | emit | `goal.service` | `{session, goal?, change{operation, ref{id, revision}, goal?}}` |
+| `goal/activation-changed` | emit | `goal.service` | `{sessionId, goal?{id, revision, activation}}` |
+
+`change` is the frozen DSH object: `operation` is one of `create`, `edit`,
+`pause`, `resume`, `complete`, `block`, `clear`; `ref` identifies the snapshot the
+operation produced (after `clear` it names the tombstone revision); `goal` is the
+full goal view or `None` after `clear`.
+
+DSH publishes these events per agent, so its frame needs no session id. Our bus
+is global, so `goal/changed` carries one extra `session` key on top of `change`,
+and `goal` (the objective string) stays for the pre-M5 consumers. Everything
+inside `change` is exactly the contract in `docs/spec/goal.md` section 6.
+
+`goal/activation-changed` fires only when the process-local activation actually
+changes: `create` and `resume` arm a goal, `pause`/`complete`/`block`/`clear`
+disarm it, `edit` leaves it alone, and every new agent starts disarmed.

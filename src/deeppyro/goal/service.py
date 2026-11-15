@@ -78,6 +78,25 @@ def _positive_int(value: Any) -> int | None:
     return value
 
 
+def _change_payload(change: SnapshotChange | ClearedChange) -> dict[str, Any]:
+    """The `goal/changed` change object: operation, ref and the goal view."""
+    raw = change.to_dict()
+    operation = raw.get("operation")
+    if isinstance(change, SnapshotChange):
+        goal = change.goal
+        return {
+            "operation": operation,
+            "ref": {"id": goal.id, "revision": goal.revision},
+            "goal": goal.to_dict(),
+        }
+    cleared = change.cleared
+    return {
+        "operation": operation,
+        "ref": {"id": cleared.id, "revision": cleared.revision},
+        "goal": None,
+    }
+
+
 class GoalService:
     """Per-session goal state; usable without a plugin context."""
 
@@ -86,6 +105,7 @@ class GoalService:
 
     def __init__(self, config: Any = None) -> None:
         self._states: dict[str, GoalState] = {}
+        self._folded_at: dict[str, int] = {}
         self._activations: dict[str, Activation] = {}
         self._records: dict[str, RecordFn] = {}
         self._emit: Callable[[str, dict[str, Any]], Any] | None = None
@@ -145,19 +165,22 @@ class GoalService:
     def invalidate(self, session: Any) -> None:
         """Drop the cached fold so the next read replays the log again."""
         self._states.pop(_session_id(session), None)
+        self._folded_at.pop(_session_id(session), None)
 
     # -- reads ---------------------------------------------------------
     def state(self, session: Any) -> GoalState:
+        """The folded goal state, refolded whenever the log has grown."""
         session_id = _session_id(session)
-        cached = self._states.get(session_id)
-        if cached is not None:
-            return cached
         records = self._load_records(session)
+        cached = self._states.get(session_id)
+        if cached is not None and self._folded_at.get(session_id) == len(records):
+            return cached
         try:
             folded = goal_replay.fold(records, default_max_rounds=self._default_max_rounds)
         except GoalReplayError as exc:
             raise GoalError(str(exc), "GOAL_REPLAY_FAILED") from exc
         self._states[session_id] = folded
+        self._folded_at[session_id] = len(records)
         return folded
 
     def _load_records(self, session: Any) -> list[Any]:
@@ -360,7 +383,6 @@ class GoalService:
             view = await self.edit(session, current.ref, objective=text)
         return view.goal.objective
 
-    # -- internals -----------------------------------------------------
     def _session_id_for(self, session: Any) -> str:
         self.bind(session)
         return _session_id(session)
@@ -383,9 +405,10 @@ class GoalService:
         except (GoalError, GoalReplayError) as exc:  # pragma: no cover - guard rail
             raise GoalError(str(exc), "GOAL_REPLAY_FAILED") from exc
         self._states[session_id] = updated
+        self._folded_at[session_id] = len(_records_of(session)) if not isinstance(session, str) else 0
         if activation is not None:
             self._set_activation(session_id, activation)
-        self._publish(session_id, updated)
+        self._publish(session_id, change, updated)
         return goal_replay.view(updated, self.activation(session_id))
 
     def _require(self, session: Any, state: GoalState, ref: GoalRef) -> GoalSnapshot:
@@ -465,10 +488,27 @@ class GoalService:
             raise ToolError("goal: the service is not bound to this session")
         return record
 
-    def _publish(self, session_id: str, state: GoalState) -> None:
-        """Announce the change; M3b replaces the payload with the DSH shape."""
+    def _publish(
+        self,
+        session_id: str,
+        change: SnapshotChange | ClearedChange,
+        state: GoalState,
+    ) -> None:
+        """Announce the change on the bus in the DSH shape.
+
+        DSH publishes per agent, so its payload needs no session id. Our bus is
+        global, so the frame carries one extra `session` key on top of the
+        frozen `change` object; everything inside `change` is the contract.
+        """
         objective = state.goal.objective if state.goal is not None else None
-        self._emit_event(GOAL_BUS_EVENT, {"session": session_id, "goal": objective})
+        self._emit_event(
+            GOAL_BUS_EVENT,
+            {
+                "session": session_id,
+                "goal": objective,
+                "change": _change_payload(change),
+            },
+        )
 
     def _emit_event(self, event: str, payload: dict[str, Any]) -> None:
         emitter = self._emit

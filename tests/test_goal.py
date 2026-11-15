@@ -51,7 +51,9 @@ async def test_create_records_a_snapshot_and_publishes() -> None:
     assert record.data["operation"] == "create"
     assert record.data["goal"]["phase"] == "active"
     await asyncio.sleep(0)
-    assert seen == [{"session": "session-1", "goal": "ship the plugin"}]
+    assert [event["session"] for event in seen] == ["session-1"]
+    assert [event["goal"] for event in seen] == ["ship the plugin"]
+    assert [event["change"]["operation"] for event in seen] == ["create"]
     assert service.get(session) == "ship the plugin"
 
 

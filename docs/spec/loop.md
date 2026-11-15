@@ -473,3 +473,46 @@ integration. The full suite at the P1 close was 2224 passed.
   the loop wiring (one `image/offload` per step before the request, refs-only durable log).
 
 Lint: `uv run ruff check src tests` and `uv run ruff format --check src tests` are clean.
+
+## 13. Goal round driver (opt-in)
+
+The driver turns an active, armed goal into successive turns without a human in
+the loop. It is off by default: set `[goal] driver = true` in `config.toml` to
+load `deeppyro.builtin.goal_round_driver:GoalRoundDriverPlugin`. With the flag
+off the plugin registers no listener and publishes nothing, so a session's
+records are identical to a run without goals.
+
+Invariants (`docs/spec/goal.md` section 7):
+
+1. `drivable` means the goal is `active` **and** armed in this process.
+2. `readyToDrive` also needs the agent to be live, idle, not stopping, and no
+   competing human message already queued for the next turn.
+3. Every round appends one `user/message` whose source is
+   `{kind: "goal", goalId, revision, round}`; the round number is
+   `roundsStarted + 1`, and `roundsStarted` only advances when that message is
+   admitted by the fold.
+4. Exhausting `maxGoalRounds` blocks the goal with the `round-limit` reason
+   instead of queueing another round.
+5. A failed `followup` blocks with `queue-failed`, but only if the same goal
+   revision is still active and armed.
+6. A human message for the next turn makes the queued attempt stale; a message
+   that is itself the round is not competing.
+7. `turn/end` with `max-tokens` disarms; `aborted` cancels a claimed round, and
+   a `disposed` abort disarms outright.
+8. Detaching interrupts a running round with `clear_inbox=False`, so the
+   remaining inbox survives.
+
+The pre-step fence (section 7.5) is the safety net: before a step enters, the
+driver re-validates the reservation. If the goal moved on, the round message was
+discarded, or another message was claimed alongside it, the driver restores the
+other claimed messages onto `next-step`, marks the attempt stale, returns
+`{"kind": "reject"}`, and re-drives. A rejection that happens after the fence
+allowed the step blocks the goal with `prompt-rejected`, and only when the same
+goal revision is still current.
+
+Documented divergences from DSH: there is no `currentInitiator` (the driver only
+interrupts the agent it drives), no `subagents.waitForChildren` gate, no
+`sessions.flush` (appends are already durable), no `agent/created|disposed`
+producers (the driver uses `AgentsPlugin.on_created`/`live_agents`), and the
+wrap-up text after `complete`/`blocked` closes the turn instead of injecting an
+extra context message.

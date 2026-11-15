@@ -195,3 +195,25 @@ TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /pres
     # 可用 DSH_SESSIONS / DEEPPYRO_FIXTURES 覆盖输入、输出目录
 
 缺少 fixtures 时，相关测试会自动 skip，其余测试照常运行。
+
+### Goals and automatic rounds (opt-in)
+
+A session can carry a goal: `create_goal`, `update_goal` and `get_goal` are the
+model-facing tools, and `/goal` in the TUI is the human surface (`/goal <text>`,
+`/goal edit <text>`, `/goal pause`, `/goal resume`, `/goal complete`,
+`/goal clear`).
+
+Automatic rounds are off by default. To let an active goal drive itself turn
+after turn, opt in:
+
+```toml
+[goal]
+driver = true               # load the round driver plugin
+maxGoalRounds = 256         # hard ceiling per goal
+blockedAfterConsecutiveRounds = 3
+```
+
+Every round is a full turn, so a 20-round goal is 20 model requests plus their
+tool traffic. `pause` interrupts the running round and keeps the inbox, `resume`
+re-arms the same goal, and closing the process leaves goals disarmed: a fresh
+process never resumes a goal on its own.

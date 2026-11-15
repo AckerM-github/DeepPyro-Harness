@@ -194,6 +194,27 @@ def _signal_aborted(payload: Mapping[str, Any]) -> bool:
     return bool(is_set()) if callable(is_set) else False
 
 
+def _change_operation(payload: Mapping[str, Any]) -> str:
+    change = payload.get("change")
+    if not isinstance(change, Mapping):
+        return ""
+    operation = change.get("operation")
+    return operation if isinstance(operation, str) else ""
+
+
+def _change_matches_attempt(payload: Mapping[str, Any], state: DriverState) -> bool:
+    attempt = state.attempt
+    if attempt is None:
+        return False
+    change = payload.get("change")
+    if not isinstance(change, Mapping):
+        return False
+    ref = change.get("ref")
+    if not isinstance(ref, Mapping):
+        return False
+    return ref.get("id") == attempt.goal_id and ref.get("revision") == attempt.revision
+
+
 def _changed_session(payload: Mapping[str, Any]) -> str | None:
     for key in ("session", "sessionId"):
         value = payload.get(key)
@@ -692,7 +713,13 @@ class RoundDriver:
         state.fold_dirty = True
         goal, activation = self.current_goal(state)
         drivable = self.drivable(goal, activation)
-        if not drivable and state.attempt is not None and _is_busy(state.agent) and not state.stopping:
+        paused = _change_operation(payload) == "pause" and _change_matches_attempt(payload, state)
+        if (
+            state.attempt is not None
+            and _is_busy(state.agent)
+            and not state.stopping
+            and (paused or not drivable)
+        ):
             self._interrupt(state)
         self.request_drive(state)
 
