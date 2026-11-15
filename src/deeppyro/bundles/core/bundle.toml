@@ -38,6 +38,10 @@ id = "tools"
 plugin = "deeppyro.builtin.tools:ToolsPlugin"
 
 [[plugins]]
+id = "goal"
+plugin = "deeppyro.builtin.goal:GoalPlugin"
+
+[[plugins]]
 id = "tools-builtin"
 plugin = "deeppyro.builtin.tools:BuiltinToolsPlugin"
 

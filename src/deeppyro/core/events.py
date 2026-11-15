@@ -81,6 +81,7 @@ _PRODUCERS: dict[str, str] = {
     "approval/request": "sandbox.approval",
     "command/executed": "commands.service",
     "workspace/changed": "working_directory.service",
+    "goal/changed": "goal.service",
 }
 
 #: Implemented events that are not in the DSH catalogue yet: their mode is

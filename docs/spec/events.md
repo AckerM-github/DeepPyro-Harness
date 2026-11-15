@@ -164,7 +164,7 @@ call site that proves it:
 | `team` | 2 | team members land in `team/` state files, no events yet |
 | `schedule` | 3 | the scheduler fires jobs, not events |
 | `compaction` | 4 | compaction is a record, its lifecycle is silent |
-| `goal` | 2 | DSH-only for now |
+| `goal` | 2 | `goal/changed` is implemented (`goal` tool + prompt line); activation waits |
 | `workspace` | 3 | `workspace/changed` is implemented for cwd moves; the rest wait |
 | `jobs` | 1 | job bookkeeping is polled, not published |
 | `fs` | 5 | file watching is not implemented |
