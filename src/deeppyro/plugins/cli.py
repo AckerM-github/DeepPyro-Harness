@@ -33,6 +33,7 @@ from deeppyro.plugins.bootstrap import (
 from deeppyro.plugins.install import customized_core, requirement_errors, vendor_conflict_map
 from deeppyro.plugins.metadata import (
     FAILURE_ABI,
+    KNOWN_SLOT_KINDS,
     MetadataError,
     python_tag,
 )
@@ -243,7 +244,7 @@ def _installer_failure(exc: Exception, *, json_output: bool) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    packages = scan_plugin_packages()
+    packages = scan_plugin_packages(known_slots=KNOWN_SLOT_KINDS)
     conflicts = vendor_conflict_map(packages)
     diagnostics = {package.id: diagnose(package, conflicts=conflicts) for package in packages}
     if args.json:
@@ -317,7 +318,7 @@ def cmd_info(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    packages = scan_plugin_packages()
+    packages = scan_plugin_packages(known_slots=KNOWN_SLOT_KINDS)
     issues = list(install.manifest_issues())
     if args.plugin_id:
         packages = [package for package in packages if package.id == args.plugin_id]
