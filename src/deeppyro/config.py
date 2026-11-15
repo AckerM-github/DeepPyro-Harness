@@ -52,7 +52,8 @@ class AgentConfig(BaseModel):
     # Tool-heavy steps can emit several long tool calls in one assistant message;
     # 8192 leaves room for that on DeepSeek's 8k-output models.
     maxTokens: int | None = 8192
-    maxSteps: int = 100
+    # Unbounded like DSH; set [agent].maxSteps to cap a runaway loop.
+    maxSteps: int | None = None
 
 
 class Config(BaseModel):

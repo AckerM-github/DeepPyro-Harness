@@ -578,26 +578,7 @@ class AgentSession:
         admitted = list(claimed)
         starts_series = True
         pre_step_installed = self._hook_enabled(AGENT_PRE_STEP)
-        decision = await self._pre_step_hook(turn, claimed)
-        if decision is None and pre_step_installed:
-            # A listener neither continued the chain nor returned a decision:
-            # the dispatch is vetoed, so the built-in step entry never runs.
-            await self._blocked_turn(turn, "agent/pre-step hook vetoed the turn")
-            return ""
-        if decision is not None:
-            kind = decision.get("kind")
-            if kind == "reject":
-                await self._blocked_turn(turn, decision.get("reason"))
-                return ""
-            if kind != "enter":
-                raise ValueError(f"agent/pre-step returned unsupported kind {kind!r}")
-            raw_messages = decision.get("messages")
-            if raw_messages is not None:
-                admitted = self._admit_messages(raw_messages)
-            flag = decision.get("startsRequestSeries")
-            if isinstance(flag, bool):
-                starts_series = flag
-        if not admitted:
+        if not admitted and not pre_step_installed:
             await self._close_turn({"kind": "completed"}, final_text=None)
             return ""
 
@@ -606,19 +587,45 @@ class AgentSession:
         while True:
             if self._interrupt_requested:
                 return await self._abort_turn("user")
-            if step >= self._options.max_steps:
+            if self._options.max_steps is not None and step >= self._options.max_steps:
                 await self._close_turn({"kind": "max-steps"}, final_text=last_text)
                 return last_text
             step += 1
             self._step = step
+            first = step == 1
+            step_messages = admitted if first else self._inbox.claim(TARGET_NEXT_STEP, turn)
+            # DSH fires agent/pre-step once per step, with only the messages that
+            # step claimed; the decision replaces them (or rejects the step).
+            decision = await self._pre_step_hook(turn, step, step_messages)
+            if decision is None and pre_step_installed:
+                # A listener neither continued the chain nor returned a decision:
+                # the dispatch is vetoed, so the built-in step entry never runs.
+                await self._blocked_turn(turn, "agent/pre-step hook vetoed the turn")
+                return ""
+            if decision is not None:
+                kind = decision.get("kind")
+                if kind == "reject":
+                    await self._blocked_turn(turn, decision.get("reason"))
+                    return ""
+                if kind != "enter":
+                    raise ValueError(f"agent/pre-step returned unsupported kind {kind!r}")
+                raw_messages = decision.get("messages")
+                if raw_messages is not None:
+                    step_messages = self._admit_messages(raw_messages)
+                flag = decision.get("startsRequestSeries")
+                if isinstance(flag, bool):
+                    starts_series = flag
+            if first and not step_messages:
+                await self._close_turn({"kind": "completed"}, final_text=None)
+                return ""
+            # The step is admitted: open it in the log *after* the hook decided,
+            # so a rejected step leaves no step/start behind (DSH semantics).
             self._append("step/start", {"turn": turn, "step": step})
             # UI-only hint so a TUI can start a fresh reasoning step; the durable
             # step/start record above already carries the same information.
             self._emit({"type": "step", "turn": turn, "step": step})
             self._step_open = True
             self._prepare_step_state()
-            first = step == 1
-            step_messages = admitted if first else self._inbox.claim(TARGET_NEXT_STEP, turn)
             # The chosen model is adopted before the prompt and the request are
             # built, so the system prompt, request/header, request/context and the
             # actual request all describe the same model.
@@ -705,16 +712,18 @@ class AgentSession:
         return not self._inbox.next_step
 
     # -- hooks -------------------------------------------------------------
-    async def _pre_step_hook(self, turn: int, claimed: list[Message]) -> dict[str, Any] | None:
+    async def _pre_step_hook(
+        self, turn: int, step: int, claimed: list[Message]
+    ) -> dict[str, Any] | None:
         if not self._hook_enabled(AGENT_PRE_STEP):
             return None
         hooks = self._hooks
         assert hooks is not None
         payload = {
             "agent": self,
-            "messages": [*self._derive_messages(), *claimed],
+            "messages": list(claimed),
             "turn": turn,
-            "step": 1,
+            "step": step,
             "signal": self._cancel_event,
             "modelSelection": {"provider": self._provider.name, "model": self._model},
             "tools": [schema.model_dump() for schema in self._registry.schemas()],

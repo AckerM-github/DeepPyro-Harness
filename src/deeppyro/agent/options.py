@@ -14,7 +14,9 @@ class AgentOptions:
     the CLI without threading a dozen separate arguments.
     """
 
-    max_steps: int = 100
+    # DSH's loop has no step cap: it runs until the turn stops on its own.
+    # The cap stays available as an explicit opt-in for scripts and tests.
+    max_steps: int | None = None
     max_tokens: int | None = None
     temperature: float | None = None
     compact_threshold: float = 0.85
