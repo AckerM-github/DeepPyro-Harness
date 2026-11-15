@@ -135,3 +135,50 @@ They are deliberately **not** bus events: their payloads are cordis objects
 (`Fiber`, `Context`), they fire inside the port's own hook table, and binding a
 domain handler to them would leak the framework into plugin code. `is_bus_event("internal/…")`
 stays False, so `ctx.on()` routes them to cordis where they belong.
+
+## 9. Milestone status
+
+| milestone | state | evidence |
+| --- | --- | --- |
+| M0 catalogue rebuild | done | `scripts/extract_dsh_events.mjs`, `docs/spec/dsh-event-catalog.md` |
+| M1 single bus in front of plugins | done | `core/bus.py`, `PluginContext.on()` routes bus names, `hook-bridge` deleted |
+| M1b transport/catalogue split | done | `EventBus` raises anything, `HookService` keeps the name policy |
+| M2 catalogue + payload contract | done | `core/event_catalog.py` (94 names), `EVENT_SPECS` = 115 entries |
+| M3 mode evidence + semantics | done | `extract_dsh_events.mjs` reads dispatch modes, `test_bus_modes.py` |
+| M3b internal/* plumbing | done | `INTERNAL_SPECS`, ten names, all raised by the vendored port |
+| M4 consumers | done | six in-tree subscribers listed in §6, `test_bus_consumers.py` |
+| M5 documentation freeze | done | this document plus `hooks.md` §9 |
+
+One deviation survives on purpose: `llm/stream` is `emit` here and `waterfall` in
+DSH (§3). Everything else matches name for name.
+
+## 10. Reserved namespaces (P1)
+
+"The bus knows the name before the subsystem exists" is the rule for these
+namespaces. Each entry carries a reason and, when DSH has the same event, the
+call site that proves it:
+
+| namespace | entries | why declared now |
+| --- | --- | --- |
+| `subagent` | 5 | the plugin exists, the events are not raised yet |
+| `team` | 2 | team members land in `team/` state files, no events yet |
+| `schedule` | 3 | the scheduler fires jobs, not events |
+| `compaction` | 4 | compaction is a record, its lifecycle is silent |
+| `goal` | 2 | DSH-only for now |
+| `workspace` | 3 | workspace switching is a service call |
+| `jobs` | 1 | job bookkeeping is polled, not published |
+| `fs` | 5 | file watching is not implemented |
+| `web` | 1 | no fetch subsystem |
+| `credentials` | 2 | credentials are read on demand |
+| `settings` | 2 | settings write-through has no observers |
+| `loader` | 6 | DSH's loader has no counterpart here |
+| `agent-preset` | 1 | presets resolve statically |
+| `app-boot` | 1 | boot does not publish itself |
+| `mcp` | 2 | MCP is a non-goal |
+| `api-session` | 6 | the web API owns these, there is no web API |
+| `sandbox` | 1 | policy changes are read, not announced |
+| `command` | 1 | slash commands return inline |
+
+`spill` and `attachment` are absent from the DSH catalogue, so nothing is
+declared for them: an empty namespace would be a shell, and the brief forbids
+shells.

@@ -403,6 +403,11 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 
 ### 11.2 插件契约（`deeppyro.api`）
 
+事件总线在 `core/bus.py`（传输，任意名字）+ `core/events.py`（目录、模式、生产者）。
+`ctx.on()` 先查目录：命中走总线，否则回落 cordis。目录与冻结状态见
+`@docs/spec/events.md`；`hooks/service.py` 只是保留名字策略的薄门面。
+
+
 - `Plugin`：`plugin_id`/`version`/`api_version`/`inject`/`Config`(pydantic)/`setup(ctx, config)`；
   可选 `async stop()` 清理，可选 `volatile: ClassVar[tuple[str, ...]]` 声明可 live apply 的字段。
 - `on_config(config)`：配置热更新回调（仅 volatile 字段变更且经 `kernel.apply_plugin_config` 时同步调用）。

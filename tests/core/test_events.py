@@ -68,3 +68,44 @@ def test_the_ten_cordis_plumbing_events_are_catalogued_but_not_bus_events() -> N
         assert spec.producer.startswith("cordis.")
         assert spec.dsh_ref.startswith("'internal/")
         assert not events.is_bus_event(name)
+
+
+# The P1 namespaces named by the alignment brief. They are declared, not built:
+# the bus must know their names so a plugin can subscribe before the subsystem
+# exists, but nothing dispatches them until a real producer lands.
+P1_NAMESPACES = {
+    "agent-preset",
+    "api-session",
+    "app-boot",
+    "command",
+    "compaction",
+    "credentials",
+    "fs",
+    "goal",
+    "jobs",
+    "loader",
+    "mcp",
+    "sandbox",
+    "schedule",
+    "settings",
+    "subagent",
+    "team",
+    "web",
+    "workspace",
+}
+
+
+def test_every_p1_namespace_is_declared_with_evidence() -> None:
+    declared = {name.split("/", 1)[0] for name in events.EVENT_SPECS}
+    missing = sorted(P1_NAMESPACES - declared)
+    assert missing == [], f"P1 namespaces missing from the bus table: {missing}"
+
+    for name in events.EVENT_SPECS:
+        if name.split("/", 1)[0] not in P1_NAMESPACES:
+            continue
+        spec = events.EVENT_SPECS[name]
+        if spec.implemented:
+            assert spec.producer, name
+        else:
+            assert spec.reason, f"{name} is reserved without a reason"
+            assert spec.dsh_ref or spec.reason, name
