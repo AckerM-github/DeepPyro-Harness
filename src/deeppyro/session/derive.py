@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from deeppyro.core.errors import SessionError
-from deeppyro.core.wire import LogRecord, Message, ReplaceOp
+from deeppyro.core.wire import LogRecord, Message, ReplaceOp, TextPart, ToolCallPart
 from deeppyro.session.events import (
     KNOWN_EVENT_TYPES,
     PROJECTION_EVENTS,
@@ -209,6 +209,59 @@ def _deep_equal_json(left: object, right: object) -> bool:
             return False
         return all(_deep_equal_json(left[key], right[key]) for key in left)
     return left == right
+
+
+#: Text recorded for a tool call whose result never reached the log.
+INTERRUPTED_RESULT_TEXT = "tool result was never recorded: the turn stopped before the tool finished"
+
+
+def pending_tool_calls(messages: Sequence[Message]) -> list[tuple[str, str]]:
+    """Return the (call id, tool name) pairs whose result never reached the log.
+
+    A process killed between "the model asked for a tool" and "the tool result"
+    leaves an assistant message that declares tool calls nobody answered. The
+    model API rejects such a history outright, so every later request fails.
+    """
+    answered = {message.toolCallId for message in messages if message.role == "tool" and message.toolCallId}
+    pending: list[tuple[str, str]] = []
+    for message in messages:
+        if message.role != "assistant":
+            continue
+        for part in message.content:
+            if isinstance(part, ToolCallPart) and part.id and part.id not in answered:
+                pending.append((part.id, part.name))
+    return pending
+
+
+def repair_pending_tool_calls(messages: Sequence[Message]) -> list[Message]:
+    """Insert synthetic error results for tool calls the log never answered.
+
+    Repairing while reading keeps the log immutable and lets an interrupted
+    session resume: the model sees "the tool failed" instead of a history the
+    provider refuses to accept. The results are inserted directly after the
+    assistant message that declared them -- the API requires them there, so
+    appending at the end would still be rejected. The synthetic result carries
+    ``source={"kind": "repair"}`` so a reader can tell it from a real one.
+    """
+    answered = {message.toolCallId for message in messages if message.role == "tool" and message.toolCallId}
+    repaired: list[Message] = []
+    for message in messages:
+        repaired.append(message)
+        if message.role != "assistant":
+            continue
+        for part in message.content:
+            if not isinstance(part, ToolCallPart) or not part.id or part.id in answered:
+                continue
+            repaired.append(
+                Message(
+                    role="tool",
+                    toolCallId=part.id,
+                    isError=True,
+                    content=[TextPart(text=f"{INTERRUPTED_RESULT_TEXT} ({part.name})")],
+                    source={"kind": "repair"},
+                )
+            )
+    return repaired
 
 
 def derive_messages(records: Sequence[LogRecord], *, strict: bool = True) -> list[Message]:

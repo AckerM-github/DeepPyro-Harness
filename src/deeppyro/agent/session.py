@@ -97,6 +97,7 @@ from deeppyro.prompt.projection import (
 )
 from deeppyro.prompt.runtime_context import render_runtime_context, runtime_context_sections
 from deeppyro.sandbox.policy import approval_policy_text, sandbox_policy_text
+from deeppyro.session.derive import repair_pending_tool_calls
 from deeppyro.session.image_projection import IMAGE_OFFLOAD_EVENT
 
 logger = logging.getLogger(__name__)
@@ -854,7 +855,7 @@ class AgentSession:
         data = plan.record_data()
         if data:
             self._append(IMAGE_OFFLOAD_EVENT, data)
-        return plan.messages
+        return repair_pending_tool_calls(plan.messages)
 
     # -- streaming ---------------------------------------------------------
     def _build_request(self, messages: list[Message]) -> LlmRequest:
@@ -1238,7 +1239,7 @@ class AgentSession:
         derive = getattr(self._session, "derive_messages", None)
         if not callable(derive):
             raise SessionError("session object has no derive_messages()")
-        return list(derive())
+        return repair_pending_tool_calls(list(derive()))
 
     def _count_turns(self) -> int:
         return sum(1 for record in self._records() if getattr(record, "type", None) == "turn/start")
