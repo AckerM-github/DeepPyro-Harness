@@ -19,6 +19,10 @@ EXPECTED_NAMES = [
     "help",
     "new",
     "resume",
+    "sessions",
+    "rename",
+    "archive",
+    "unarchive",
     "provider",
     "model",
     "preset",
@@ -76,6 +80,18 @@ class FakeApp:
 
     async def thinking_command(self, argument: str) -> None:
         self.calls.append(("thinking", argument))
+
+    async def sessions_command(self, argument: str) -> None:
+        self.calls.append(("sessions", argument))
+
+    async def rename_command(self, argument: str) -> None:
+        self.calls.append(("rename", argument))
+
+    async def archive_command(self) -> None:
+        self.calls.append(("archive", ""))
+
+    async def unarchive_command(self, argument: str) -> None:
+        self.calls.append(("unarchive", argument))
 
     async def compact(self) -> None:
         self.calls.append(("compact", ""))

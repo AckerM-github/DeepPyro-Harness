@@ -16,7 +16,8 @@ from typing import Any
 from deeppyro.config import session_dir
 from deeppyro.core.errors import SessionError
 from deeppyro.core.ids import new_session_id, now_ms
-from deeppyro.core.wire import LogRecord, SessionHeader
+from deeppyro.core.wire import LogRecord, Message, SessionHeader
+from deeppyro.llm.messages import message_text
 from deeppyro.session import writer
 from deeppyro.session.layout import (
     LOG_BASENAME,
@@ -25,6 +26,7 @@ from deeppyro.session.layout import (
     encode_segment,
     flat_session_path,
 )
+from deeppyro.session.metadata import derive_title, existing_title, is_archived, preview_text
 from deeppyro.session.reader import read_header, read_session_file
 from deeppyro.session.session import Session
 
@@ -41,6 +43,9 @@ class SessionInfo:
     turns: int
     recordCount: int
     agentPreset: str | None
+    updatedAt: int = 0
+    preview: str | None = None
+    archived: bool = False
 
 
 class SessionStore:
@@ -104,8 +109,12 @@ class SessionStore:
             zstd=path.name.endswith(".zstd"),
         )
 
-    def list(self) -> list[SessionInfo]:
-        """All readable sessions, newest first by createdAt."""
+    def list(self, *, include_archived: bool = False) -> list[SessionInfo]:
+        """All readable sessions, newest first by createdAt.
+
+        Archived sessions are hidden unless ``include_archived`` asks for them:
+        archiving is a log record, so nothing has to move on disk.
+        """
         infos: dict[str, SessionInfo] = {}
         for path in discover_session_files(self.root):
             try:
@@ -114,7 +123,10 @@ class SessionStore:
                 continue
             if data.header.id in infos:
                 continue
-            infos[data.header.id] = _build_info(path, data.header, data.records)
+            info = _build_info(path, data.header, data.records)
+            if info.archived and not include_archived:
+                continue
+            infos[data.header.id] = info
         return sorted(infos.values(), key=lambda info: (info.createdAt, info.id), reverse=True)
 
     def latest(self) -> SessionInfo | None:
@@ -180,15 +192,12 @@ class SessionStore:
 
 
 def _build_info(path: pathlib.Path, header: SessionHeader, records: Sequence[LogRecord]) -> SessionInfo:
-    title: str | None = None
-    for record in reversed(records):
-        if record.type != "session/title":
-            continue
-        candidate = record.data.get("title")
-        if isinstance(candidate, str) and candidate:
-            title = candidate
-            break
+    # A recorded title (a creator or /rename) always wins; otherwise the first
+    # user message doubles as a readable title so no session stays "(untitled)".
+    preview = _first_user_preview(records)
+    title = existing_title(records) or derive_title(preview)
     turns = sum(1 for record in records if record.type == "turn/start")
+    updated = max((int(record.time) for record in records), default=0) or header.createdAt
     return SessionInfo(
         id=header.id,
         path=path,
@@ -198,4 +207,22 @@ def _build_info(path: pathlib.Path, header: SessionHeader, records: Sequence[Log
         turns=turns,
         recordCount=len(records),
         agentPreset=header.agentPreset,
+        updatedAt=updated,
+        preview=preview,
+        archived=is_archived(records),
     )
+
+
+def _first_user_preview(records: Sequence[LogRecord]) -> str | None:
+    """One-line preview of the first thing the person said in this session."""
+    for record in records:
+        if record.type != "user/message":
+            continue
+        try:
+            message = Message.model_validate(record.data)
+        except Exception:  # noqa: BLE001, S112 - a damaged record must not hide the session
+            continue
+        preview = preview_text(message_text(message))
+        if preview:
+            return preview
+    return None

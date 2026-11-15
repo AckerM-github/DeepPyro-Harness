@@ -25,6 +25,7 @@ from textual.widgets import Footer, Header
 
 from deeppyro import __version__
 from deeppyro.api import DEFAULT_PRESET_ID
+from deeppyro.session.metadata import record_archive, record_title
 from deeppyro.tui.commands import dispatch, help_text, live_commands
 from deeppyro.tui.format import context_percent, short_session_id
 from deeppyro.tui.history import is_ptc_mode_message, process_map, reasoning_from_session
@@ -46,6 +47,7 @@ from deeppyro.tui.screens.slot_screen import open_slot_screen
 from deeppyro.tui.screens.splash import SplashScreen
 from deeppyro.tui.screens.team import TaskBoardScreen, TeamPanelScreen
 from deeppyro.tui.screens.thinking import ThinkingScreen
+from deeppyro.tui.session_view import listing_lines, matches, picker_items
 from deeppyro.tui.sink import TuiSink
 from deeppyro.tui.slots import (
     SCREEN,
@@ -908,13 +910,7 @@ class DeepPyroApp(App[None]):
             return None
 
     def _session_items(self, sessions: list[Any]) -> list[tuple[str, str, str]]:
-        items: list[tuple[str, str, str]] = []
-        for info in sessions:
-            session_id = str(getattr(info, "id", "") or "")
-            title = str(getattr(info, "title", None) or "(untitled)")
-            cwd = str(getattr(info, "cwd", "") or "")
-            items.append((session_id, short_session_id(session_id), f"{title}  {cwd}"))
-        return items
+        return picker_items(sessions)
 
     async def resume(self, argument: str) -> None:
         if self._working:
@@ -928,12 +924,9 @@ class DeepPyroApp(App[None]):
             choice = await self._pick("Resume session", self._session_items(sessions))
             if choice is None:
                 self.conversation.add_info("recent sessions:")
-                for index, info in enumerate(sessions, start=1):
-                    title = getattr(info, "title", None) or "(untitled)"
-                    self.conversation.add_info(
-                        f"  {index}. {short_session_id(getattr(info, 'id', ''))}  {title}  {getattr(info, 'cwd', '')}"
-                    )
-                self.conversation.add_info("use /resume <index|id>")
+                for line in listing_lines(sessions):
+                    self.conversation.add_info(line)
+                self.conversation.add_info("use /resume <index|id|text>")
                 return
             argument = choice
         target = None
@@ -949,6 +942,16 @@ class DeepPyroApp(App[None]):
                     target = info
                     break
         if target is None:
+            candidates = [info for info in sessions if matches(info, argument)]
+            if len(candidates) == 1:
+                target = candidates[0]
+            elif candidates:
+                self.conversation.add_info(f"{len(candidates)} sessions match {argument!r}:")
+                for line in listing_lines(candidates[:20]):
+                    self.conversation.add_info(line)
+                self.conversation.add_info("use /resume <index|id>")
+                return
+        if target is None:
             self.conversation.add_error(f"session not found: {argument}")
             return
         session_id = str(getattr(target, "id", "") or "")
@@ -959,6 +962,103 @@ class DeepPyroApp(App[None]):
         self.conversation.add_info(f"resumed {short_session_id(session_id)}")
         self._render_history()
         self.refresh_status()
+
+    def sessions_command(self, argument: str = "") -> None:
+        """List sessions without opening one: title, age, turns and a preview."""
+        raw = (argument or "").strip()
+        include_archived = raw in {"--all", "-a"}
+        if include_archived:
+            raw = ""
+        sessions = self.runtime.recent_sessions(limit=50, include_archived=include_archived)
+        if raw:
+            sessions = [info for info in sessions if matches(info, raw)]
+        if not sessions:
+            detail = f" matching {raw!r}" if raw else ""
+            self.conversation.add_info(f"no sessions{detail}")
+            return
+        header = "archived sessions" if include_archived else "sessions"
+        if raw:
+            header += f" matching {raw!r}"
+        self.conversation.add_info(f"{header} ({len(sessions)}):")
+        for line in listing_lines(sessions):
+            self.conversation.add_info(line)
+        self.conversation.add_info("use /resume <index|id|text> to open one")
+
+    def rename_command(self, argument: str = "") -> None:
+        """Give the current session a title that survives reload and /resume."""
+        title = (argument or "").strip()
+        if not title:
+            self.conversation.add_info("usage: /rename <title>")
+            return
+        session = getattr(self.runtime, "session", None)
+        if session is None:
+            self.conversation.add_error("no active session")
+            return
+        try:
+            stored = record_title(session, title)
+        except Exception as exc:  # noqa: BLE001 - a rename must not break the UI
+            self.conversation.add_error(f"could not rename: {exc}")
+            return
+        self.conversation.add_info(f"renamed this session to {stored!r}")
+        self.refresh_status()
+
+    async def archive_command(self) -> None:
+        """Hide the current session from lists and start a fresh one."""
+        if self._working:
+            self.notify("cannot archive during a turn", severity="warning")
+            return
+        session = getattr(self.runtime, "session", None)
+        if session is None:
+            self.conversation.add_error("no active session")
+            return
+        session_id = short_session_id(str(getattr(session, "session_id", "") or ""))
+        try:
+            record_archive(session, True)
+        except Exception as exc:  # noqa: BLE001 - archiving must not break the UI
+            self.conversation.add_error(f"could not archive: {exc}")
+            return
+        await self.new_session()
+        self.conversation.add_info(f"archived {session_id}; started a new session")
+        self.conversation.add_info("use /sessions --all to see archived sessions, /unarchive to restore")
+
+    def unarchive_command(self, argument: str = "") -> None:
+        """Restore an archived session so it shows up in /sessions again."""
+        archived = self.runtime.archived_sessions(limit=50)
+        if not archived:
+            self.conversation.add_info("no archived sessions")
+            return
+        raw = (argument or "").strip()
+        target = None
+        if raw.isdigit():
+            index = int(raw)
+            if 1 <= index <= len(archived):
+                target = archived[index - 1]
+        elif raw:
+            candidates = [info for info in archived if matches(info, raw)]
+            bare = raw.removeprefix("session-")
+            for info in candidates:
+                info_id = str(getattr(info, "id", "") or "")
+                if info_id == raw or info_id.removeprefix("session-").startswith(bare):
+                    target = info
+                    break
+            if target is None and len(candidates) == 1:
+                target = candidates[0]
+        if target is None:
+            self.conversation.add_info("archived sessions:")
+            for line in listing_lines(archived):
+                self.conversation.add_info(line)
+            self.conversation.add_info("use /unarchive <index|id|text>")
+            return
+        session_id = str(getattr(target, "id", "") or "")
+        try:
+            session = self.runtime.store.open(session_id)
+            record_archive(session, False)
+        except Exception as exc:  # noqa: BLE001 - unarchiving must not break the UI
+            self.conversation.add_error(f"could not unarchive: {exc}")
+            return
+        self.conversation.add_info(
+            f"restored {short_session_id(session_id)}; use /resume {session_id} to open it"
+        )
 
     def _provider_names(self) -> list[str]:
         """Configured provider names, falling back to the active one."""

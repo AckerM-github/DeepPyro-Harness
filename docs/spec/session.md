@@ -272,3 +272,48 @@ Coverage map:
 * tests/session/test_invariants.py (11) — cross-fixture surface metadata, shadow coverage, tool pairing, derived-message legality, manifest aggregates, stable fixture statistics, SessionLogLike conformance.
 * tests/agent/test_hook_records.py (10) — record_hook_event writes both hook types with the observed seq/event order, rejects other types, and keeps derivation/surface unchanged.
 * tests/session_query/test_hook_trace.py (13) — hook_trace pairing (open results, orphan results, limit validation, missing session).
+
+## 13. Session metadata: titles, previews and archiving
+
+Session lists (`/sessions`, `/resume`, plugin pickers) have to answer "which
+conversation is this?" without opening it. All three facts come from the log.
+
+### 13.1 Title
+
+* `session/title` (part of DSH's vocabulary) — `{"title": str, "source": str}`;
+  the last record wins, so renaming is a single append.
+* `deeppyro.session.metadata.record_title(session, title, *, source="user")`
+  appends one; `existing_title(records)` reads the newest.
+* `SessionInfo.title` is the newest `session/title` when present, otherwise a
+  **derived** title from the first `user/message` (`derive_title`, 60 chars).
+  A session is therefore never `(untitled)`, and an explicit title written by a
+  creator plugin or by `/rename` always wins over the derived one.
+* TUI: `/rename <title>`.
+
+### 13.2 Preview and updatedAt
+
+* `SessionInfo.preview` — one line (80 chars) from the first `user/message`.
+* `SessionInfo.updatedAt` — `max(record.time)`, falling back to `header.createdAt`.
+
+### 13.3 Archive
+
+* `session/archived` — `{"archived": bool, "source": str, "at": int}`; the last
+  record wins.
+* It is **not** part of DSH's 57-type vocabulary, so it is appended with the
+  envelope `ignorable: true`. DSH-compatible readers then skip the record
+  instead of rejecting the whole log, and a log written here stays readable
+  there (`session/events.py` only tolerates unknown types when `ignorable`).
+* Archiving never moves or deletes a file: `SessionStore._locate` finds sessions
+  by scanning, and `routes.json` / `parentSession` / projection sidecars all
+  reference the id.
+* `SessionStore.list(include_archived=False)` hides archived sessions;
+  `list(include_archived=True)` shows them with `SessionInfo.archived`.
+* TUI: `/archive` archives the current session and starts a new one;
+  `/unarchive [index|id|text]` restores one.
+
+### 13.4 Listing helpers
+
+`deeppyro.tui.session_view` renders the rows: `relative_time`, `picker_items`,
+`listing_lines` (grouped by workspace) and `matches` (id / title / preview /
+cwd). `/sessions [query|--all]` prints them; `/resume [id|index|text]` opens one
+by id prefix, index, or a single fuzzy match.

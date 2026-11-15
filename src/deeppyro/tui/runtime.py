@@ -1258,9 +1258,14 @@ class TuiRuntime:
         except Exception:  # noqa: BLE001 - context display must never break the UI
             return 0
 
-    def recent_sessions(self, limit: int = 20) -> list[Any]:
-        """Most recent sessions, newest first."""
-        return list(self.store.list())[: max(limit, 0)]
+    def recent_sessions(self, limit: int = 20, *, include_archived: bool = False) -> list[Any]:
+        """Most recent sessions, newest first; archived ones are hidden by default."""
+        return list(self.store.list(include_archived=include_archived))[: max(limit, 0)]
+
+    def archived_sessions(self, limit: int = 20) -> list[Any]:
+        """Archived sessions only, newest first."""
+        sessions = [info for info in self.store.list(include_archived=True) if info.archived]
+        return sessions[: max(limit, 0)]
 
     async def compact_now(self) -> bool:
         """Compact the active session immediately; True when it shrank."""
