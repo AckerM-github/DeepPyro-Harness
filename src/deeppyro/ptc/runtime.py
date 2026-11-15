@@ -1,6 +1,8 @@
 """Per-call Python PTC runtime.
 
-Each invocation starts a fresh CPython subprocess running deeppyro.ptc.worker.
+Each invocation starts a fresh CPython subprocess running deeppyro.ptc.worker
+(a frozen executable re-enters itself with --internal-ptc-worker instead, since
+no interpreter or worker.py exists on disk).
 The worker speaks a line-delimited JSON protocol on stdin/stdout; program print
 output is forwarded as log frames.  Tool bindings are dispatched on the host
 through the callables supplied by the run_code tool.
@@ -24,6 +26,7 @@ from typing import Any, ClassVar
 
 from deeppyro.core.errors import ConfigError
 from deeppyro.core.protocols import ToolContext
+from deeppyro.runtime_env import INTERNAL_PTC_WORKER, executable, is_frozen
 
 from .types import (
     PTC_FAILURE_KINDS,
@@ -116,7 +119,26 @@ class PtcRuntime:
         worker_path: str | os.PathLike[str] | None = None,
     ) -> None:
         self.config = config if isinstance(config, PtcConfig) else PtcConfig.from_mapping(config)
+        # An explicit path always means "run this script"; only the default path
+        # may be replaced by the frozen self-re-entry protocol.
+        self._worker_override = worker_path is not None
         self.worker_path = Path(worker_path) if worker_path is not None else WORKER_PATH
+
+    def uses_internal_worker(self) -> bool:
+        """True when the worker runs inside a frozen executable, not as a script."""
+        return not self._worker_override and is_frozen()
+
+    def worker_argv(self) -> list[str]:
+        """The argv that starts one worker process.
+
+        A source install runs ``sys.executable -I -S -X utf8 worker.py`` so the
+        worker cannot import the harness.  A frozen executable has neither an
+        interpreter nor a ``worker.py`` on disk, so it re-enters itself through
+        the hidden ``--internal-ptc-worker`` flag instead.
+        """
+        if self.uses_internal_worker():
+            return [executable(), INTERNAL_PTC_WORKER]
+        return [sys.executable, "-I", "-S", "-X", "utf8", str(self.worker_path)]
 
     @property
     def timeout(self) -> dict[str, int]:
@@ -199,20 +221,13 @@ class PtcRuntime:
             raise TypeError("spec must be a PtcRunSpec")
         if ctx.cancel.is_set():
             return self._result((), PtcFailure("abort", "run_code was aborted"))
-        if not self.worker_path.is_file():
+        if not self.uses_internal_worker() and not self.worker_path.is_file():
             return self._result(
                 (), PtcFailure("worker-exit", f"the PTC worker script is missing: {self.worker_path}")
             )
         timeout_ms = max(1, min(int(spec.timeout_ms), self.config.max_timeout_ms))
         env = self._worker_env()
-        argv = [
-            sys.executable,
-            "-I",
-            "-S",
-            "-X",
-            "utf8",
-            str(self.worker_path),
-        ]
+        argv = self.worker_argv()
         try:
             process = await asyncio.create_subprocess_exec(
                 *argv,

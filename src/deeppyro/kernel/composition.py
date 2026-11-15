@@ -53,6 +53,7 @@ from deeppyro.kernel.manifest import (
     resolve_plugin_name,
 )
 from deeppyro.paths import deeppyro_home, plugins_dir
+from deeppyro.runtime_env import data_path
 
 
 class CompositionError(RuntimeError):
@@ -131,8 +132,13 @@ _REQUIREMENT_ID_RE = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s*(.*)$")
 
 
 def core_bundle_path() -> Path:
-    """Location of the bundle shipped with deeppyro itself."""
-    return Path(__file__).resolve().parent.parent / "bundles" / "core" / "bundle.toml"
+    """Location of the bundle shipped with deeppyro itself.
+
+    Source installs read it from the package tree; a frozen build ships the same
+    file as a data file under ``sys._MEIPASS`` and resolves it there (see
+    deeppyro.runtime_env for the single resource convention).
+    """
+    return data_path(Path("bundles") / "core" / "bundle.toml")
 
 
 def user_bundles_dir() -> Path:

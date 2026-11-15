@@ -12,7 +12,9 @@ CreateProcessAsUserW(CREATE_SUSPENDED), assigns it to a kill-on-close job
 object and mirrors the child exit code.
 
 Every failure is fail-closed: the runner writes "windows-acl-run: <detail>"
-to stderr, exits 127 and never starts an unconfined child. The module can be
+to stderr, exits 127 and never starts an unconfined child.  ``self_command()``
+picks the re-entry argv: ``-m`` for a source install, the hidden
+``--internal-sandbox-runner`` flag for a frozen executable. The module can be
 imported on any platform; only the Windows code path is executed under
 os.name == "nt".
 """
@@ -29,6 +31,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from deeppyro.core.errors import DeeppyroError
+from deeppyro.runtime_env import INTERNAL_SANDBOX_RUNNER, is_frozen
 
 #: Prefix the provider recognises as a broken runner (never a command result).
 FAILURE_PREFIX = "windows-acl-run: "
@@ -46,7 +49,15 @@ class RunnerError(DeeppyroError):
 
 
 def self_command() -> list[str]:
-    """Return the argv that re-invokes this runner as a Python module."""
+    """Return the argv that re-invokes this runner.
+
+    A source install re-enters the module with ``-m``.  A frozen executable
+    cannot: its ``sys.executable`` is the harness binary, so it re-enters
+    through the hidden ``--internal-sandbox-runner`` flag that
+    ``deeppyro.tui.main`` dispatches before booting the runtime.
+    """
+    if is_frozen():
+        return [sys.executable, INTERNAL_SANDBOX_RUNNER]
     return [sys.executable, "-m", "deeppyro.sandbox.windows_acl_runner"]
 
 

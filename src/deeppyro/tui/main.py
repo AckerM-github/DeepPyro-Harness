@@ -11,6 +11,7 @@ import argparse
 import sys
 from collections.abc import Sequence
 
+from deeppyro.runtime_env import INTERNAL_PTC_WORKER, INTERNAL_SANDBOX_RUNNER
 from deeppyro.sandbox.types import APPROVALS, PRESETS
 
 
@@ -43,6 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cwd", default=None, help="workspace directory")
     parser.add_argument("--max-steps", type=int, default=None, help="tool steps per turn")
+    # Hidden: frozen-build self re-entry (see deeppyro.runtime_env).  REMAINDER
+    # passes the payload -- runner options, or nothing for the PTC worker --
+    # through untouched.  They are dispatched before argparse in most cases.
+    parser.add_argument(INTERNAL_SANDBOX_RUNNER, nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
+    parser.add_argument(INTERNAL_PTC_WORKER, nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     return parser
 
@@ -56,16 +62,56 @@ def _version() -> str:
         return "0.0.0"
 
 
+def _dispatch_internal(raw: Sequence[str]) -> int | None:
+    """Run one hidden re-entry flag without booting the runtime, or return None.
+
+    These flags are the frozen-build subprocess protocol: a frozen executable
+    has no interpreter and no ``.py`` files on disk, so it cannot re-invoke
+    ``python -m deeppyro...`` and re-enters itself instead.  The branch runs
+    before argparse and before any runtime import, so a worker sees raw stdio
+    and nothing else (source installs keep the ``-m`` paths).
+    """
+    if not raw:
+        return None
+    head = raw[0]
+    if head == INTERNAL_SANDBOX_RUNNER:
+        from deeppyro.sandbox.windows_acl_runner import main as runner_main
+
+        return runner_main(raw[1:])
+    if head == INTERNAL_PTC_WORKER:
+        from deeppyro.ptc.worker import main as worker_main
+
+        return worker_main()
+    return None
+
+
+def _parsed_internal(args: argparse.Namespace) -> list[str] | None:
+    """Rebuild an internal argv when argparse (not the early dispatch) saw the flag."""
+    remainder = getattr(args, "internal_sandbox_runner", None)
+    if remainder is not None:
+        return [INTERNAL_SANDBOX_RUNNER, *remainder]
+    remainder = getattr(args, "internal_ptc_worker", None)
+    if remainder is not None:
+        return [INTERNAL_PTC_WORKER, *remainder]
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    internal = _dispatch_internal(raw)
+    if internal is not None:
+        return internal
     # `dpyro plugin ...` is a management subcommand rather than a prompt: it
     # must not boot the runtime. Everything else keeps the flat CLI shape.
-    raw = list(sys.argv[1:] if argv is None else argv)
     if raw and raw[0] == "plugin":
         from deeppyro.plugins.cli import main as plugin_main
 
         return plugin_main(raw[1:])
     parser = build_parser()
     args = parser.parse_args(raw)
+    internal = _parsed_internal(args)
+    if internal is not None:
+        return _dispatch_internal(internal) or 0
     if args.version:
         print(f"deeppyro-harness {_version()}")
         return 0
