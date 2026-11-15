@@ -1,14 +1,14 @@
-"""``dpyro plugin`` — inspect and diagnose installed plugin packages.
+"""``dpyro plugin`` — inspect, diagnose and install plugin packages.
 
-The command surface is deliberately small for now (``list``/``info``/``doctor``/
-``path``); installation verbs (``add``/``remove``/``update``) arrive with the uv
-installer and reuse the same :class:`~deeppyro.plugins.bootstrap.PluginPackage`
-diagnosis, so what ``doctor`` reports is exactly what the installer would have
-preflighted.
+The command surface covers inspection (``list``/``info``/``doctor``/``path``)
+and lifecycle verbs (``add``/``remove``/``update``/``enable``/``disable``/
+``allow-version``). Installation is delegated to
+:mod:`deeppyro.plugins.install`, which stages every change and keeps preflight,
+install and manifest recording separate.
 
 Exit codes:
   0  success
-  1  usage error
+  1  usage error (unknown plugin id, bad arguments)
   2  preflight/diagnosis failure (nothing was installed or nothing is healthy)
   3  install failed and was rolled back
   4  restart required to apply the change
@@ -19,19 +19,20 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from deeppyro.plugins import install
 from deeppyro.plugins.bootstrap import (
     PluginPackage,
     load_package,
     plugin_root,
     scan_plugin_packages,
 )
+from deeppyro.plugins.install import customized_core, requirement_errors, vendor_conflict_map
 from deeppyro.plugins.metadata import (
     FAILURE_ABI,
-    FAILURE_DEP_MISSING,
     MetadataError,
     python_tag,
 )
@@ -105,21 +106,7 @@ def dependency_errors(package: PluginPackage) -> list[MetadataError]:
     metadata = package.metadata
     if metadata is None or not metadata.deps.requires:
         return []
-    available = vendor_contents(package.vendor)
-    errors: list[MetadataError] = []
-    for requirement in metadata.deps.requires:
-        name = _requirement_name(requirement)
-        if not name:
-            continue
-        if _normalise(name) not in available:
-            errors.append(
-                MetadataError(
-                    FAILURE_DEP_MISSING,
-                    f"requires {requirement!r} but {package.vendor or metadata.deps.vendor} does not provide it",
-                    plugin_id=package.id,
-                )
-            )
-    return errors
+    return requirement_errors(package.id, metadata.deps.requires, package.vendor)
 
 
 def bundle_errors(package: PluginPackage) -> list[MetadataError]:
@@ -140,16 +127,28 @@ def bundle_errors(package: PluginPackage) -> list[MetadataError]:
     return []
 
 
-def diagnose(package: PluginPackage) -> list[MetadataError]:
+def diagnose(
+    package: PluginPackage,
+    *,
+    conflicts: Mapping[str, Iterable[MetadataError]] | None = None,
+) -> list[MetadataError]:
     """Every problem found for one package, in a stable order."""
     errors: list[MetadataError] = list(package.errors)
     errors.extend(dependency_errors(package))
     errors.extend(_abi_warnings(package))
     errors.extend(bundle_errors(package))
+    if conflicts is not None:
+        errors.extend(conflicts.get(package.id, ()))
     return errors
 
 
-def _package_payload(package: PluginPackage, errors: list[MetadataError]) -> dict[str, Any]:
+def _package_payload(
+    package: PluginPackage,
+    errors: list[MetadataError],
+    *,
+    core_overrides: bool = False,
+    warnings: Iterable[str] = (),
+) -> dict[str, Any]:
     metadata = package.metadata
     return {
         "id": package.id,
@@ -162,6 +161,8 @@ def _package_payload(package: PluginPackage, errors: list[MetadataError]) -> dic
         "bundle": (package.directory / "bundle.toml").is_file(),
         "ui": (package.directory / "ui.toml").is_file(),
         "healthy": not errors,
+        "customizedCore": core_overrides,
+        "warnings": list(warnings),
         "errors": [
             {"kind": error.kind, "message": error.message, "remediation": error.remediation}
             for error in errors
@@ -181,13 +182,72 @@ def _print_table(rows: list[list[str]], headers: list[str]) -> None:
         print("  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)))
 
 
-# -- verbs ----------------------------------------------------------------
+def _emit_json(payload: Mapping[str, Any]) -> None:
+    print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+
+
+def _failure(
+    message: str,
+    *,
+    json_output: bool,
+    kind: str,
+    exit_code: int,
+    problems: Iterable[str] = (),
+    stderr_tail: str = "",
+) -> int:
+    problem_list = [str(problem) for problem in problems]
+    if json_output:
+        payload: dict[str, Any] = {"ok": False, "kind": kind, "error": message}
+        if problem_list:
+            payload["problems"] = problem_list
+        if stderr_tail:
+            payload["stderrTail"] = stderr_tail
+        _emit_json(payload)
+    else:
+        print(message, file=sys.stderr)
+        for problem in problem_list:
+            print(f"  - {problem}", file=sys.stderr)
+        if stderr_tail:
+            print(stderr_tail, file=sys.stderr)
+    return exit_code
+
+
+def _installer_failure(exc: Exception, *, json_output: bool) -> int:
+    if isinstance(exc, install.PreflightFailure):
+        return _failure(
+            "preflight failed; nothing was installed",
+            json_output=json_output,
+            kind="preflight",
+            exit_code=EXIT_PREFLIGHT,
+            problems=exc.problems,
+        )
+    if isinstance(exc, install.InstallFailure):
+        message = str(exc)
+        if exc.rolled_back:
+            message += " (rolled back)"
+        else:
+            message += " (rollback incomplete; inspect the plugin directory)"
+        return _failure(
+            message,
+            json_output=json_output,
+            kind="install",
+            exit_code=EXIT_INSTALL,
+            stderr_tail=exc.stderr_tail,
+        )
+    if isinstance(exc, install.UnknownPlugin):
+        return _failure(str(exc), json_output=json_output, kind="usage", exit_code=EXIT_USAGE)
+    return _failure(str(exc), json_output=json_output, kind="preflight", exit_code=EXIT_PREFLIGHT)
+
+
+# -- inspection verbs -----------------------------------------------------
 
 
 def cmd_list(args: argparse.Namespace) -> int:
     packages = scan_plugin_packages()
+    conflicts = vendor_conflict_map(packages)
+    diagnostics = {package.id: diagnose(package, conflicts=conflicts) for package in packages}
     if args.json:
-        payload = [_package_payload(package, diagnose(package)) for package in packages]
+        payload = [_package_payload(package, diagnostics[package.id]) for package in packages]
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return EXIT_OK
     if not packages:
@@ -195,7 +255,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         return EXIT_OK
     rows: list[list[str]] = []
     for package in packages:
-        errors = diagnose(package)
+        errors = diagnostics[package.id]
         status = "ok" if not errors else errors[0].kind
         metadata = package.metadata
         rows.append(
@@ -209,7 +269,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             ]
         )
     _print_table(rows, ["id", "version", "api", "provides", "vendor", "status"])
-    unhealthy = [package.id for package in packages if diagnose(package)]
+    unhealthy = [package.id for package in packages if diagnostics[package.id]]
     if unhealthy:
         print()
         print("unhealthy: " + ", ".join(unhealthy) + " (run 'dpyro plugin doctor')")
@@ -258,29 +318,75 @@ def cmd_info(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     packages = scan_plugin_packages()
+    issues = list(install.manifest_issues())
     if args.plugin_id:
         packages = [package for package in packages if package.id == args.plugin_id]
-        if not packages:
+        issues = [issue for issue in issues if issue.plugin_id == args.plugin_id]
+        if not packages and not issues:
             print(f"plugin {args.plugin_id!r} is not installed", file=sys.stderr)
             return EXIT_USAGE
+    conflicts = vendor_conflict_map(packages)
+    overrides = set(customized_core(packages))
     failures = 0
     for package in packages:
-        errors = diagnose(package)
+        errors = diagnose(package, conflicts=conflicts)
+        advisory: list[str] = []
+        if package.id in overrides:
+            advisory.append("bundle.toml overrides composition rows owned by the core bundle")
         if args.json:
-            print(json.dumps(_package_payload(package, errors), indent=2, ensure_ascii=False))
+            print(
+                json.dumps(
+                    _package_payload(
+                        package,
+                        errors,
+                        core_overrides=package.id in overrides,
+                        warnings=advisory,
+                    ),
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
             failures += 1 if errors else 0
             continue
         header = f"{package.id} {package.version}".strip()
-        if not errors:
+        if errors:
+            failures += 1
+            print(f"FAIL  {header}")
+            for error in errors:
+                print(f"      {error.kind}: {error.message}")
+                if error.remediation:
+                    print(f"      -> {error.remediation}")
+        else:
             print(f"ok  {header}")
-            continue
+        for warning in advisory:
+            print(f"warn  customized-core: {warning} [{package.id}]")
+    for issue in issues:
         failures += 1
-        print(f"FAIL  {header}")
-        for error in errors:
-            print(f"      {error.kind}: {error.message}")
-            if error.remediation:
-                print(f"      -> {error.remediation}")
-    if not packages:
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "id": issue.plugin_id,
+                        "healthy": False,
+                        "manifestDangling": True,
+                        "errors": [
+                            {
+                                "kind": issue.kind,
+                                "message": issue.message,
+                                "remediation": issue.remediation,
+                            }
+                        ],
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            continue
+        print(f"FAIL  {issue.plugin_id} (manifest)")
+        print(f"      {issue.kind}: {issue.message}")
+        if issue.remediation:
+            print(f"      -> {issue.remediation}")
+    if not packages and not issues:
         print(f"no plugin packages under {plugin_root()}")
     return EXIT_OK if failures == 0 else EXIT_PREFLIGHT
 
@@ -293,10 +399,179 @@ def cmd_path(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# -- lifecycle verbs ------------------------------------------------------
+
+
+def cmd_add(args: argparse.Namespace) -> int:
+    try:
+        report = install.add(
+            args.source,
+            force=args.force,
+            no_deps=args.no_deps,
+            offline=args.offline,
+        )
+    except install.InstallerError as exc:
+        return _installer_failure(exc, json_output=args.json)
+    payload = {
+        "ok": True,
+        "id": report.plugin_id,
+        "version": report.version,
+        "directory": str(report.directory),
+        "replaced": report.replaced,
+        "manifestChanged": report.manifest_changed,
+        "vendor": report.vendor,
+        "warnings": list(report.warnings),
+        "restartRequired": report.manifest_changed,
+    }
+    if args.json:
+        _emit_json(payload)
+    else:
+        verb = "replaced" if report.replaced else "installed"
+        print(f"{verb} {report.plugin_id} {report.version} -> {report.directory}")
+        for warning in report.warnings:
+            print(f"warn: {warning}")
+        if report.manifest_changed:
+            print("restart deeppyro to apply the change")
+    return EXIT_RESTART if report.manifest_changed else EXIT_OK
+
+
+def cmd_remove(args: argparse.Namespace) -> int:
+    try:
+        report = install.remove(args.plugin_id, force=args.force)
+    except install.UnknownPlugin:
+        return _failure(
+            f"plugin {args.plugin_id!r} is not installed",
+            json_output=args.json,
+            kind="usage",
+            exit_code=EXIT_USAGE,
+        )
+    except install.InstallerError as exc:
+        return _installer_failure(exc, json_output=args.json)
+    payload = {
+        "ok": True,
+        "id": report.plugin_id,
+        "dependents": list(report.dependents),
+        "forced": bool(report.dependents) and args.force,
+        "manifestChanged": report.manifest_changed,
+        "restartRequired": report.manifest_changed,
+    }
+    if args.json:
+        _emit_json(payload)
+    else:
+        print(f"removed {report.plugin_id}")
+        if report.dependents and args.force:
+            print("removed despite dependents: " + ", ".join(report.dependents))
+        if report.manifest_changed:
+            print("restart deeppyro to apply the change")
+    return EXIT_RESTART if report.manifest_changed else EXIT_OK
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    try:
+        report = install.update(args.plugin_id, offline=args.offline)
+    except install.UnknownPlugin:
+        return _failure(
+            f"plugin {args.plugin_id!r} is not installed",
+            json_output=args.json,
+            kind="usage",
+            exit_code=EXIT_USAGE,
+        )
+    except install.InstallerError as exc:
+        return _installer_failure(exc, json_output=args.json)
+    payload = {
+        "ok": True,
+        "id": report.plugin_id,
+        "rebuilt": report.rebuilt,
+        "changes": [
+            {"name": change.name, "before": change.before, "after": change.after} for change in report.changes
+        ],
+        "warnings": list(report.warnings),
+        "restartRequired": report.rebuilt,
+    }
+    if args.json:
+        _emit_json(payload)
+    else:
+        for change in report.changes:
+            print(f"{change.name}: {change.before or '-'} -> {change.after or '-'}")
+        if report.rebuilt:
+            print(f"updated {report.plugin_id}")
+        elif not report.changes:
+            print(f"{report.plugin_id}: nothing to update")
+        for warning in report.warnings:
+            print(f"warn: {warning}")
+    return EXIT_RESTART if report.rebuilt else EXIT_OK
+
+
+def _state_command(args: argparse.Namespace, *, enabled: bool) -> int:
+    try:
+        report = install.set_enabled(args.plugin_id, enabled)
+    except install.UnknownPlugin:
+        return _failure(
+            f"plugin {args.plugin_id!r} is not installed",
+            json_output=args.json,
+            kind="usage",
+            exit_code=EXIT_USAGE,
+        )
+    except install.InstallerError as exc:
+        return _installer_failure(exc, json_output=args.json)
+    payload = {
+        "ok": True,
+        "id": report.plugin_id,
+        "enabled": report.enabled,
+        "changed": report.changed,
+        "restartRequired": report.changed,
+    }
+    if args.json:
+        _emit_json(payload)
+    else:
+        state = "enabled" if report.enabled else "disabled"
+        print(f"{state} {report.plugin_id}")
+        if report.changed:
+            print("restart deeppyro to apply the change")
+    return EXIT_RESTART if report.changed else EXIT_OK
+
+
+def cmd_enable(args: argparse.Namespace) -> int:
+    return _state_command(args, enabled=True)
+
+
+def cmd_disable(args: argparse.Namespace) -> int:
+    return _state_command(args, enabled=False)
+
+
+def cmd_allow_version(args: argparse.Namespace) -> int:
+    try:
+        report = install.allow_version(args.plugin_id, args.version)
+    except install.UnknownPlugin:
+        return _failure(
+            f"plugin {args.plugin_id!r} is not installed",
+            json_output=args.json,
+            kind="usage",
+            exit_code=EXIT_USAGE,
+        )
+    except install.InstallerError as exc:
+        return _installer_failure(exc, json_output=args.json)
+    payload = {
+        "ok": True,
+        "id": report.plugin_id,
+        "version": report.version,
+        "changed": report.changed,
+        "restartRequired": report.changed,
+    }
+    if args.json:
+        _emit_json(payload)
+    else:
+        if report.changed:
+            print(f"allowed {report.plugin_id} {report.version} (backup: plugin.toml.bak)")
+        else:
+            print(f"{report.plugin_id} {report.version} is already allowed")
+    return EXIT_RESTART if report.changed else EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dpyro plugin",
-        description="inspect and diagnose deeppyro plugin packages",
+        description="inspect, diagnose and install deeppyro plugin packages",
     )
     parser.add_argument("--json", action="store_true", help="machine readable output")
     sub = parser.add_subparsers(dest="command")
@@ -307,6 +582,29 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="diagnose packages and print remediation")
     doctor.add_argument("plugin_id", nargs="?", default=None)
     sub.add_parser("path", help="print the plugin package directory")
+
+    add = sub.add_parser("add", help="install a plugin package")
+    add.add_argument("source", help="directory, wheel/sdist archive, registry spec or git URL")
+    add.add_argument("--force", action="store_true", help="replace an existing install")
+    add.add_argument("--no-deps", dest="no_deps", action="store_true", help="do not install [deps].requires")
+    add.add_argument("--offline", action="store_true", help="pass --offline to uv")
+
+    remove = sub.add_parser("remove", help="remove an installed package")
+    remove.add_argument("plugin_id")
+    remove.add_argument("--force", action="store_true", help="remove even if other packages depend on it")
+
+    update = sub.add_parser("update", help="rebuild a package's vendor tree")
+    update.add_argument("plugin_id")
+    update.add_argument("--offline", action="store_true", help="pass --offline to uv")
+
+    for name in ("enable", "disable"):
+        child = sub.add_parser(name, help=f"{name} an installed package")
+        child.add_argument("plugin_id")
+
+    allow = sub.add_parser("allow-version", help="allow one exact dpyro version for a package")
+    allow.add_argument("plugin_id")
+    allow.add_argument("version")
+
     # Accept --json after the verb as well; SUPPRESS keeps a global --json that
     # appeared before the verb instead of overwriting it with False.
     for child in sub.choices.values():
@@ -325,6 +623,12 @@ _COMMANDS = {
     "info": cmd_info,
     "doctor": cmd_doctor,
     "path": cmd_path,
+    "add": cmd_add,
+    "remove": cmd_remove,
+    "update": cmd_update,
+    "enable": cmd_enable,
+    "disable": cmd_disable,
+    "allow-version": cmd_allow_version,
 }
 
 

@@ -277,7 +277,9 @@ async def _mount_row(
         await fiber
     except Exception as exc:
         record.error = str(exc)
-        if critical:
+        # A broken user-manifest row must not brick the whole kernel; the row
+        # is reported as failed through App.row_states() instead.
+        if critical and "manifest:" not in row.origin:
             if isinstance(exc, KernelBootError):
                 raise
             raise KernelBootError(
