@@ -31,7 +31,6 @@ EXPECTED_ORDER = [
     "hooks",
     "llm-retry",
     "hook-observability",
-    "hook-bridge",
     "hook-journal",
     "session-title",
     "jobs",
@@ -125,7 +124,6 @@ config = { start = 5 }
         "hooks",
         "llm-retry",
         "hook-observability",
-        "hook-bridge",
         "hook-journal",
         "session-title",
         "jobs",
@@ -181,7 +179,6 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
             "hooks",
             "llm-retry",
             "hook-observability",
-            "hook-bridge",
             "hook-journal",
             "session-title",
             "jobs",
@@ -224,7 +221,6 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
         assert app.started["hooks"] == "ACTIVE"
         assert app.started["llm-retry"] == "ACTIVE"
         assert app.started["hook-observability"] == "ACTIVE"
-        assert app.started["hook-bridge"] == "ACTIVE"
         assert app.started["hook-journal"] == "ACTIVE"
         assert app.started["presets"] == "ACTIVE"
         assert app.started["prompt"] == "ACTIVE"

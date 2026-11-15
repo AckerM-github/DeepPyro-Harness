@@ -295,10 +295,12 @@ AgentSession._hook_enabled(name) returns has(name) or observed for the nine
 non-hot agent dispatches; PermissionGate._ask_hook/_emit and
 tools/pipeline.py _emit_call_events use the same rule.
 
-The default bundle consumes the observer stream twice: hook-journal writes
-hook/invoked and hook/result records through AgentSession.record_hook_event, and
-hook-bridge republishes the same phases as cordis events. Records are shaped by
-src/deeppyro/hooks/records.py and skip the two hot hooks.
+The default bundle consumes the observer stream once: hook-journal writes
+hook/invoked and hook/result records through AgentSession.record_hook_event.
+Records are shaped by src/deeppyro/hooks/records.py and skip the two hot hooks.
+Plugins observe the bus directly with ctx.on(name, handler) — PluginContext
+routes any name declared in deeppyro.core.events to the HookService (M1 single
+bus) and only falls back to cordis for kernel events.
 
 ## 3. Hook catalogue
 
@@ -700,12 +702,12 @@ agent loop uses the same pattern: check for the service, dispatch the hook, and
 apply the decision described above. Missing service means no listeners, not an
 error.
 
-The core bundle also mounts four hook plugins around that row. llm-retry and
-hook-observability follow hooks; hook-bridge and hook-journal follow
-hook-observability and turn the observer stream into cordis events and session
-records. prompt-extension and approval-policy mount after prompt-core (their
-prompt/config dependencies) and are inert by default. All six are ordinary rows
-with their own ctx.effect cleanup:
+The core bundle also mounts hook plugins around that row. llm-retry and
+hook-observability follow hooks; hook-journal follows hook-observability and
+turns the observer stream into session records. prompt-extension and
+approval-policy mount after prompt-core (their prompt/config dependencies) and
+are inert by default. session-title follows hook-observability too. All of them
+are ordinary rows with their own ctx.effect cleanup:
 
     [[plugins]]
     id = "llm-retry"
@@ -714,10 +716,6 @@ with their own ctx.effect cleanup:
     [[plugins]]
     id = "hook-observability"
     plugin = "deeppyro.builtin.hook_observability:HookObservabilityPlugin"
-
-    [[plugins]]
-    id = "hook-bridge"
-    plugin = "deeppyro.builtin.hook_bridge:HookBridgePlugin"
 
     [[plugins]]
     id = "hook-journal"
@@ -731,31 +729,31 @@ with their own ctx.effect cleanup:
     id = "approval-policy"
     plugin = "deeppyro.builtin.approval_policy:ApprovalPolicyPlugin"
 
-hook-bridge and hook-journal are critical=false: their failure is isolated and
-never blocks boot. Both subscribe through add_observer, so they see dispatches
-even when no listener is registered (section 2.11). hot hooks are skipped.
-approval/* and session/* dispatches carry no agent, so hook-journal skips them,
-while hook-bridge still republishes them.
+hook-journal is critical=false: its failure is isolated and never blocks boot.
+It subscribes through add_observer, so it sees dispatches even when no listener
+is registered (section 2.11). Hot hooks are skipped. approval/* and session/*
+dispatches carry no agent, so hook-journal skips them; approval auditing writes
+session records from ApprovalService._record instead (section 9).
 
 Current call sites:
 
 * src/deeppyro/agent/session.py dispatches agent/pre-step, agent/request,
   agent/request-error, agent/assistant-stream, agent/status,
-  agent/turn-stopping, agent/error, model/selection, llm/stream,
-  system-prompt/assemble, and the fallback tool/call emit; every dispatch
-  carries the session scope described in section 2.10.
+  agent/turn-stopping, agent/error, llm/stream and system-prompt/assemble;
+  every dispatch carries the session scope described in section 2.10.
+  agent/pre-step fires once per proposed step (M0 P0-2), and the loop has no
+  default step cap (P0-1).
 * src/deeppyro/tools/pipeline.py dispatches tools/pre-execute, tools/execute,
   tools/post-execute, and tool/call with the owning agent's scope.
-* src/deeppyro/sandbox/gate.py dispatches approval/request, approval/asked, and
-  approval/decided (no scope).
+* src/deeppyro/sandbox/gate.py dispatches approval/request (no scope); the
+  audit trail of asked/decided is session records written by
+  ApprovalService._record, not bus events.
 * src/deeppyro/tui/runtime.py and src/deeppyro/headless.py dispatch
   session/created and session/disposed.
 * src/deeppyro/builtin/llm_retry.py registers an agent/request-error listener
   that returns {"kind": "retry"} or continues the chain.
 * src/deeppyro/builtin/hook_observability.py registers a continuing listener
   for ten observation hooks and logs them.
-* src/deeppyro/builtin/hook_bridge.py registers a HookBridge observer that
-  republishes non-hot dispatches as kernel hook/invoked and hook/result events.
 * src/deeppyro/builtin/hook_journal.py registers an observer that appends
   hook/invoked and hook/result records through AgentSession.record_hook_event;
   SessionQuery.hook_trace pairs them back for /hooks and tests.
@@ -836,6 +834,16 @@ lands on the session of the gate that asked (`PermissionGate(..., session=...)`)
 and survives a plugin that forgets to listen. The remaining fifteen names are
 unchanged; `docs/spec/dsh-event-catalog-unresolved.md` tracks the 94-name DSH
 contract, the ten subscribe-only names, and the runtime harvest.
+
+M1 also retires the cordis mirror. `hook-bridge` (and `kernel/hook_bridge.py`)
+is gone: `PluginContext.on()` now resolves a name through
+`deeppyro.core.events.EVENT_SPECS` and subscribes to the HookService directly, so
+a third-party plugin sees the bus without a second dispatch path. Names the
+catalogue does not know still fall back to `ctx.on` cordis events, which keeps
+kernel observability (`plugin/status`, `loader/changed`, ...) working. The
+durable trace is unchanged: `hook-journal` keeps writing `hook/invoked` and
+`hook/result` session records, and the TUI reads those records rather than a
+republished event stream.
 
 ## 10. Testing
 

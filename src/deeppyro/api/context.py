@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
+
+from deeppyro.core.events import is_bus_event
 
 from .errors import PluginDependencyError
 
@@ -56,6 +58,27 @@ class _NoopUi:
 
 
 _NOOP_UI = _NoopUi()
+
+
+def _bus_options(options: Any) -> dict[str, Any]:
+    """Translate cordis listener options into kernel-bus keyword arguments."""
+    if options is None:
+        return {}
+    if isinstance(options, Mapping):
+        data = dict(options)
+    else:  # pragma: no cover - cordis passes mappings, this keeps objects usable
+        data = {key: getattr(options, key) for key in ("prepend", "once", "scope") if hasattr(options, key)}
+    mapped: dict[str, Any] = {}
+    if data.get("prepend"):
+        mapped["prepend"] = True
+    if data.get("once"):
+        mapped["once"] = True
+    if data.get("global") or data.get("global_"):
+        mapped["global_"] = True
+    scope = data.get("scope")
+    if scope is not None:
+        mapped["scope"] = scope
+    return mapped
 
 
 class PluginContext:
@@ -180,10 +203,33 @@ class PluginContext:
         return self._raw.effect(execute, label=f"{self.plugin_id}:{label}")
 
     def on(self, event: Any, handler: Any, options: Any = None) -> Any:
+        """Subscribe to an event and return an idempotent disposer.
+
+        Domain events (anything in ``deeppyro.core.events.EVENT_SPECS``) live on
+        the kernel bus, exactly like DSH, so a plugin may subscribe with
+        ``ctx.on("tools/pre-execute", ...)`` and observe the real dispatch. The
+        handler signature follows the event mode: ``handler(payload)`` for emit
+        events, ``handler(payload, next_step)`` for waterfall events. Any other
+        name keeps the cordis behaviour the kernel itself uses.
+        """
+        bus = self._bus()
+        if bus is not None and isinstance(event, str) and is_bus_event(event):
+            return bus.on(event, handler, **_bus_options(options))
         return self._raw.on(event, handler, options)
 
     def once(self, event: Any, handler: Any, options: Any = None) -> Any:
+        """Subscribe for a single dispatch (see :meth:`on`)."""
+        bus = self._bus()
+        if bus is not None and isinstance(event, str) and is_bus_event(event):
+            return bus.on(event, handler, once=True, **_bus_options(options))
         return self._raw.once(event, handler, options)
+
+    def _bus(self) -> Any | None:
+        """The kernel event bus, when this context can reach it."""
+        bus = self.get("hooks")
+        if bus is None or not callable(getattr(bus, "on", None)):
+            return None
+        return bus
 
     def emit(self, *args: Any) -> Any:
         return self._raw.emit(*args)

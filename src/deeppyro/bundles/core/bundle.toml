@@ -74,15 +74,8 @@ plugin = "deeppyro.builtin.llm_retry:LlmRetryPlugin"
 id = "hook-observability"
 plugin = "deeppyro.builtin.hook_observability:HookObservabilityPlugin"
 
-# The kernel-facing half of the hook bus: forwards dispatches to cordis events
-# (hook/invoked, hook/result) so plugins can observe without registering hooks.
-[[plugins]]
-id = "hook-bridge"
-plugin = "deeppyro.builtin.hook_bridge:HookBridgePlugin"
-critical = false
-
-# The session-facing half of the hook bus: journals hook records into the
-# executing agent's session log and the live event sink.
+# Journals every bus dispatch into the session log (hook/invoked + hook/result)
+# so a trace survives a crash; plugins observe events with ctx.on() instead.
 [[plugins]]
 id = "hook-journal"
 plugin = "deeppyro.builtin.hook_journal:HookJournalPlugin"

@@ -1,21 +1,24 @@
-"""Integration checks for the P0 bus alignment (header/context fidelity, tool payload).
+"""M1: one bus. A plugin subscribes to a domain event and sees the real dispatch.
 
-These tests drive the real AgentSession over the in-memory fakes and assert the
-wire shapes P0 pinned against the reference agent loop: request records carry no
-turn/step position, and tool hooks receive the executing agent plus the visible
-tool set.
+DSH has a single cordis ``EventsService``: ``agent/pre-step``, ``tools/execute``
+and friends are events like any other, so a third-party plugin observes them by
+name. deeppyro used to hide them behind ``hooks`` plus a cordis republisher
+(``hook-bridge``), which meant a plugin could subscribe to ``hook/invoked`` and
+filter, but not to the event itself.
+
+This test pins the new shape: ``ctx.on("tools/pre-execute", handler)`` on a
+``PluginContext`` registers a listener on the kernel bus and receives the real
+payload while a turn runs.
 """
 
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
 from typing import Any
 
 from deeppyro.agent import AgentOptions, AgentSession
-from deeppyro.core.protocols import Finish, TextDelta, ToolCallArgsDelta, ToolCallStart
+from deeppyro.api.context import PluginContext
+from deeppyro.core.protocols import TextDelta, ToolCallArgsDelta, ToolCallStart
 from deeppyro.hooks import HookService
-from deeppyro.hooks.types import TOOLS_EXECUTE, TOOLS_POST_EXECUTE, TOOLS_PRE_EXECUTE
 from tests.agent.fakes import (
     FakePermission,
     FakeRegistry,
@@ -28,139 +31,92 @@ from tests.agent.fakes import (
 )
 
 
-def make_agent(
-    tmp_path: Path,
-    script: list[ScriptedTurn],
-    *,
-    registry: FakeRegistry | None = None,
-    services: dict[str, Any] | None = None,
-) -> tuple[FakeSessionLog, AgentSession]:
+class StubContext:
+    """The minimum raw context ``PluginContext`` needs to reach the bus."""
+
+    def __init__(self, hooks: HookService) -> None:
+        self.hooks = hooks
+        self.reflect = self
+
+    def get(self, name: str) -> Any | None:
+        return self.hooks if name == "hooks" else None
+
+    def on(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover - cordis fallback
+        raise AssertionError("domain events must not fall back to cordis")
+
+    def once(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover - cordis fallback
+        raise AssertionError("domain events must not fall back to cordis")
+
+    def effect(self, execute: Any, label: str = "") -> Any:  # pragma: no cover - unused
+        return execute()
+
+
+def make_agent(tmp_path, script, hooks: HookService):
     session = FakeSessionLog(cwd=tmp_path)
     provider = ScriptedProvider(script)
     sink = RecordingSink(session)
     agent = AgentSession(
         session=session,
         provider=provider,
-        registry=registry if registry is not None else FakeRegistry(),
+        registry=FakeRegistry([FakeTool("echo", text="ok")]),
         options=AgentOptions(model="test-model"),
         sink=sink,
         permission=FakePermission(),
         cwd=tmp_path,
-        services=services,
+        services={"hooks": hooks},
     )
-    return session, agent
+    return session, provider, agent
 
 
-async def test_request_records_have_no_position_and_series_semantics(tmp_path: Path) -> None:
-    """request/header and request/context are wire-shaped; startsSeries only on a series start."""
-    script = [
-        ScriptedTurn(events=[TextDelta("one"), finish("stop")]),
-        ScriptedTurn(events=[TextDelta("two"), finish("stop")]),
-    ]
-    session, agent = make_agent(tmp_path, script)
-
-    assert await agent.send("first") == "one"
-    assert await agent.send("second") == "two"
-
-    headers = session.records_of("request/header")
-    contexts = session.records_of("request/context")
-    assert len(headers) == 2
-    first, second = (record.data for record in headers)
-    assert set(first) == {"header", "reason", "startsSeries"}
-    assert first["reason"] == "initial"
-    assert first["startsSeries"] is True
-    assert "turn" not in first and "step" not in first
-    assert set(second) == {"header", "reason"}
-    assert second["reason"] == "series"
-    assert "startsSeries" not in second
-    for record in contexts:
-        assert set(record.data) <= {
-            "provider",
-            "model",
-            "contextWindow",
-            "systemPromptUpdate",
-        }
-        assert record.data["provider"] and record.data["model"]
-        assert "turn" not in record.data and "step" not in record.data
-
-
-async def test_tool_hooks_receive_the_agent_and_the_visible_tool_set(tmp_path: Path) -> None:
-    """Every tool hook payload carries agent and toolSet from the batch caller."""
+async def test_a_plugin_observes_tools_pre_execute_through_the_bus(tmp_path) -> None:
     hooks = HookService()
-    payloads: list[dict[str, Any]] = []
-
-    async def observe(payload: dict[str, Any], next_step: Any) -> Any:
-        payloads.append(payload)
-        return await next_step()
-
-    for name in (TOOLS_PRE_EXECUTE, TOOLS_EXECUTE):
-        hooks.on(name, observe)
-
-    async def accept(payload: dict[str, Any], next_step: Any) -> Any:
-        payloads.append(payload)
-        return await next_step()
-
-    hooks.on(TOOLS_POST_EXECUTE, accept)
-
-    registry = FakeRegistry([FakeTool("read"), FakeTool("echo")])
-    script = [
-        ScriptedTurn(
-            events=[
-                ToolCallStart("call_1", "echo"),
-                ToolCallArgsDelta("call_1", "{}"),
-                Finish("tool-calls"),
-            ]
-        ),
-        ScriptedTurn(events=[TextDelta("done"), finish("stop")]),
-    ]
-    session, agent = make_agent(tmp_path, script, registry=registry, services={"hooks": hooks})
-
-    assert await agent.send("go") == "done"
-
-    assert [record.type for record in session.records_of("tool/result")] == ["tool/result"]
-    assert payloads, "tool hooks were never dispatched"
-    for payload in payloads:
-        assert payload["agent"] is agent
-        # HookService freezes payload lists into tuples before dispatch.
-        assert list(payload["toolSet"]) == ["echo", "read"]
-
-
-async def test_tool_hook_agent_is_none_for_a_bare_pipeline_caller() -> None:
-    """A direct run_tool_batch caller keeps the keys but leaves agent unset."""
-    from deeppyro.core.protocols import ToolContext
-    from deeppyro.tools.pipeline import run_tool_batch
-
+    plugin = PluginContext(StubContext(hooks), plugin_id="third-party")
     seen: list[dict[str, Any]] = []
-    hooks = HookService()
 
     async def observe(payload: dict[str, Any], next_step: Any) -> Any:
         seen.append(payload)
         return await next_step()
 
-    hooks.on(TOOLS_PRE_EXECUTE, observe)
-    registry = FakeRegistry([FakeTool("echo")])
+    disposer = plugin.on("tools/pre-execute", observe)
+    assert hooks.has("tools/pre-execute") is True
 
-    class Request:
-        call_id = "call_1"
-        name = "echo"
-        arguments = "{}"
+    script = [
+        ScriptedTurn(
+            events=[ToolCallStart("call_1", "echo"), ToolCallArgsDelta("call_1", "{}"), finish("tool-calls")]
+        ),
+        ScriptedTurn(events=[TextDelta("done"), finish("stop")]),
+    ]
+    _session, _provider, agent = make_agent(tmp_path, script, hooks)
 
-    def factory(_request: Any) -> ToolContext:
-        return ToolContext(
-            cwd=Path("."),
-            session_id="s",
-            turn=1,
-            step=1,
-            call_id="call_1",
-            cancel=asyncio.Event(),
-            log=lambda *args, **kwargs: 1,
-        )
+    assert await agent.send("go") == "done"
+    assert [(payload["tool"], payload["call"]["callId"]) for payload in seen] == [("echo", "call_1")]
 
-    await run_tool_batch(
-        [Request()],
-        registry=registry,
-        ctx_factory=factory,
-        hooks=hooks,
-    )
-    assert seen[0]["agent"] is None
-    assert "toolSet" not in seen[0]
+    disposer()
+    assert hooks.has("tools/pre-execute") is False
+
+
+async def test_a_plugin_may_decline_a_tool_with_one_listener(tmp_path) -> None:
+    """``ctx.once`` mirrors the bus once semantics."""
+    hooks = HookService()
+    plugin = PluginContext(StubContext(hooks), plugin_id="third-party")
+    calls: list[str] = []
+
+    def decline(payload: dict[str, Any], next_step: Any) -> Any:
+        calls.append(payload["tool"])
+        return {"kind": "deny", "reason": "not today"}
+
+    plugin.once("tools/pre-execute", decline)
+
+    script = [
+        ScriptedTurn(
+            events=[ToolCallStart("call_1", "echo"), ToolCallArgsDelta("call_1", "{}"), finish("tool-calls")]
+        ),
+        ScriptedTurn(events=[TextDelta("done"), finish("stop")]),
+    ]
+    session, _provider, agent = make_agent(tmp_path, script, hooks)
+
+    await agent.send("go")
+
+    assert calls == ["echo"]
+    assert hooks.has("tools/pre-execute") is False
+    assert session.records_of("tool/result")[0].data["message"]["isError"] is True

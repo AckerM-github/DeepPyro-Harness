@@ -712,9 +712,7 @@ class AgentSession:
         return not self._inbox.next_step
 
     # -- hooks -------------------------------------------------------------
-    async def _pre_step_hook(
-        self, turn: int, step: int, claimed: list[Message]
-    ) -> dict[str, Any] | None:
+    async def _pre_step_hook(self, turn: int, step: int, claimed: list[Message]) -> dict[str, Any] | None:
         if not self._hook_enabled(AGENT_PRE_STEP):
             return None
         hooks = self._hooks

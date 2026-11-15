@@ -1,10 +1,10 @@
-"""Integration checks for the P2 bus (hook journaling and the cordis bridge).
+"""Integration checks for the P2 bus (hook journaling and its in-tree consumers).
 
-P2 turns the hook runtime observable: HookService notifies registered observers,
-the hook-journal plugin writes hook/invoked + hook/result into the executing
-agent's session log, and the hook-bridge plugin republishes dispatches as cordis
-events. These tests drive a real AgentSession over the in-memory fakes to prove
-the wiring is end-to-end and that hot streaming hooks stay off the bus.
+P2 turns the hook runtime observable: HookService notifies registered observers
+and the hook-journal plugin writes hook/invoked + hook/result into the executing
+agent's session log. These tests drive a real AgentSession over the in-memory
+fakes to prove the wiring is end-to-end and that hot streaming hooks stay off
+the bus.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from deeppyro.builtin.approval_policy import ApprovalPolicyPlugin
-from deeppyro.builtin.hook_bridge import HookBridgePlugin
 from deeppyro.builtin.hook_journal import HookJournalPlugin
 from deeppyro.builtin.prompt_extension import PromptExtensionPlugin
 from deeppyro.hooks import (
@@ -24,7 +23,6 @@ from deeppyro.hooks import (
     SYSTEM_PROMPT_ASSEMBLE,
     HookService,
 )
-from deeppyro.kernel.hook_bridge import EVENT_INVOKED, EVENT_RESULT, HookEventScope
 from deeppyro.sandbox import ApprovalRequest, PermissionGate
 from tests.agent.fakes import RecordingSink
 from tests.integration.test_p1_bus import _stop_turn, make_agent
@@ -57,13 +55,6 @@ class FakeCtx:
 def _journal(hooks: HookService) -> tuple[HookJournalPlugin, FakeCtx]:
     ctx = FakeCtx({"hooks": hooks})
     plugin = HookJournalPlugin(ctx, None)
-    plugin.setup(ctx, None)
-    return plugin, ctx
-
-
-def _bridge(hooks: HookService) -> tuple[HookBridgePlugin, FakeCtx]:
-    ctx = FakeCtx({"hooks": hooks})
-    plugin = HookBridgePlugin(ctx, None)
     plugin.setup(ctx, None)
     return plugin, ctx
 
@@ -101,32 +92,7 @@ async def test_agent_turn_journals_hook_records_without_hot_hooks(tmp_path: Path
         assert isinstance(record.data["ok"], bool)
         assert record.data["mode"] in {"waterfall", "serial", "emit", "bail", "parallel"}
 
-    # The live sink mirrors the durable log one-for-one (headless NDJSON sees this).
-    assert {event["seq"] for event in sink.of_type("hook/invoked")} == {record.seq for record in invoked}
-    assert {event["seq"] for event in sink.of_type("hook/result")} == {record.seq for record in results}
     assert all(event["type"] != "error" for event in sink.events)
-
-
-async def test_bridge_republishes_dispatches_as_cordis_events(tmp_path: Path) -> None:
-    """The bridge turns each dispatch into hook/invoked and hook/result emits."""
-    hooks = HookService()
-    _bridge_plugin, ctx = _bridge(hooks)
-
-    await hooks.serial(AGENT_TURN_STOPPING, {"turn": 1, "signal": None}, scope={"session": "s-1"})
-
-    names = [call[0][1] for call in ctx.emitted]
-    assert names == [EVENT_INVOKED, EVENT_RESULT]
-    this_args = [call[0][0] for call in ctx.emitted]
-    assert all(isinstance(arg, HookEventScope) for arg in this_args)
-    assert dict(this_args[0].scope or {}) == {"session": "s-1"}
-    assert this_args[0].__filter__(None) is True
-
-    invoked_data = ctx.emitted[0][0][2]
-    result_data = ctx.emitted[1][0][2]
-    assert invoked_data["hook"] == AGENT_TURN_STOPPING
-    assert invoked_data["mode"] == "serial"
-    assert result_data["hook"] == AGENT_TURN_STOPPING
-    assert result_data["ok"] is True
 
 
 class FakeConfigService:
@@ -188,12 +154,3 @@ async def test_approval_policy_can_allow_without_prompting(tmp_path: Path) -> No
     allowed = await gate.request(ApprovalRequest(kind="command", summary="run", tool="shell"))
     assert allowed.allowed is True
     assert allowed.reason == "approved for this call"
-
-
-async def test_bridge_skips_hot_streaming_hooks() -> None:
-    """llm/stream and agent/assistant-stream never reach the cordis event bus."""
-    hooks = HookService()
-    _bridge_plugin, ctx = _bridge(hooks)
-
-    await hooks.emit(LLM_STREAM, {"frame": {"kind": "text", "delta": "x"}}, scope={"session": "s"})
-    assert ctx.emitted == []

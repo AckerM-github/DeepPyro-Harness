@@ -31,9 +31,7 @@ async def test_pre_step_fires_once_per_step_with_only_the_claimed_messages(tmp_p
     seen: list[tuple[int, int, list[str]]] = []
 
     async def record(payload: dict[str, Any], nxt: Any) -> Any:
-        seen.append(
-            (payload["turn"], payload["step"], [message.text() for message in payload["messages"]])
-        )
+        seen.append((payload["turn"], payload["step"], [message.text() for message in payload["messages"]]))
         return await nxt()
 
     hooks.on(AGENT_PRE_STEP, record)

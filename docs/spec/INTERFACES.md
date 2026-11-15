@@ -447,10 +447,9 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 | `working-directory` | `builtin.working_directory` | `working_directory`：`.bind/.unbind/.get/.ensure/.set/.context_text`；`working_directory` 工具 |
 | `user-questions` | `builtin.user_questions` | `user_questions`：`.configure(handler)`、`.ask(questions, call_id=...)`；`ask_user_question` 工具 |
 | `attachments` | `builtin.attachments` | `attachments`：`.save_image(...)`、`.image_host_path/.read_image_bytes/.lookup/.validate_image_batch` |
-| `hooks` | `builtin.hooks` | `hooks`：`HookService.on(name, handler, *, prepend=False, once=False, scope=None, global_=False)/has/listeners/waterfall/serial/emit/bail/parallel/add_observer`；`observed` 为是否有观察者，`HookObservation`（kind/hook/mode/scope/payload/result/error/duration_ms）是唯一观察点；`HOOK_NAMES`/`HOOK_MODES` 共 19 个 hook（清单与 payload 见 `docs/spec/hooks.md`）；payload 递归冻结、waterfall 极性为 cordis（不调 next 即 veto）、`HookAggregateError` 汇总 parallel 失败；不注册工具/命令/提示词 |
+| `hooks` | `builtin.hooks` | `hooks`：`HookService.on(name, handler, *, prepend=False, once=False, scope=None, global_=False)/has/listeners/waterfall/serial/emit/bail/parallel/add_observer`；`observed` 为是否有观察者，`HookObservation`（kind/hook/mode/scope/payload/result/error/duration_ms）是唯一观察点；`HOOK_NAMES`/`HOOK_MODES` 共 15 个 hook（`DEPRECATED_NAMES` 另留 4 个退役名；清单与 payload 见 `docs/spec/hooks.md`）；总线目录在 `core.events.EVENT_SPECS`（15 implemented + 25 reserved），`PluginContext.on/once` 对目录内的名字直连本服务、其余回落 cordis；payload 递归冻结、waterfall 极性为 cordis（不调 next 即 veto）、`HookAggregateError` 汇总 parallel 失败；不注册工具/命令/提示词 |
 | `llm-retry` | `builtin.llm_retry` | `retryPolicy`：订阅 `agent/request-error` 的消费者；读 `[retry]`（mode normal/always、maxRetries、initialDelayMs、maxDelayMs、jitterRatio、retryableCodes），返回 `{"kind":"retry"}` 触发重试；不写记录（`decide_retry` 写） |
 | `hook-observability` | `builtin.hook_observability` | 无新服务；订阅 10 个观测 hook（3 个 waterfall 透传 + 7 个 emit），INFO/DEBUG 记 `hook <name> ...`，`snapshot()` 返回计数、`close()` 幂等注销 |
-| `hook-bridge` | `builtin.hook_bridge` | 无新服务（critical=false）；`HookBridge` 观察非热 dispatch，按 scope-first 重发 cordis `hook/invoked`/`hook/result` 事件（`kernel.hook_bridge.HookEventScope` 为 thisArg，`__filter__` 恒 True） |
 | `hook-journal` | `builtin.hook_journal` | 无新服务（critical=false）；把非热且带 agent 的 dispatch 记为 `hook/invoked`/`hook/result`（形状见 session.md §4.2），`records_written` 计数；写失败隔离 |
 | `jobs` | `builtin.jobs` | `jobs`：`.start(...)`、`.get/.list/.output/.wait/.kill/.cancel_owner/.cancel_all`；`job_output/job_kill/job_list` 工具 |
 | `plugin-tools` | `tools.builtin.plugin_tools` | 5 个 `plugin_*` 工具（manager/inspect/settings/create_bundle 等） |
@@ -509,9 +508,8 @@ await app.stop()                           # 逆序 dispose
 - `tests/builtin/test_activity.py`、`tests/tui/test_activity_bar.py`、`test_plan_screen.py`、`test_jobs_screen.py`、`test_team_screen.py`：活动投影与 M1/M2/M3 界面。
 - `tests/session_query/`：会话摘要/读取/事件窗口/过滤/trace，只读不落盘；`test_hook_trace.py` 覆盖 hook/invoked+result 配对与 limit/session 校验。
 - `tests/hooks/test_observer.py`：`add_observer` 统一观察点（第五条 dispatch 全覆盖、成对 invoked/resolved、观察者异常隔离、`observed` 生命周期）；`test_records.py`：hook 记录整理与固定键序。
-- `tests/kernel/test_hook_bridge.py`、`tests/builtin/test_hook_bridge.py`：scope-first cordis 事件、`__filter__`、注销、热 hook 跳过。
 - `tests/builtin/test_hook_journal.py`：写 session 记录、跳过热/无 agent、异常隔离、计数。
-- `tests/integration/test_p2_bus.py`：一次真实 turn 的 hook 记录回放与 SessionQuery.hook_trace 配对、bridge scope-first、prompt-extension/approval-policy 端到端、热 hook 不入桥。
+- `tests/integration/test_p2_bus.py`：一次真实 turn 的 hook 记录回放与 SessionQuery.hook_trace 配对、prompt-extension/approval-policy 端到端、热 hook 不入账。`test_p0_bus_alignment.py`：`PluginContext.on/once` 经总线派发（不落 cordis）、`tools/pre-execute` 的 deny 短路。
 - `tests/compact/`：compress 工具解析/事务性 block 写入、refs 固化、`search_context`/`decompress` 工具。
 - `tests/working_directory/`：服务 bind/set/ensure 与 `working_directory` 工具。
 - `tests/user_questions/`：问题解析/校验、`ask_user_question` 工具输出与 handler 串行。
