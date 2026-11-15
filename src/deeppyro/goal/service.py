@@ -467,14 +467,17 @@ class GoalService:
 
     def _publish(self, session_id: str, state: GoalState) -> None:
         """Announce the change; M3b replaces the payload with the DSH shape."""
+        objective = state.goal.objective if state.goal is not None else None
+        self._emit_event(GOAL_BUS_EVENT, {"session": session_id, "goal": objective})
+
+    def _emit_event(self, event: str, payload: dict[str, Any]) -> None:
         emitter = self._emit
         if emitter is None:
             return
-        objective = state.goal.objective if state.goal is not None else None
         try:
-            pending = emitter(GOAL_BUS_EVENT, {"session": session_id, "goal": objective})
+            pending = emitter(event, payload)
         except Exception:
-            logger.warning("failed to publish %s", GOAL_BUS_EVENT, exc_info=True)
+            logger.warning("failed to publish %s", event, exc_info=True)
             return
         if not inspect.isawaitable(pending):
             return

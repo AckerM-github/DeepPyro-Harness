@@ -318,7 +318,7 @@ class Inbox:
             for message in removed:
                 self._emit_event(DISCARDED_EVENT, {"message": _dump(message)})
         for message in inserted:
-            self._emit_event(INSERTED_EVENT, {"message": _dump(message), "target": target})
+            self._emit_event(INSERTED_EVENT, {"message": _dump(message)})
         return removed
 
     def _apply_splice(self, data: Any) -> None:

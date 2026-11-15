@@ -84,6 +84,10 @@ _PRODUCERS: dict[str, str] = {
     "goal/changed": "goal.service",
     "mcp/connected": "mcp.service",
     "mcp/disconnected": "mcp.service",
+    "agent/inbox/inserted": "agent.session",
+    "agent/inbox/claimed": "agent.session",
+    "agent/inbox/discarded": "agent.session",
+    "goal/activation-changed": "goal.service",
 }
 
 #: Implemented events that are not in the DSH catalogue yet: their mode is

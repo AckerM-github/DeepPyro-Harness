@@ -51,6 +51,7 @@ class Session:
         self._closed = False
         self._surface: list[LogRecord] | None = None
         self._append_observers: list[Callable[[Session, LogRecord], None]] = []
+        self._subscriptions: list[list[Any]] = []
 
     @property
     def session_id(self) -> str:
@@ -109,6 +110,40 @@ class Session:
                 pass
 
         return dispose
+
+    def subscribe(self, callback: Callable[[str, dict[str, Any], int], None]) -> Callable[[], None]:
+        """Call `callback(record_type, data, seq)` after each successful append.
+
+        This is the process-local companion of the durable log: a subscriber
+        sees exactly the records that were just made durable, in order. A
+        raising callback is isolated so it can never break durability, and a
+        session without subscribers pays nothing beyond the list check.
+        """
+        entry: list[Any] = [callback, None]
+
+        def observer(_session: Session, record: LogRecord) -> None:
+            callback(record.type, record.data, record.seq)
+
+        entry[1] = observer
+        self._subscriptions.append(entry)
+        dispose = self.add_append_observer(observer)
+
+        def unsubscribe() -> None:
+            try:
+                self._subscriptions.remove(entry)
+            except ValueError:
+                pass
+            dispose()
+
+        entry.append(unsubscribe)
+        return unsubscribe
+
+    def unsubscribe(self, callback: Callable[[str, dict[str, Any], int], None]) -> None:
+        """Drop a subscription registered by :meth:subscribe."""
+        for entry in list(self._subscriptions):
+            if entry[0] is callback:
+                entry[2]()
+                return
 
     def _notify_append(self, record: LogRecord) -> None:
         for observer in list(self._append_observers):

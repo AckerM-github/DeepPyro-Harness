@@ -287,6 +287,7 @@ class AgentSession:
         self._instructions = [*collect_instructions(self._cwd), *options.instructions]
         self._append_supports_envelope = self._detect_envelope_support()
         self._inbox = Inbox.from_records(list(self._records()), log=self._session, emit=self._inbox_event)
+        self._inbox_tasks: set[asyncio.Task[Any]] = set()
         self._header_logged = False
         self._phase = "idle"
         self._driving = False
@@ -501,7 +502,7 @@ class AgentSession:
         if not self._hook_enabled(AGENT_STATUS):
             return
         assert self._hooks is not None
-        await self._hooks.emit(AGENT_STATUS, {"status": phase}, scope=self._hook_scope())
+        await self._hooks.emit(AGENT_STATUS, {"agent": self, "status": phase}, scope=self._hook_scope())
 
     def _hook_scope(self) -> dict[str, Any]:
         """The dispatch scope for hook calls made by this agent.
@@ -1094,6 +1095,7 @@ class AgentSession:
             log=self._tool_log,
             permission=self._permission,
             services=self._services,
+            agent=self,
         )
 
     def _tool_log(self, record_type: str, data: dict[str, Any]) -> int:
@@ -1237,6 +1239,33 @@ class AgentSession:
         event: dict[str, Any] = {"type": event_type}
         event.update(payload)
         self._emit(event)
+        self._publish_inbox(event_type, payload)
+
+    def _publish_inbox(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Mirror one inbox notification onto the bus, without blocking the caller.
+
+        The inbox mutates synchronously, so the bus dispatch is scheduled and
+        failures are logged only: an observer must never break input handling.
+        """
+        hooks = self._hooks
+        if hooks is None or not self._hook_enabled(event_type):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - no loop means no bus dispatch
+            return
+        task = loop.create_task(hooks.emit(event_type, payload, scope=self._hook_scope()))
+        self._inbox_tasks.add(task)
+
+        def done(finished: asyncio.Task[Any]) -> None:
+            self._inbox_tasks.discard(finished)
+            if finished.cancelled():
+                return
+            error = finished.exception()
+            if error is not None:
+                logger.warning("failed to publish %s", event_type, exc_info=error)
+
+        task.add_done_callback(done)
 
     def _records(self) -> list[Any]:
         records = getattr(self._session, "records", None)

@@ -130,11 +130,15 @@ class HookService:
 
     # -- policy ------------------------------------------------------------
     def _validate(self, name: str) -> None:
+        # Imported lazily: the catalogue imports `hooks.types`, so a module
+        # level import here would close the cycle back onto this module.
+        from deeppyro.core.events import is_bus_event
+
         if name in DEPRECATED_NAMES:
             raise ValueError(
                 f"hook {name!r} was retired from the bus; subscribe to what replaces it "
                 "(tools/pre-execute, tools/execute, tools/post-execute for tool calls; "
                 "llm/stream or agent/request for model selection; approval/request for approvals)"
             )
-        if name not in HOOK_NAMES:
+        if name not in HOOK_NAMES and not is_bus_event(name):
             raise ValueError(_unknown_name_message(name))

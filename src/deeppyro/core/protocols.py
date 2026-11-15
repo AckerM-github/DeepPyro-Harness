@@ -157,6 +157,9 @@ class ToolContext:
     permission: Any | None = None
     # runtime services (jobs manager, session store, ...) attached by the app
     services: dict[str, Any] = field(default_factory=dict)
+    # the AgentSession executing this call, attached by the agent loop; tools
+    # that need the open turn (goal tools) read it instead of guessing
+    agent: Any | None = None
 
 
 @runtime_checkable

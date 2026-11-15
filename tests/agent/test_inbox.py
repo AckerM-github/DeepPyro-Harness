@@ -214,7 +214,7 @@ def test_splice_discard_marks_cancellation_and_emits_events() -> None:
     assert recorder.events == []
 
 
-def test_splice_insertion_emits_targeted_inserted_event() -> None:
+def test_splice_insertion_emits_inserted_event() -> None:
     recorder = Recorder()
     inbox = Inbox(emit=recorder)
     inbox.push(TARGET_NEXT_STEP, make_message("s1"))
@@ -222,10 +222,7 @@ def test_splice_insertion_emits_targeted_inserted_event() -> None:
     inbox.splice(TARGET_NEXT_STEP, 0, 0, [make_message("s0")])
 
     assert ids(inbox.next_step) == ["s0", "s1"]
-    assert recorder.of(INSERTED_EVENT)[-1] == {
-        "message": dump("s0"),
-        "target": TARGET_NEXT_STEP,
-    }
+    assert recorder.of(INSERTED_EVENT)[-1] == {"message": dump("s0")}
 
 
 # -- claiming ---------------------------------------------------------------
@@ -370,10 +367,7 @@ def test_replace_rewrites_in_place_and_validates_identity() -> None:
     assert inbox.replace("t1", make_message("t1b")) is True
     assert ids(inbox.next_turn) == ["t1b", "t2"]
     assert recorder.of(DISCARDED_EVENT) == [{"message": dump("t1")}]
-    assert recorder.of(INSERTED_EVENT)[-1] == {
-        "message": dump("t1b"),
-        "target": TARGET_NEXT_TURN,
-    }
+    assert recorder.of(INSERTED_EVENT)[-1] == {"message": dump("t1b")}
 
     with pytest.raises(SessionError, match='message "s1" is already pending'):
         inbox.replace("t2", make_message("s1"))
