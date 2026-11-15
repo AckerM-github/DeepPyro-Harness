@@ -19,6 +19,7 @@ _SKILLS_ROW = PluginSpec(
     name="deeppyro.builtin.skills:SkillsPlugin",
 )
 _FAKE_ROWS = (
+    PluginSpec(id="commands", name="deeppyro.builtin.commands:CommandsPlugin"),
     PluginSpec(id="fake-tools", name="tests.skills.plugins_dummy:FakeToolsPlugin"),
     PluginSpec(id="fake-prompt", name="tests.skills.plugins_dummy:FakePromptPlugin"),
 )

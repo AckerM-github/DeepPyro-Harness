@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .errors import SkillParseError
@@ -41,6 +41,7 @@ class SkillFile:
     model_invocable: bool = True
     user_invocable: bool = True
     body: str = ""
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 def is_valid_skill_name(name: str) -> bool:
@@ -85,6 +86,7 @@ def parse_skill_text(text: str, *, source: str = "<skill>", fallback_name: str =
     model_invocable = True if disable is None else not _boolean(disable, "disable-model-invocation", source)
     user = fields.get("user-invocable")
     user_invocable = True if user is None else _boolean(user, "user-invocable", source)
+    metadata = _metadata_fields(fields, source)
     return SkillFile(
         name=name,
         description=description.strip(),
@@ -92,7 +94,28 @@ def parse_skill_text(text: str, *, source: str = "<skill>", fallback_name: str =
         model_invocable=model_invocable,
         user_invocable=user_invocable,
         body=body.strip(),
+        metadata=metadata,
     )
+
+
+def _metadata_fields(fields: dict[str, str], source: str) -> dict[str, str]:
+    """Collect `metadata.<key>: value` lines into a flat mapping.
+
+    DSH accepts a nested YAML `metadata` map; this parser is line oriented, so
+    the flat dotted spelling is the supported form. A bare `metadata:` line is
+    accepted and ignored so authoring mistakes degrade instead of failing.
+    """
+    metadata: dict[str, str] = {}
+    for key, value in fields.items():
+        if key == "metadata":
+            continue
+        if not key.startswith("metadata."):
+            continue
+        name = key[len("metadata.") :].strip()
+        if not name:
+            raise SkillParseError(f"{source}: frontmatter key {key!r} is missing a metadata name")
+        metadata[name] = value.strip()
+    return metadata
 
 
 def first_paragraph(body: str) -> str:

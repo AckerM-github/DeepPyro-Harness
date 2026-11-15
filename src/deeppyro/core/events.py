@@ -82,12 +82,16 @@ _PRODUCERS: dict[str, str] = {
     "command/executed": "commands.service",
     "workspace/changed": "working_directory.service",
     "goal/changed": "goal.service",
+    "mcp/connected": "mcp.service",
+    "mcp/disconnected": "mcp.service",
 }
 
 #: Implemented events that are not in the DSH catalogue yet: their mode is
 #: declared here instead of being inferred from a call site.
 _EXTRA_MODES: dict[str, str] = {
     "workspace/changed": "emit",
+    "mcp/connected": "emit",
+    "mcp/disconnected": "emit",
 }
 
 #: DSH bus events deeppyro recognises but does not dispatch yet. Kept explicit
@@ -106,8 +110,6 @@ _RESERVED: dict[str, str] = {
     "jobs/updated": "jobs",
     "loader/changed": "loader",
     "llm/selection": "llm",
-    "mcp/connected": "mcp",
-    "mcp/disconnected": "mcp",
     "plugin/status": "plugin",
     "sandbox/policy": "sandbox",
     "schedule/fired": "schedule",

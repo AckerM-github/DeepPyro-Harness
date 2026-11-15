@@ -137,6 +137,7 @@ class SkillRegistry:
             provider=summary.provider,
             path=summary.path,
             resource_base=summary.resource_base,
+            metadata=dict(summary.metadata),
             content=parsed.body,
         )
 

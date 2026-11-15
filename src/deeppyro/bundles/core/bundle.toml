@@ -144,17 +144,17 @@ plugin = "deeppyro.builtin.memory:MemoryPlugin"
 critical = false
 
 [[plugins]]
-id = "skills"
-plugin = "deeppyro.builtin.skills:SkillsPlugin"
-critical = false
-
-[[plugins]]
 id = "commands"
 plugin = "deeppyro.builtin.commands:CommandsPlugin"
 
 [[plugins]]
 id = "commands-builtin"
 plugin = "deeppyro.builtin.commands_builtin:CommandsBuiltinPlugin"
+
+[[plugins]]
+id = "skills"
+plugin = "deeppyro.builtin.skills:SkillsPlugin"
+critical = false
 
 [[plugins]]
 id = "agents"

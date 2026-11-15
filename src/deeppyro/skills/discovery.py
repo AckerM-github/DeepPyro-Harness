@@ -25,7 +25,9 @@ from .types import (
     SOURCE_CUSTOM,
     SOURCE_PROJECT_AGENTS,
     SOURCE_PROJECT_DSH,
+    SOURCE_USER_AGENTS,
     SOURCE_USER_DSH,
+    USER_AGENTS_RANK,
     USER_DSH_RANK,
     SkillConfig,
     SkillSource,
@@ -114,6 +116,13 @@ def discover_roots(
         user_dir = base / "skills"
     add(USER_DSH_RANK, SOURCE_USER_DSH, user_dir)
 
+    if cfg.user_agents_dir.strip():
+        agents_dir = Path(cfg.user_agents_dir).expanduser()
+    else:
+        base = Path(home) if home is not None else paths.deeppyro_home()
+        agents_dir = base.parent / ".agents" / "skills"
+    add(USER_AGENTS_RANK, SOURCE_USER_AGENTS, agents_dir)
+
     if cfg.bundled_skill_dir.strip():
         add(BUNDLED_RANK, SOURCE_BUNDLED, Path(cfg.bundled_skill_dir).expanduser())
 
@@ -150,6 +159,7 @@ def scan_skills(roots: Sequence[SkillRoot]) -> SkillScan:
                 provider="filesystem",
                 path=str(candidate),
                 resource_base=str(candidate.parent),
+                metadata=dict(parsed.metadata),
             )
             existing = found.get(parsed.name)
             if existing is not None:

@@ -24,7 +24,7 @@
 - 加载结果：成功时返回 render_skill_content 生成的文本，形如 skill_content 标签包裹的 resource 段与 instructions 段。目录型 skill 的 resource 段给出 skill 目录（Base directory for this skill: ...）与相对路径解析提示；无目录的 provider 型 skill 给出 provider 提示。文本内的 &、<、> 会转义，属性内的 &、双引号、< 会转义。
 - 目录注入：某条 system-reminder 块列出 available_skills，每条只含 name 与去掉换行的 description；目录只列 model_invocable 的 skill，按 name 排序。没有可列 skill 时不注入（返回空串，prompt 服务自动 strip 空段）。
 - 目录排序与去重：同名 skill 低 rank 者胜，扫描时记录 warning 而不是报错；坏文件跳过并记入 errors。
-- rank 与搜索根：project .dsh/skills = 100、project .agents/skills = 200、custom = 300、user 目录 = 400、bundled = 600。P1 不默认扫描 ~/.agents/skills，也不自带 bundled skill 资产（bundled 根仅在显式配置 bundled_skill_dir 时启用）。
+- rank 与搜索根：project .dsh/skills = 100、project .agents/skills = 200、custom = 300、user 目录 = 400、user agents 目录 = 500、bundled = 600。P1 不自带 bundled skill 资产（bundled 根仅在显式配置 bundled_skill_dir 时启用）。
 - 项目根：从 cwd 向上找最近的含 .git 的目录，找不到则用 cwd 自身。
 
 ## 3. 搜索路径优先级
@@ -37,6 +37,7 @@ discover_roots(cwd, config) 生成的根按 (rank, path) 排序，rank 小者优
 | 200 | project-agents | <project>/.agents/skills | 兼容 AGENTS 生态 |
 | 300 | custom | config.custom_skill_dirs | 相对路径基于项目根 |
 | 400 | user-dsh | config.user_skills_dir 或 <DEEPPYRO_HOME>/skills | 用户级 |
+| 500 | user-agents | config.user_agents_dir 或 ~/.agents/skills | 用户级（与 DSH 对齐） |
 | 600 | bundled | config.bundled_skill_dir | 仅显式配置时启用 |
 
 要点：include_default_roots=False 时仍保留 user-dsh 根（用户级默认值独立于此开关）；resolve 后同路径去重，先出现者保留；不存在的根在扫描时静默跳过。
@@ -52,7 +53,8 @@ discover_roots(cwd, config) 生成的根按 (rank, path) 排序，rank 小者优
 - description：字符串。缺失时取正文首个非空段落（遇空行停止，空白折叠，去掉行首 #）。
 - whenToUse 或 when_to_use：字符串，进入 SkillSummary.when_to_use。
 - disable-model-invocation：布尔，取反为 model_invocable；默认 False。
-- user-invocable：布尔，默认 True。
+- user-invocable：布尔，默认 True；false 的 skill 不出现在 `/skill` 列表里，也不能被加载。
+- metadata.<key>：扁平写法收集为 `metadata` 映射（DSH 用嵌套 YAML map；本解析器逐行，故用点号拼写；裸 `metadata:` 行被忽略）。
 
 布尔写法：true/yes/on/1 为真，false/no/off/0 为假，其他值报错。字符串可用双引号（按 JSON 转义解析）或单引号（去除引号、连续两个单引号表示一个单引号）。未知标量键被忽略；旧的驼峰键 disableModelInvocation、modelInvocable、userInvocable 会被明确拒绝并提示改用连字符形式。缩进行、无冒号行、重复键、缺失闭合分隔符都会抛出 SkillParseError。读取失败（OSError）同样抛 SkillParseError。
 
@@ -118,3 +120,16 @@ SkillsPlugin：Service，provide = skills，plugin_id = skills，inject = [confi
 - 同名低 rank 赢；一旦高 rank 根里出现同名文件只产生 warning，不覆盖已有 skill。
 - 文件在 get 与渲染之间被删除时返回 None/错误，不缓存内容；没有版本号或 revision。
 - 目录文案、工具描述与错误文案保持英文原文以贴合模型提示词，中文只出现在文档与 TUI 外围文案。
+
+## 9. `/skill` 命令
+
+`SkillsPlugin` 注册一条命令（`plugin_id = "skills"`）：
+
+```
+/skill                  # 列出当前工作空间里 user-invocable 的 skill
+/skill <name> [args]    # 把该 skill 正文作为下一条用户消息送入会话，并附上 args
+```
+
+工作目录来自宿主（`host.cwd` / `host.workspace` / `host.runtime.cwd`，最后回退进程 cwd），所以同一进程里不同会话看到的是各自的 skill 集合。发送优先走 `host.runtime.agent.send`，其次 `host.agent.send`；宿主没有 agent 时退化为把正文打印到对话区。
+
+与 DSH 的差异：DSH 把每个 user-invocable skill 直接暴露成 `/name`；deeppyro 目前是一条 `/skill <name>` 入口，因为命令注册在 boot 期完成、而 skill 集合随会话工作目录变化。逐名注册留待命令注册表支持按会话解析时再做。

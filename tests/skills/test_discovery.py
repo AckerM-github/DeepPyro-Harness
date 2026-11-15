@@ -14,7 +14,9 @@ from deeppyro.skills.types import (
     SOURCE_CUSTOM,
     SOURCE_PROJECT_AGENTS,
     SOURCE_PROJECT_DSH,
+    SOURCE_USER_AGENTS,
     SOURCE_USER_DSH,
+    USER_AGENTS_RANK,
     USER_DSH_RANK,
     SkillConfig,
 )
@@ -36,6 +38,7 @@ def test_discover_roots_order_and_sources(tmp_path: Path, isolated_home: Path) -
         PROJECT_AGENTS_RANK,
         CUSTOM_RANK,
         USER_DSH_RANK,
+        USER_AGENTS_RANK,
         BUNDLED_RANK,
     ]
     assert [item.source for item in roots] == [
@@ -43,13 +46,15 @@ def test_discover_roots_order_and_sources(tmp_path: Path, isolated_home: Path) -
         SOURCE_PROJECT_AGENTS,
         SOURCE_CUSTOM,
         SOURCE_USER_DSH,
+        SOURCE_USER_AGENTS,
         SOURCE_BUNDLED,
     ]
     assert roots[0].path == project / ".dsh" / "skills"
     assert roots[1].path == project / ".agents" / "skills"
     assert roots[2].path == custom.resolve()
     assert roots[3].path == (isolated_home / "skills").resolve()
-    assert roots[4].path == bundled.resolve()
+    assert roots[4].path == (isolated_home.parent / ".agents" / "skills").resolve()
+    assert roots[5].path == bundled.resolve()
 
 
 def test_discover_roots_resolves_relative_custom_dir_against_project(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ the model-facing projection of the current discovery scan.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,12 +19,14 @@ PROJECT_DSH_RANK = 100
 PROJECT_AGENTS_RANK = 200
 CUSTOM_RANK = 300
 USER_DSH_RANK = 400
+USER_AGENTS_RANK = 500
 BUNDLED_RANK = 600
 
 SOURCE_PROJECT_DSH: SkillSource = "project-dsh"
 SOURCE_PROJECT_AGENTS: SkillSource = "project-agents"
 SOURCE_CUSTOM: SkillSource = "custom"
 SOURCE_USER_DSH: SkillSource = "user-dsh"
+SOURCE_USER_AGENTS: SkillSource = "user-agents"
 SOURCE_BUNDLED: SkillSource = "bundled"
 
 #: Lower rank wins when two roots provide a skill with the same name.
@@ -33,6 +35,7 @@ SKILL_SOURCE_RANKS: dict[SkillSource, int] = {
     SOURCE_PROJECT_AGENTS: PROJECT_AGENTS_RANK,
     SOURCE_CUSTOM: CUSTOM_RANK,
     SOURCE_USER_DSH: USER_DSH_RANK,
+    SOURCE_USER_AGENTS: USER_AGENTS_RANK,
     SOURCE_BUNDLED: BUNDLED_RANK,
 }
 
@@ -53,6 +56,8 @@ class SkillSummary:
     provider: str = "filesystem"
     path: str = ""
     resource_base: str = ""
+    #: Free-form `metadata.*` frontmatter keys, kept for parity with DSH.
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +97,8 @@ class SkillConfig(BaseModel):
     bundled_skill_dir: str = ""
     catalog_max_entries: int = 500
     catalog_description_max_length: int = 500
+    #: Empty means ~/.agents/skills (the agents-home root DSH ranks at 500).
+    user_agents_dir: str = ""
     watch: bool = False
 
 
@@ -106,7 +113,9 @@ __all__ = [
     "SOURCE_CUSTOM",
     "SOURCE_PROJECT_AGENTS",
     "SOURCE_PROJECT_DSH",
+    "SOURCE_USER_AGENTS",
     "SOURCE_USER_DSH",
+    "USER_AGENTS_RANK",
     "USER_DSH_RANK",
     "SkillCatalog",
     "SkillConfig",
