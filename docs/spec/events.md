@@ -165,7 +165,7 @@ call site that proves it:
 | `schedule` | 3 | the scheduler fires jobs, not events |
 | `compaction` | 4 | compaction is a record, its lifecycle is silent |
 | `goal` | 2 | DSH-only for now |
-| `workspace` | 3 | workspace switching is a service call |
+| `workspace` | 3 | `workspace/changed` is implemented for cwd moves; the rest wait |
 | `jobs` | 1 | job bookkeeping is polled, not published |
 | `fs` | 5 | file watching is not implemented |
 | `web` | 1 | no fetch subsystem |

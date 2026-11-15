@@ -8,6 +8,7 @@ bus a single-consumer pipe.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -17,6 +18,7 @@ from deeppyro.builtin.commands import CommandsPlugin
 from deeppyro.core.bus import EventBus
 from deeppyro.hooks.service import HookService
 from deeppyro.hooks.types import AGENT_STATUS
+from deeppyro.working_directory.service import WorkingDirectoryService
 
 
 class _Stub:
@@ -200,3 +202,24 @@ async def test_the_tui_path_publishes_too() -> None:
     assert spec.handler(object(), "") == "inline"
     await asyncio.sleep(0)
     assert seen == [{"name": "direct", "ok": True, "error": "", "plugin": ""}]
+
+
+async def test_a_committed_cd_publishes_workspace_changed(tmp_path: Path) -> None:
+    bus = EventBus()
+    seen: list[dict[str, Any]] = []
+    bus.on("workspace/changed", seen.append)
+    service = WorkingDirectoryService()
+    service.configure(emit=bus.emit)
+    workspace = tmp_path / "ws"
+    nested = workspace / "nested"
+    nested.mkdir(parents=True)
+    service.bind("session-1", cwd=workspace, record=lambda *args: None)
+    await service.set("session-1", nested)
+    await asyncio.sleep(0)
+    assert seen == [
+        {
+            "session": "session-1",
+            "cwd": str(nested),
+            "previous": str(workspace),
+        }
+    ]

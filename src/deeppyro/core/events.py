@@ -80,6 +80,13 @@ _PRODUCERS: dict[str, str] = {
     "tools/post-execute": "tools.pipeline",
     "approval/request": "sandbox.approval",
     "command/executed": "commands.service",
+    "workspace/changed": "working_directory.service",
+}
+
+#: Implemented events that are not in the DSH catalogue yet: their mode is
+#: declared here instead of being inferred from a call site.
+_EXTRA_MODES: dict[str, str] = {
+    "workspace/changed": "emit",
 }
 
 #: DSH bus events deeppyro recognises but does not dispatch yet. Kept explicit
@@ -200,7 +207,7 @@ def _build_specs() -> dict[str, EventSpec]:
     for name in _PRODUCERS.keys() - HOOK_MODES.keys():
         if True:
             modes, _site = _catalog_entry(name)
-            if not modes:
+            if not modes and name not in _EXTRA_MODES:
                 raise RuntimeError(f"bus event {name!r} has no mode: add it to the catalog")
     for name, mode in HOOK_MODES.items():
         modes, site = _catalog_entry(name)
@@ -218,7 +225,7 @@ def _build_specs() -> dict[str, EventSpec]:
         modes, site = _catalog_entry(name)
         specs[name] = EventSpec(
             name=name,
-            mode=modes[0],  # type: ignore[arg-type]
+            mode=(_EXTRA_MODES.get(name) or modes[0]),  # type: ignore[arg-type]
             status="implemented",
             producer=_PRODUCERS[name],
             dsh_ref=site,

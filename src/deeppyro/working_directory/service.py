@@ -23,9 +23,10 @@ sessions):
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -112,6 +113,10 @@ class WorkingDirectoryService:
         self._records: dict[str, RecordFn] = {}
         self._notices: dict[str, NoticeFn] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        #: Optional sink for ``workspace/changed``; the kernel plugin wires it to
+        #: the bus so a subscriber sees the move without polling the state.
+        self._emit: Callable[[str, dict[str, Any]], Any] | None = None
+        self._pending: set[asyncio.Task[Any]] = set()
 
     @staticmethod
     def _parse_default(value: Any) -> Path:
@@ -133,6 +138,7 @@ class WorkingDirectoryService:
         default_directory: str | Path | None = None,
         record: RecordFn | None = None,
         inject_notice: NoticeFn | None = None,
+        emit: Callable[[str, dict[str, Any]], Any] | None = None,
     ) -> None:
         """Install host callbacks used when a session has no per-session binding."""
         if default_directory is not None:
@@ -141,6 +147,8 @@ class WorkingDirectoryService:
             self._global_record = record
         if inject_notice is not None:
             self._global_notice = inject_notice
+        if emit is not None:
+            self._emit = emit
 
     def bind(
         self,
@@ -228,6 +236,7 @@ class WorkingDirectoryService:
             if record is None:
                 raise ToolError("working-directory: the service is not configured for this session")
             record("working-directory/change", {"cwd": str(target)})
+            self._publish(session_id, current, target)
             self._states[session_id] = WorkingDirectoryState(cwd=target)
             notice = self._notice_for(session_id)
             if notice is not None:
@@ -237,6 +246,30 @@ class WorkingDirectoryService:
                 except Exception:  # pragma: no cover - defensive; exercise in tests
                     logger.warning("failed to inject working-directory notice", exc_info=True)
             return target
+
+    def _publish(self, session_id: str, previous: Path, current: Path) -> None:
+        """Announce a committed move on the bus (best effort, never fatal)."""
+        emitter = self._emit
+        if emitter is None:
+            return
+        payload = {
+            "session": session_id,
+            "cwd": str(current),
+            "previous": str(previous),
+        }
+        try:
+            pending = emitter("workspace/changed", payload)
+        except Exception:  # pragma: no cover - observability must not fail a cd
+            logger.warning("failed to publish workspace/changed", exc_info=True)
+            return
+        if inspect.isawaitable(pending):
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            task = loop.create_task(pending)
+            self._pending.add(task)
+            task.add_done_callback(self._pending.discard)
 
     def context_text(self, session: Any) -> str:
         """Render the runtime-context line for the current session cwd."""

@@ -43,7 +43,16 @@ class WorkingDirectoryPlugin(Plugin):
         super().__init__(ctx, config)
         self.service = WorkingDirectoryService(_service_config(config))
 
+    def _bus(self, ctx: Any) -> Any | None:
+        try:
+            return ctx.get("bus")
+        except Exception:  # noqa: BLE001 - the plugin still works without a bus
+            return None
+
     def setup(self, ctx: Any, config: Any) -> None:
+        bus = self._bus(ctx)
+        if bus is not None:
+            self.service.configure(emit=bus.emit)
         ctx.provide("working_directory", self.service)
         ctx.register_tool(lambda _cfg, _workspace: [WorkingDirectoryTool()])
 
