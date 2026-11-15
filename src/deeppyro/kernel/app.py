@@ -533,7 +533,19 @@ def _build_composition(
     manifest_paths: Iterable[str],
     extra_plugins: Iterable[PluginSpec],
     bundle_paths: Iterable[str],
+    *,
+    activate_plugins: bool = True,
 ) -> Composition:
+    if activate_plugins:
+        # Imported lazily: deeppyro.plugins imports the bundle store, which
+        # imports this module. Preparing the package roots here keeps sys.path
+        # activation ahead of every row resolution without an import cycle.
+        from deeppyro.plugins.bootstrap import prepare as prepare_plugin_packages
+
+        # Make plugin package roots (and their vendored dependencies) importable
+        # before any row target is resolved. Without this a row could only load
+        # after plugin-manager had mounted, which coupled ordering to import.
+        prepare_plugin_packages()
     plugins = tuple(plugins)
     manifest_paths = tuple(manifest_paths)
     extra_plugins = tuple(extra_plugins)
@@ -578,6 +590,7 @@ async def create_app(
     extra_plugins: Iterable[PluginSpec] = (),
     composition: Composition | None = None,
     bundle_paths: Iterable[str] = (),
+    activate_plugins: bool = True,
 ) -> App:
     """Boot a DeepPyro app.
 
@@ -590,10 +603,20 @@ async def create_app(
         composition: a pre-built composition; overrides the three above.
         bundle_paths: additional bundle directories/files to load on top of the
             core bundle before user bundles.
+        activate_plugins: scan the plugin package root and put every package
+            directory plus its ``_vendor`` directory on ``sys.path`` before the
+            composition is built. Embedders that manage ``sys.path`` themselves
+            can disable it.
     """
     resolved = _resolve_config(config)
     if composition is None:
-        composition = _build_composition(plugins, manifest_paths, extra_plugins, bundle_paths)
+        composition = _build_composition(
+            plugins,
+            manifest_paths,
+            extra_plugins,
+            bundle_paths,
+            activate_plugins=activate_plugins,
+        )
 
     ctx = Context()
     provide_config(ctx, resolved)

@@ -10,7 +10,10 @@
 - @errors.py：PluginError（继承 DeeppyroError）及 PluginNotFoundError、PluginProtectionError、PluginRemovalError、ManifestWriteError、SettingsConflict。
 - @model.py：PluginSource / SOURCE_ENTRY_POINT / SOURCE_DIR / SOURCE_MANIFEST / SOURCE_LABELS、BUNDLE_STATE_* / BUNDLE_STATES、PluginInfo、ValidationResult、BundleInfo。
 - @manifest_store.py：read_manifest（转调 kernel.manifest.load_manifest）、dump_manifest（手写最小 TOML 序列化）、save_user_manifest（临时文件 + fsync + os.replace 原子写）。
-- @discovery.py：ENTRY_POINT_GROUP、PluginDiscovery，扫描三类外部来源并合并成行。
+- @discovery.py：ENTRY_POINT_GROUP、PluginDiscovery，扫描三类外部来源并合并成行（目录来源的 `plugin.toml` 由 metadata 解析，见 @docs/spec/plugin-platform.md）。
+- @metadata.py：`plugin.toml` 的 v2/legacy 解析、`[compat]` 校验、vendor 目录定位、六类失败分类与补救建议。
+- @bootstrap.py：启动期扫描插件根并把包目录与 `_vendor` 插入 `sys.path`（由 create_app 在构建组合前调用）。
+- @cli.py：`dpyro plugin list|info|doctor|path` 子命令（安装动词见 plugin-platform.md §9）。
 - @bundles.py：BundleStore，管理 ~/.dpro/bundles 下的用户 bundle。
 - @settings_store.py：SettingsStore 及 mask_secrets、manifest_revision、plugin_config_schema、validate_config、plugin_volatile_fields 等辅助函数。
 - @template.py：bundle_template（返回 bundle.toml/plugin.py/README.md 文本）与 create_bundle（生成并校验脚手架 bundle 目录）。

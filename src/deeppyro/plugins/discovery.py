@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import importlib.metadata
 import sys
-import tomllib
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
@@ -24,6 +23,7 @@ from typing import Any
 
 from deeppyro import paths
 from deeppyro.kernel.manifest import ManifestError, PluginSpec, load_manifest
+from deeppyro.plugins.metadata import MetadataError, load_metadata
 from deeppyro.plugins.model import (
     SOURCE_DIR,
     SOURCE_ENTRY_POINT,
@@ -147,6 +147,12 @@ class PluginDiscovery:
             self._add(discovered, self._directory_info(path))
 
     def _directory_info(self, directory: Path) -> PluginInfo:
+        """Describe one plugin package using the shared metadata parser.
+
+        The package format (``plugin.toml`` v2 sections or legacy flat keys) is
+        parsed by :mod:`deeppyro.plugins.metadata`, so discovery, the CLI and
+        the boot-time bootstrap all agree on what a package declares.
+        """
         plugin_id = directory.name
         toml_path = directory / "plugin.toml"
         base = PluginInfo(
@@ -156,33 +162,18 @@ class PluginDiscovery:
             origin=str(toml_path),
         )
         try:
-            with toml_path.open("rb") as handle:
-                document = tomllib.load(handle)
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            return replace(base, error=f"invalid plugin.toml: {exc}")
-
-        for field_name in _STRING_FIELDS:
-            value = document.get(field_name, "")
-            if not isinstance(value, str):
-                return replace(base, error=f"plugin.toml field {field_name!r} must be a string")
-        module = document.get("module")
-        if not isinstance(module, str) or not module:
-            return replace(base, error="plugin.toml requires a non-empty 'module' string")
-        class_name = str(document.get("class") or "")
-        target = f"{module}:{class_name}" if class_name else (module if ":" in module else None)
-        if target is None:
-            return replace(base, error="plugin.toml must set 'class' or use module:Class in 'module'")
+            metadata = load_metadata(directory, plugin_id=plugin_id)
+        except MetadataError as exc:
+            return replace(base, error=f"{exc.kind}: {exc.message}")
 
         info = replace(
             base,
-            name=str(document.get("name") or plugin_id),
-            version=str(document.get("version") or ""),
-            description=str(document.get("description") or ""),
-            target=target,
+            name=metadata.name or plugin_id,
+            version=metadata.version,
+            description=metadata.description,
+            target=metadata.target,
+            provides=metadata.provides,
         )
-        provides = document.get("provides")
-        if isinstance(provides, list) and all(isinstance(item, str) for item in provides):
-            info = replace(info, provides=tuple(provides))
         if self.inject_sys_path:
             entry = str(directory)
             if entry not in sys.path:

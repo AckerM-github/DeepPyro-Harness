@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from .errors import PluginDependencyError
@@ -78,6 +79,23 @@ class PluginContext:
                 f"plugin {self.plugin_id!r} requires service {name!r}, which is not available"
             )
         return value
+
+    @property
+    def plugin_dir(self) -> Path | None:
+        """Directory of this plugin's package, when it was installed as one.
+
+        Plugin packages live at ``<plugins_dir>/<id>/`` and carry a
+        ``plugin.toml``. Returning ``None`` for in-tree plugins keeps callers
+        free to treat the value as purely optional.
+        """
+        if not self.plugin_id:
+            return None
+        from deeppyro.paths import plugins_dir
+
+        candidate = plugins_dir() / self.plugin_id
+        if (candidate / "plugin.toml").is_file():
+            return candidate
+        return None
 
     @property
     def tools(self) -> Any:

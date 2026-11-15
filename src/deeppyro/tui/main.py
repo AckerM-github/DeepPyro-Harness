@@ -57,8 +57,15 @@ def _version() -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # `dpyro plugin ...` is a management subcommand rather than a prompt: it
+    # must not boot the runtime. Everything else keeps the flat CLI shape.
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw and raw[0] == "plugin":
+        from deeppyro.plugins.cli import main as plugin_main
+
+        return plugin_main(raw[1:])
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw)
     if args.version:
         print(f"deeppyro-harness {_version()}")
         return 0

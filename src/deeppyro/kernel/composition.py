@@ -52,7 +52,7 @@ from deeppyro.kernel.manifest import (
     load_manifest,
     resolve_plugin_name,
 )
-from deeppyro.paths import deeppyro_home
+from deeppyro.paths import deeppyro_home, plugins_dir
 
 
 class CompositionError(RuntimeError):
@@ -143,6 +143,31 @@ def user_bundles_dir() -> Path:
 def discover_user_bundles(root: str | Path | None = None) -> list[Path]:
     """Return bundle.toml files under root, sorted by directory name."""
     base = Path(root) if root is not None else user_bundles_dir()
+    if not base.is_dir():
+        return []
+    found: list[Path] = []
+    for child in sorted(base.iterdir(), key=lambda item: item.name):
+        if child.is_dir():
+            candidate = child / "bundle.toml"
+            if candidate.is_file():
+                found.append(candidate)
+    return found
+
+
+def plugin_bundles_dir() -> Path:
+    """Directory scanned for plugin packages that ship composition rows."""
+    return plugins_dir()
+
+
+def discover_plugin_bundles(root: str | Path | None = None) -> list[Path]:
+    """Return ``bundle.toml`` files shipped by plugin packages, sorted by id.
+
+    A plugin package may carry a bundle layer; it uses the same syntax as any
+    other bundle (a ``[bundle]`` table plus ``[[plugins]]`` rows), which gives
+    packages insert/override semantics identical to the built-in bundle without
+    a second patch format.
+    """
+    base = Path(root) if root is not None else plugin_bundles_dir()
     if not base.is_dir():
         return []
     found: list[Path] = []
@@ -413,9 +438,11 @@ def load_bundle(path: str | Path) -> Bundle:
     if not bundle_path.is_file():
         raise CompositionError(f"bundle not found: {bundle_path}")
     try:
-        with bundle_path.open("rb") as handle:
-            document = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+        data = bundle_path.read_bytes()
+        if data.startswith(b"\xef\xbb\xbf"):
+            data = data[3:]
+        document = tomllib.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise CompositionError(f"cannot read bundle {bundle_path}: {exc}") from exc
     unknown = set(document) - {"bundle", "plugins"}
     if unknown:
@@ -737,6 +764,12 @@ def default_composition(
     for path in discovered:
         if path not in candidates:
             candidates.append(path)
+    # Plugin packages may ship their own composition layer. It sits after the
+    # user bundles and before the patch manifests, mirroring DSH's layer order
+    # (built-in bundle -> profile bundles -> profile patch).
+    for path in discover_plugin_bundles():
+        if path not in candidates:
+            candidates.append(path)
     for path in extra_bundle_paths:
         candidate = Path(path)
         if candidate not in candidates:
@@ -767,8 +800,10 @@ __all__ = [
     "PluginRow",
     "core_bundle_path",
     "default_composition",
+    "discover_plugin_bundles",
     "discover_user_bundles",
     "load_bundle",
+    "plugin_bundles_dir",
     "register_target_alias",
     "resolve_row",
     "row_to_spec",
