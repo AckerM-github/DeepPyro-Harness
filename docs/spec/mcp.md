@@ -1,118 +1,185 @@
 # MCP client
 
-`deeppyro.mcp` is a Model Context Protocol **client**: it connects to the MCP
-servers named in the user config, performs the `initialize` handshake, lists
-their tools and bridges every tool into the ordinary deeppyro tool registry.
-The bundled `mcp` plugin (`deeppyro.builtin.mcp:McpPlugin`) owns the lifecycle.
+`deeppyro.mcp` is a Model Context Protocol **client** aligned with the DSH
+`dsh-mcp-client` + `dsh-mcp-resources` packages: it connects to the configured
+servers, negotiates the protocol, bridges their tools into the ordinary tool
+registry, publishes server instructions into the prompt, and exposes the three
+shared resource tools. The bundled `mcp` plugin
+(`deeppyro.builtin.mcp:McpPlugin`) owns the lifecycle.
 
-Resources, prompts, sampling and elicitation are deliberate non-goals: v1 is a
-tool bridge only. Nothing here starts an MCP *server*, and nothing here talks to
-the network at import time or during plugin construction.
+It never starts an MCP *server*, never performs I/O at import time, and adds no
+third-party dependency (`stdio` uses `asyncio` subprocesses, `streamable-http`
+uses `httpx`).
 
 ## Configuration
 
-Servers live in the user config under `[[mcp.servers]]`:
-
 ```toml
 [[mcp.servers]]
-name = "filesystem"
-transport = "stdio"          # "stdio" (default) or "http"
+serverName = "github"                  # also accepted as `name`
+transport = "stdio"                    # "stdio" | "streamable-http" (alias: "http")
 command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-env = { LOG_LEVEL = "warn" }
+args = ["-y", "@modelcontextprotocol/server-github"]
+cwd = ""                               # stdio working directory
+env = { GITHUB_TOKEN = "..." }         # merged over a scrubbed environment
 enabled = true
-startup_timeout = 20.0
-call_timeout = 60.0
+toolCallTimeoutMs = 60000
+maxInstructionBytes = 32768
+failOnStartupError = false
+
+[mcp.servers.reconnect]
+enabled = true
+initialDelayMs = 500
+maxDelayMs = 30000
+maxAttempts = 10
 
 [[mcp.servers]]
-name = "remote"
-transport = "http"
+serverName = "remote"
+transport = "streamable-http"
 url = "https://mcp.example.com/mcp"
 headers = { Authorization = "Bearer $TOKEN" }
 ```
 
-* `name` is required and unique; it is part of every tool name.
-* `transport = "stdio"` requires `command`; `args` and `env` are optional and
-  `env` is merged over the inherited environment.
-* `transport = "http"` requires `url`; `headers` are sent on every request.
-* `enabled = false` keeps the row but never connects.
-* `startup_timeout` bounds the process spawn plus `initialize`; `call_timeout`
-  bounds `tools/call` and `tools/list`.
-* Unknown keys are allowed (forward compatibility) and ignored.
+| Field | Default | Meaning |
+|---|---|---|
+| `serverName` (`name`) | required | `[A-Za-z0-9_-]{1,32}`; unique across rows; the tool namespace |
+| `transport` | `stdio` | `stdio` or `streamable-http` (`http` is accepted as an alias) |
+| `command` / `args` / `cwd` / `env` | — | stdio only; `env` is merged over the scrubbed parent environment |
+| `url` / `headers` | — | `streamable-http` only |
+| `toolCallTimeoutMs` | `60000` | per `tools/call` and per resource request |
+| `maxInstructionBytes` | `32768` | UTF-8 budget for server instructions; larger instructions are dropped |
+| `failOnStartupError` | `false` | `true` aborts plugin activation instead of degrading |
+| `reconnect.*` | on, 500 ms, 30 s, 10 | backoff policy after a connection is lost |
+
+Two rows with the same `serverName` fail loudly (`McpConfigError`) rather than
+silently keeping one. Unknown keys are allowed and ignored (forward
+compatibility).
 
 ## Transports
 
 ### stdio
 
 Newline-delimited JSON over the child process' stdin/stdout, spawned with
-`asyncio.create_subprocess_exec`. stderr is drained line by line into the
-`deeppyro.mcp.<server>` logger so a chatty server can never block on a full
-pipe. If the child exits, every pending request fails with
-`McpTransportError` instead of hanging. `close()` closes stdin, sends
-`terminate`, waits up to five seconds and then kills the process.
+`asyncio.create_subprocess_exec(cwd=...)`. The child environment is built by
+`scrubbed_env`: every parent variable whose name matches `KEY|PASSWORD|SECRET|
+TOKEN` (case-insensitive) and every `DSH_*`/`DEEPPYRO_*`/`DPYRO_*` name is
+removed before `[[mcp.servers]].env` is merged on top — configured values still
+win. stderr is drained line by line into the `deeppyro.mcp.<server>` logger. If
+the child exits, pending requests fail with `McpTransportError`; `close()`
+closes stdin, sends `terminate`, waits five seconds, then kills.
 
-### http (streamable HTTP)
+### streamable-http
 
 Each JSON-RPC message is a `POST` to `url` with
-`Accept: application/json, text/event-stream`. A response body may be plain
-JSON or a server-sent-event stream; both are accepted. The `Mcp-Session-Id`
-response header is remembered and echoed on later requests. Notifications are
-expected to answer `202` (a `202` to a request is an error). HTTP status codes
-at or above 400 become `McpTransportError` with a truncated body.
+`Accept: application/json, text/event-stream`. JSON and SSE bodies are both
+accepted; `mcp-session-id` is remembered and echoed. `202`/`204` answers to a
+request are errors, HTTP >= 400 becomes `McpTransportError` with a truncated
+body.
 
 ## Handshake
 
-1. `initialize` with `protocolVersion = "2025-06-18"`, `capabilities = {}` and
-   `clientInfo = {"name": "deeppyro", "version": <package version>}`.
-2. If the server answers with a JSON-RPC error, `initialize` is retried once
-   with `"2024-11-05"`; whatever `protocolVersion` the server returns is
-   recorded as `McpClient.protocol_version`.
-3. `notifications/initialized` (no id, no response).
-4. `tools/list`, following `nextCursor` until it is absent (at most 100 pages).
+1. `initialize` with `2025-06-18`; on a JSON-RPC error it is retried once with
+   `2024-11-05`. Whatever version the server returns is recorded.
+2. `notifications/initialized`.
+3. `tools/list`, following `nextCursor` (at most 100 pages).
+4. `instructions` from the `initialize` result are kept when they fit
+   `maxInstructionBytes`.
 
-A server whose handshake fails is logged and skipped; it never fails boot.
+A server whose handshake fails is logged and skipped unless
+`failOnStartupError = true`.
 
 ## Tool naming
 
-`mcp__{server}__{tool}` with every character outside `[A-Za-z0-9_-]` replaced by
-an underscore, independently for the server and the tool part. For example
-server `my server` and tool `do.thing/x` become
-`mcp__my_server__do_thing_x`. If two servers sanitise to the same prefix and
-expose the same tool, the later adapter is dropped with a warning so the tool
-registry stays free of duplicates.
+`mcp__<serverName>__<rawName>`. Server and tool parts are sanitised
+independently (`[^A-Za-z0-9_-]` → `_`); when the *tool* part was rewritten the
+public name gains a `_<12 hex>` suffix derived from `sha256(server \0 raw)`, so
+two distinct identities can never collapse onto one name:
 
-The adapter forwards the remote `inputSchema` verbatim when it is an object
-schema with `properties`; otherwise it exposes an empty object schema. Remote
-tools are declared `parallel_safe = False`, so two calls of the same MCP tool
-never overlap.
+```text
+("web", "read_page")  -> mcp__web__read_page
+("web", "read page")  -> mcp__web__read_page_4a1c9f0d2b73
+```
 
-## Results and failures
+`tools/call` always sends the raw name. A server that lists the same tool twice
+has its whole generation rejected (the previous generation is kept) — a server
+never ends up with a partial tool set. Input schemas are forwarded verbatim when
+they are object schemas with `properties`; adapters are `parallel_safe = False`.
 
-`tools/call` results keep `content` and `isError` as the server sent them:
+## Results
 
-* `type = "text"` items are concatenated with newlines.
-* `image`/`audio`/`resource` items become one-line placeholders such as
-  `[image: image/png]`; binary content is not downloaded in v1.
-* `isError = true` raises `ToolError` with the flattened text, which the tool
-  pipeline turns into an error tool result.
-* JSON-RPC errors and transport failures also become `ToolError`, so the model
-  sees a normal failed tool call rather than a crashed turn.
+* `text` blocks are concatenated; `image`/`audio`/`resource` blocks become
+  one-line placeholders such as `[image: image/png]`.
+* Image blocks (png/jpeg/webp/gif) are persisted through the `attachments`
+  service when it is available, and surface to the model as an image
+  follow-up message; if the store rejects them the placeholder text remains.
+* `isError = true`, JSON-RPC errors and transport failures become `ToolError`,
+  so the model sees a failed tool call rather than a crashed turn.
 
-## Lifecycle and events
+## Server instructions in the prompt
+
+When at least one server is configured the plugin registers the prompt section
+`mcp` (order 40). It renders:
+
+```text
+## MCP
+
+Use list_mcp_resources, list_mcp_resource_templates, or read_mcp_resource
+with one of these names as the server argument: ["github", "docs"].
+
+### docs
+
+<that server's instructions>
+
+```
+
+Instructions are dropped (with a warning) when they exceed
+`maxInstructionBytes`; a server that returns none contributes no paragraph.
+
+## Shared resource tools
+
+With any configured server the plugin registers three tools, each requiring an
+explicit `server` argument (mirroring `dsh-mcp-resources`):
+
+| Tool | Arguments | Result |
+|---|---|---|
+| `list_mcp_resources` | `server`, optional `cursor` | one page of `resources/list`, rendered as `MCP server: <name>` + JSON |
+| `list_mcp_resource_templates` | `server`, optional `cursor` | one page of `resources/templates/list` |
+| `read_mcp_resource` | `server`, `uri` | `MCP server: <name>` + JSON with every string `blob` replaced by `[binary resource: N base64 characters; available to programmatic callers]` |
+
+Omit `cursor` for the first page and echo `nextCursor` back for the next one.
+A server that does not declare the `resources` capability answers an empty page
+without contacting it. Unknown or down servers fail the call (never dispatch to
+a wrong server). Resource text enters history only when the model asks.
+
+## Lifecycle and recovery
 
 `McpService.start()` connects every enabled server concurrently and returns one
-`McpServerStatus` per configured server (`ok`, `error`, `tools`).
-`McpService.status()` is the read-only view used by the TUI and CLI, and
+`McpServerStatus` per enabled row (`ok`, `error`, `tools`, `instructions`,
+`resources`, `reconnecting`). `status()` is the read-only view for the TUI/CLI;
 `reload()` drops all sessions and connects again.
 
-Connecting emits `mcp/connected` with `{"server": <name>, "tools": [<tool names>]}`;
-closing emits `mcp/disconnected` with the same shape (an empty tool list). Both
-are ordinary bus events (`mcp.service` is the producer); a missing bus is
-ignored, never fatal.
+A failed `tools/call` or resource request marks the connection as lost and — if
+`reconnect.enabled` — starts one supervisor task that retries with exponential
+backoff (`initialDelayMs * 2^(n-1)`, capped by `maxDelayMs`). Each interruption
+shares one attempt budget: after `maxAttempts` consecutive failures the server's
+tools are unregistered and the paragraph disappears; a connection that stayed up
+for at least `maxDelayMs` resets the budget. During an outage the last known
+tools stay listed and their calls fail.
+
+Connecting emits `mcp/connected` with `{"server", "tools"}`; disconnecting (or
+giving up) emits `mcp/disconnected`. Both are ordinary bus events produced by
+`mcp.service`.
+
+## Non-goals
+
+MCP prompts/templates-as-prompts, sampling, elicitation, resource *subscriptions*
+and update notifications, and task-based execution tools are not bridged — same
+limits as DSH. Resources are read on demand only; binary payloads stay textual
+for the model.
 
 ## Testing
 
-`tests/mcp/` covers the framing helpers, both transports (a real
-`sys.executable -c` fake server for stdio, `respx` for HTTP), the handshake,
-version fallback, pagination, adapter behaviour and the service lifecycle. No
-test performs real network I/O or spawns a real MCP server.
+`tests/mcp/` covers framing, both transports (a real `sys.executable -c` fake
+server for stdio, `respx` for HTTP), the handshake, version fallback, pagination,
+identity naming, environment scrubbing, instructions, resource tools, backoff,
+the attempt budget, and the service lifecycle. No test performs real network I/O
+or spawns a real MCP server.

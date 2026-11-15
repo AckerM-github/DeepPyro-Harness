@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any, ClassVar
 
 from deeppyro.api.plugin import Service
-from deeppyro.mcp.service import McpService, parse_servers, servers_from_config
+from deeppyro.mcp.resources import resource_tools
+from deeppyro.mcp.service import McpConfigError, McpService, parse_servers, servers_from_config
 from deeppyro.mcp.types import McpServerConfig, McpServerStatus
+
+#: Prompt section order: after the goal, before the skills catalogue.
+PROMPT_ORDER = 40
+
+RESOURCE_HINT = (
+    "Use list_mcp_resources, list_mcp_resource_templates, or read_mcp_resource "
+    "with one of these names as the server argument: {names}."
+)
 
 
 class McpPlugin(Service):
@@ -16,9 +26,9 @@ class McpPlugin(Service):
 
     provide = "mcp"
     plugin_id = "mcp"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "MCP client: connects to configured servers and bridges their tools"
-    inject: ClassVar[list[str]] = ["config", "tools"]
+    inject: ClassVar[list[str]] = ["config", "tools", "prompt"]
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
@@ -27,15 +37,30 @@ class McpPlugin(Service):
             parse_servers(servers_from_config(ctx, config), logger=self.logger),
             bus=_bus(ctx),
             logger=self.logger,
+            attachments=_service(ctx, "attachments"),
         )
 
     async def setup(self, ctx: Any, config: Any) -> None:
-        """Connect now; a failing server only logs a warning."""
+        """Connect now; a failing server only logs a warning unless it is fatal."""
 
         ctx.effect(lambda: self._disposer(), "mcp: close servers")
         await self.service.start()
-        if self.service.adapters():
-            ctx.register_tool(lambda _config, _workspace: list(self.service.adapters()))
+        if self.service.adapters() or self.service.server_names():
+            ctx.register_tool(
+                lambda _config, _workspace: [*self.service.adapters(), *resource_tools(self.service)]
+            )
+        register = getattr(ctx, "register_prompt_section", None)
+        if self.service.server_names() and register is not None:
+            register("mcp", PROMPT_ORDER, self._render)
+
+    def _render(self, tools: Any, context: Any) -> str:
+        names = self.service.server_names()
+        if not names:
+            return ""
+        lines = [f"## MCP\n\n{RESOURCE_HINT.format(names=_json(names))}"]
+        for server, instructions in self.service.instructions().items():
+            lines.append(f"### {server}\n\n{instructions}")
+        return "\n\n".join(lines)
 
     def _disposer(self) -> Any:
         def dispose() -> None:
@@ -51,6 +76,17 @@ class McpPlugin(Service):
 
     async def close(self) -> None:
         await self.service.close()
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _service(ctx: Any, name: str) -> Any:
+    try:
+        return ctx.service(name)
+    except Exception:  # noqa: BLE001 - the plugin still works without attachments
+        return None
 
 
 def _bus(ctx: Any) -> Any:
@@ -69,4 +105,4 @@ def _schedule_close(service: McpService) -> None:
     task.add_done_callback(lambda finished: finished.exception())
 
 
-__all__ = ["McpPlugin"]
+__all__ = ["PROMPT_ORDER", "McpConfigError", "McpPlugin"]

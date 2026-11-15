@@ -148,14 +148,23 @@ maxChars = 24
 model = ""
 
 # [[mcp.servers]]
-# name = "github"
-# transport = "stdio"            # or "http"
+# serverName = "github"                  # [A-Za-z0-9_-]{1,32}, unique
+# transport = "stdio"                    # or "streamable-http"
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-github"]
-# env = { GITHUB_TOKEN = "..." }
-# url = "https://example.invalid/mcp"   # transport = "http"
+# cwd = ""                               # stdio working directory
+# env = { GITHUB_TOKEN = "..." }         # merged over a scrubbed environment
+# url = "https://example.invalid/mcp"    # transport = "streamable-http"
 # headers = { Authorization = "Bearer ..." }
 # enabled = true
+# toolCallTimeoutMs = 60000
+# maxInstructionBytes = 32768
+# failOnStartupError = false
+# [mcp.servers.reconnect]
+# enabled = true
+# initialDelayMs = 500
+# maxDelayMs = 30000
+# maxAttempts = 10
 
 [permission]
 defaultPreset = "workspace-write"

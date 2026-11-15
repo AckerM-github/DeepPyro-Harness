@@ -41,6 +41,7 @@ class McpClient:
         self.protocol_version: str = ""
         self.server_info: dict[str, Any] = {}
         self.capabilities: dict[str, Any] = {}
+        self.instructions: str = ""
 
     @property
     def tools(self) -> list[McpToolInfo]:
@@ -70,6 +71,8 @@ class McpClient:
         self.server_info = dict(server_info) if isinstance(server_info, dict) else {}
         capabilities = result.get("capabilities")
         self.capabilities = dict(capabilities) if isinstance(capabilities, dict) else {}
+        instructions = result.get("instructions")
+        self.instructions = instructions.strip() if isinstance(instructions, str) else ""
         await self._transport.notify(
             notification_message("notifications/initialized"),
             timeout=self.config.call_timeout,
@@ -114,6 +117,38 @@ class McpClient:
         result = await self._request("tools/call", params, timeout=self.config.call_timeout)
         if not isinstance(result, dict):
             raise McpProtocolError("tools/call must return an object")
+        return result
+
+    @property
+    def supports_resources(self) -> bool:
+        """The server declared the ``resources`` capability."""
+
+        return "resources" in self.capabilities
+
+    async def list_resources(self, cursor: str | None = None) -> dict[str, Any]:
+        """One page of ``resources/list`` (the protocol page, not every page)."""
+
+        params: dict[str, Any] = {"cursor": cursor} if cursor else {}
+        result = await self._request("resources/list", params, timeout=self.config.call_timeout)
+        if not isinstance(result, dict):
+            raise McpProtocolError("resources/list must return an object")
+        return result
+
+    async def list_resource_templates(self, cursor: str | None = None) -> dict[str, Any]:
+        """One page of ``resources/templates/list``."""
+
+        params: dict[str, Any] = {"cursor": cursor} if cursor else {}
+        result = await self._request("resources/templates/list", params, timeout=self.config.call_timeout)
+        if not isinstance(result, dict):
+            raise McpProtocolError("resources/templates/list must return an object")
+        return result
+
+    async def read_resource(self, uri: str) -> dict[str, Any]:
+        """``resources/read`` for one URI."""
+
+        result = await self._request("resources/read", {"uri": uri}, timeout=self.config.call_timeout)
+        if not isinstance(result, dict):
+            raise McpProtocolError("resources/read must return an object")
         return result
 
     async def _request(self, method: str, params: Any, *, timeout: float) -> Any:

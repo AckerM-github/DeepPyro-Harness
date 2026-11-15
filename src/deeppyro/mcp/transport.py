@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -21,6 +22,23 @@ TERMINATE_TIMEOUT = 5.0
 BODY_LIMIT = 400
 
 DEFAULT_HEADERS = {"accept": "application/json, text/event-stream"}
+
+#: Environment names DSH strips before spawning a stdio server.
+_SECRET_NAME = re.compile(r"KEY|PASSWORD|SECRET|TOKEN", re.IGNORECASE)
+_SCRUBBED_PREFIXES = ("DSH_", "DEEPPYRO_", "DPYRO_")
+
+
+def scrubbed_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """The parent environment minus credentials and host namespaces, plus ``extra``."""
+
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not _SECRET_NAME.search(name) and not name.startswith(_SCRUBBED_PREFIXES)
+    }
+    if extra:
+        env.update({str(name): str(value) for name, value in extra.items()})
+    return env
 
 
 class McpTransportError(RuntimeError):
@@ -50,7 +68,7 @@ class StdioTransport:
         if self._process is not None:
             return
         argv = [self.config.command, *self.config.args]
-        env = {**os.environ, **self.config.env}
+        env = scrubbed_env(self.config.env)
         try:
             self._process = await asyncio.create_subprocess_exec(
                 *argv,
@@ -58,6 +76,7 @@ class StdioTransport:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                cwd=self.config.cwd or None,
             )
         except OSError as exc:
             raise McpTransportError(f"could not start {self.config.command!r}: {exc}") from exc
@@ -302,6 +321,6 @@ def _messages_from_sse(text: str) -> list[dict[str, Any]]:
 def make_transport(config: McpServerConfig, *, logger: logging.Logger | None = None) -> Any:
     """Build the transport a ``McpServerConfig`` asks for."""
 
-    if config.transport == "http":
+    if config.streamable_http:
         return HttpTransport(config, logger=logger)
     return StdioTransport(config, logger=logger)

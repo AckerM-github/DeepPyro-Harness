@@ -18,7 +18,7 @@ from deeppyro.tools.base import make_parameters
 
 class FakeClient:
     def __init__(self, result=None, *, error=None) -> None:
-        self.config = McpServerConfig(name="my server", command="fake")
+        self.config = McpServerConfig(name="my-server", command="fake")
         self.result = result or {"content": []}
         self.error = error
         self.calls: list[tuple[str, dict]] = []
@@ -45,14 +45,19 @@ def context() -> ToolContext:
 async def test_names_are_sanitized() -> None:
     assert sanitize_name("my server!") == "my_server_"
     assert sanitize_name("   ") == "tool"
-    assert mcp_tool_name("my server", "do.thing/x") == "mcp__my_server__do_thing_x"
+    clean = mcp_tool_name("my-server", "echo")
+    assert clean == "mcp__my-server__echo"
+    lossy = mcp_tool_name("my server", "do.thing/x")
+    assert lossy.startswith("mcp__my_server__do_thing_x_")
+    assert len(lossy.rsplit("_", 1)[1]) == 12
+    assert lossy != mcp_tool_name("my server", "do_thing/x")
 
 
 async def test_description_fallback_and_schema_passthrough() -> None:
     schema = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
     adapter = McpToolAdapter(FakeClient(), McpToolInfo(name="echo", input_schema=schema))
-    assert adapter.name == "mcp__my_server__echo"
-    assert adapter.description == "echo from MCP server my server"
+    assert adapter.name == "mcp__my-server__echo"
+    assert adapter.description == "echo from MCP server my-server"
     assert adapter.parameters == schema
 
 
@@ -74,7 +79,7 @@ async def test_content_is_flattened_for_the_model() -> None:
     assert "hello" in out.text
     assert "[image: image/png]" in out.text
     assert "[resource: file:///tmp/a.txt]" in out.text
-    assert out.meta == {"mcp": {"server": "my server", "tool": "mixed"}}
+    assert out.meta == {"mcp": {"server": "my-server", "tool": "mixed"}}
 
 
 async def test_arguments_are_forwarded() -> None:

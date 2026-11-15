@@ -83,16 +83,18 @@ async def test_disabled_servers_are_skipped() -> None:
     assert [item.name for item in statuses] == ["on"]
 
 
-async def test_duplicate_tool_names_are_dropped() -> None:
+async def test_a_duplicate_tool_rejects_the_whole_generation() -> None:
     def factory(config: McpServerConfig) -> FakeClient:
+        if config.name == "dupes":
+            return FakeClient(config, tools=[tool("echo"), tool("echo")])
         return FakeClient(config, tools=[tool("echo")])
 
-    service = McpService([server("a b"), server("a_b")], client_factory=factory)
+    service = McpService([server("dupes"), server("fine")], client_factory=factory)
     statuses = await service.start()
 
-    names = [adapter.name for adapter in service.adapters()]
-    assert names == ["mcp__a_b__echo"]
-    assert all(item.ok for item in statuses)
+    assert [adapter.name for adapter in service.adapters()] == ["mcp__fine__echo"]
+    assert not statuses[0].ok and "collides" in statuses[0].error
+    assert statuses[1].ok
 
 
 async def test_close_emits_disconnect_events() -> None:

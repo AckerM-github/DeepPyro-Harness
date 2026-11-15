@@ -25,6 +25,13 @@ class StubContext:
         self.reflect = StubReflect()
         self.registered: list[Any] = []
         self.effects: list[tuple[Any, str]] = []
+        self.sections: list[tuple[str, int, Any]] = []
+
+    def service(self, name: str) -> Any:
+        raise KeyError(name)
+
+    def register_prompt_section(self, name: str, order: int, renderer: Any, **kwargs: Any) -> None:
+        self.sections.append((name, order, renderer))
 
     def get(self, name: str) -> Any:
         raise KeyError(name)
@@ -58,7 +65,7 @@ async def test_plugin_declares_the_service_and_injects_config_and_tools() -> Non
 
     assert plugin.provide == "mcp"
     assert plugin.plugin_id == "mcp"
-    assert list(plugin.inject) == ["config", "tools"]
+    assert list(plugin.inject) == ["config", "tools", "prompt"]
     assert [name for name, _ in ctx.reflect.provided] == ["mcp"]
 
 
@@ -78,7 +85,12 @@ async def test_setup_registers_the_bridged_tools_and_exposes_status() -> None:
     assert ctx.effects and ctx.effects[0][1] == "mcp: close servers"
     assert len(ctx.registered) == 1
     tools = ctx.registered[0](None, None)
-    assert [tool.name for tool in tools] == ["mcp__fake__echo"]
+    assert [tool.name for tool in tools] == [
+        "mcp__fake__echo",
+        "list_mcp_resources",
+        "list_mcp_resource_templates",
+        "read_mcp_resource",
+    ]
     assert [status.name for status in plugin.status()] == ["fake"]
     assert plugin.status()[0].ok
 
@@ -106,3 +118,33 @@ async def test_reload_replaces_the_adapters() -> None:
     assert [status.name for status in statuses] == ["later"]
     assert [adapter.name for adapter in plugin.service.adapters()] == ["mcp__later__echo"]
     await plugin.close()
+
+
+async def test_the_prompt_section_names_the_servers_and_their_instructions() -> None:
+    ctx = StubContext()
+    plugin = McpPlugin(ctx, None)
+
+    class WithInstructions(FakeClient):
+        instructions = "Call the graph endpoint first."
+
+    plugin.service = McpService(
+        [McpServerConfig(name="docs", command="fake")], client_factory=WithInstructions
+    )
+    await plugin.setup(ctx, None)
+
+    assert [name for name, _, _ in ctx.sections] == ["mcp"]
+    _name, order, renderer = ctx.sections[0]
+    text = renderer(None, None)
+    assert order == 40
+    assert '"docs"' in text
+    assert "list_mcp_resources" in text
+    assert "### docs" in text and "Call the graph endpoint first." in text
+    await plugin.close()
+
+
+async def test_no_servers_means_no_prompt_section() -> None:
+    ctx = StubContext()
+    plugin = McpPlugin(ctx, None)
+    await plugin.setup(ctx, None)
+
+    assert ctx.sections == []
