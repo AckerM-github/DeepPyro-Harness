@@ -174,7 +174,7 @@ call site that proves it:
 | `loader` | 6 | DSH's loader has no counterpart here |
 | `agent-preset` | 1 | presets resolve statically |
 | `app-boot` | 1 | boot does not publish itself |
-| `mcp` | 2 | MCP is a non-goal |
+| `mcp` | 2 | **implemented**: `mcp/connected` and `mcp/disconnected` fire from `mcp.service` (see `mcp.md`) |
 | `api-session` | 6 | the web API owns these, there is no web API |
 | `sandbox` | 1 | policy changes are read, not announced |
 | `command` | 1 | **implemented**: `command/executed` fires for every run |

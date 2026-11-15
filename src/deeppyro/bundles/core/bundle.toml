@@ -46,6 +46,11 @@ id = "tools-builtin"
 plugin = "deeppyro.builtin.tools:BuiltinToolsPlugin"
 
 [[plugins]]
+id = "mcp"
+plugin = "deeppyro.builtin.mcp:McpPlugin"
+critical = false
+
+[[plugins]]
 id = "compress"
 plugin = "deeppyro.builtin.compress:CompressPlugin"
 

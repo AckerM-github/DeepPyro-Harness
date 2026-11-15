@@ -147,6 +147,16 @@ enabled = true
 maxChars = 24
 model = ""
 
+# [[mcp.servers]]
+# name = "github"
+# transport = "stdio"            # or "http"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-github"]
+# env = { GITHUB_TOKEN = "..." }
+# url = "https://example.invalid/mcp"   # transport = "http"
+# headers = { Authorization = "Bearer ..." }
+# enabled = true
+
 [permission]
 defaultPreset = "workspace-write"
 """
