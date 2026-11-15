@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from deeppyro.core.event_catalog import BUS_EVENTS
 from deeppyro.hooks.types import HOOK_MODES
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "EventSpec",
     "EventStatus",
     "is_bus_event",
+    "mode_conflicts",
     "mode_of",
     "names",
     "producer_of",
@@ -47,6 +49,10 @@ class EventSpec:
     status: EventStatus = "implemented"
     producer: str = ""
     dsh_ref: str = ""
+    #: modes DSH declares or uses for this name, when the M0 catalog knows it.
+    dsh_modes: tuple[str, ...] = ()
+    #: why a reserved name exists without a producer.
+    reason: str = ""
 
     @property
     def implemented(self) -> bool:
@@ -103,32 +109,68 @@ _RESERVED: dict[str, str] = {
     "workspace/changed": "workspace",
 }
 
-EVENT_SPECS: dict[str, EventSpec] = {
-    name: EventSpec(
-        name=name,
-        mode=mode,  # type: ignore[arg-type]
-        status="implemented",
-        producer=_PRODUCERS.get(name, ""),
-        dsh_ref=f"dsh/{name.split('/', 1)[0]}",
-    )
-    for name, mode in HOOK_MODES.items()
-}
 
-for _name, _namespace in _RESERVED.items():
-    EVENT_SPECS.setdefault(
-        _name,
-        EventSpec(
-            name=_name,
+def _catalog_entry(name: str) -> tuple[tuple[str, ...], str]:
+    return BUS_EVENTS.get(name, ((), ""))
+
+
+def _build_specs() -> dict[str, EventSpec]:
+    """Merge the three sources: what deeppyro dispatches, the DSH catalog, extras."""
+
+    specs: dict[str, EventSpec] = {}
+    for name, mode in HOOK_MODES.items():
+        if name not in _PRODUCERS:
+            raise RuntimeError(f"bus event {name!r} has a mode but no producer")
+        modes, site = _catalog_entry(name)
+        specs[name] = EventSpec(
+            name=name,
+            mode=mode,  # type: ignore[arg-type]
+            status="implemented",
+            producer=_PRODUCERS[name],
+            dsh_ref=site,
+            dsh_modes=modes,
+        )
+    for name, (modes, site) in BUS_EVENTS.items():
+        if name in specs:
+            continue
+        specs[name] = EventSpec(
+            name=name,
+            mode=modes[0],  # type: ignore[arg-type]
+            status="reserved",
+            producer=f"dsh/{name.split('/', 1)[0]}",
+            dsh_ref=site,
+            dsh_modes=modes,
+            reason="DSH bus event with no deeppyro producer yet",
+        )
+    for name, namespace in _RESERVED.items():
+        if name in specs:
+            continue
+        specs[name] = EventSpec(
+            name=name,
             mode="emit",
             status="reserved",
-            producer=f"dsh/{_namespace}",
-            dsh_ref=f"dsh/{_namespace}",
-        ),
-    )
+            producer=f"dsh/{namespace}",
+            dsh_ref=f"dsh/{namespace}",
+            reason="declared by deeppyro; no counterpart in the M0 DSH catalog",
+        )
+    return specs
+
+
+EVENT_SPECS: dict[str, EventSpec] = _build_specs()
 
 RESERVED_NAMES: frozenset[str] = frozenset(
     name for name, event in EVENT_SPECS.items() if event.status == "reserved"
 )
+
+
+def mode_conflicts() -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Implemented names whose deeppyro mode is not one DSH uses (M3 work list)."""
+
+    return {
+        name: (event.mode, event.dsh_modes)
+        for name, event in sorted(EVENT_SPECS.items())
+        if event.implemented and event.dsh_modes and event.mode not in event.dsh_modes
+    }
 
 
 def spec(name: str) -> EventSpec | None:

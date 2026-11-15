@@ -817,6 +817,12 @@ Migration from the pre-P1 service:
 
 ## 9. Bus migration (M0)
 
+The catalogue of bus names now lives outside this document, in
+[`events.md`](events.md) (`deeppyro.core.events`). `HookService` remains the
+transport; `ctx.on()` routes any catalogue name there and anything else to
+cordis. The migration table below lists the four names that were retired from
+the bus in M0.
+
 Four names used to sit on the bus although DSH spells them as session records.
 They keep their constants for one minor release, are marked ``DEPRECATED`` in
 `deeppyro.hooks.DEPRECATED_NAMES`, and are no longer dispatchable: subscribing to
