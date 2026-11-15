@@ -269,6 +269,13 @@ class UpdateGoalTool(BaseTool):
         else:
             assert reason is not None
             await service.block(session, ref, reason, code="model-reported")
+        if action in ("complete", "blocked") and round_authorized and ctx.conclude_turn is not None:
+            # DSH defers a closing message into the model context; v1 has no such
+            # channel, so the documented downgrade is to end the turn here.
+            conclusion: dict[str, Any] = {"kind": "completed"}
+            if action == "blocked":
+                conclusion = {"kind": "blocked", "reason": {"kind": "goal", "reason": "model-reported"}}
+            ctx.conclude_turn(conclusion)
         return _result(_payload(service, session))
 
     @staticmethod

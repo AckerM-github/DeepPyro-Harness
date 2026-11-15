@@ -157,7 +157,7 @@ def test_deprecated_shell_is_marked_and_keeps_its_schema() -> None:
 
 # -- agent ladder --------------------------------------------------------
 async def test_get_goal_without_an_agent_is_refused(tmp_path: Any) -> None:
-    service, session, _agent, ctx = workspace(tmp_path)
+    _service, _session, _agent, ctx = workspace(tmp_path)
     ctx.agent = None
     with pytest.raises(GoalToolError) as excinfo:
         await GetGoalTool().run({}, ctx)
@@ -182,7 +182,7 @@ def test_root_detection_uses_the_header_origin_then_the_preset() -> None:
 
 
 async def test_missing_goal_service_is_a_plain_tool_error(tmp_path: Any) -> None:
-    service, session, agent, ctx = workspace(tmp_path)
+    _service, _session, _agent, ctx = workspace(tmp_path)
     ctx.services = {}
     with pytest.raises(ToolError) as excinfo:
         await GetGoalTool().run({}, ctx)
@@ -192,7 +192,7 @@ async def test_missing_goal_service_is_a_plain_tool_error(tmp_path: Any) -> None
 
 # -- output shape --------------------------------------------------------
 async def test_get_goal_reports_null_before_any_goal(tmp_path: Any) -> None:
-    service, session, agent, ctx = workspace(tmp_path)
+    _service, _session, _agent, ctx = workspace(tmp_path)
     result = await GetGoalTool().run({}, ctx)
     assert result.text == '{"goal":null}'
     assert json.loads(result.text) == {"goal": None}
@@ -225,7 +225,7 @@ async def test_create_goal_renders_the_shared_shape(tmp_path: Any) -> None:
 
 # -- create authority ----------------------------------------------------
 async def test_create_goal_requires_a_human_turn(tmp_path: Any) -> None:
-    service, session, agent, ctx = workspace(tmp_path, human=False)
+    service, session, _agent, ctx = workspace(tmp_path, human=False)
     with pytest.raises(GoalToolError) as excinfo:
         await CreateGoalTool().run({"objective": "ship it"}, ctx)
     assert code_of(excinfo) == GOAL_TOOL_AUTHORITY_REQUIRED
@@ -267,7 +267,7 @@ async def test_mutating_actions_require_a_human_turn(tmp_path: Any, action: str)
     ],
 )
 async def test_update_goal_rejects_malformed_references(tmp_path: Any, args: dict[str, Any]) -> None:
-    service, session, agent, ctx = workspace(tmp_path)
+    _service, _session, _agent, ctx = workspace(tmp_path)
     with pytest.raises(GoalToolError) as excinfo:
         await UpdateGoalTool().run(args, ctx)
     assert code_of(excinfo) == GOAL_TOOL_INVALID_UPDATE
@@ -471,7 +471,7 @@ async def test_custom_threshold_is_honoured(tmp_path: Any) -> None:
 
 # -- deprecated shell ----------------------------------------------------
 async def test_deprecated_shell_reads_sets_and_clears(tmp_path: Any) -> None:
-    service, session, agent, ctx = workspace(tmp_path)
+    _service, _session, _agent, ctx = workspace(tmp_path)
     tool = GoalTool()
     assert (await tool.run({}, ctx)).text == "no goal"
     set_result = await tool.run({"text": "keep shipping"}, ctx)

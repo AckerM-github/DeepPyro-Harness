@@ -42,6 +42,11 @@ id = "goal"
 plugin = "deeppyro.builtin.goal:GoalPlugin"
 
 [[plugins]]
+id = "goal-round-driver"
+plugin = "deeppyro.builtin.goal_round_driver:GoalRoundDriverPlugin"
+critical = false
+
+[[plugins]]
 id = "tools-builtin"
 plugin = "deeppyro.builtin.tools:BuiltinToolsPlugin"
 

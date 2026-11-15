@@ -15,6 +15,16 @@ from deeppyro.tools.builtin.goal import (
     UpdateGoalTool,
 )
 
+GOAL_POLICY = (
+    "create_goal may infer goal intent from a direct human request in any language. "
+    "After session resume or fork, an active goal is disarmed: when a human asks to "
+    "continue or resume in any wording or language, use update_goal action resume to "
+    "rearm it. Mark complete only when the objective is actually achieved. Mark blocked "
+    "only after the same blocking condition persists for at least {rounds} consecutive "
+    "goal rounds, and report that concrete condition in blocked_reason; difficulty, "
+    "uncertainty, or useful remaining work is not blocked."
+)
+
 
 def _service_config(config: Any) -> Any:
     if isinstance(config, Mapping):
@@ -102,6 +112,12 @@ class GoalPlugin(Plugin):
             return ""
         return f"## Goal\n\nThe user's goal for this session: {goal}"
 
+    def _policy(self, tools: Any, context: Any) -> str:
+        """The model guidance DSH keeps in the prompt (spec §5.4)."""
+        if not getattr(context, "session_id", ""):
+            return ""
+        return "## Goal tool\n\n" + GOAL_POLICY.format(rounds=self.blocked_after)
+
     def goal_tools(self) -> list[Any]:
         """The tools this plugin registers (the shell stays for one minor)."""
         return [
@@ -118,6 +134,7 @@ class GoalPlugin(Plugin):
         ctx.provide("goal", self.service)
         ctx.register_tool(lambda _cfg, _workspace: self.goal_tools())
         ctx.register_prompt_section("goal", 35, self._render)
+        ctx.register_prompt_section("tool:goal", 36, self._policy)
 
 
-__all__ = ["GoalPlugin"]
+__all__ = ["GOAL_POLICY", "GoalPlugin"]

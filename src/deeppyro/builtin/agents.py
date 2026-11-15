@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import weakref
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, ClassVar
 
@@ -16,6 +19,8 @@ from deeppyro.api import (
     PluginDependencyError,
     Service,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AgentsPlugin(Service):
@@ -37,6 +42,11 @@ class AgentsPlugin(Service):
         # Optional: only needed when the caller lets the service build the
         # preset-scoped tool registry itself.
         self._tools = ctx.get("tools") if hasattr(ctx, "get") else None
+        #: Every agent this service built that the garbage collector has not
+        #: reclaimed yet.  There is no disposal hook on AgentSession, so hosts
+        #: that need "is it still the live instance" read this set.
+        self._agents: weakref.WeakSet[Any] = weakref.WeakSet()
+        self._created: list[Callable[[Any], None]] = []
 
     def options(self, **overrides: Any) -> AgentOptions:
         values: dict[str, Any] = {
@@ -50,6 +60,37 @@ class AgentsPlugin(Service):
     def preset(self, preset_id: str | None = None, *, revision: int | None = None) -> Any:
         """Resolve one preset spec (the default when preset_id is None)."""
         return self._presets.resolve(preset_id, revision=revision)
+
+    def live_agents(self) -> tuple[Any, ...]:
+        """Agents this service created that are still reachable."""
+        return tuple(self._agents)
+
+    def is_live(self, agent: Any) -> bool:
+        """Whether the agent is one this service created and has not closed."""
+        if agent is None or agent not in self._agents:
+            return False
+        return not getattr(agent, "closed", False)
+
+    def on_created(self, callback: Callable[[Any], None]) -> Callable[[], None]:
+        """Observe every agent created from now on; returns the disposer."""
+        self._created.append(callback)
+
+        def dispose() -> None:
+            try:
+                self._created.remove(callback)
+            except ValueError:
+                pass
+
+        return dispose
+
+    def _register(self, agent: Any) -> None:
+        """Remember one agent and tell the creation observers about it."""
+        self._agents.add(agent)
+        for callback in tuple(self._created):
+            try:
+                callback(agent)
+            except Exception:
+                logger.exception("agents: a creation observer failed")
 
     def create(
         self,
@@ -113,6 +154,7 @@ class AgentsPlugin(Service):
         agent.preset = spec.id
         agent.preset_revision = spec.revision
         agent.preset_spec = spec
+        self._register(agent)
         return agent
 
     def _require_materialized(self, spec: Any) -> None:
