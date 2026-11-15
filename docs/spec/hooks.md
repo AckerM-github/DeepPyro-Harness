@@ -817,7 +817,27 @@ Migration from the pre-P1 service:
 * The "next() called more than once" RuntimeError is retained; its message
   names the hook.
 
-## 9. Testing
+## 9. Bus migration (M0)
+
+Four names used to sit on the bus although DSH spells them as session records.
+They keep their constants for one minor release, are marked ``DEPRECATED`` in
+`deeppyro.hooks.DEPRECATED_NAMES`, and are no longer dispatchable: subscribing to
+one raises `ValueError`, which is the honest failure for a name nothing emits.
+
+| retired name | DSH shape | replacement |
+| --- | --- | --- |
+| `tool/call` | record, no dispatch site | bus `tools/pre-execute`, `tools/execute`, `tools/post-execute`; record `tool/call` |
+| `model/selection` | record | records `request/header` and `request/context` |
+| `approval/asked` | record | record `approval/asked` written by the approval gate |
+| `approval/decided` | record | record `approval/decided` written by the approval gate |
+
+The approval audit trail is written through `ApprovalService._record`, so it
+lands on the session of the gate that asked (`PermissionGate(..., session=...)`)
+and survives a plugin that forgets to listen. The remaining fifteen names are
+unchanged; `docs/spec/dsh-event-catalog-unresolved.md` tracks the 94-name DSH
+contract, the ten subscribe-only names, and the runtime harvest.
+
+## 10. Testing
 
     uv run pytest -o addopts= -q tests/hooks tests/integration/test_p0_bus_alignment.py \
         tests/integration/test_p1_bus.py

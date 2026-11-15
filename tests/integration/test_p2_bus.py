@@ -21,7 +21,6 @@ from deeppyro.hooks import (
     AGENT_PRE_STEP,
     AGENT_TURN_STOPPING,
     LLM_STREAM,
-    MODEL_SELECTION,
     SYSTEM_PROMPT_ASSEMBLE,
     HookService,
 )
@@ -86,7 +85,7 @@ async def test_agent_turn_journals_hook_records_without_hot_hooks(tmp_path: Path
     assert journal.records_written == len(invoked) + len(results)
 
     names = {record.data["hook"] for record in invoked}
-    assert {AGENT_PRE_STEP, MODEL_SELECTION, SYSTEM_PROMPT_ASSEMBLE, AGENT_TURN_STOPPING} <= names
+    assert {AGENT_PRE_STEP, SYSTEM_PROMPT_ASSEMBLE, AGENT_TURN_STOPPING} <= names
     assert LLM_STREAM not in names
     assert AGENT_ASSISTANT_STREAM not in names
     assert all(record.data.get("scope", {}).get("session") == session.session_id for record in invoked)

@@ -7,7 +7,13 @@ from typing import Any
 
 import pytest
 
-from deeppyro.hooks import AGENT_PRE_STEP, MODEL_SELECTION, TOOL_CALL, HookObservation, HookService
+from deeppyro.hooks import (
+    AGENT_PRE_STEP,
+    AGENT_STATUS,
+    SYSTEM_PROMPT_ASSEMBLE,
+    HookObservation,
+    HookService,
+)
 from deeppyro.hooks.records import HOT_HOOKS
 from deeppyro.kernel.hook_bridge import EVENT_INVOKED, EVENT_RESULT, HookBridge, HookEventScope
 
@@ -59,7 +65,7 @@ def test_invoked_observation_emits_invoked_record() -> None:
     bridge(
         make_observation(
             kind="invoked",
-            hook=TOOL_CALL,
+            hook=AGENT_STATUS,
             mode="emit",
             scope={"session": "session-1"},
             payload={"tool": "read", "turn": 2, "call": {"callId": "call-9"}, "frame": object()},
@@ -71,7 +77,7 @@ def test_invoked_observation_emits_invoked_record() -> None:
     assert isinstance(scope, HookEventScope)
     assert event == EVENT_INVOKED
     assert data == {
-        "hook": TOOL_CALL,
+        "hook": AGENT_STATUS,
         "mode": "emit",
         "scope": {"session": "session-1"},
         "turn": 2,
@@ -87,7 +93,7 @@ def test_resolved_observation_emits_result_record_for_a_value() -> None:
     bridge(
         make_observation(
             kind="resolved",
-            hook=MODEL_SELECTION,
+            hook=SYSTEM_PROMPT_ASSEMBLE,
             mode="waterfall",
             result={"provider": "local"},
             duration_ms=3.7,
@@ -96,7 +102,7 @@ def test_resolved_observation_emits_result_record_for_a_value() -> None:
 
     _scope, event, data = emit.calls[0]
     assert event == EVENT_RESULT
-    assert data["hook"] == MODEL_SELECTION
+    assert data["hook"] == SYSTEM_PROMPT_ASSEMBLE
     assert data["mode"] == "waterfall"
     assert data["ok"] is True
     assert data["outcome"] == "value"
@@ -130,7 +136,7 @@ def test_resolved_observation_without_a_result_reports_none() -> None:
     emit = RecordingEmit()
     bridge = HookBridge(emit)
 
-    bridge(make_observation(kind="resolved", hook=TOOL_CALL, mode="emit"))
+    bridge(make_observation(kind="resolved", hook=AGENT_STATUS, mode="emit"))
 
     _scope, _event, data = emit.calls[0]
     assert data["ok"] is True
@@ -185,20 +191,20 @@ async def test_bridge_observes_a_real_waterfall_dispatch() -> None:
     bridge = HookBridge(emit)
     dispose = hooks.add_observer(bridge)
 
-    await hooks.waterfall(MODEL_SELECTION, {}, fallback="fallback", scope={"session": "session-1"})
+    await hooks.waterfall(SYSTEM_PROMPT_ASSEMBLE, {}, fallback="fallback", scope={"session": "session-1"})
 
     assert [call[1] for call in emit.calls] == [EVENT_INVOKED, EVENT_RESULT]
     invoked_scope, _event, invoked = emit.calls[0]
     assert isinstance(invoked_scope, HookEventScope)
     assert invoked_scope.scope == {"session": "session-1"}
-    assert invoked == {"hook": MODEL_SELECTION, "mode": "waterfall", "scope": {"session": "session-1"}}
+    assert invoked == {"hook": SYSTEM_PROMPT_ASSEMBLE, "mode": "waterfall", "scope": {"session": "session-1"}}
     _scope, _event, resolved = emit.calls[1]
     assert resolved["ok"] is True
     assert resolved["outcome"] == "value"
     assert resolved["preview"] == "fallback"
 
     dispose()
-    await hooks.waterfall(MODEL_SELECTION, {}, fallback="fallback")
+    await hooks.waterfall(SYSTEM_PROMPT_ASSEMBLE, {}, fallback="fallback")
     assert len(emit.calls) == 2
 
 
@@ -207,9 +213,9 @@ async def test_bridge_observes_a_real_emit_dispatch() -> None:
     emit = RecordingEmit()
     hooks.add_observer(HookBridge(emit))
 
-    await hooks.emit(TOOL_CALL, {"tool": "read"})
+    await hooks.emit(AGENT_STATUS, {"tool": "read"})
 
     assert [call[1] for call in emit.calls] == [EVENT_INVOKED, EVENT_RESULT]
     assert emit.calls[0][0].scope is None
-    assert emit.calls[0][2] == {"hook": TOOL_CALL, "mode": "emit", "tool": "read"}
+    assert emit.calls[0][2] == {"hook": AGENT_STATUS, "mode": "emit", "tool": "read"}
     assert emit.calls[1][2]["outcome"] == "none"

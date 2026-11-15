@@ -19,12 +19,14 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from deeppyro.core.errors import ConfigError, SessionError
-from deeppyro.hooks.types import APPROVAL_ASKED, APPROVAL_DECIDED, APPROVAL_REQUEST
+from deeppyro.hooks.types import APPROVAL_REQUEST
 from deeppyro.sandbox.types import APPROVALS, Approval, ApprovalRequest
 
 logger = logging.getLogger(__name__)
 
 APPROVAL_POLICY_EVENT = "approval/policy"
+APPROVAL_ASKED_EVENT = "approval/asked"
+APPROVAL_DECIDED_EVENT = "approval/decided"
 
 #: Hook results from older deeppyro plugins are accepted as aliases.
 _OUTCOME_ALIASES: dict[str, str] = {
@@ -115,11 +117,13 @@ class ApprovalService:
         reason = request.reason or request.summary
         if reason:
             asked["reason"] = reason
-        await self._emit(APPROVAL_ASKED, asked)
+        # DSH records both halves of an approval; it does not dispatch them on
+        # the bus. The record is the audit trail the sandbox policy promises.
+        _record(session, APPROVAL_ASKED_EVENT, asked)
         outcome = await self._decide(
             request, policy=policy, agent=agent, signal=signal, approval_id=approval_id
         )
-        await self._emit(APPROVAL_DECIDED, {"id": approval_id, "outcome": outcome})
+        _record(session, APPROVAL_DECIDED_EVENT, {"id": approval_id, "outcome": outcome})
         return outcome
 
     async def _decide(
@@ -183,17 +187,21 @@ class ApprovalService:
             return "unavailable"
         return mapped
 
-    def _emit(self, name: str, payload: dict[str, Any]) -> Awaitable[None]:
-        return _emit(self._hooks, name, payload)
 
+def _record(session: Any | None, event: str, payload: dict[str, Any]) -> None:
+    """Append an audit record, tolerating sessions that cannot record.
 
-async def _emit(hooks: Any | None, name: str, payload: dict[str, Any]) -> None:
-    if hooks is None or not (hooks.has(name) or bool(getattr(hooks, "observed", False))):
+    The approval service runs under a sandbox gate that may be probed without a
+    session (unit tests, dry runs); a missing recorder must not turn a policy
+    decision into an exception.
+    """
+    append = getattr(session, "append", None)
+    if not callable(append):
         return
     try:
-        await hooks.emit(name, payload)
-    except Exception:
-        logger.exception("hook %r failed while dispatching an approval event", name)
+        append(event, payload)
+    except Exception:  # auditing never blocks a decision
+        logger.exception("failed to record %s", event)
 
 
 def _policy(value: Any) -> Approval:

@@ -87,9 +87,7 @@ from deeppyro.hooks.types import (
     AGENT_STATUS,
     AGENT_TURN_STOPPING,
     LLM_STREAM,
-    MODEL_SELECTION,
     SYSTEM_PROMPT_ASSEMBLE,
-    TOOL_CALL,
 )
 from deeppyro.prompt import PromptContext, build_system_prompt, collect_instructions
 from deeppyro.prompt.projection import (
@@ -620,10 +618,9 @@ class AgentSession:
             self._prepare_step_state()
             first = step == 1
             step_messages = admitted if first else self._inbox.claim(TARGET_NEXT_STEP, turn)
-            # The selection is adopted before the prompt and the request are built,
-            # so the system prompt, request/header, request/context and the actual
-            # request all describe the same model.
-            await self._select_model(turn, step)
+            # The chosen model is adopted before the prompt and the request are
+            # built, so the system prompt, request/header, request/context and the
+            # actual request all describe the same model.
             await self._commit_system_prompt(turn, step, starts_series=starts_series and first)
             for message in step_messages:
                 self._append_user_message(message)
@@ -811,44 +808,6 @@ class AgentSession:
         return await hooks.waterfall(
             AGENT_REQUEST_ERROR, payload, fallback=lambda: None, scope=self._hook_scope()
         )
-
-    async def _select_model(self, turn: int, step: int) -> str:
-        """Run model/selection and adopt the chosen model for this request.
-
-        The waterfall gets the current route and a fallback that returns it
-        unchanged.  A listener may return a {provider, model} mapping; only the
-        model may change, because the provider is the adapter bound to this
-        session.  Unknown keys are ignored so a listener may echo richer
-        selection data.
-        """
-        if not self._hook_enabled(MODEL_SELECTION):
-            return self._model
-        hooks = self._hooks
-        assert hooks is not None
-        provider = self._provider.name
-        fallback = {"provider": provider, "model": self._model}
-        payload = {
-            "agent": self,
-            "turn": turn,
-            "step": step,
-            "provider": provider,
-            "model": self._model,
-        }
-        result = await hooks.waterfall(
-            MODEL_SELECTION, payload, fallback=lambda: dict(fallback), scope=self._hook_scope()
-        )
-        if result is None:
-            return self._model
-        if not isinstance(result, Mapping):
-            raise SessionError(f"model/selection hook must return a mapping, got {type(result).__name__}")
-        selected_provider = result.get("provider", provider)
-        if selected_provider != provider:
-            raise SessionError("model/selection hook may not change the provider")
-        model = result.get("model", self._model)
-        if not isinstance(model, str) or not model:
-            raise SessionError(f"model/selection hook returned an invalid model: {model!r}")
-        self._model = model
-        return model
 
     async def _stream_frame(self, frame: dict[str, Any]) -> None:
         hooks = self._hooks
@@ -1153,33 +1112,6 @@ class AgentSession:
         )
         return seq
 
-    async def _emit_tool_call_events(
-        self, requests: list[Any], seqs: list[int | None], turn: int, step: int
-    ) -> None:
-        """Emit tool/call for each call whose tool/call record was appended.
-
-        The tools pipeline does this for the normal batch path; this mirror keeps
-        the standalone fallback batch behaviour identical.
-        """
-        if not self._hook_enabled(TOOL_CALL):
-            return
-        hooks = self._hooks
-        assert hooks is not None
-        for request, seq in zip(requests, seqs):
-            if seq is None:
-                continue
-            await hooks.emit(
-                TOOL_CALL,
-                {
-                    "agent": self,
-                    "callId": request.call_id,
-                    "name": request.name,
-                    "turn": turn,
-                    "step": step,
-                },
-                scope=self._hook_scope(),
-            )
-
     async def _execute_batch(self, requests: list[Any], turn: int, step: int) -> list[Any]:
         try:
             from deeppyro.tools.pipeline import run_tool_batch
@@ -1216,9 +1148,6 @@ class AgentSession:
             )
             for request in requests
         ]
-        # The records above are durable now, so listeners may act on them before
-        # any tool actually runs (same contract as the tools pipeline).
-        await self._emit_tool_call_events(requests, seqs, turn, step)
 
         async def run_one(index: int, request: Any) -> _BatchOutcome:
             call_seq = seqs[index]

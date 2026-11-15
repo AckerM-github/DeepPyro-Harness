@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from deeppyro.hooks import HookAggregateError, HookService
+from deeppyro.hooks import DEPRECATED_NAMES, HookAggregateError, HookService
 from deeppyro.hooks.types import (
     AGENT_PRE_STEP,
     AGENT_STATUS,
@@ -892,16 +892,25 @@ def test_hook_names_are_fixed() -> None:
             "agent/status",
             "system-prompt/assemble",
             "llm/stream",
-            "model/selection",
             "session/created",
             "session/disposed",
             "agent/error",
             "tools/pre-execute",
             "tools/execute",
             "tools/post-execute",
-            "tool/call",
             "approval/request",
-            "approval/asked",
-            "approval/decided",
         }
     )
+
+
+def test_record_only_names_are_deprecated_but_still_importable() -> None:
+    # DSH records these names instead of dispatching them; the constants survive
+    # one minor so plugins keep importing, but the bus rejects them.
+    assert DEPRECATED_NAMES == frozenset(
+        {"model/selection", "tool/call", "approval/asked", "approval/decided"}
+    )
+    assert not (DEPRECATED_NAMES & HOOK_NAMES)
+    service = HookService()
+    for name in sorted(DEPRECATED_NAMES):
+        with pytest.raises(ValueError):
+            service.on(name, lambda payload: None)

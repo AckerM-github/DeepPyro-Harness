@@ -18,8 +18,8 @@ from deeppyro.hooks.types import (
     AGENT_PRE_STEP,
     AGENT_STATUS,
     APPROVAL_REQUEST,
+    LLM_STREAM,
     SYSTEM_PROMPT_ASSEMBLE,
-    TOOL_CALL,
 )
 from deeppyro.sandbox.gate import ApprovalRequest, PermissionGate
 from tests.agent.fakes import (
@@ -134,8 +134,12 @@ async def test_dispatch_without_a_scope_skips_scoped_listeners(tmp_path: Path) -
     assert global_seen == ["running", "idle"]
 
 
-async def test_tool_call_scope_follows_the_executing_session(tmp_path: Path) -> None:
-    """tool/call dispatched by the pipeline carries the owning agent's session scope."""
+async def test_stream_scope_follows_the_executing_session(tmp_path: Path) -> None:
+    """Dispatches carry the owning agent's session scope, one frame at a time.
+
+    ``tool/call`` used to prove this; it is a session record now, not a bus
+    event, so the streaming hook carries the same guarantee.
+    """
     hooks = HookService()
     registry = FakeRegistry([FakeTool("echo")])
     session_a, _provider_a, agent_a = make_agent(
@@ -146,15 +150,15 @@ async def test_tool_call_scope_follows_the_executing_session(tmp_path: Path) -> 
     )
     owner_a: list[Any] = []
     owner_b: list[Any] = []
-    hooks.on(TOOL_CALL, owner_a.append, scope={"session": session_a.session_id})
-    hooks.on(TOOL_CALL, owner_b.append, scope={"session": session_b.session_id})
+    hooks.on(LLM_STREAM, owner_a.append, scope={"session": session_a.session_id})
+    hooks.on(LLM_STREAM, owner_b.append, scope={"session": session_b.session_id})
 
     assert await agent_a.send("a") == "ok"
     assert await agent_b.send("b") == "ok"
 
-    assert [payload["agent"] for payload in owner_a] == [agent_a]
-    assert [payload["agent"] for payload in owner_b] == [agent_b]
-    assert [payload["name"] for payload in owner_a] == ["echo"]
+    assert owner_a and owner_b
+    assert {payload["agent"] for payload in owner_a} == {agent_a}
+    assert {payload["agent"] for payload in owner_b} == {agent_b}
 
 
 async def test_pre_step_veto_blocks_the_turn(tmp_path: Path) -> None:

@@ -6,7 +6,7 @@ the event stream observable in a normal session log. It only observes: emit
 handlers return ``None`` and waterfall handlers await the downstream chain and
 return its value, so policy is never changed.
 
-High-frequency hooks (``llm/stream`` and ``tool/call``) log at DEBUG; the rest
+The high-frequency hook (``llm/stream``) logs at DEBUG; the rest
 log at INFO. The message shape is stable (``hook <name> key=value ...``) so
 tests and operators can grep it.
 """
@@ -20,15 +20,11 @@ from typing import Any, ClassVar
 from deeppyro.api import Plugin
 from deeppyro.hooks import (
     AGENT_ERROR,
-    APPROVAL_ASKED,
-    APPROVAL_DECIDED,
     APPROVAL_REQUEST,
     LLM_STREAM,
-    MODEL_SELECTION,
     SESSION_CREATED,
     SESSION_DISPOSED,
     SYSTEM_PROMPT_ASSEMBLE,
-    TOOL_CALL,
 )
 from deeppyro.hooks.types import HookNext, HookPayload
 
@@ -36,20 +32,16 @@ from deeppyro.hooks.types import HookNext, HookPayload
 OBSERVED_HOOKS: tuple[str, ...] = (
     SYSTEM_PROMPT_ASSEMBLE,
     LLM_STREAM,
-    MODEL_SELECTION,
-    TOOL_CALL,
     SESSION_CREATED,
     SESSION_DISPOSED,
     APPROVAL_REQUEST,
-    APPROVAL_ASKED,
-    APPROVAL_DECIDED,
     AGENT_ERROR,
 )
 
 #: Hooks dispatched through ``waterfall``; their handlers must await next().
-WATERFALL_HOOKS = frozenset({SYSTEM_PROMPT_ASSEMBLE, MODEL_SELECTION, APPROVAL_REQUEST})
+WATERFALL_HOOKS = frozenset({SYSTEM_PROMPT_ASSEMBLE, APPROVAL_REQUEST})
 
-_DEBUG_HOOKS = frozenset({LLM_STREAM, TOOL_CALL})
+_DEBUG_HOOKS = frozenset({LLM_STREAM})
 _FIELD_ORDER = (
     "sessionId",
     "cwd",

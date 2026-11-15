@@ -7,7 +7,8 @@ from typing import Any
 import pytest
 
 from deeppyro.builtin.hook_bridge import HookBridgePlugin
-from deeppyro.hooks import LLM_STREAM, MODEL_SELECTION, TOOL_CALL, HookService
+from deeppyro.hooks import AGENT_STATUS, SYSTEM_PROMPT_ASSEMBLE, HookService
+from deeppyro.hooks.records import HOT_HOOKS
 from deeppyro.kernel.hook_bridge import EVENT_INVOKED, EVENT_RESULT, HookEventScope
 
 
@@ -69,13 +70,13 @@ def test_setup_requires_the_hooks_service() -> None:
 async def test_emit_dispatch_reaches_the_cordis_event_stream() -> None:
     _plugin, hooks, ctx = make_plugin()
 
-    await hooks.emit(TOOL_CALL, {"tool": "read"})
+    await hooks.emit(AGENT_STATUS, {"tool": "read"})
 
     assert [event for _scope, event, _data in ctx.events] == [EVENT_INVOKED, EVENT_RESULT]
     scope, _event, invoked = ctx.events[0]
     assert isinstance(scope, HookEventScope)
     assert scope.scope is None
-    assert invoked == {"hook": TOOL_CALL, "mode": "emit", "tool": "read"}
+    assert invoked == {"hook": AGENT_STATUS, "mode": "emit", "tool": "read"}
     assert ctx.events[1][2]["ok"] is True
     assert ctx.events[1][2]["outcome"] == "none"
 
@@ -83,7 +84,7 @@ async def test_emit_dispatch_reaches_the_cordis_event_stream() -> None:
 async def test_waterfall_dispatch_forwards_the_scope() -> None:
     _plugin, hooks, ctx = make_plugin()
 
-    await hooks.waterfall(MODEL_SELECTION, {}, fallback="local", scope={"session": "session-1"})
+    await hooks.waterfall(SYSTEM_PROMPT_ASSEMBLE, {}, fallback="local", scope={"session": "session-1"})
 
     scope, _event, invoked = ctx.events[0]
     assert scope.scope == {"session": "session-1"}
@@ -94,7 +95,8 @@ async def test_waterfall_dispatch_forwards_the_scope() -> None:
 async def test_hot_hooks_never_reach_the_event_stream() -> None:
     _plugin, hooks, ctx = make_plugin()
 
-    await hooks.emit(LLM_STREAM, {"provider": "local"})
+    for name in sorted(HOT_HOOKS):
+        await hooks.emit(name, {"provider": "local"})
 
     assert ctx.events == []
 
@@ -103,6 +105,6 @@ async def test_disposer_unregisters_the_bridge() -> None:
     _plugin, hooks, ctx = make_plugin()
 
     ctx.disposers[0]()
-    await hooks.emit(TOOL_CALL, {"tool": "read"})
+    await hooks.emit(AGENT_STATUS, {"tool": "read"})
 
     assert ctx.events == []

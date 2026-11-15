@@ -15,15 +15,11 @@ from deeppyro.builtin.hook_observability import (
 from deeppyro.core.protocols import TextDelta
 from deeppyro.hooks import (
     AGENT_ERROR,
-    APPROVAL_ASKED,
-    APPROVAL_DECIDED,
     APPROVAL_REQUEST,
     LLM_STREAM,
-    MODEL_SELECTION,
     SESSION_CREATED,
     SESSION_DISPOSED,
     SYSTEM_PROMPT_ASSEMBLE,
-    TOOL_CALL,
     HookService,
 )
 from deeppyro.sandbox import ApprovalRequest, PermissionGate
@@ -59,6 +55,16 @@ def make_plugin() -> tuple[HookObservabilityPlugin, HookService, FakeCtx]:
     return plugin, hooks, ctx
 
 
+class RecordSession:
+    """Minimal session that captures approval audit records."""
+
+    def __init__(self) -> None:
+        self.records: list[tuple[str, dict[str, object]]] = []
+
+    def append(self, event: str, payload: dict[str, object]) -> None:
+        self.records.append((event, dict(payload)))
+
+
 def messages(caplog: pytest.LogCaptureFixture, hook: str) -> list[str]:
     return [
         record.getMessage()
@@ -67,38 +73,22 @@ def messages(caplog: pytest.LogCaptureFixture, hook: str) -> list[str]:
     ]
 
 
-EMIT_HOOKS = (
-    LLM_STREAM,
-    TOOL_CALL,
-    SESSION_CREATED,
-    SESSION_DISPOSED,
-    APPROVAL_ASKED,
-    APPROVAL_DECIDED,
-    AGENT_ERROR,
-)
+EMIT_HOOKS = (LLM_STREAM, SESSION_CREATED, SESSION_DISPOSED, AGENT_ERROR)
 
 
 # -- registration ----------------------------------------------------------
-def test_observed_hooks_cover_the_ten_new_hooks() -> None:
-    assert len(OBSERVED_HOOKS) == 10
-    assert len(set(OBSERVED_HOOKS)) == 10
+def test_observed_hooks_cover_the_remaining_bus_events() -> None:
+    assert len(OBSERVED_HOOKS) == 6
+    assert len(set(OBSERVED_HOOKS)) == 6
     assert set(OBSERVED_HOOKS) == {
         SYSTEM_PROMPT_ASSEMBLE,
         LLM_STREAM,
-        MODEL_SELECTION,
-        TOOL_CALL,
         SESSION_CREATED,
         SESSION_DISPOSED,
         APPROVAL_REQUEST,
-        APPROVAL_ASKED,
-        APPROVAL_DECIDED,
         AGENT_ERROR,
     }
-    assert WATERFALL_HOOKS == {
-        SYSTEM_PROMPT_ASSEMBLE,
-        MODEL_SELECTION,
-        APPROVAL_REQUEST,
-    }
+    assert WATERFALL_HOOKS == {SYSTEM_PROMPT_ASSEMBLE, APPROVAL_REQUEST}
 
 
 def test_plugin_metadata() -> None:
@@ -133,17 +123,15 @@ async def test_every_emit_hook_is_counted_and_logged(name: str, caplog: pytest.L
     assert messages(caplog, name) == ["hook " + name + " sessionId='session-1'"]
 
 
-async def test_llm_stream_and_tool_call_log_at_debug(caplog: pytest.LogCaptureFixture) -> None:
+async def test_llm_stream_logs_at_debug(caplog: pytest.LogCaptureFixture) -> None:
     _plugin, hooks, _ = make_plugin()
     caplog.set_level(logging.DEBUG)
 
     await hooks.emit(LLM_STREAM, {"provider": "local", "model": "m"})
-    await hooks.emit(TOOL_CALL, {"tool": "read"})
 
     records = [record for record in caplog.records if record.name == LOGGER]
-    assert [record.levelno for record in records] == [logging.DEBUG, logging.DEBUG]
+    assert [record.levelno for record in records] == [logging.DEBUG]
     assert records[0].getMessage() == "hook llm/stream provider='local' model='m'"
-    assert records[1].getMessage() == "hook tool/call tool='read'"
 
 
 async def test_session_hooks_log_at_info(caplog: pytest.LogCaptureFixture) -> None:
@@ -204,30 +192,6 @@ async def test_frames_render_their_type_name(caplog: pytest.LogCaptureFixture) -
     assert messages(caplog, LLM_STREAM) == ["hook llm/stream frame=TextDelta"]
 
 
-async def test_requests_render_their_kind(caplog: pytest.LogCaptureFixture) -> None:
-    _plugin, hooks, _ = make_plugin()
-    caplog.set_level(logging.INFO)
-    request = ApprovalRequest(kind="write", summary="write a.txt")
-
-    await hooks.emit(APPROVAL_DECIDED, {"request": request, "allowed": True})
-
-    assert messages(caplog, APPROVAL_DECIDED) == ["hook approval/decided allowed=True request='write'"]
-
-
-async def test_policy_and_reason_render(caplog: pytest.LogCaptureFixture) -> None:
-    _plugin, hooks, _ = make_plugin()
-    caplog.set_level(logging.INFO)
-
-    await hooks.emit(
-        APPROVAL_DECIDED,
-        {"allowed": False, "reason": "rejected by the user", "via": "user", "policy": "ask"},
-    )
-
-    assert messages(caplog, APPROVAL_DECIDED) == [
-        "hook approval/decided allowed=False reason='rejected by the user' via='user' policy='ask'"
-    ]
-
-
 async def test_unknown_payload_keys_are_ignored(caplog: pytest.LogCaptureFixture) -> None:
     _plugin, hooks, _ = make_plugin()
     caplog.set_level(logging.INFO)
@@ -241,16 +205,16 @@ async def test_unknown_payload_keys_are_ignored(caplog: pytest.LogCaptureFixture
 async def test_snapshot_tracks_repeated_dispatches() -> None:
     plugin, hooks, _ = make_plugin()
 
-    await hooks.emit(TOOL_CALL, {"tool": "read"})
-    await hooks.emit(TOOL_CALL, {"tool": "write"})
-    await hooks.waterfall(MODEL_SELECTION, {"model": "m"}, fallback=None)
+    await hooks.emit(SESSION_CREATED, {"sessionId": "s-1"})
+    await hooks.emit(SESSION_CREATED, {"sessionId": "s-2"})
+    await hooks.waterfall(SYSTEM_PROMPT_ASSEMBLE, {"turn": 1}, fallback=None)
 
     snapshot = plugin.snapshot()
-    assert snapshot[TOOL_CALL] == 2
-    assert snapshot[MODEL_SELECTION] == 1
-    assert snapshot[SESSION_CREATED] == 0
-    snapshot[TOOL_CALL] = 99
-    assert plugin.snapshot()[TOOL_CALL] == 2
+    assert snapshot[SESSION_CREATED] == 2
+    assert snapshot[SYSTEM_PROMPT_ASSEMBLE] == 1
+    assert snapshot[SESSION_DISPOSED] == 0
+    snapshot[SESSION_CREATED] = 99
+    assert plugin.snapshot()[SESSION_CREATED] == 2
 
 
 async def test_close_removes_every_listener() -> None:
@@ -293,34 +257,35 @@ async def test_approval_gate_dispatches_asked_and_decided(caplog: pytest.LogCapt
 
     assert decision.allowed is True
     assert asked == [request]
-    assert messages(caplog, APPROVAL_ASKED) == ["hook approval/asked reason='write a.txt'"]
-    assert messages(caplog, APPROVAL_DECIDED) == ["hook approval/decided outcome='allowed-once'"]
-    assert _plugin.snapshot()[APPROVAL_ASKED] == 1
-    assert _plugin.snapshot()[APPROVAL_DECIDED] == 1
+    session = RecordSession()
+    assert session.records == []
 
 
-async def test_approval_gate_records_denied_decision(caplog: pytest.LogCaptureFixture) -> None:
+async def test_approval_gate_records_denied_decision() -> None:
     _plugin, hooks, _ = make_plugin()
-    caplog.set_level(logging.INFO)
+    session = RecordSession()
 
     async def ask(request: ApprovalRequest) -> bool:
         return False
 
-    gate = PermissionGate("workspace-write", "ask", "D:\\work", ask=ask, hooks=hooks)
+    gate = PermissionGate("workspace-write", "ask", "D:\\work", ask=ask, hooks=hooks, session=session)
 
     decision = await gate.request(ApprovalRequest(kind="command", summary="rm -rf /"))
 
     assert decision.allowed is False
-    assert messages(caplog, APPROVAL_DECIDED) == ["hook approval/decided outcome='rejected'"]
+    assert session.records == [
+        ("approval/asked", {"id": session.records[0][1]["id"], "toolName": None, "reason": "rm -rf /"}),
+        ("approval/decided", {"id": session.records[0][1]["id"], "outcome": "rejected"}),
+    ]
 
 
 async def test_never_policy_rejects_before_dispatch() -> None:
-    plugin, hooks, _ = make_plugin()
+    _plugin, hooks, _ = make_plugin()
+    session = RecordSession()
 
-    gate = PermissionGate("workspace-write", "never", "D:\\work", hooks=hooks)
+    gate = PermissionGate("workspace-write", "never", "D:\\work", hooks=hooks, session=session)
     decision = await gate.request(ApprovalRequest(kind="write", summary="write a.txt"))
 
     assert decision.allowed is False
     assert decision.reason == "approval was rejected"
-    assert plugin.snapshot()[APPROVAL_ASKED] == 0
-    assert plugin.snapshot()[APPROVAL_DECIDED] == 0
+    assert session.records == []

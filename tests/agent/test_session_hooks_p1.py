@@ -193,18 +193,16 @@ async def test_llm_stream_emits_frames_with_the_route(tmp_path: Path) -> None:
     assert {payload["frame"]["type"] for payload in frames} >= {"start", "chunk", "end"}
 
 
-async def test_tool_call_emitted_after_record_before_dispatch(tmp_path: Path) -> None:
-    """tool/call fires once per recorded call, before the tool runs."""
+async def test_tool_call_is_a_session_record_not_a_bus_event(tmp_path: Path) -> None:
+    """tool/call and model/selection are records; the bus refuses the bare names.
+
+    DSH spells both as records and has no dispatch site for either, so deeppyro
+    keeps them as deprecated constants only: the tool batch still records one
+    tool/call per started call, and a plugin that subscribes raises instead of
+    silently listening to a name nothing dispatches.
+    """
     tool = FakeTool("echo", text="ok")
     hooks = HookService()
-    seen: list[tuple[Any, int, int]] = []
-    session_holder: list[FakeSessionLog] = []
-
-    def on_tool_call(payload: Any) -> None:
-        session = session_holder[0]
-        seen.append((payload, len(session.records_of("tool/call")), len(tool.calls)))
-
-    hooks.on(TOOL_CALL, on_tool_call)
     script = [
         ScriptedTurn(
             events=[
@@ -218,142 +216,17 @@ async def test_tool_call_emitted_after_record_before_dispatch(tmp_path: Path) ->
     session, _provider, _sink, agent = make_agent(
         tmp_path, script, registry=FakeRegistry([tool]), services={"hooks": hooks}
     )
-    session_holder.append(session)
 
     assert await agent.send("go") == "done"
 
-    assert len(seen) == 1
-    payload, record_count, executed = seen[0]
-    assert set(payload) == {"agent", "callId", "name", "turn", "step"}
-    assert "arguments" not in payload
-    assert payload["agent"] is agent
-    assert payload["callId"] == "call_1"
-    assert payload["name"] == "echo"
-    assert payload["turn"] == 1
-    assert payload["step"] == 1
-    # The record is durable before the hook fires and the tool has not started.
-    assert record_count == 1
-    assert executed == 0
+    calls = session.records_of("tool/call")
+    assert len(calls) == 1
+    assert calls[0].data["callId"] == "call_1"
     assert len(tool.calls) == 1
 
-
-async def test_tool_call_not_emitted_for_calls_never_dispatched(tmp_path: Path) -> None:
-    """A cancelled batch emits no tool/call for later calls that never started."""
-    slow = FakeTool("slow", delay=5.0, parallel_safe=False)
-    later = FakeTool("later", parallel_safe=False)
-    hooks = HookService()
-    names: list[str] = []
-    errors: list[Any] = []
-    hooks.on(TOOL_CALL, lambda payload: names.append(payload["name"]))
-    hooks.on(AGENT_ERROR, errors.append)
-    script = [
-        ScriptedTurn(
-            events=[
-                ToolCallStart("call_slow", "slow"),
-                ToolCallArgsDelta("call_slow", "{}"),
-                ToolCallStart("call_later", "later"),
-                ToolCallArgsDelta("call_later", "{}"),
-                finish("tool-calls"),
-            ]
-        ),
-        ScriptedTurn(events=[finish("stop")]),
-    ]
-    session, _provider, _sink, agent = make_agent(
-        tmp_path, script, registry=FakeRegistry([slow, later]), services={"hooks": hooks}
-    )
-
-    task = asyncio.create_task(agent.send("go"))
-    await _wait_for(lambda: bool(slow.calls))
-    await agent.interrupt()
-    await task
-
-    assert names == ["slow"]
-    records = session.records_of("tool/call")
-    assert [record.data["name"] for record in records] == ["slow", "later"]
-    # The synthesized record for the never-dispatched call is not a hook event.
-    assert records[1].seq > records[0].seq
-    results = session.records_of("tool/result")
-    assert [record.data["error"]["code"] for record in results] == [
-        "ABORTED",
-        "ABORTED_BEFORE_DISPATCH",
-    ]
-    assert errors == []
-
-
-async def test_model_selection_changes_the_route_before_the_request(tmp_path: Path) -> None:
-    """A model/selection waterfall result is adopted for prompt, records and request."""
-    hooks = HookService()
-    seen: list[Any] = []
-
-    def select(payload: Any, nxt: Any) -> dict[str, str]:
-        seen.append(payload)
-        return {"provider": payload["provider"], "model": "selected-model", "extra": "ignored"}
-
-    hooks.on(MODEL_SELECTION, select)
-    script = [
-        ScriptedTurn(events=[TextDelta("one"), finish("stop")]),
-        ScriptedTurn(events=[TextDelta("two"), finish("stop")]),
-    ]
-    session, provider, _sink, agent = make_agent(tmp_path, script, services={"hooks": hooks})
-
-    assert await agent.send("hello") == "one"
-
-    assert len(seen) == 1
-    payload = seen[0]
-    assert payload["agent"] is agent
-    assert payload["turn"] == 1
-    assert payload["step"] == 1
-    assert payload["provider"] == "fake-provider"
-    assert payload["model"] == "test-model"
-    assert agent.model == "selected-model"
-    assert provider.requests[0].model == "selected-model"
-    headers = session.records_of("request/header")
-    assert headers[-1].data["header"]["config"]["model"] == "selected-model"
-    contexts = session.records_of("request/context")
-    assert contexts[-1].data["model"] == "selected-model"
-
-    assert await agent.send("again") == "two"
-
-    assert len(seen) == 2
-    assert seen[1]["model"] == "selected-model"
-    headers = session.records_of("request/header")
-    # The selection is already in force, so the second turn starts a new series
-    # with an unchanged header instead of writing a change record.
-    assert headers[0].data["reason"] == "initial"
-    assert headers[0].data["startsSeries"] is True
-    assert headers[-1].data["reason"] == "series"
-    assert "startsSeries" not in headers[-1].data
-    assert headers[-1].data["header"]["config"]["model"] == "selected-model"
-    assert agent.model == "selected-model"
-
-
-async def test_model_selection_veto_keeps_the_current_model(tmp_path: Path) -> None:
-    """A listener returning None without next() leaves the model unchanged."""
-    hooks = HookService()
-    hooks.on(MODEL_SELECTION, lambda payload, nxt: None)
-    session, provider, _sink, agent = make_agent(
-        tmp_path,
-        [ScriptedTurn(events=[TextDelta("hi"), finish("stop")])],
-        services={"hooks": hooks},
-    )
-
-    await agent.send("hello")
-
-    assert agent.model == "test-model"
-    assert provider.requests[0].model == "test-model"
-    assert session.records_of("request/header")[-1].data["header"]["config"]["model"] == "test-model"
-
-
-async def test_model_selection_rejects_a_provider_change(tmp_path: Path) -> None:
-    """The provider is bound to the session, so a listener may not swap it."""
-    hooks = HookService()
-    hooks.on(MODEL_SELECTION, lambda payload, nxt: {"provider": "other-provider", "model": "x"})
-    _session, _provider, _sink, agent = make_agent(
-        tmp_path, [ScriptedTurn(events=[finish("stop")])], services={"hooks": hooks}
-    )
-
-    with pytest.raises(SessionError, match="model/selection hook may not change the provider"):
-        await agent.send("hello")
+    for name in (TOOL_CALL, MODEL_SELECTION):
+        with pytest.raises(ValueError, match="unknown hook"):
+            hooks.on(name, lambda payload: None)
 
 
 async def test_agent_error_emitted_once_for_a_provider_failure(tmp_path: Path) -> None:

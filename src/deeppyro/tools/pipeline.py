@@ -41,7 +41,7 @@ from typing import Any
 
 from deeppyro.core.errors import AbortedError, PermissionDenied, ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.hooks import TOOL_CALL, TOOLS_EXECUTE, TOOLS_POST_EXECUTE, TOOLS_PRE_EXECUTE
+from deeppyro.hooks import TOOLS_EXECUTE, TOOLS_POST_EXECUTE, TOOLS_PRE_EXECUTE
 from deeppyro.tools.registry import ToolRegistry
 from deeppyro.tools.spill import (
     default_spill_dir,
@@ -446,43 +446,6 @@ def _collect_call_seqs(
     return seqs, failures
 
 
-async def _emit_call_events(
-    hooks: Any,
-    requests: list[ToolCallRequest],
-    call_seqs: list[int | None],
-    *,
-    turn: int | None,
-    step: int | None,
-    agent: Any | None,
-) -> None:
-    """Emit tool/call for every call whose record was appended, before dispatch."""
-    emit = getattr(hooks, "emit", None) if hooks is not None else None
-    if not callable(emit):
-        return
-    has = getattr(hooks, "has", None)
-    observed = bool(getattr(hooks, "observed", False))
-    if callable(has) and not (has(TOOL_CALL) or observed):
-        return
-    scope = _hook_scope(agent)
-    for request, seq in zip(requests, call_seqs):
-        if seq is None:
-            continue
-        outcome = _scoped(
-            emit,
-            TOOL_CALL,
-            {
-                "agent": agent,
-                "callId": request.call_id,
-                "name": request.name,
-                "turn": turn,
-                "step": step,
-            },
-            scope=scope,
-        )
-        if inspect.isawaitable(outcome):
-            await outcome
-
-
 async def run_tool_call(
     request: ToolCallRequest,
     *,
@@ -571,7 +534,6 @@ async def run_tool_batch(
     outcomes: list[ToolOutcome | None] = [None] * len(requests)
     inflight: list[asyncio.Task[None]] = []
     call_seqs, log_failures = _collect_call_seqs(requests, log=log, turn=turn, step=step)
-    await _emit_call_events(hooks, requests, call_seqs, turn=turn, step=step, agent=agent)
 
     async def run_one(index: int, request: ToolCallRequest) -> None:
         ctx = ctx_factory(request)

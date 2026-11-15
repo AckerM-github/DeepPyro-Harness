@@ -9,13 +9,25 @@ from types import MappingProxyType
 import pytest
 
 from deeppyro.core.errors import ConfigError
-from deeppyro.hooks import (
-    APPROVAL_ASKED,
-    APPROVAL_DECIDED,
-    APPROVAL_REQUEST,
-    HookService,
-)
+from deeppyro.hooks import APPROVAL_REQUEST, HookService
 from deeppyro.sandbox import ApprovalRequest, PermissionGate
+
+
+class RecordSession:
+    """Minimal session that captures approval audit records."""
+
+    def __init__(self) -> None:
+        self.records: list[tuple[str, dict[str, object]]] = []
+
+    def append(self, event: str, payload: dict[str, object]) -> None:
+        self.records.append((event, dict(payload)))
+
+
+class BrokenSession:
+    """Session whose audit write fails; the decision must not change."""
+
+    def append(self, event: str, payload: dict[str, object]) -> None:
+        raise RuntimeError("session log is read-only")
 
 
 def outside_path() -> Path:
@@ -128,15 +140,14 @@ async def test_request_never_rejects_before_the_waterfall(tmp_path: Path) -> Non
         called.append(dict(payload))
         return "allow"
 
-    asked: list[dict[str, object]] = []
     hooks.on(APPROVAL_REQUEST, allow)
-    hooks.on(APPROVAL_ASKED, lambda payload: asked.append(dict(payload)))
-    gate = PermissionGate("workspace-write", "never", tmp_path, hooks=hooks)
+    session = RecordSession()
+    gate = PermissionGate("workspace-write", "never", tmp_path, hooks=hooks, session=session)
     decision = await gate.request(ApprovalRequest(kind="x", summary="y"))
     assert decision.allowed is False
     assert decision.reason == "approval was rejected"
     assert called == []
-    assert asked == []
+    assert session.records == []
 
 
 async def test_request_without_an_answerer_fails_closed(tmp_path: Path) -> None:
@@ -189,22 +200,20 @@ def _hook_service() -> HookService:
 async def test_approval_request_hook_allow_short_circuits_the_answerer(tmp_path: Path) -> None:
     hooks = _hook_service()
     seen: list[dict[str, object]] = []
-    events: list[tuple[str, dict[str, object]]] = []
 
     async def allow(payload: dict[str, object], next_step) -> str:  # type: ignore[no-untyped-def]
         seen.append(dict(payload))
         return "allow"
 
     hooks.on(APPROVAL_REQUEST, allow)
-    hooks.on(APPROVAL_ASKED, lambda payload: events.append(("asked", dict(payload))))
-    hooks.on(APPROVAL_DECIDED, lambda payload: events.append(("decided", dict(payload))))
+    session = RecordSession()
     called: list[ApprovalRequest] = []
 
     async def grant(req: ApprovalRequest) -> bool:
         called.append(req)
         return False
 
-    gate = PermissionGate("workspace-write", "ask", tmp_path, ask=grant, hooks=hooks)
+    gate = PermissionGate("workspace-write", "ask", tmp_path, ask=grant, hooks=hooks, session=session)
     req = ApprovalRequest(kind="command", summary="run it", tool="pwsh", call_id="call-1")
     decision = await gate.request(req)
 
@@ -214,15 +223,15 @@ async def test_approval_request_hook_allow_short_circuits_the_answerer(tmp_path:
     assert gate.approvals == [(req, decision)]
     payload = seen[0]
     assert payload["request"] == req
-    assert payload["approval"] == {"id": events[0][1]["id"], "toolName": "pwsh", "callId": "call-1"}
+    assert payload["approval"] == {"id": session.records[0][1]["id"], "toolName": "pwsh", "callId": "call-1"}
     assert payload["policy"] == "ask"
     assert payload["agent"] is None
     assert payload["signal"] is None
-    assert [name for name, _ in events] == ["asked", "decided"]
-    assert events[0][1]["toolName"] == "pwsh"
-    assert events[0][1]["callId"] == "call-1"
-    assert events[0][1]["reason"] == "run it"
-    assert events[1][1]["outcome"] == "allowed-once"
+    assert [name for name, _ in session.records] == ["approval/asked", "approval/decided"]
+    assert session.records[0][1]["toolName"] == "pwsh"
+    assert session.records[0][1]["callId"] == "call-1"
+    assert session.records[0][1]["reason"] == "run it"
+    assert session.records[1][1]["outcome"] == "allowed-once"
 
 
 @pytest.mark.parametrize(
@@ -246,29 +255,27 @@ async def test_approval_request_hook_outcomes(tmp_path: Path, outcome: str, reas
 
 async def test_approval_request_hook_ask_falls_through_to_the_answerer(tmp_path: Path) -> None:
     hooks = _hook_service()
-    events: list[tuple[str, dict[str, object]]] = []
 
     async def relay(payload, next_step):  # type: ignore[no-untyped-def]
         return await next_step()
 
     hooks.on(APPROVAL_REQUEST, relay)
-    hooks.on(APPROVAL_ASKED, lambda payload: events.append(("asked", dict(payload))))
-    hooks.on(APPROVAL_DECIDED, lambda payload: events.append(("decided", dict(payload))))
+    session = RecordSession()
     requested: list[ApprovalRequest] = []
 
     async def grant(req: ApprovalRequest) -> bool:
         requested.append(req)
         return True
 
-    gate = PermissionGate("workspace-write", "ask", tmp_path, ask=grant, hooks=hooks)
+    gate = PermissionGate("workspace-write", "ask", tmp_path, ask=grant, hooks=hooks, session=session)
     decision = await gate.request(ApprovalRequest(kind="x", summary="y"))
 
     assert decision.allowed is True
     assert requested == [ApprovalRequest(kind="x", summary="y")]
-    assert [name for name, _ in events] == ["asked", "decided"]
-    assert events[0][1]["toolName"] is None
-    assert events[0][1]["reason"] == "y"
-    assert events[1][1]["outcome"] == "allowed-once"
+    assert [name for name, _ in session.records] == ["approval/asked", "approval/decided"]
+    assert session.records[0][1]["toolName"] is None
+    assert session.records[0][1]["reason"] == "y"
+    assert session.records[1][1]["outcome"] == "allowed-once"
 
 
 async def test_approval_request_unknown_hook_result_fails_closed(tmp_path: Path) -> None:
@@ -310,14 +317,10 @@ async def test_approval_hook_payload_is_frozen(tmp_path: Path) -> None:
         captured[0]["agent"] = object()  # type: ignore[index]
 
 
-async def test_approval_decided_listener_failure_does_not_change_the_decision(tmp_path: Path) -> None:
-    hooks = _hook_service()
-
-    def explode(payload: object) -> None:
-        raise RuntimeError("logger broke")
-
-    hooks.on(APPROVAL_DECIDED, explode)
-    gate = PermissionGate("workspace-write", "never", tmp_path, hooks=hooks)
+async def test_audit_write_failure_does_not_change_the_decision(tmp_path: Path) -> None:
+    gate = PermissionGate(
+        "workspace-write", "ask", tmp_path, ask=lambda request: True, session=BrokenSession()
+    )
     decision = await gate.request(ApprovalRequest(kind="x", summary="y"))
-    assert decision.allowed is False
-    assert decision.reason == "approval was rejected"
+    assert decision.allowed is True
+    assert decision.reason == "approved for this call"

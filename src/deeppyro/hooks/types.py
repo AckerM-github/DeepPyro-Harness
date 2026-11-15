@@ -29,6 +29,10 @@ AGENT_STATUS = "agent/status"
 # -- prompt and llm --------------------------------------------------------
 SYSTEM_PROMPT_ASSEMBLE = "system-prompt/assemble"
 LLM_STREAM = "llm/stream"
+# Deprecated: in DSH ``model/selection`` is a session-record name, not a bus
+# event (zero call sites, no ``interface Events`` member). The constant stays
+# importable for one minor, but the name is not dispatchable any more; a
+# session's model is still observable through its ``model/selection`` record.
 MODEL_SELECTION = "model/selection"
 
 # -- session lifecycle -----------------------------------------------------
@@ -40,10 +44,16 @@ AGENT_ERROR = "agent/error"
 TOOLS_PRE_EXECUTE = "tools/pre-execute"
 TOOLS_EXECUTE = "tools/execute"
 TOOLS_POST_EXECUTE = "tools/post-execute"
+# Deprecated: ``tool/call`` is a record name in DSH, not a bus event. Observe a
+# call through tools/pre-execute (admission), tools/execute (execution),
+# tools/post-execute (result) or the tools/result record instead.
 TOOL_CALL = "tool/call"
 
 # -- approval --------------------------------------------------------------
 APPROVAL_REQUEST = "approval/request"
+# Deprecated: DSH records ``approval/asked`` and ``approval/decided`` instead of
+# dispatching them; deeppyro now appends the records from ApprovalService, so
+# the bus copies are gone. The constants stay importable for one minor.
 APPROVAL_ASKED = "approval/asked"
 APPROVAL_DECIDED = "approval/decided"
 
@@ -57,19 +67,19 @@ HOOK_NAMES = frozenset(
         AGENT_STATUS,
         SYSTEM_PROMPT_ASSEMBLE,
         LLM_STREAM,
-        MODEL_SELECTION,
         SESSION_CREATED,
         SESSION_DISPOSED,
         AGENT_ERROR,
         TOOLS_PRE_EXECUTE,
         TOOLS_EXECUTE,
         TOOLS_POST_EXECUTE,
-        TOOL_CALL,
         APPROVAL_REQUEST,
-        APPROVAL_ASKED,
-        APPROVAL_DECIDED,
     }
 )
+
+#: Names kept importable for one minor after they left the bus. They resolve to
+#: session-record names in DSH and are no longer registered or dispatched.
+DEPRECATED_NAMES = frozenset({MODEL_SELECTION, TOOL_CALL, APPROVAL_ASKED, APPROVAL_DECIDED})
 
 # Recommended dispatch mode for each hook. Call sites that follow this table
 # keep the DSH semantics: unordered listeners are not called as a waterfall.
@@ -82,17 +92,13 @@ HOOK_MODES: dict[str, str] = {
     AGENT_STATUS: "emit",
     SYSTEM_PROMPT_ASSEMBLE: "waterfall",
     LLM_STREAM: "emit",
-    MODEL_SELECTION: "waterfall",
     SESSION_CREATED: "emit",
     SESSION_DISPOSED: "emit",
     AGENT_ERROR: "emit",
     TOOLS_PRE_EXECUTE: "waterfall",
     TOOLS_EXECUTE: "waterfall",
     TOOLS_POST_EXECUTE: "waterfall",
-    TOOL_CALL: "emit",
     APPROVAL_REQUEST: "waterfall",
-    APPROVAL_ASKED: "emit",
-    APPROVAL_DECIDED: "emit",
 }
 
 HookPayload = dict[str, Any]

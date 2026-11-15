@@ -11,8 +11,8 @@ from deeppyro.builtin.hook_journal import HookJournalPlugin
 from deeppyro.hooks import (
     AGENT_ASSISTANT_STREAM,
     AGENT_PRE_STEP,
+    AGENT_STATUS,
     LLM_STREAM,
-    TOOL_CALL,
     HookService,
 )
 from deeppyro.hooks.records import INVOKED_RECORD_TYPE, MAX_PREVIEW, RESULT_RECORD_TYPE
@@ -83,7 +83,7 @@ def test_setup_registers_one_effect() -> None:
     assert ctx.effects == ["hook-journal"]
     assert len(ctx.disposers) == 1
     assert plugin.records_written == 0
-    assert hooks.has(TOOL_CALL) is False
+    assert hooks.has(AGENT_STATUS) is False
 
 
 def test_setup_requires_the_hooks_service() -> None:
@@ -98,13 +98,13 @@ async def test_emit_hook_journals_invoked_and_result() -> None:
     agent = FakeAgent()
 
     await hooks.emit(
-        TOOL_CALL,
-        {"agent": agent, "tool": "read", "call": {"callId": "call-1"}, "turn": 2},
+        AGENT_STATUS,
+        {"agent": agent, "tool": "read", "call": {"callId": "call-1"}, "turn": 2, "status": "thinking"},
     )
 
     assert record_types(agent) == [INVOKED_RECORD_TYPE, RESULT_RECORD_TYPE]
     invoked = record_of(agent, INVOKED_RECORD_TYPE)
-    assert invoked["hook"] == TOOL_CALL
+    assert invoked["hook"] == AGENT_STATUS
     assert invoked["mode"] == "emit"
     assert invoked["tool"] == "read"
     assert invoked["callId"] == "call-1"
@@ -163,7 +163,7 @@ async def test_hot_hooks_are_not_journaled(hook: str) -> None:
 async def test_payload_without_an_agent_is_skipped() -> None:
     plugin, hooks, _ctx = make_plugin()
 
-    await hooks.emit(TOOL_CALL, {"tool": "read"})
+    await hooks.emit(AGENT_STATUS, {"status": "thinking"})
 
     assert plugin.records_written == 0
 
@@ -171,7 +171,7 @@ async def test_payload_without_an_agent_is_skipped() -> None:
 async def test_agent_without_record_hook_event_is_skipped() -> None:
     plugin, hooks, _ctx = make_plugin()
 
-    await hooks.emit(TOOL_CALL, {"agent": object(), "tool": "read"})
+    await hooks.emit(AGENT_STATUS, {"agent": object(), "status": "thinking"})
 
     assert plugin.records_written == 0
 
@@ -181,7 +181,7 @@ async def test_record_failure_is_isolated(caplog: pytest.LogCaptureFixture) -> N
     agent = FakeAgent(error=RuntimeError("session log is read-only"))
     caplog.set_level(logging.ERROR)
 
-    await hooks.emit(TOOL_CALL, {"agent": agent, "tool": "read"})
+    await hooks.emit(AGENT_STATUS, {"agent": agent, "status": "thinking"})
 
     assert agent.records == []
     assert plugin.records_written == 0
@@ -192,11 +192,11 @@ async def test_disposing_the_effect_stops_journaling() -> None:
     plugin, hooks, ctx = make_plugin()
     agent = FakeAgent()
 
-    await hooks.emit(TOOL_CALL, {"agent": agent})
+    await hooks.emit(AGENT_STATUS, {"agent": agent})
     assert plugin.records_written == 2
 
     ctx.disposers[0]()
-    await hooks.emit(TOOL_CALL, {"agent": agent})
+    await hooks.emit(AGENT_STATUS, {"agent": agent})
     assert plugin.records_written == 2
 
 
@@ -205,8 +205,8 @@ async def test_scope_is_recorded_in_the_invoked_event() -> None:
     agent = FakeAgent()
 
     await hooks.emit(
-        TOOL_CALL,
-        {"agent": agent, "tool": "read"},
+        AGENT_STATUS,
+        {"agent": agent, "status": "thinking"},
         scope={"session": "session-1", "preset": "default"},
     )
 
@@ -220,8 +220,8 @@ async def test_scope_is_recorded_in_the_invoked_event() -> None:
 async def test_counter_tracks_successful_writes() -> None:
     plugin, hooks, _ctx = make_plugin()
 
-    await hooks.emit(TOOL_CALL, {"agent": FakeAgent()})
-    await hooks.emit(TOOL_CALL, {"agent": FakeAgent()})
+    await hooks.emit(AGENT_STATUS, {"agent": FakeAgent()})
+    await hooks.emit(AGENT_STATUS, {"agent": FakeAgent()})
 
     assert plugin.records_written == 4
 
@@ -230,9 +230,8 @@ async def test_no_journal_writes_for_unrelated_hooks_without_agents() -> None:
     plugin, hooks, _ctx = make_plugin()
     agent = FakeAgent()
 
-    await hooks.emit(TOOL_CALL, {"tool": "read"})
-    await hooks.emit(TOOL_CALL, {"agent": agent})
-    await hooks.emit(LLM_STREAM, {"agent": agent})
+    await hooks.emit(AGENT_STATUS, {"status": "thinking"})
+    await hooks.emit(AGENT_STATUS, {"agent": agent})
 
     assert record_types(agent) == [INVOKED_RECORD_TYPE, RESULT_RECORD_TYPE]
     assert plugin.records_written == 2
@@ -242,7 +241,7 @@ async def test_error_records_are_not_written_after_failure() -> None:
     plugin, hooks, _ctx = make_plugin()
     agent = FakeAgent(error=RuntimeError("boom"))
 
-    await hooks.serial(TOOL_CALL, {"agent": agent}, scope={"session": "s1"})
+    await hooks.serial(AGENT_STATUS, {"agent": agent}, scope={"session": "s1"})
 
     assert agent.records == []
     assert plugin.records_written == 0
