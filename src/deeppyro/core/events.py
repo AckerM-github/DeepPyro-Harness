@@ -79,6 +79,7 @@ _PRODUCERS: dict[str, str] = {
     "tools/execute": "tools.pipeline",
     "tools/post-execute": "tools.pipeline",
     "approval/request": "sandbox.approval",
+    "command/executed": "commands.service",
 }
 
 #: DSH bus events deeppyro recognises but does not dispatch yet. Kept explicit
@@ -194,10 +195,30 @@ def _build_specs() -> dict[str, EventSpec]:
     for name, mode in HOOK_MODES.items():
         if name not in _PRODUCERS:
             raise RuntimeError(f"bus event {name!r} has a mode but no producer")
+    # Producers that are not legacy hook names take their mode from the DSH
+    # catalog: the name policy in hooks/types.py only covers the old surface.
+    for name in _PRODUCERS.keys() - HOOK_MODES.keys():
+        if True:
+            modes, _site = _catalog_entry(name)
+            if not modes:
+                raise RuntimeError(f"bus event {name!r} has no mode: add it to the catalog")
+    for name, mode in HOOK_MODES.items():
         modes, site = _catalog_entry(name)
         specs[name] = EventSpec(
             name=name,
             mode=mode,  # type: ignore[arg-type]
+            status="implemented",
+            producer=_PRODUCERS[name],
+            dsh_ref=site,
+            dsh_modes=modes,
+        )
+    for name in _PRODUCERS.keys() - HOOK_MODES.keys():
+        if name in specs:
+            continue
+        modes, site = _catalog_entry(name)
+        specs[name] = EventSpec(
+            name=name,
+            mode=modes[0],  # type: ignore[arg-type]
             status="implemented",
             producer=_PRODUCERS[name],
             dsh_ref=site,

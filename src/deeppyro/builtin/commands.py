@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import logging
 from collections.abc import Callable, Iterable
 from typing import Any
 
 from deeppyro.api import CommandSpec, PluginDependencyError, Service
+
+logger = logging.getLogger(__name__)
 
 
 class CommandsPlugin(Service):
@@ -20,6 +24,7 @@ class CommandsPlugin(Service):
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
         self._commands: list[CommandSpec] = []
+        self._pending: set[asyncio.Task[Any]] = set()
 
     def add(
         self,
@@ -46,7 +51,7 @@ class CommandsPlugin(Service):
             summary=summary,
             usage=usage,
             aliases=aliases,
-            handler=handler,
+            handler=self._observed(name, handler, plugin_id),
             plugin_id=plugin_id,
         )
         self._commands.append(spec)
@@ -58,6 +63,66 @@ class CommandsPlugin(Service):
                 pass
 
         return remove
+
+    def _bus(self) -> Any | None:
+        """The event bus, when the kernel has one (it does from HooksPlugin on)."""
+        try:
+            return self.ctx.get("bus")
+        except Exception:  # noqa: BLE001 - an absent bus must not break a command
+            return None
+
+    def _observed(self, name: str, handler: Any, plugin_id: str) -> Any:
+        """Wrap one handler so every run publishes ``command/executed``.
+
+        The TUI dispatches specs directly (it never goes through
+        :meth:`invoke`), so the wrapper has to live on the handler itself: both
+        paths then report the same event without either one knowing about the
+        other.
+        """
+        if handler is None:
+            return None
+
+        def run(host: Any, argument: str = "") -> Any:
+            try:
+                result = handler(host, argument)
+            except Exception as exc:
+                self._publish(name, ok=False, error=type(exc).__name__, plugin_id=plugin_id)
+                raise
+            if inspect.isawaitable(result):
+                return self._await_and_publish(name, result, plugin_id)
+            self._publish(name, ok=True, plugin_id=plugin_id)
+            return result
+
+        return run
+
+    async def _await_and_publish(self, name: str, awaitable: Any, plugin_id: str) -> Any:
+        try:
+            value = await awaitable
+        except Exception as exc:
+            self._publish(name, ok=False, error=type(exc).__name__, plugin_id=plugin_id)
+            raise
+        self._publish(name, ok=True, plugin_id=plugin_id)
+        return value
+
+    def _publish(self, name: str, *, ok: bool, error: str = "", plugin_id: str = "") -> None:
+        bus = self._bus()
+        if bus is None:
+            return
+        payload = {"name": name, "ok": ok, "error": error, "plugin": plugin_id}
+        try:
+            pending = bus.emit("command/executed", payload)
+        except Exception:
+            logger.debug("could not publish command/executed for %s", name, exc_info=True)
+            return
+        if not inspect.isawaitable(pending):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(pending)
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
 
     def all(self) -> list[CommandSpec]:
         return list(self._commands)

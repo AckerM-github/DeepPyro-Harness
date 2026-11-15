@@ -177,7 +177,7 @@ call site that proves it:
 | `mcp` | 2 | MCP is a non-goal |
 | `api-session` | 6 | the web API owns these, there is no web API |
 | `sandbox` | 1 | policy changes are read, not announced |
-| `command` | 1 | slash commands return inline |
+| `command` | 1 | **implemented**: `command/executed` fires for every run |
 
 `spill` and `attachment` are absent from the DSH catalogue, so nothing is
 declared for them: an empty namespace would be a shell, and the brief forbids
