@@ -82,3 +82,7 @@ The difference is the useful signal, not the totals:
 | DSH bus names deeppyro does not implement | 79 | M2 catalogue work |
 
 Reproduce with `uv run pytest tests/integration/test_event_harness.py -s`.
+
+## Mode evidence
+
+`modes` in the catalog and in `core/event_catalog.py` lists *dispatch* modes only. `on`/`once` are subscription verbs and are recorded separately (`subscribed` in the JSON dump); a handler whose last parameter is `next` implies a waterfall dispatch.

@@ -150,6 +150,20 @@ const ANY_CALL = new RegExp(
 );
 const LITERAL = /["'`]([a-z][a-z0-9.-]*(?:\/[A-Za-z0-9_.:-]+)+)["'`]/g;
 
+// `.on(name, handler)` and `.once(name, handler)` subscribe; the handler arity
+// tells us how the event is dispatched: cordis hands waterfall handlers their
+// extra arguments plus a trailing `next`. Subscription verbs therefore must not
+// be recorded as dispatch modes.
+function handlerMode(tail) {
+  const arrow = tail.match(/^\s*,\s*(?:async\s+)?(?:function\s*)?\(([^)]*)\)\s*(?:=>|\{)/);
+  if (arrow) {
+    const params = arrow[1].split(',').map((part) => part.trim()).filter(Boolean);
+    if (params.length === 0) return null;
+    return params[params.length - 1] === 'next' ? 'waterfall' : null;
+  }
+  return null;
+}
+
 function scanSource(text, rel, state) {
   const lineOf = lineIndex(text);
   for (const match of text.matchAll(ANY_CALL)) state.anyCalls += 1;
@@ -157,8 +171,15 @@ function scanSource(text, rel, state) {
     const [, receiver, mode, name] = match;
     if (!NAME.test(name)) continue;
     const site = `${rel}:${lineOf(match.index)}`;
-    const record = state.names.get(name) ?? { name, modes: new Set(), sites: [], literals: 0, declared: null, files: new Set(), receivers: new Set() };
-    record.modes.add(mode);
+    const record = state.names.get(name) ?? { name, modes: new Set(), subscribed: new Set(), sites: [], literals: 0, declared: null, files: new Set(), receivers: new Set() };
+    if (mode === 'on' || mode === 'once') {
+      record.subscribed.add(mode);
+      const tail = text.slice(match.index + match[0].length, match.index + match[0].length + 400);
+      const inferred = handlerMode(tail);
+      if (inferred) record.modes.add(inferred);
+    } else {
+      record.modes.add(mode);
+    }
     record.receivers.add(receiver);
     record.files.add(rel);
     if (record.sites.length < 400) record.sites.push(site);
@@ -169,7 +190,7 @@ function scanSource(text, rel, state) {
     const name = match[1];
     if (!NAME.test(name)) continue;
     if (name.includes('${')) continue;
-    const record = state.names.get(name) ?? { name, modes: new Set(), sites: [], literals: 0, declared: null, files: new Set(), receivers: new Set() };
+    const record = state.names.get(name) ?? { name, modes: new Set(), subscribed: new Set(), sites: [], literals: 0, declared: null, files: new Set(), receivers: new Set() };
     record.literals += 1;
     record.files.add(rel);
     state.names.set(name, record);
@@ -298,7 +319,7 @@ const INTERNAL_KNOWN = new Set([
 ]);
 
 function classify(name, record, records) {
-  const hasCall = record.modes.size > 0 || Boolean(record.declared);
+  const hasCall = record.modes.size > 0 || record.subscribed.size > 0 || Boolean(record.declared);
   if (INTERNAL_KNOWN.has(name)) return 'internal';
   if (hasCall) return 'bus';
   if (records.has(name)) return 'record';
@@ -403,7 +424,7 @@ function render(state, opts, scan) {
     const ns = record.name.split('/')[0];
     const entry = byNs.get(ns) ?? { all: 0, bus: 0 };
     entry.all += 1;
-    if (record.modes.size) entry.bus += 1;
+    if (record.modes.size || record.subscribed.size) entry.bus += 1;
     byNs.set(ns, entry);
   }
   push('| namespace | names | with call site |');
@@ -518,6 +539,7 @@ if (opts.dump) {
       namespace: record.name.split('/')[0],
       bucket: classify(record.name, record, state.records),
       modes: [...record.modes].sort(),
+    subscribed: [...record.subscribed].sort(),
       sites: record.sites,
       literalCount: record.literals,
       declared: record.declared,

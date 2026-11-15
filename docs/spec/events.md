@@ -32,19 +32,28 @@ The generator strips the `dsh/node_modules/` prefix from evidence paths, sorts
 names and modes, and keeps the first call site, so the committed file has no
 environment-specific detail.
 
-## 3. Mode conflicts (M3 work list)
+## 3. Mode evidence and the one deliberate divergence
 
-Four implemented names dispatch with a mode DSH does not use for them. They are
-listed by `events.mode_conflicts()` and pinned by a test:
+The catalog's `modes` column records *dispatch* modes only. Subscription verbs
+(`on`/`once`) are tracked separately as `subscribed`, because a handler's arity
+tells us how the event is dispatched: a trailing `next` parameter means the
+caller expects a waterfall, a single parameter means plain emit. Before that
+distinction the catalog reported `emit` for four names that DSH actually
+waterfalls; `mode_conflicts()` therefore dropped from four entries to one.
 
-| name | deeppyro | DSH catalog |
-| --- | --- | --- |
-| `approval/request` | waterfall | emit |
-| `llm/stream` | emit | waterfall |
-| `system-prompt/assemble` | waterfall | emit |
-| `tools/post-execute` | waterfall | emit |
+| name | deeppyro | DSH catalog | status |
+| --- | --- | --- | --- |
+| `llm/stream` | emit | waterfall | deliberate deviation, see below |
 
-`HOOK_MODES` stays the dispatch truth until M3 reconciles them one at a time.
+DSH waterfalls `llm/stream` over the *stream object itself*
+(`this.ctx.waterfall(this, "llm/stream", options, () => this.adapterStream(...))`),
+so a handler can replace the whole iterator. deeppyro emits one event per delta
+instead: the streaming path is hot, and every consumer so far (sink, journal,
+observability) wants deltas, not the iterator. Converging would give plugins the
+power to rewrite the stream but would put an await plus a payload copy on the
+per-token path. The deviation stays explicit — it is returned by
+`mode_conflicts()` and pinned by a test — until a consumer needs to replace the
+stream rather than watch it.
 
 ## 4. Reserved entries carry a reason
 

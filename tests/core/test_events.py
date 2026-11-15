@@ -41,13 +41,12 @@ def test_retired_names_are_not_bus_events() -> None:
         assert not events.is_bus_event(name), name
 
 
-def test_the_mode_conflict_list_is_the_known_four() -> None:
-    assert sorted(events.mode_conflicts()) == [
-        "approval/request",
-        "llm/stream",
-        "system-prompt/assemble",
-        "tools/post-execute",
-    ]
+def test_the_mode_conflict_list_is_the_one_deliberate_deviation() -> None:
+    # `llm/stream` is the only name whose deeppyro mode is not a DSH mode: DSH
+    # waterfalls the stream object, deeppyro emits a delta per chunk. The other
+    # three names looked conflicting only because the catalog read subscription
+    # verbs as dispatch modes; evidence now separates the two.
+    assert events.mode_conflicts() == {"llm/stream": ("emit", ("waterfall",))}
 
 
 def test_the_two_tables_do_not_overlap() -> None:
