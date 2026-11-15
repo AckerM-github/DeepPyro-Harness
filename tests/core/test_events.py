@@ -54,3 +54,17 @@ def test_the_two_tables_do_not_overlap() -> None:
     assert implemented == set(HOOK_MODES)
     assert implemented.isdisjoint(events.RESERVED_NAMES)
     assert len(events.EVENT_SPECS) == len(BUS_EVENTS) + 21
+
+
+def test_the_ten_cordis_plumbing_events_are_catalogued_but_not_bus_events() -> None:
+    # D2 of the alignment plan: internal/* must be implemented (the vendored port
+    # raises all ten), but they are plumbing over cordis objects, so they stay out
+    # of EVENT_SPECS -- a plugin cannot bind a domain handler to them.
+    names = sorted(events.INTERNAL_NAMES)
+    assert len(names) == 10
+    for name in names:
+        spec = events.internal_spec(name)
+        assert spec is not None and spec.implemented
+        assert spec.producer.startswith("cordis.")
+        assert spec.dsh_ref.startswith("'internal/")
+        assert not events.is_bus_event(name)

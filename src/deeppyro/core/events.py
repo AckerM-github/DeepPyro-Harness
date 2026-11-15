@@ -24,10 +24,13 @@ from deeppyro.hooks.types import HOOK_MODES
 
 __all__ = [
     "EVENT_SPECS",
+    "INTERNAL_NAMES",
+    "INTERNAL_SPECS",
     "RESERVED_NAMES",
     "EventMode",
     "EventSpec",
     "EventStatus",
+    "internal_spec",
     "is_bus_event",
     "mode_conflicts",
     "mode_of",
@@ -108,6 +111,76 @@ _RESERVED: dict[str, str] = {
     "web/fetched": "web",
     "workspace/changed": "workspace",
 }
+
+
+#: The ten cordis plumbing events the vendored port already raises. They are not
+#: domain events: they fire inside the port's own hook table (fiber.py, reflect.py,
+#: events.py), carry cordis objects rather than domain payloads, and deliberately
+#: stay out of ``EVENT_SPECS`` so ``ctx.on`` cannot bind a plugin to them.
+_INTERNAL: dict[str, tuple[str, str, str]] = {
+    "internal/commit": ("emit", "cordis.fiber", "'internal/commit'(fiber: Fiber, originalConfig: any): void"),
+    "internal/config": (
+        "waterfall",
+        "cordis.events",
+        "'internal/config'(fiber: Fiber, next: () => any): any",
+    ),
+    "internal/dispatch": (
+        "emit",
+        "cordis.events",
+        "'internal/dispatch'(mode: DispatchMode, name: string | symbol, args: any[], thisArg: any): void",
+    ),
+    "internal/get": (
+        "waterfall",
+        "cordis.reflect",
+        "'internal/get'(ctx: Context, name: string, error: Error, next: () => any): any",
+    ),
+    "internal/listener": (
+        "bail",
+        "cordis.events",
+        "'internal/listener'(this: Context, name: string, listener: any, prepend: boolean): void",
+    ),
+    "internal/plugin": ("emit", "cordis.fiber", "'internal/plugin'(fiber: Fiber): void"),
+    "internal/service": (
+        "emit",
+        "cordis.reflect",
+        "'internal/service'(this: Context, name: string, value: any): void",
+    ),
+    "internal/set": (
+        "waterfall",
+        "cordis.reflect",
+        "'internal/set'(ctx: Context, name: string, value: any, error: Error, next: () => boolean): boolean",
+    ),
+    "internal/status": (
+        "emit",
+        "cordis.fiber",
+        "'internal/status'(fiber: Fiber, oldValue: FiberState): void",
+    ),
+    "internal/update": (
+        "waterfall",
+        "cordis.events",
+        "'internal/update'(this: Fiber, resolvedConfig: any, next: () => Awaitable<void>): Awaitable<void>",
+    ),
+}
+
+INTERNAL_SPECS: dict[str, EventSpec] = {
+    name: EventSpec(
+        name=name,
+        mode=mode,  # type: ignore[arg-type]
+        status="implemented",
+        producer=producer,
+        dsh_ref=signature,
+        dsh_modes=(mode,),
+        reason="cordis plumbing; not a domain event",
+    )
+    for name, (mode, producer, signature) in _INTERNAL.items()
+}
+
+INTERNAL_NAMES: frozenset[str] = frozenset(INTERNAL_SPECS)
+
+
+def internal_spec(name: str) -> EventSpec | None:
+    """Return the plumbing spec for an ``internal/*`` event (``None`` otherwise)."""
+    return INTERNAL_SPECS.get(name)
 
 
 def _catalog_entry(name: str) -> tuple[tuple[str, ...], str]:

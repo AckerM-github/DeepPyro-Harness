@@ -22,9 +22,12 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from deeppyro.hooks.types import HookPayload
+if TYPE_CHECKING:  # the bus must not import the hook package at runtime
+    from deeppyro.hooks.types import HookPayload
+else:
+    HookPayload = dict[str, Any]
 
 logger = logging.getLogger(__name__)
 

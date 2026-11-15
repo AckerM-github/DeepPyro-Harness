@@ -110,3 +110,28 @@ lets the kernel journal, prompt assembly, and plugins share one registry.
 `PluginContext.on()` prefers `bus`, so a plugin subscription and a hook
 subscription land in the same table. `tests/integration/test_single_bus.py`
 pins that: a subscription through either door is dispatched through the other.
+
+## 8. internal/* plumbing
+
+cordis raises ten plumbing events while it starts fibers, resolves services, and
+applies configuration. The vendored port already raises all ten (`fiber.py`,
+`reflect.py`, `events.py`), and `core/events.py` catalogues them in
+`INTERNAL_SPECS` with the declared signature as evidence:
+
+| name | mode | raised by |
+| --- | --- | --- |
+| `internal/listener` | bail | `cordis.events` |
+| `internal/dispatch` | emit | `cordis.events` |
+| `internal/config` | waterfall | `cordis.events` |
+| `internal/update` | waterfall | `cordis.events` |
+| `internal/get` | waterfall | `cordis.reflect` |
+| `internal/set` | waterfall | `cordis.reflect` |
+| `internal/service` | emit | `cordis.reflect` |
+| `internal/plugin` | emit | `cordis.fiber` |
+| `internal/status` | emit | `cordis.fiber` |
+| `internal/commit` | emit | `cordis.fiber` |
+
+They are deliberately **not** bus events: their payloads are cordis objects
+(`Fiber`, `Context`), they fire inside the port's own hook table, and binding a
+domain handler to them would leak the framework into plugin code. `is_bus_event("internal/…")`
+stays False, so `ctx.on()` routes them to cordis where they belong.
