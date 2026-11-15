@@ -51,6 +51,7 @@ from deeppyro.tui.session_view import listing_lines, matches, picker_items
 from deeppyro.tui.sink import TuiSink
 from deeppyro.tui.slots import (
     SCREEN,
+    SETTINGS,
     SlotRegistry,
     apply_conversation_slots,
     build_slot_context,
@@ -1626,6 +1627,34 @@ class DeepPyroApp(App[None]):
             self.conversation.add_info("use /panel <id>")
         else:
             self.conversation.add_info("no plugin panels or screens are registered")
+
+    async def settings_command(self, argument: str) -> None:
+        """Open a plugin-contributed settings page by id, or list them."""
+        registry = self._slots
+        if registry is None:
+            self.conversation.add_info("plugin settings are not available in this session")
+            return
+        pages = registry.settings_pages()
+        if not pages:
+            self.conversation.add_info("no plugin settings pages are registered")
+            return
+        wanted = argument.strip()
+        if not wanted and len(pages) == 1:
+            wanted = pages[0].id
+        if wanted:
+            screen = open_plugin_panel(
+                self,
+                registry,
+                kind=SETTINGS,
+                slot_id=wanted,
+                context=build_slot_context(self),
+            )
+            if screen is not None:
+                return
+            self.conversation.add_info(f"no plugin settings page: {wanted}")
+        labels = [f"{page.id} ({page.title})" if page.title else page.id for page in pages]
+        self.conversation.add_info("plugin settings: " + ", ".join(labels))
+        self.conversation.add_info("use /settings <id>")
 
     async def show_plugins(self) -> None:
         """Open the external plugin manager, or list kernel plugins as fallback."""

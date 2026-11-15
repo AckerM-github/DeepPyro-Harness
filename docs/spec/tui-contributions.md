@@ -17,7 +17,7 @@
 | `status` | `[[status]]` | `PluginStatusBar`（底部单行） | `build_slot_context(app)` 快照 | 同步、返回 `str`/`Text`；不碰控件 |
 | `conversation` | `[[conversation]]` | 会话流（事件行） | 事件 dict | `predicate` 只读事件；返回 widget/`None` |
 | `panel` | `[[panels]]` | `PluginPanelScreen`（模态） | 快照 | 工厂同步、只读快照 |
-| `settings` | `[[settings]]` | `PluginPanelScreen`（同 panel 宿主） | 快照 | 宿主消费端后续里程碑接入 |
+| `settings` | `[[settings]]` | `PluginPanelScreen`（同 panel 宿主） | 快照 | `/settings [id]`（M1 接入） |
 | `screen` | `[[screens]]` | `SlotScreen`（整窗模态） | 快照 | 渲染器必须同步；禁止 IO/await |
 
 `SlotRegistry` 的查询按 `(kind, order, id)` 排序。`ui.toml` 用 `id` 声明稳定 id；`screen`/`panel`/`settings` 省略 `id` 时按标题 slug 生成，其余槽位按 callable 的模块名生成。
@@ -59,7 +59,7 @@ SlotRegistry.add_screen(
 
 ### 2.2 打开
 
-- 用户：`/panel <id>` 先尝试 panel，再尝试 screen；未命中时列出两类 id。插件也可以注册自己的命令，在 handler 里 `ctx.ui.open_screen("indexer")`。
+- 用户：`/panel <id>` 先尝试 panel，再尝试 screen；未命中时列出两类 id。`/settings [id]` 打开设置页（唯一时免参数）。插件也可以注册自己的命令，在 handler 里 `ctx.ui.open_screen("indexer")`。
 - 插件代码：`ctx.ui.open_screen("indexer")`（任意线程，见 §4）。
 - 宿主 API：`deeppyro.tui.screens.slot_screen.open_slot_screen(app, registry, *, slot_id=None, context=None) -> SlotScreen | None`；slot_id 省略时打开排序最靠前的 screen。
 
@@ -209,7 +209,7 @@ ruff check src tests
 
 ## 10. 已知限制
 
-- `settings` 槽位已有注册与面板宿主，但尚无独立设置入口消费；后续里程碑接入。
+- `settings` 槽位由 `/settings [id]` 消费：只有一个页面时直接打开，多个页面时先列出 `id (title)`，无页面时给一句提示；渲染器约束与 panel 相同。
 - `ui` 动作无优先级、无确认、无重试；大量高频动作共享 0.1 秒批次的 200 条上限。
 - CLI `dpyro plugin list/doctor` 仍以默认参数调用 `scan_plugin_packages()`，未传 `known_slots`；未知 `[ui].slots` 目前在 TUI `/plugins` 健康扫描和注册期报错中可见，CLI 表格与 doctor 暂不显示（`src/deeppyro/plugins/*` 不在 P2 改动范围）。
 - `screen` 渲染器禁止 IO 是契约约束，宿主不做静态分析，只能靠评审与测试保证。

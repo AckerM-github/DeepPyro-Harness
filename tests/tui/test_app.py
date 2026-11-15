@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
+import pytest
 from textual.widgets import Static
 
 from deeppyro.tui.app import CUSTOM_WORKSPACE, DeepPyroApp
@@ -846,3 +847,60 @@ async def test_status_and_welcome_show_the_agent_preset_presentation() -> None:
         assert any(
             "agent preset Standard (standard · native presentation · default mode)" in text for text in texts
         ), texts
+
+
+async def test_settings_command_opens_the_only_page() -> None:
+    registry = SlotRegistry()
+    registry.add_settings_page("Demo settings", lambda context: Static("settings body"), plugin_id="demo")
+    app = DeepPyroApp(runtime_factory=_runtime_with_slots(registry), splash=False)
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one(PromptArea)
+        prompt.text = "/settings"
+        await pilot.press("enter")
+        for _ in range(40):
+            if isinstance(app.screen, PluginPanelScreen):
+                break
+            await pilot.pause(0.05)
+        assert isinstance(app.screen, PluginPanelScreen)
+
+
+async def test_settings_command_lists_pages_when_several_exist(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = SlotRegistry()
+    registry.add_settings_page("One", lambda context: Static("a"), id="one", plugin_id="demo")
+    registry.add_settings_page("Two", lambda context: Static("b"), id="two", plugin_id="demo")
+    app = DeepPyroApp(runtime_factory=_runtime_with_slots(registry), splash=False)
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.pause()
+        calls: list[str] = []
+        monkeypatch.setattr(app.conversation, "add_info", calls.append)
+        await app.settings_command("")
+        assert calls[0].startswith("plugin settings: ")
+        assert "one (One)" in calls[0]
+        assert "two (Two)" in calls[0]
+        assert calls[1] == "use /settings <id>"
+        assert not isinstance(app.screen, PluginPanelScreen)
+
+
+async def test_settings_command_with_an_unknown_id_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = SlotRegistry()
+    registry.add_settings_page("One", lambda context: Static("a"), id="one", plugin_id="demo")
+    app = DeepPyroApp(runtime_factory=_runtime_with_slots(registry), splash=False)
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.pause()
+        calls: list[str] = []
+        monkeypatch.setattr(app.conversation, "add_info", calls.append)
+        await app.settings_command("nope")
+        assert calls[0] == "no plugin settings page: nope"
+        assert calls[1].startswith("plugin settings: ")
+
+
+async def test_settings_command_without_pages_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = SlotRegistry()
+    app = DeepPyroApp(runtime_factory=_runtime_with_slots(registry), splash=False)
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.pause()
+        calls: list[str] = []
+        monkeypatch.setattr(app.conversation, "add_info", calls.append)
+        await app.settings_command("")
+        assert calls == ["no plugin settings pages are registered"]
