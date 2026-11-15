@@ -61,23 +61,40 @@ class AgentsPlugin(Service):
         """Resolve one preset spec (the default when preset_id is None)."""
         return self._presets.resolve(preset_id, revision=revision)
 
+    def _registry(self) -> weakref.WeakSet[Any]:
+        """The live-agent set, created on first use for uninitialised plugins."""
+        registry = getattr(self, "_agents", None)
+        if registry is None:
+            registry = weakref.WeakSet()
+            self._agents = registry
+        return registry
+
+    def _observers(self) -> list[Callable[[Any], None]]:
+        """The creation observers, created on first use."""
+        observers = getattr(self, "_created", None)
+        if observers is None:
+            observers = []
+            self._created = observers
+        return observers
+
     def live_agents(self) -> tuple[Any, ...]:
         """Agents this service created that are still reachable."""
-        return tuple(self._agents)
+        return tuple(self._registry())
 
     def is_live(self, agent: Any) -> bool:
         """Whether the agent is one this service created and has not closed."""
-        if agent is None or agent not in self._agents:
+        if agent is None or agent not in self._registry():
             return False
         return not getattr(agent, "closed", False)
 
     def on_created(self, callback: Callable[[Any], None]) -> Callable[[], None]:
         """Observe every agent created from now on; returns the disposer."""
-        self._created.append(callback)
+        observers = self._observers()
+        observers.append(callback)
 
         def dispose() -> None:
             try:
-                self._created.remove(callback)
+                observers.remove(callback)
             except ValueError:
                 pass
 
@@ -85,8 +102,8 @@ class AgentsPlugin(Service):
 
     def _register(self, agent: Any) -> None:
         """Remember one agent and tell the creation observers about it."""
-        self._agents.add(agent)
-        for callback in tuple(self._created):
+        self._registry().add(agent)
+        for callback in tuple(self._observers()):
             try:
                 callback(agent)
             except Exception:

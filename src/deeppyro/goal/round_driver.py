@@ -26,11 +26,20 @@ Documented divergences from the DSH reference implementation:
 * deeppyro has no ``agent.status`` property and no ``agent/created`` /
   ``agent/disposed`` bus producers: idleness comes from ``agent.busy`` and the
   live-agent registry of the ``agents`` service supplies created/disposed.
-* ``goal/changed`` still carries the legacy payload ``{"session", "goal"}`` and
-  ``goal/activation-changed`` is never published, so the driver treats every
-  goal change as ``needs_checkpoint`` and notices a disarm by re-reading state.
+* ``goal/changed`` still carries the legacy payload ``{"session", "goal"}``, has
+  no ``change.operation`` and no agent scope, and ``goal/activation-changed`` is
+  never published: the driver treats every goal change as ``needs_checkpoint``,
+  and since it cannot tell a pause from any other change, a change that makes a
+  goal it is actively driving undrivable is handled as a pause (it interrupts
+  that session's turn).
 * ``GoalService.state`` caches its fold, so the driver invalidates the cache
   whenever a user message or a goal change may have moved the round counter.
+* the inbox mirrors its events onto the bus through a fire-and-forget task, so a
+  claim can reach the pre-step fence before its ``claimed`` event does: the fence
+  accepts a ``queued`` attempt whose message matches and promotes it in place.
+* unloading has no ``cancel({kind: "parent"}, {keepInbox: true})``: the driver
+  interrupts a running round with ``agent.interrupt(clear_inbox=False)`` and does
+  not block teardown on the agent reaching idle.
 """
 
 from __future__ import annotations
@@ -54,6 +63,8 @@ GOAL_SOURCE_KIND = "goal"
 
 NEXT_STEP = "next-step"
 NEXT_TURN = "next-turn"
+NEXT_STEP_ATTR = "next_step"
+NEXT_TURN_ATTR = "next_turn"
 TURN_END = "turn/end"
 USER_MESSAGE = "user/message"
 
@@ -199,7 +210,7 @@ def _changed_session(payload: Mapping[str, Any]) -> str | None:
 
 def _pending_messages(inbox: Any) -> list[Any]:
     messages: list[Any] = []
-    for name in (NEXT_STEP, NEXT_TURN):
+    for name in (NEXT_STEP_ATTR, NEXT_TURN_ATTR):
         messages.extend(getattr(inbox, name, ()) or ())
     return messages
 
@@ -216,7 +227,7 @@ def _queued_message_id(agent: Any, before: set[str]) -> str:
     inbox = getattr(agent, "inbox", None)
     if inbox is None:
         return ""
-    for message in reversed(getattr(inbox, NEXT_TURN, ()) or ()):
+    for message in reversed(getattr(inbox, NEXT_TURN_ATTR, ()) or ()):
         identifier = _message_id(message)
         if identifier and identifier not in before:
             return identifier
@@ -249,7 +260,6 @@ class DriverState:
     run: asyncio.Task[Any] | None = None
     stopping: bool = False
     phase: str = PHASE_IDLE
-    last_drivable: bool | None = None
     fold_dirty: bool = True
     goal_state: Any = None
     disposers: list[Callable[[], None]] = field(default_factory=list)
@@ -539,7 +549,7 @@ class RoundDriver:
             return decision
         if kind == "reject":
             self._retire_attempt(state, source)
-            await self._block_rejected(state)
+            await self._block_rejected(state, source)
             return decision
         if kind != "enter":
             return decision
@@ -644,7 +654,7 @@ class RoundDriver:
         if attempt is not None and _same_queued(message, attempt):
             return
         inbox = getattr(state.agent, "inbox", None)
-        pending = {_message_id(item) for item in getattr(inbox, NEXT_TURN, ()) or ()}
+        pending = {_message_id(item) for item in getattr(inbox, NEXT_TURN_ATTR, ()) or ()}
         identifier = _message_id(message)
         if not identifier or identifier not in pending:
             return
@@ -682,15 +692,7 @@ class RoundDriver:
         state.fold_dirty = True
         goal, activation = self.current_goal(state)
         drivable = self.drivable(goal, activation)
-        was_drivable = state.last_drivable
-        state.last_drivable = drivable
-        if (
-            not drivable
-            and was_drivable
-            and state.attempt is not None
-            and _is_busy(state.agent)
-            and not state.stopping
-        ):
+        if not drivable and state.attempt is not None and _is_busy(state.agent) and not state.stopping:
             self._interrupt(state)
         self.request_drive(state)
 
@@ -776,10 +778,12 @@ class RoundDriver:
             return
         state.fold_dirty = True
 
-    async def _block_rejected(self, state: DriverState) -> None:
+    async def _block_rejected(self, state: DriverState, source: Mapping[str, Any]) -> None:
         goal, activation = self.current_goal(state)
-        if not self.drivable(goal, activation) or goal is None:
+        if goal is None or not self.drivable(goal, activation):
             return
+        if goal.id != source.get("goalId") or goal.revision != source.get("revision"):
+            return  # the goal moved on: this rejection is about a stale round
         await self.block(
             state,
             goal.ref,
@@ -789,12 +793,12 @@ class RoundDriver:
             ),
         )
 
-    def _interrupt(self, state: DriverState) -> None:
+    def _interrupt(self, state: DriverState, *, clear_inbox: bool = True) -> None:
         agent = state.agent
 
         async def cancel() -> None:
             try:
-                await agent.interrupt(clear_inbox=True)
+                await agent.interrupt(clear_inbox=clear_inbox)
             except Exception:  # cancelling is best effort
                 logger.exception("goal round driver: could not interrupt the agent")
 
@@ -837,6 +841,8 @@ class RoundDriver:
         attempt = state.attempt
         if attempt is not None:
             attempt.stale = True
+            if _is_busy(state.agent):
+                self._interrupt(state, clear_inbox=False)
         state.requested = False
         if state.run is not None and not state.run.done():
             state.run.cancel()
