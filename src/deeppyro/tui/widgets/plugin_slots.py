@@ -103,16 +103,21 @@ class PluginStatusBar(Static):
     def render_text(self, context: Mapping[str, Any] | None = None) -> Text:
         """Build the status line without touching widget state (test seam)."""
         parts: list[Text] = []
-        registry = self._registry
-        if registry is None:
-            return Text()
         payload = dict(context or {})
-        for contribution in registry.list(STATUS):
-            try:
-                value = call_slot_factory(contribution.factory, payload)
-                parts.append(_to_text(value))
-            except Exception:  # noqa: BLE001 - isolate one broken plugin
-                parts.append(Text("!", style="dim"))
+        registry = self._registry
+        if registry is not None:
+            for contribution in registry.list(STATUS):
+                try:
+                    value = call_slot_factory(contribution.factory, payload)
+                    parts.append(_to_text(value))
+                except Exception:  # noqa: BLE001 - isolate one broken plugin
+                    parts.append(Text("!", style="dim"))
+        ui_status = payload.get("ui_status")
+        if isinstance(ui_status, Mapping):
+            for slot_id in sorted(ui_status):
+                value = str(ui_status[slot_id] or "").strip()
+                if value:
+                    parts.append(Text(value))
         if not parts:
             return Text()
         line = Text()

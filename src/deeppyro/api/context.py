@@ -10,6 +10,54 @@ from typing import Any
 from .errors import PluginDependencyError
 
 
+class _NoopUi:
+    """Stand-in returned by :attr:`PluginContext.ui` when no ui service exists.
+
+    Headless sessions and tests should not have to special-case the service:
+    every producer method returns ``False`` and the counters stay at zero.
+    """
+
+    available = False
+
+    def post(self, action: Any, /, **payload: Any) -> bool:
+        return False
+
+    def notify(self, text: str, level: str = "info") -> bool:
+        return False
+
+    def open_screen(self, slot_id: str | None = None) -> bool:
+        return False
+
+    def open_panel(self, slot_id: str | None = None) -> bool:
+        return False
+
+    def set_status(self, slot_id: str, text: str) -> bool:
+        return False
+
+    def add_row(self, text: str, *, level: str = "info") -> bool:
+        return False
+
+    def refresh(self) -> bool:
+        return False
+
+    @property
+    def pending(self) -> int:
+        return 0
+
+    @property
+    def error_messages(self) -> tuple[str, ...]:
+        return ()
+
+    def stats(self) -> dict[str, Any]:
+        return {"bound": False, "queued": 0, "delivered": 0, "dropped": 0, "errors": 0}
+
+    def __repr__(self) -> str:
+        return "<NoopUi>"
+
+
+_NOOP_UI = _NoopUi()
+
+
 class PluginContext:
     """A thin, plugin-friendly facade over the raw Cordis context.
 
@@ -116,6 +164,16 @@ class PluginContext:
     @property
     def presets(self) -> Any:
         return self.service("presets")
+
+    @property
+    def ui(self) -> Any:
+        """Thread-safe UI action channel, or a no-op stand-in in headless runs.
+
+        Plugins may call this from any thread; actions are drained by the TUI
+        on its own thread. Without a TUI every method simply returns ``False``.
+        """
+        service = self.get("ui")
+        return service if service is not None else _NOOP_UI
 
     # -- lifecycle helpers ------------------------------------------------
     def effect(self, execute: Callable[[], Any], label: str = "anonymous") -> Any:

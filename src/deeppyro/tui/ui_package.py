@@ -63,6 +63,7 @@ from deeppyro.paths import deeppyro_home
 from deeppyro.tui.slots import (
     CONVERSATION,
     PANEL,
+    SCREEN,
     SETTINGS,
     STATUS,
     SlotRegistry,
@@ -83,6 +84,7 @@ _SECTION_KINDS: dict[str, str] = {
     "conversation": CONVERSATION,
     "panels": PANEL,
     "settings": SETTINGS,
+    "screens": SCREEN,
 }
 
 #: Type of the optional import seam used by tests and embedders.
@@ -409,6 +411,11 @@ def _load_entry(
             if factory is None:
                 return None
             registry.add_settings_page(title, factory, order, id=slot_id, plugin_id=bundle_id)
+        elif kind == SCREEN:
+            renderer = _callable(entry, "renderer", base, label, import_module, path, errors)
+            if renderer is None:
+                return None
+            registry.add_screen(slot_id, title=title, renderer=renderer, order=order, plugin_id=bundle_id)
         else:  # pragma: no cover - guarded by _SECTIONS
             errors.append(f"{path}: {label}: unsupported section {kind!r}")
             return None

@@ -5,12 +5,13 @@ the application. This module is deliberately Textual-free so it can be imported
 by the kernel, tests, and future headless frontends; the widgets that render a
 registry live in :mod:`deeppyro.tui.widgets.plugin_slots`.
 
-Four slot kinds are supported:
+Five slot kinds are supported:
 
 * `status` - a one-line status item rendered by `PluginStatusBar`;
 * `conversation` - an event row rendered into the conversation stream;
 * `panel` - a free-form Textual widget shown in `PluginPanelScreen`;
-* `settings` - a settings page, rendered by the same panel host.
+* `settings` - a settings page, rendered by the same panel host;
+* `screen` - a full modal screen shown in `SlotScreen`.
 
 All registrations return an idempotent dispose callable. Contributions are
 de-duplicated by `(kind, id)`; the second registration raises `SlotError`
@@ -51,9 +52,10 @@ STATUS: Final = "status"
 CONVERSATION: Final = "conversation"
 PANEL: Final = "panel"
 SETTINGS: Final = "settings"
+SCREEN: Final = "screen"
 
-SlotKind = Literal["status", "conversation", "panel", "settings"]
-SLOT_KINDS: Final[tuple[SlotKind, ...]] = (STATUS, CONVERSATION, PANEL, SETTINGS)
+SlotKind = Literal["status", "conversation", "panel", "settings", "screen"]
+SLOT_KINDS: Final[tuple[SlotKind, ...]] = (STATUS, CONVERSATION, PANEL, SETTINGS, SCREEN)
 DEFAULT_ORDER: Final = 100
 
 
@@ -66,14 +68,15 @@ class SlotContribution:
     """One plugin contribution to a UI slot.
 
     Attributes:
-        kind: One of `status`, `conversation`, `panel`, `settings`.
+        kind: One of `status`, `conversation`, `panel`, `settings`, `screen`.
         id: Stable identity within the kind; used for de-duplication.
         plugin_id: Plugin that owns the contribution.
         order: Sort key inside a kind (lower renders first).
         factory: Renderer/factory callable. Its signature depends on the kind:
             status takes a context mapping and returns `str`/`rich.text.Text`;
             conversation takes an event dict and returns a Textual widget or
-            `None`; panel/settings take a context mapping and return a widget.
+            `None`; panel/settings/screen take a context mapping and return a
+            widget. Screen renderers must be synchronous and read-only.
         predicate: Optional event filter for conversation rows.
         title: Human-readable title for panel/settings entries.
         metadata: Small plugin-defined payload; never mutated by the host.
@@ -128,11 +131,11 @@ def _guess_plugin_id(factory: Any) -> str:
 def default_slot_id(kind: str, factory: Any, title: str = "") -> str:
     """Return a deterministic id for a contribution.
 
-    Panels and settings pages prefer their human title; renderers use their
-    qualified name. Lambdas include the source line so two lambdas in one
+    Panels, settings pages and screens prefer their human title; renderers use
+    their qualified name. Lambdas include the source line so two lambdas in one
     plugin do not collide accidentally.
     """
-    if title and kind in (PANEL, SETTINGS):
+    if title and kind in (PANEL, SETTINGS, SCREEN):
         return _slugify(title)
     module = str(getattr(factory, "__module__", "") or "plugin")
     qualname = str(getattr(factory, "__qualname__", "") or getattr(factory, "__name__", "") or "slot")
@@ -275,6 +278,38 @@ class SlotRegistry:
             metadata=metadata,
         )
 
+    def add_screen(
+        self,
+        id: str,
+        *,
+        title: str = "",
+        renderer: Callable[[Mapping[str, Any]], Any],
+        kind: str = SCREEN,
+        order: int = DEFAULT_ORDER,
+        plugin_id: str = "",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> Callable[[], None]:
+        """Register a full-screen renderer; returns a dispose callable.
+
+        The renderer receives the host snapshot mapping built by
+        :func:`build_slot_context` and returns a Textual widget (or an iterable
+        of widgets). It must be synchronous and must not touch the host widget
+        tree; the modal host isolates every exception.
+        """
+        if kind != SCREEN:
+            raise SlotError(f"add_screen only registers {SCREEN!r} slots, got {kind!r}")
+        if not str(id or "").strip():
+            raise SlotError("screen slot id must not be empty")
+        return self._add(
+            SCREEN,
+            factory=renderer,
+            order=order,
+            slot_id=id,
+            plugin_id=plugin_id,
+            title=title,
+            metadata=metadata,
+        )
+
     def _add(
         self,
         kind: SlotKind,
@@ -288,7 +323,8 @@ class SlotRegistry:
         predicate: Callable[[dict[str, Any]], bool] | None = None,
     ) -> Callable[[], None]:
         if kind not in SLOT_KINDS:
-            raise SlotError(f"unknown slot kind: {kind!r}")
+            known = ", ".join(SLOT_KINDS)
+            raise SlotError(f"unknown slot kind {kind!r} (known: {known})")
         if not _is_callable(factory):
             raise SlotError(f"{kind} slot factory must be callable")
         validated_order = _validate_order(order)
@@ -348,6 +384,10 @@ class SlotRegistry:
     def settings_pages(self) -> list[SlotContribution]:
         """Settings-page factories in display order."""
         return self.list(SETTINGS)
+
+    def screens(self) -> list[SlotContribution]:
+        """Full-screen renderers in display order."""
+        return self.list(SCREEN)
 
     def get(self, kind: str, slot_id: str) -> SlotContribution | None:
         """Return one contribution, or None when it is not registered."""
@@ -428,17 +468,22 @@ class SlotsPlugin(Plugin):
 
     plugin_id = "slots"
     version = "0.1.0"
-    description = "TUI slot registry: status items, conversation rows, panels, settings"
+    description = "TUI slot registry: status items, conversation rows, panels, settings, screens"
     inject: ClassVar[list[str]] = []
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
+        from deeppyro.tui.ui import UiService
+
         self.registry = SlotRegistry(plugin_id=self.plugin_id)
+        self.ui = UiService()
         self.ui_packages: list[UIPackageReport] = []
         self._ui_scan_errors: list[str] = []
 
     def setup(self, ctx: Any, config: Any) -> None:
-        """Provide the registry as a cordis service and load installed UI packages."""
+        """Provide the registry and ui channel as cordis services."""
+        if getattr(ctx, "raw", None) is not None:
+            ctx.provide("ui", self.ui)
         ctx.provide("slots", self.registry)
         try:
             self.load_ui_packages()
@@ -567,7 +612,10 @@ def build_slot_context(app: Any) -> dict[str, Any]:
     Keys are stable and documented in docs/spec/tui-slots.md:
     `app`, `runtime`, `cwd`, `session_id`, `provider`, `model`, `phase`,
     `input_tokens`, `output_tokens`, `cached_tokens`, `context_window`,
-    `usage`, `busy`, `theme`, `locale`, `translate`.
+    `usage`, `busy`, `theme`, `locale`, `translate`, `ui_status`.
+
+    `ui_status` maps plugin-chosen ids to inline text set through the `ui`
+    service; the status bar renders the non-empty values after slot items.
 
     Theme and locale are read from the host registry when the app exposes one;
     without a registry the theme/locale maps are empty and `translate` is the
@@ -608,6 +656,7 @@ def build_slot_context(app: Any) -> dict[str, Any]:
         "theme": theme,
         "locale": locale,
         "translate": translate,
+        "ui_status": dict(getattr(app, "_ui_status", {}) or {}),
     }
 
 
@@ -615,6 +664,7 @@ __all__ = [
     "CONVERSATION",
     "DEFAULT_ORDER",
     "PANEL",
+    "SCREEN",
     "SETTINGS",
     "SLOT_KINDS",
     "STATUS",

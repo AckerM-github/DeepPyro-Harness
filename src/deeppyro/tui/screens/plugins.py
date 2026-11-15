@@ -23,6 +23,7 @@ from deeppyro.plugins.model import SOURCE_LABELS, PluginInfo, ValidationResult
 
 if TYPE_CHECKING:
     from deeppyro.plugins.manager import PluginManager
+    from deeppyro.tui.health import HealthSnapshot, PluginHealth
 
 _COLUMNS = ("名称", "版本", "来源", "状态", "说明")
 _EMPTY_HINT = (
@@ -73,6 +74,12 @@ class PluginScreen(ModalScreen[str | None]):
         background: $surface;
     }
 
+    #plugin-health {
+        height: auto;
+        max-height: 2;
+        color: $text-muted;
+    }
+
     #plugin-detail {
         height: auto;
         max-height: 10;
@@ -92,6 +99,7 @@ class PluginScreen(ModalScreen[str | None]):
         self,
         manager: PluginManager | None = None,
         *,
+        health: HealthSnapshot | None = None,
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,
@@ -102,6 +110,7 @@ class PluginScreen(ModalScreen[str | None]):
 
             manager = DefaultPluginManager()
         self._manager = manager
+        self._health = health
         self._ids: list[str] = []
 
     @property
@@ -114,13 +123,37 @@ class PluginScreen(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="plugin-dialog"):
             yield Static("外部插件", id="plugin-title", markup=False)
+            yield Static("", id="plugin-health", markup=False)
             yield DataTable(id="plugin-table")
             yield Static("", id="plugin-detail", markup=False)
             yield Static(_KEY_HINT, id="plugin-hint", markup=False)
 
     def on_mount(self) -> None:
+        self._render_health()
         self._load_rows()
         self.query_one("#plugin-table", DataTable).focus()
+
+    def _render_health(self) -> None:
+        """Show the shared diagnosis summary above the table."""
+        widget = self.query_one("#plugin-health", Static)
+        if self._health is None:
+            widget.update("")
+            widget.display = False
+            return
+        lines = [self._health.summary()]
+        lines.extend(f"扫描错误: {error}" for error in self._health.errors[:2])
+        widget.update("\n".join(lines))
+        widget.display = True
+
+    def _health_record(self, plugin_id: str) -> PluginHealth | None:
+        if self._health is None:
+            return None
+        return self._health.get(plugin_id)
+
+    def _health_records(self) -> tuple[PluginHealth, ...]:
+        if self._health is None:
+            return ()
+        return self._health.records
 
     # -- table -----------------------------------------------------------
 
@@ -131,16 +164,30 @@ class PluginScreen(ModalScreen[str | None]):
         table.add_columns(*_COLUMNS)
         infos = list(self._manager.list())
         for info in infos:
+            record = self._health_record(info.id)
             table.add_row(
                 info.name or info.id,
                 info.version or "-",
                 SOURCE_LABELS.get(info.source, info.source),
-                self._status_text(info),
-                self._summary_text(info),
+                self._status_text(info, record),
+                self._summary_text(info, record),
                 key=info.id,
             )
             self._ids.append(info.id)
-        if not infos:
+        seen = set(self._ids)
+        for record in self._health_records():
+            if record.id in seen:
+                continue
+            table.add_row(
+                record.id,
+                record.version or "-",
+                "插件包",
+                record.state,
+                record.summary,
+                key=record.id,
+            )
+            self._ids.append(record.id)
+        if not self._ids:
             self._update_detail(_EMPTY_HINT)
             return
         index = 0
@@ -149,13 +196,17 @@ class PluginScreen(ModalScreen[str | None]):
         table.move_cursor(row=index)
 
     @staticmethod
-    def _status_text(info: PluginInfo) -> str:
+    def _status_text(info: PluginInfo, record: PluginHealth | None = None) -> str:
+        if record is not None:
+            return record.state
         if info.error:
             return "错误"
         return "启用" if info.enabled else "禁用"
 
     @staticmethod
-    def _summary_text(info: PluginInfo) -> str:
+    def _summary_text(info: PluginInfo, record: PluginHealth | None = None) -> str:
+        if record is not None and not record.healthy:
+            return record.summary
         if info.error:
             return info.error
         return info.description or "-"
@@ -193,6 +244,28 @@ class PluginScreen(ModalScreen[str | None]):
                 lines.append("校验: 通过")
             else:
                 lines.append(f"校验: 失败  {result.error or ''}".rstrip())
+        record = self._health_record(info.id)
+        if record is not None:
+            lines.append(f"健康: {record.state}")
+            for issue in record.issues:
+                lines.append(f"  {issue.kind}: {issue.message}")
+                if issue.remediation:
+                    lines.append(f"  建议: {issue.remediation}")
+        self._update_detail("\n".join(lines))
+
+    def _show_health_detail(self, record: PluginHealth) -> None:
+        lines = [
+            f"标识: {record.id}",
+            f"版本: {record.version or '-'}",
+            f"目录: {record.directory or '-'}",
+            f"状态: {record.state}",
+        ]
+        if record.ui_slots:
+            lines.append(f"声明槽位: {', '.join(record.ui_slots)}")
+        for issue in record.issues:
+            lines.append(f"错误: {issue.kind}: {issue.message}")
+            if issue.remediation:
+                lines.append(f"建议: {issue.remediation}")
         self._update_detail("\n".join(lines))
 
     # -- actions ---------------------------------------------------------
@@ -241,6 +314,10 @@ class PluginScreen(ModalScreen[str | None]):
             return
         info = self._manager.get(plugin_id)
         if info is None:
+            record = self._health_record(plugin_id)
+            if record is not None:
+                self._show_health_detail(record)
+                return
             self.notify(f"插件 {plugin_id!r} 不存在", severity="error")
             return
         try:

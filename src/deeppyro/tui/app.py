@@ -42,15 +42,27 @@ from deeppyro.tui.screens.picker import PickerScreen
 from deeppyro.tui.screens.plan import PlanScreen, plan_summary
 from deeppyro.tui.screens.plugin_panel import open_plugin_panel
 from deeppyro.tui.screens.question import QuestionScreen
+from deeppyro.tui.screens.slot_screen import open_slot_screen
 from deeppyro.tui.screens.splash import SplashScreen
 from deeppyro.tui.screens.team import TaskBoardScreen, TeamPanelScreen
 from deeppyro.tui.screens.thinking import ThinkingScreen
 from deeppyro.tui.sink import TuiSink
 from deeppyro.tui.slots import (
+    SCREEN,
     SlotRegistry,
     apply_conversation_slots,
     build_slot_context,
     resolve_slot_registry,
+)
+from deeppyro.tui.ui import (
+    ADD_ROW,
+    NOTIFY,
+    OPEN_PANEL,
+    OPEN_SCREEN,
+    REFRESH,
+    SET_STATUS,
+    UiAction,
+    resolve_ui_service,
 )
 from deeppyro.tui.widgets.activity_bar import AGENTS, JOBS, PLAN, ActivityBar
 from deeppyro.tui.widgets.agent_process import AgentProcess
@@ -147,6 +159,9 @@ class DeepPyroApp(App[None]):
         self._phase = "idle"
         self._context_used = 0
         self._last_ctrl_c = 0.0
+        self._ui: Any = None
+        self._ui_timer: Any = None
+        self._ui_status: dict[str, str] = {}
 
     # -- composition -----------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -195,6 +210,7 @@ class DeepPyroApp(App[None]):
         self._configure_schedule()
         await self._start_schedule()
         self._bind_slots()
+        self._bind_ui()
         self._update_splash()
         self._render_welcome()
         self._refresh_activity()
@@ -259,7 +275,121 @@ class DeepPyroApp(App[None]):
         except Exception:  # noqa: BLE001, S110 - optional chrome never blocks boot
             pass
 
+    def _bind_ui(self) -> None:
+        """Attach the optional `ui` service and drain its queue on this thread."""
+        ui = resolve_ui_service(self.runtime)
+        if ui is None:
+            return
+        try:
+            ui.bind(self)
+            self._ui = ui
+            self._ui_timer = self.set_interval(0.1, self._drain_ui)
+        except Exception:  # noqa: BLE001 - optional chrome never blocks boot
+            self._ui = None
+            self._ui_timer = None
+
+    def _drain_ui(self) -> None:
+        """Deliver queued plugin actions; always runs on the Textual thread."""
+        ui = self._ui
+        if ui is None:
+            return
+        try:
+            ui.drain()
+        except Exception:  # noqa: BLE001, S110 - one drain failure cannot break the timer
+            pass
+
+    def _unbind_ui(self) -> None:
+        """Stop the drain timer and detach before the runtime closes."""
+        timer = self._ui_timer
+        self._ui_timer = None
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:  # noqa: BLE001, S110 - a dead timer is already stopped
+                pass
+        ui = self._ui
+        self._ui = None
+        if ui is None:
+            return
+        for step in (ui.unbind, ui.clear):
+            try:
+                step()
+            except Exception:  # noqa: BLE001, S110 - shutdown is best effort
+                pass
+
+    def handle_ui_action(self, action: UiAction) -> None:
+        """Handle one `ui` action on the Textual thread (the drain backend)."""
+        payload = action.payload
+        kind = action.kind
+        if kind == NOTIFY:
+            self._notify_ui(payload)
+            return
+        if kind == OPEN_SCREEN:
+            self._open_ui_screen(payload)
+            return
+        if kind == OPEN_PANEL:
+            self._open_ui_panel(payload)
+            return
+        if kind == SET_STATUS:
+            self._set_ui_status(payload)
+            return
+        if kind == ADD_ROW:
+            self._add_ui_row(payload)
+            return
+        if kind == REFRESH:
+            self.refresh_status()
+            return
+        self.notify(f"unknown plugin ui action: {kind}", severity="warning")
+
+    def _notify_ui(self, payload: Mapping[str, Any]) -> None:
+        level = str(payload.get("level") or "info").lower()
+        severity = {"warning": "warning", "error": "error"}.get(level, "information")
+        text = str(payload.get("text") or "").strip()
+        if text:
+            self.notify(text, severity=severity)
+
+    def _open_ui_screen(self, payload: Mapping[str, Any]) -> None:
+        registry = self._slots
+        if registry is None:
+            self.notify("plugin screens are not available in this session", severity="warning")
+            return
+        slot_id = str(payload.get("slot_id") or "").strip() or None
+        screen = open_slot_screen(self, registry, slot_id=slot_id, context=build_slot_context(self))
+        if screen is None:
+            self.notify(f"no plugin screen: {slot_id or 'default'}", severity="warning")
+
+    def _open_ui_panel(self, payload: Mapping[str, Any]) -> None:
+        registry = self._slots
+        if registry is None:
+            self.notify("plugin panels are not available in this session", severity="warning")
+            return
+        slot_id = str(payload.get("slot_id") or "").strip() or None
+        screen = open_plugin_panel(self, registry, slot_id=slot_id, context=build_slot_context(self))
+        if screen is None:
+            self.notify(f"no plugin panel: {slot_id or 'default'}", severity="warning")
+
+    def _set_ui_status(self, payload: Mapping[str, Any]) -> None:
+        slot_id = str(payload.get("id") or "").strip()
+        if not slot_id:
+            return
+        text = str(payload.get("text") or "").strip()
+        if text:
+            self._ui_status[slot_id] = text
+        else:
+            self._ui_status.pop(slot_id, None)
+        self._refresh_plugin_status()
+
+    def _add_ui_row(self, payload: Mapping[str, Any]) -> None:
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            return
+        if str(payload.get("level") or "info").lower() == "error":
+            self.conversation.add_error(text)
+        else:
+            self.conversation.add_info(text)
+
     async def on_unmount(self) -> None:
+        self._unbind_ui()
         runtime = self.runtime
         if runtime is None:
             return
@@ -1378,12 +1508,24 @@ class DeepPyroApp(App[None]):
         )
         if screen is not None:
             return
+        screen = open_slot_screen(
+            self,
+            registry,
+            slot_id=argument.strip() or None,
+            context=build_slot_context(self),
+        )
+        if screen is not None:
+            return
         panels = [row.id for row in registry.list("panel")]
+        screens = [row.id for row in registry.list(SCREEN)]
         if panels:
             self.conversation.add_info("plugin panels: " + ", ".join(panels))
+        if screens:
+            self.conversation.add_info("plugin screens: " + ", ".join(screens))
+        if panels or screens:
             self.conversation.add_info("use /panel <id>")
         else:
-            self.conversation.add_info("no plugin panels are registered")
+            self.conversation.add_info("no plugin panels or screens are registered")
 
     async def show_plugins(self) -> None:
         """Open the external plugin manager, or list kernel plugins as fallback."""
@@ -1395,7 +1537,15 @@ class DeepPyroApp(App[None]):
             if callable(service):
                 plugin_manager = service("plugin_manager")
                 manager = getattr(plugin_manager, "manager", None)
-            await self.push_screen_wait(PluginScreen(manager))
+            health = None
+            if manager is not None:
+                try:
+                    from deeppyro.tui.health import scan_health
+
+                    health = scan_health()
+                except Exception:  # noqa: BLE001 - health is optional detail
+                    health = None
+            await self.push_screen_wait(PluginScreen(manager, health=health))
             return
         except Exception:  # noqa: BLE001, S110 - outside a worker or manager failure
             pass
