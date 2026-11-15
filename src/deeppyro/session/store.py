@@ -16,8 +16,7 @@ from typing import Any
 from deeppyro.config import session_dir
 from deeppyro.core.errors import SessionError
 from deeppyro.core.ids import new_session_id, now_ms
-from deeppyro.core.wire import LogRecord, Message, SessionHeader
-from deeppyro.llm.messages import message_text
+from deeppyro.core.wire import LogRecord, SessionHeader
 from deeppyro.session import writer
 from deeppyro.session.layout import (
     LOG_BASENAME,
@@ -26,7 +25,13 @@ from deeppyro.session.layout import (
     encode_segment,
     flat_session_path,
 )
-from deeppyro.session.metadata import derive_title, existing_title, is_archived, preview_text
+from deeppyro.session.metadata import (
+    derive_title,
+    existing_title,
+    first_user_text,
+    is_archived,
+    preview_text,
+)
 from deeppyro.session.reader import read_header, read_session_file
 from deeppyro.session.session import Session
 
@@ -215,14 +220,4 @@ def _build_info(path: pathlib.Path, header: SessionHeader, records: Sequence[Log
 
 def _first_user_preview(records: Sequence[LogRecord]) -> str | None:
     """One-line preview of the first thing the person said in this session."""
-    for record in records:
-        if record.type != "user/message":
-            continue
-        try:
-            message = Message.model_validate(record.data)
-        except Exception:  # noqa: BLE001, S112 - a damaged record must not hide the session
-            continue
-        preview = preview_text(message_text(message))
-        if preview:
-            return preview
-    return None
+    return preview_text(first_user_text(records))

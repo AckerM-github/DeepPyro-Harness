@@ -19,7 +19,7 @@ def test_list_derives_a_title_and_preview_from_the_first_user_message(tmp_path: 
     session = store.create(str(tmp_path / "ws"))
     session.append("user/message", _user("please refactor the sandbox gate").model_dump(exclude_none=True))
     info = store.list()[0]
-    assert info.title == "please refactor the sandbox gate"
+    assert info.title == "please refactor the san\u2026"
     assert info.preview == "please refactor the sandbox gate"
     assert info.updatedAt >= info.createdAt
     session.close()

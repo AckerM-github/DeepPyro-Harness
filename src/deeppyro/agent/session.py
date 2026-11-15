@@ -348,6 +348,20 @@ class AgentSession:
         """The durable session id (the default hook dispatch scope key)."""
         return self._session.session_id
 
+    @property
+    def session(self) -> Any:
+        """The durable session this agent appends to.
+
+        Plugins that observe a turn through a hook use it to read records or to
+        append their own (titles, notes) without opening a second handle.
+        """
+        return self._session
+
+    @property
+    def provider_name(self) -> str:
+        """Name of the provider that serves this agent's requests."""
+        return str(getattr(self._provider, "name", "") or "")
+
     # -- public API --------------------------------------------------------
     async def send(self, text: str) -> str:
         """Queue a next-turn user message and run the loop until idle."""

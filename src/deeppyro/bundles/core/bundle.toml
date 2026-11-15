@@ -88,6 +88,13 @@ id = "hook-journal"
 plugin = "deeppyro.builtin.hook_journal:HookJournalPlugin"
 critical = false
 
+# Names a session from its first exchange: the store derives a short fallback
+# title, and this plugin upgrades it once with a single small request.
+[[plugins]]
+id = "session-title"
+plugin = "deeppyro.builtin.session_title:SessionTitlePlugin"
+critical = false
+
 [[plugins]]
 id = "jobs"
 plugin = "deeppyro.builtin.jobs:JobsPlugin"

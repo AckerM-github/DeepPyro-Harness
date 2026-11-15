@@ -138,6 +138,14 @@ hookTools = []
 
 # Named sandbox+approval bundles offered by /permission. See
 # docs/spec/sandbox.md.
+# Session titles: a short fallback is derived locally, then upgraded once by a
+# single small request after the first turn. Set enabled = false to skip the
+# request (and keep the fallback only).
+[title]
+enabled = true
+maxChars = 24
+model = ""
+
 [permission]
 defaultPreset = "workspace-write"
 """

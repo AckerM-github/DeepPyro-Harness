@@ -280,12 +280,17 @@ conversation is this?" without opening it. All three facts come from the log.
 
 ### 13.1 Title
 
-* `session/title` (part of DSH's vocabulary) — `{"title": str, "source": str}`;
-  the last record wins, so renaming is a single append.
+* `session/title` (part of DSH's vocabulary) — `{"title": str, "source": {
+  "kind": str}}`; the last record wins, so renaming is a single append. A title
+  is stored up to 120 characters so a long rename survives; only generated ones
+  are trimmed to 24.
 * `deeppyro.session.metadata.record_title(session, title, *, source="user")`
-  appends one; `existing_title(records)` reads the newest.
+  appends one; `existing_title(records)` reads the newest and
+  `title_source(records)` says where it came from (`user`, `llm`, a plugin id).
 * `SessionInfo.title` is the newest `session/title` when present, otherwise a
-  **derived** title from the first `user/message` (`derive_title`, 60 chars).
+  **derived** title from the first `user/message` (`derive_title`): 24
+  characters, first sentence only, and a leading `/command` is dropped so
+  `/rename fix the gate` and `fix the gate` read the same in a list.
   A session is therefore never `(untitled)`, and an explicit title written by a
   creator plugin or by `/rename` always wins over the derived one.
 * TUI: `/rename <title>`.
@@ -317,3 +322,32 @@ conversation is this?" without opening it. All three facts come from the log.
 `listing_lines` (grouped by workspace) and `matches` (id / title / preview /
 cwd). `/sessions [query|--all]` prints them; `/resume [id|index|text]` opens one
 by id prefix, index, or a single fuzzy match.
+
+### 13.5 Generated titles (the `session-title` plugin)
+
+The derived title is a truncation, which reads like a fragment in a list. The
+built-in `session-title` plugin upgrades it once, using the same records DSH
+writes, so both harnesses name a session the same way:
+
+* `session/title-llm-request` (part of DSH's vocabulary) — captures exactly what
+  the request was: `{titleProvider, messageSeqs, route, system, messages,
+  maxTokens, reasoningEffort}`. The prompt is DSH's verbatim (`aim for about 5
+  words, or 10 CJK characters`), and the messages are the first user message
+  rendered as a JSON array.
+* `session/title` with `source: {"kind": "llm"}` — written only if the request
+  produced text; `clean_title` takes the first non-empty line, drops quotes,
+  `Title:`/`标题：` prefixes, trailing punctuation and Markdown.
+
+Rules that keep a title from ever costing a turn:
+
+* only the first turn triggers it (`agent/turn-stopping`, `turn == 1`);
+* an existing title — a rename, or one a creator plugin wrote — is never
+  overwritten, so re-running the turn is a no-op;
+* the request runs in the background (`close()` cancels it), is capped at 64
+  tokens and 20 seconds, and every failure is logged and swallowed: the derived
+  fallback title simply stays;
+* `[title]` in the user config: `enabled` (default `true`), `maxChars` (24),
+  `model` (empty means the session's model), `maxTokens` and `timeout`.
+* A one-shot run (`dpyro --headless`) closes the provider when the turn ends, so
+  the request may be abandoned mid-flight; that is logged at debug level and the
+  derived fallback title stands. Long-lived sessions (TUI, IM) finish it.

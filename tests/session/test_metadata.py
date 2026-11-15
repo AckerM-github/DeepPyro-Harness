@@ -41,8 +41,23 @@ def test_derive_title_collapses_whitespace_and_truncates() -> None:
     long = "x" * 200
     title = derive_title(long)
     assert title is not None
-    assert len(title) == 60
+    assert len(title) == 24
     assert title.endswith("\u2026")
+
+
+def test_derive_title_stops_at_the_first_sentence() -> None:
+    assert derive_title("fix the sandbox gate. then run the tests") == "fix the sandbox gate"
+    assert derive_title("\u4f60\u597d\u3002\u6211\u60f3\u770b\u770b\u4ee3\u7801") == "\u4f60\u597d"
+    assert derive_title("upgrade to v0.1.0 please") == "upgrade to v0.1.0 please"
+    assert derive_title("first line\nsecond line") == "first line"
+
+
+def test_derive_title_drops_a_leading_command() -> None:
+    assert derive_title("/rename fix the gate") == "fix the gate"
+    # A path is not a command: the slash has to introduce a bare word.
+    path_title = derive_title("/etc/passwd is world readable") or ""
+    assert path_title.startswith("/etc/passwd")
+    assert derive_title("/resume") == "/resume"
 
 
 def test_preview_text_keeps_one_line() -> None:
