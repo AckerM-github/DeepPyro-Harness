@@ -475,6 +475,7 @@ class GoalService:
     def _now(self) -> int:
         try:
             value = self._clock()
+        # boundary: the clock is an injected callable
         except Exception:  # noqa: BLE001 - a broken clock must not block a goal
             value = int(time.time() * 1000)
         return int(value)
@@ -516,6 +517,7 @@ class GoalService:
             return
         try:
             pending = emitter(event, payload)
+        # boundary: the emitter is an injected event-bus callback
         except Exception:
             logger.warning("failed to publish %s", event, exc_info=True)
             return

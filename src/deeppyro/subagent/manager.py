@@ -322,6 +322,7 @@ class SubagentService:
                 reply = await agent.send(prompt)
             except asyncio.CancelledError:
                 raise
+            # boundary: agent.send() runs a full child turn with LLM, tools and hooks
             except Exception as exc:  # noqa: BLE001 - report a failed run in the result
                 result = SubagentResult(
                     child_id=activation.child_id,
@@ -485,6 +486,7 @@ class SubagentService:
         )
         try:
             session = create_seeded(header, seed)
+        # boundary: the sessions store is a duck-typed plugin backend (create_with_seed)
         except Exception as exc:
             raise SubagentError(f"cannot create fork session: {exc}") from exc
         return session, inherited_event_count
@@ -500,6 +502,7 @@ class SubagentService:
         if callable(factory):
             try:
                 return factory(provider)
+            # boundary: the llm service's provider() factory is plugin code
             except Exception as exc:
                 raise SubagentError(f"unknown llm provider {provider!r}: {exc}") from exc
         raise SubagentError(f"unknown llm provider {provider!r}")
@@ -531,6 +534,7 @@ class SubagentService:
     ) -> Any:
         try:
             options = self._agents.options(model=model, context_window=self._context_window)
+        # boundary: the agents service is a duck-typed plugin that builds the subagent's options
         except Exception as exc:
             raise SubagentError(f"cannot build subagent options: {exc}") from exc
         try:
@@ -546,6 +550,7 @@ class SubagentService:
                 preset=preset,
                 preset_revision=preset_revision,
             )
+        # boundary: the agents plugin creates the subagent's agent and session
         except Exception as exc:
             raise SubagentError(f"cannot create subagent agent: {exc}") from exc
         return agent
@@ -572,6 +577,7 @@ class SubagentService:
             return
         try:
             append(record_type, data)
+        # boundary: the parent session is a duck-typed object; bookkeeping append failures are not fatal
         except Exception:
             logger.warning("failed to append %s record", record_type, exc_info=True)
 
@@ -649,6 +655,7 @@ class SubagentService:
             outcome = followup(notice, source=source)
             if inspect.isawaitable(outcome):
                 await outcome
+        # boundary: parent_agent.followup() is a duck-typed agent handle; the notice is best effort
         except Exception:
             logger.warning(
                 "failed to deliver settlement notice for subagent %s",

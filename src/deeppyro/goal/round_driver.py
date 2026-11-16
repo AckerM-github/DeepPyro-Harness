@@ -136,7 +136,7 @@ def _as_message(value: Any) -> Message | None:
     if isinstance(value, Mapping):
         try:
             return Message.model_validate(dict(value))
-        except Exception:  # noqa: BLE001 - a malformed dump must not break the fence
+        except (TypeError, ValueError):  # a malformed dump must not break the fence
             logger.debug("goal round driver: dropping an unusable claimed message")
             return None
     return None
@@ -406,6 +406,7 @@ class RoundDriver:
                 await self.drive(state)
             except asyncio.CancelledError:
                 raise
+            # boundary: drive() runs plugin agents/goals; a driver failure disarms instead of raising
             except Exception:  # a driver failure disarms, never raises
                 logger.exception("goal round driver: a drive attempt failed")
                 self._disarm(state)
@@ -428,6 +429,7 @@ class RoundDriver:
         if state.needs_checkpoint:
             try:
                 await self.checkpoint(state)
+            # boundary: checkpoint() is an overridable hook that may run plugin code
             except Exception:  # a failed checkpoint disarms
                 logger.exception("goal round driver: the checkpoint failed")
                 self._disarm(state)
@@ -479,6 +481,7 @@ class RoundDriver:
                     "round": round_number,
                 },
             )
+        # boundary: state.agent.followup() is a duck-typed agent handle that writes to its session and sinks
         except Exception as exc:  # queueing must not kill the loop
             logger.exception("goal round driver: could not queue a round")
             state.attempt = None
@@ -628,6 +631,7 @@ class RoundDriver:
                 continue
             try:
                 inbox.prepend(NEXT_STEP, message)
+            # boundary: inbox.prepend() is a duck-typed agent inbox (session append + sink notification)
             except Exception:  # restoring must never break the step
                 logger.exception("goal round driver: could not restore claimed input")
                 continue
@@ -767,6 +771,7 @@ class RoundDriver:
                 state.fold_dirty = False
             state.goal_state = goals.state(session)
             activation = goals.activation(session)
+        # boundary: goals.* are duck-typed goal-service calls that fold persisted records
         except Exception:  # an unreadable goal is no goal
             logger.exception("goal round driver: could not read the goal state")
             return None, "disarmed"
@@ -784,6 +789,7 @@ class RoundDriver:
             return
         try:
             await goals.block(state.agent.session, ref, reason)
+        # boundary: goals.block() persists durable goal records through the goal service
         except Exception:  # a failed block disarms, never raises
             logger.exception("goal round driver: could not block the goal")
             self._disarm(state)
@@ -796,6 +802,7 @@ class RoundDriver:
             return
         try:
             await goals.pause(state.agent.session, goal.ref)
+        # boundary: goals.pause() persists durable goal records through the goal service
         except Exception:  # a failed pause disarms, never raises
             logger.exception("goal round driver: could not pause the goal")
             self._disarm(state)
@@ -823,6 +830,7 @@ class RoundDriver:
         async def cancel() -> None:
             try:
                 await agent.interrupt(clear_inbox=clear_inbox)
+            # boundary: agent.interrupt() pumps the duck-typed agent's driver, sink and log
             except Exception:  # cancelling is best effort
                 logger.exception("goal round driver: could not interrupt the agent")
 
@@ -840,6 +848,7 @@ class RoundDriver:
             return
         try:
             goals.disarm(state.agent.session)
+        # boundary: goals.disarm() persists activation through the goal service
         except Exception:  # a failed disarm must not break the bus
             logger.exception("goal round driver: could not disarm the goal")
 
@@ -859,6 +868,7 @@ class RoundDriver:
             return
         try:
             remove(attempt.message_id)
+        # boundary: inbox.remove() is a duck-typed agent inbox
         except Exception:  # a failed removal must not break the settle
             logger.exception("goal round driver: could not drop a queued round")
 
@@ -896,5 +906,6 @@ def _safe_dispose(dispose: Any) -> None:
         return
     try:
         dispose()
+    # boundary: dispose() is a plugin unsubscribe callback owned by another component
     except Exception:  # disposal is best effort
         logger.debug("goal round driver: a disposer failed", exc_info=True)
