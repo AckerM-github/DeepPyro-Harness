@@ -269,7 +269,7 @@ class RuntimeContext:
             raise RuntimeError("context has no fiber to own an effect")
         return self._fiber.effect(execute, label=label)
 
-    def plugin(self, plugin: Any, config: Any = None) -> Fiber:
+    def plugin(self, plugin: Any, config: dict[str, Any] | None = None) -> Fiber:
         """Mount a plugin (class, callable or host plugin dict) and return its fiber."""
         from deeppyro.kernel.host import mount
 

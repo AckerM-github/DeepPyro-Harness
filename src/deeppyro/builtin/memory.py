@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from deeppyro.api import Plugin, PluginDependencyError
+from deeppyro.api import Plugin, PluginConfig, PluginContext, PluginDependencyError
 from deeppyro.memory.service import MemoryService
 from deeppyro.memory.store import MemoryStore
 from deeppyro.memory.types import PROJECTION_FILENAMES, TARGETS
@@ -57,7 +57,7 @@ class MemoryPlugin(Plugin):
     description = "runtime memory: USER.md/MEMORY.md projections and the mnemon_runtime_memory tool"
     inject: ClassVar[list[str]] = ["prompt"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self.service: MemoryService | None = None
 

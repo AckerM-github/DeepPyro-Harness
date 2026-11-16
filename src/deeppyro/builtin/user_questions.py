@@ -7,9 +7,9 @@ provides the service and registers the tool.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.tools.builtin.ask_user import AskUserQuestionTool
 from deeppyro.user_questions import UserQuestionsService
 
@@ -23,7 +23,7 @@ class UserQuestionsPlugin(Plugin):
     description = "blocking ask_user_question service and its model-facing tool"
     inject: ClassVar[list[str]] = ["tools"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self.service = UserQuestionsService()
 

@@ -8,9 +8,9 @@ that the starting tool passes in (normally the agent session log).
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.jobs import JobsService
 from deeppyro.tools.builtin.jobs import job_tools
 
@@ -24,7 +24,7 @@ class JobsPlugin(Plugin):
     description = "background job registry and job control tools"
     inject: ClassVar[list[str]] = ["tools"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self.service = JobsService()
 

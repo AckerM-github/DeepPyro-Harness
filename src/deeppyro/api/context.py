@@ -13,6 +13,7 @@ from deeppyro.hooks.service import HookService
 
 from .errors import PluginDependencyError
 from .services import ServiceNotFoundError, ServiceTypeError, contract_path, note_service_value, service_name
+from .types import PluginConfig
 
 T = TypeVar("T")
 
@@ -95,6 +96,9 @@ class PluginContext:
     is torn down when the plugin fiber unloads.
     """
 
+    #: Config validated by the kernel adapter for the owning plugin.
+    config: PluginConfig
+
     __slots__ = (
         "_logger",
         "_raw",
@@ -109,7 +113,7 @@ class PluginContext:
         raw: Any,
         *,
         plugin_id: str = "",
-        config: Any = None,
+        config: PluginConfig = None,
         default_scope: str | None = None,
         default_revision: int | None = None,
     ) -> None:
@@ -314,7 +318,7 @@ class PluginContext:
     def emit(self, *args: Any) -> Any:
         return self._raw.emit(*args)
 
-    def plugin(self, plugin: Any, config: Any = None) -> Any:
+    def plugin(self, plugin: Any, config: dict[str, Any] | None = None) -> Any:
         return self._raw.plugin(plugin, config)
 
     def inject(self, inject: Any, callback: Any) -> Any:
@@ -324,7 +328,7 @@ class PluginContext:
         raw = self._raw.isolate(name, label)
         return self._child(raw)
 
-    def intercept(self, name: str, config: Any) -> PluginContext:
+    def intercept(self, name: str, config: Mapping[str, Any]) -> PluginContext:
         raw = self._raw.intercept(name, config)
         return self._child(raw)
 

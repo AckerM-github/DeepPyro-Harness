@@ -14,9 +14,9 @@ never change a hook result.
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar
+from typing import ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.core.payloads import HookInvokedRecord, HookResultRecord
 from deeppyro.hooks.records import (
     INVOKED_RECORD_TYPE,
@@ -39,7 +39,7 @@ class HookJournalPlugin(Plugin):
     description = "journal hook dispatches into the executing agent session log"
     inject: ClassVar[list[str]] = ["hooks"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self.records_written = 0
 

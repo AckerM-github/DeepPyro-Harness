@@ -9,7 +9,7 @@ import logging
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from deeppyro.api import CommandSpec, PluginDependencyError, Service
+from deeppyro.api import CommandSpec, PluginConfig, PluginContext, PluginDependencyError, Service
 from deeppyro.api.services import lookup_service
 from deeppyro.core.bus import EventBus
 
@@ -24,7 +24,7 @@ class CommandsPlugin(Service):
     version = "0.1.0"
     description = "slash command registry"
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self._commands: list[CommandSpec] = []
         self._pending: set[asyncio.Task[Any]] = set()

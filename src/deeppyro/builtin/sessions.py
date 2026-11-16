@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from deeppyro.api import Service
+from deeppyro.api import PluginConfig, PluginContext, Service
 from deeppyro.config import session_dir
 from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.session import SessionStore
@@ -19,7 +19,7 @@ class SessionsPlugin(Service):
     version = "0.1.0"
     description = "durable session log store"
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         cfg = ctx.require(KernelConfig).value
         self.store = SessionStore(root=session_dir(cfg))

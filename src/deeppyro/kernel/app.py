@@ -128,7 +128,7 @@ def _teardown(instance: Any) -> Callable[[], Any] | None:
 
 
 def _api_adapter(cls: type, row: PluginRow, record: MountRecord | None = None) -> Callable[..., Any]:
-    async def apply(raw_ctx: Any, raw_config: Any) -> Any:
+    async def apply(raw_ctx: RuntimeContext, raw_config: Any) -> Any:
         config = _validate_config(cls, raw_config, row)
         ctx = PluginContext(raw_ctx, plugin_id=row.id, config=config)
         instance = cls(ctx, config)

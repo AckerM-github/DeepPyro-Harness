@@ -106,7 +106,7 @@ isolate semantics stay identical to the string path.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import Any, Protocol, TypeVar, cast
 
 from deeppyro.core.bus import EventBus
 from deeppyro.hooks.service import HookService
@@ -119,6 +119,7 @@ __all__ = [
     "ServiceBag",
     "ServiceNotFoundError",
     "ServiceTypeError",
+    "SupportsServiceLookup",
     "bind_service_type",
     "contract_path",
     "lookup_service",
@@ -213,6 +214,19 @@ def service_name(contract: type[Any]) -> str:
     )
 
 
+class SupportsServiceLookup(Protocol):
+    """Any context that can resolve a service by its canonical name.
+
+    Both PluginContext and the kernel RuntimeContext satisfy this shape: the
+    kernel cannot be imported here (api sits below kernel), so the lookup
+    helpers only depend on the one method they use.
+    """
+
+    def get(self, name: str, /) -> Any | None:
+        """Return the service registered under name, or None."""
+        ...
+
+
 def _name_or_none(service: str | type[Any]) -> str | None:
     """Resolve a service argument to its name, or None when it cannot."""
     if isinstance(service, str):
@@ -223,7 +237,7 @@ def _name_or_none(service: str | type[Any]) -> str | None:
         return None
 
 
-def lookup_service(ctx: Any, service: str | type[Any]) -> Any | None:
+def lookup_service(ctx: SupportsServiceLookup, service: str | type[Any]) -> Any | None:
     """Resolve one service through any runtime context or context facade.
 
     PluginContext accepts contracts directly, but a raw RuntimeContext (and a
@@ -239,7 +253,7 @@ def lookup_service(ctx: Any, service: str | type[Any]) -> Any | None:
     return getter(name)
 
 
-def require_service(ctx: Any, service: str | type[Any], *, owner: str = "plugin") -> Any:
+def require_service(ctx: SupportsServiceLookup, service: str | type[Any], *, owner: str = "plugin") -> Any:
     """Like lookup_service, but raise when the service is not available.
 
     String arguments keep the historical PluginDependencyError wording; class

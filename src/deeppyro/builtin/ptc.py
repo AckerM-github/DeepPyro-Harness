@@ -10,9 +10,9 @@ sees run_code and the programmatic tool calling instructions.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
-from deeppyro.api import PTC_PRESET_ID, Plugin
+from deeppyro.api import PTC_PRESET_ID, Plugin, PluginConfig, PluginContext
 from deeppyro.core.protocols import ToolSchema
 from deeppyro.ptc import NESTED_EXCLUDED_TOOLS, RUN_CODE_NAME, PtcConfig, PtcRuntime, RunCodeTool
 from deeppyro.ptc.sdk import render_tools_sdk
@@ -27,7 +27,7 @@ PTC_ONLY_INSTRUCTION = (
 )
 
 
-def _ptc_config(ctx: Any, row_config: Any) -> dict[str, Any]:
+def _ptc_config(ctx: PluginContext, row_config: PluginConfig) -> dict[str, Any]:
     """Merge the bundle row config under the [ptc] table from the kernel config."""
     merged: dict[str, Any] = {}
     if isinstance(row_config, Mapping):
@@ -58,14 +58,20 @@ class PtcPlugin(Plugin):
     description = "Python programmatic tool calling (run_code)"
     inject: ClassVar[list[str]] = ["config", "tools", "prompt"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
-        self.config = PtcConfig.from_mapping(_ptc_config(ctx, config))
-        self.service = PtcRuntime(self.config)
+        ptc_config = PtcConfig.from_mapping(_ptc_config(ctx, config))
+        # This plugin has always replaced the injected config with its own
+        # validated PtcConfig. That model is a frozen dataclass, so it is not
+        # part of the adapter-facing PluginConfig union; the cast records the
+        # deliberate narrow while the runtime value stays unchanged.
+        self.config = cast("PluginConfig", ptc_config)
+        self._ptc = ptc_config
+        self.service = PtcRuntime(ptc_config)
 
     def setup(self) -> None:
         self.ctx.provide("ptc", self.service)
-        if self.config.mode == "ptc":
+        if self._ptc.mode == "ptc":
             # Global mode: the host selected PTC for every composition.
             self.ctx.register_tool(lambda _cfg, _workspace: [RunCodeTool(self.service)])
             self.ctx.register_prompt_section(PTC_ONLY_SECTION, PTC_ONLY_ORDER, self._render_ptc_only)

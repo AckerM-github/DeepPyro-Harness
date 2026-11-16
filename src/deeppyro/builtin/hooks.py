@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.core.bus import EventBus
 from deeppyro.hooks import HookService
 
@@ -18,7 +18,7 @@ class HooksPlugin(Plugin):
     description = "runtime hook service for agent and tool pipeline interception"
     inject: ClassVar[list[str]] = []
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self.bus = EventBus()
         self.service = HookService(self.bus)

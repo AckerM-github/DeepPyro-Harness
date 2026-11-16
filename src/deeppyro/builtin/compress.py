@@ -17,7 +17,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.compact.block_tools import DecompressTool, SearchContextTool
 from deeppyro.compact.blocks import BlockStore
@@ -34,7 +34,7 @@ class CompressConfig(BaseModel):
     compressEnabled: bool = True
 
 
-def _global_config(ctx: Any) -> Any:
+def _global_config(ctx: PluginContext) -> Any:
     try:
         service = ctx.require(KernelConfig)
     except (AttributeError, LookupError):
@@ -107,7 +107,7 @@ class CompressPlugin(Plugin):
     Config = CompressConfig
     inject: ClassVar[list[str]] = ["config", "sessions", "tools"]
 
-    def __init__(self, ctx: Any, config: Any = None) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig = None) -> None:
         super().__init__(ctx, config)
         self.blocks: BlockStore | None = None
         self.refs: RefStore | None = None

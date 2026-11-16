@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from deeppyro.api import Service
+from deeppyro.api import PluginConfig, PluginContext, Service
 from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.schedule import ScheduleConfig, ScheduleManager
 from deeppyro.tools.builtin.schedule import (
@@ -26,7 +26,7 @@ from deeppyro.tools.builtin.schedule import (
 )
 
 
-def _schedule_config(ctx: Any, row_config: Any) -> Mapping[str, Any] | None:
+def _schedule_config(ctx: PluginContext, row_config: PluginConfig) -> Mapping[str, Any] | None:
     """Resolve the [schedule] table from the kernel config, falling back to the row config."""
     raw: Any = None
     config_service = ctx.get(KernelConfig)
@@ -57,7 +57,7 @@ class SchedulePlugin(Service):
     description = "scheduled reminders with persistent storage and a single timer"
     inject: ClassVar[list[str]] = ["config", "tools", "prompt"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         raw_config = _schedule_config(ctx, config)
         self.manager = ScheduleManager(config=ScheduleConfig.from_config(raw_config))

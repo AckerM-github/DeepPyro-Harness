@@ -17,6 +17,8 @@ from deeppyro.api import (
     AGENT_PRESENTATION_PTC,
     TEAM_MODE_DISABLED_TOOLS,
     TEAM_TOOL_NAMES,
+    PluginConfig,
+    PluginContext,
     PluginDependencyError,
     Service,
 )
@@ -39,7 +41,7 @@ class AgentsPlugin(Service):
     version = "0.1.0"
     description = "agent session factory"
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self._ctx = ctx
         cfg = ctx.require(KernelConfig).value

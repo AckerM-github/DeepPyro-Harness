@@ -13,7 +13,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.builtin.agents import AgentsPlugin
 from deeppyro.goal import GoalService
 from deeppyro.goal.round_driver import RoundDriver
@@ -22,7 +22,7 @@ from deeppyro.hooks.service import HookService
 logger = logging.getLogger(__name__)
 
 
-def _service_config(config: Any) -> Any:
+def _service_config(config: PluginConfig) -> Any:
     """The ``[goal]`` row or table inside a plugin config."""
     if isinstance(config, Mapping):
         for key in ("goal", "goals"):
@@ -37,7 +37,7 @@ def _service_config(config: Any) -> Any:
     return config
 
 
-def _merged_config(ctx: Any, row_config: Any) -> dict[str, Any]:
+def _merged_config(ctx: PluginContext, row_config: PluginConfig) -> dict[str, Any]:
     """Merge the bundle row config under the ``[goal]`` table of the kernel config."""
     merged: dict[str, Any] = {}
     table = _service_config(row_config)
@@ -82,7 +82,7 @@ class GoalRoundDriverPlugin(Plugin):
     description = "opt-in automatic goal rounds for armed goals"
     inject: ClassVar[list[str]] = ["hooks", "agents"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self.enabled = False
         self.driver: RoundDriver | None = None

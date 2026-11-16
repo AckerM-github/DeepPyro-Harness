@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, ClassVar
 
-from deeppyro.api import Plugin, Service, ToolContribution
+from deeppyro.api import Plugin, PluginConfig, PluginContext, Service, ToolContribution
 from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.tools import ToolRegistry, builtin_tools
 
@@ -24,7 +24,7 @@ class ToolsPlugin(Service):
     version = "0.1.0"
     description = "tool contribution registry"
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         cfg = ctx.require(KernelConfig).value
         self._config = cfg

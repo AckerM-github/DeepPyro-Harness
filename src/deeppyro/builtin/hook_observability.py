@@ -17,7 +17,7 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import Any, ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.hooks import (
     AGENT_ERROR,
     APPROVAL_REQUEST,
@@ -98,7 +98,7 @@ class HookObservabilityPlugin(Plugin):
     description = "log each runtime hook dispatch"
     inject: ClassVar[list[str]] = ["hooks"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self._counts: dict[str, int] = {name: 0 for name in OBSERVED_HOOKS}
         self._disposers: list[Callable[[], Any]] = []

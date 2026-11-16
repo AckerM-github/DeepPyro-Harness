@@ -22,14 +22,17 @@ from __future__ import annotations
 import inspect
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deeppyro.kernel.fiber import Fiber
+
+if TYPE_CHECKING:
+    from deeppyro.kernel.context import RuntimeContext
 
 log = logging.getLogger("deeppyro.kernel")
 
 
-def mount(ctx: Any, plugin: Any, config: Any = None) -> Fiber:
+def mount(ctx: RuntimeContext, plugin: Any, config: dict[str, Any] | None = None) -> Fiber:
     """Create a fiber for one plugin and attach it to the parent fiber."""
     name, runner, inject = _normalize(plugin)
     parent = ctx.fiber
@@ -83,7 +86,7 @@ def _inject_names(plugin: Any) -> tuple[str, ...]:
 
 
 def _dict_runner(apply: Callable[[Any, Any], Any]) -> Callable[[Any, Any], Any]:
-    async def run(ctx: Any, config: Any) -> Any:
+    async def run(ctx: RuntimeContext, config: dict[str, Any]) -> Any:
         result = apply(ctx, config)
         if inspect.isawaitable(result):
             result = await result
@@ -93,7 +96,7 @@ def _dict_runner(apply: Callable[[Any, Any], Any]) -> Callable[[Any, Any], Any]:
 
 
 def _apply_runner(apply: Callable[[Any, Any], Any]) -> Callable[[Any, Any], Any]:
-    async def run(ctx: Any, config: Any) -> Any:
+    async def run(ctx: RuntimeContext, config: dict[str, Any]) -> Any:
         result = apply(ctx, config)
         if inspect.isawaitable(result):
             result = await result
@@ -103,7 +106,7 @@ def _apply_runner(apply: Callable[[Any, Any], Any]) -> Callable[[Any, Any], Any]
 
 
 def _class_runner(cls: type) -> Callable[[Any, Any], Any]:
-    async def run(ctx: Any, config: Any) -> Any:
+    async def run(ctx: RuntimeContext, config: dict[str, Any]) -> Any:
         instance = cls(ctx, config)
         init = getattr(instance, "init", None)
         if callable(init):

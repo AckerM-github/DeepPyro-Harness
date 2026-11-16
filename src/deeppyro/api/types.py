@@ -6,10 +6,18 @@ installed deeppyro package for these declarations.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel
+
+#: Config handed to a plugin by the adapter: the validated pydantic model when
+#: the plugin declares a Config class, otherwise the raw config mapping. None
+#: only appears when a plugin or service is constructed directly outside the
+#: kernel adapter, which always passes a model or a dict.
+PluginConfig = Mapping[str, Any] | BaseModel | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +231,7 @@ __all__ = [
     "TEAM_PRESET_ID",
     "TEAM_TOOL_NAMES",
     "CommandSpec",
+    "PluginConfig",
     "PluginStatus",
     "PresetPluginRow",
     "PresetSpec",

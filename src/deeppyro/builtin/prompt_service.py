@@ -6,7 +6,7 @@ import contextlib
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from deeppyro.api import PluginDependencyError, PromptSection, Service
+from deeppyro.api import PluginConfig, PluginContext, PluginDependencyError, PromptSection, Service
 
 
 class PromptPlugin(Service):
@@ -17,7 +17,7 @@ class PromptPlugin(Service):
     version = "0.1.0"
     description = "ordered system prompt sections"
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self._sections: list[PromptSection] = []
 

@@ -22,7 +22,7 @@ from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.api.services import require_service
 from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.core.ids import new_message_id
@@ -80,7 +80,7 @@ class SessionTitlePlugin(Plugin):
     description = "name a session from its first exchange (one small request)"
     inject: ClassVar[tuple[str, ...]] = ("hooks", "llm", "config")
 
-    def __init__(self, ctx: Any, config: Any = None) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig = None) -> None:
         super().__init__(ctx, config)
         self._ctx = ctx
         self.options = options_for(ctx)
@@ -196,7 +196,7 @@ class SessionTitlePlugin(Plugin):
         return "".join(chunks)
 
 
-def options_for(ctx: Any) -> TitleOptions:
+def options_for(ctx: PluginContext) -> TitleOptions:
     """Read ``[title]`` from the user config, falling back to the defaults."""
     try:
         cfg = ctx.require(KernelConfig).value

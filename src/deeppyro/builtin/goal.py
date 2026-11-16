@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.api.services import require_service
 from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.core.bus import EventBus
@@ -29,7 +29,7 @@ GOAL_POLICY = (
 )
 
 
-def _service_config(config: Any) -> Any:
+def _service_config(config: PluginConfig) -> Any:
     if isinstance(config, Mapping):
         for key in ("goal", "goals"):
             value = config.get(key)
@@ -71,7 +71,7 @@ class GoalPlugin(Plugin):
     description = "per-session goal record, goal tools and prompt line"
     inject: ClassVar[list[str]] = ["sessions", "tools", "prompt"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         table = _service_config(config)
         self.service = GoalService(table)
@@ -88,7 +88,7 @@ class GoalPlugin(Plugin):
             label="blockedAfterConsecutiveRounds",
         )
 
-    def _bus(self, ctx: Any) -> Any | None:
+    def _bus(self, ctx: PluginContext) -> Any | None:
         try:
             return ctx.get(EventBus)
         except Exception:  # noqa: BLE001 - the plugin still works without a bus

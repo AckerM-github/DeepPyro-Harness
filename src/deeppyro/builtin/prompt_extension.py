@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.core.errors import ConfigError
 from deeppyro.core.payload import field_of
 from deeppyro.hooks import SYSTEM_PROMPT_ASSEMBLE
@@ -38,7 +38,7 @@ class PromptExtensionPlugin(Plugin):
     description = "append configured text to the assembled system prompt"
     inject: ClassVar[list[str]] = ["hooks", "config"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         cfg = ctx.require(KernelConfig).value
         self._text = _extension_text(cfg)
