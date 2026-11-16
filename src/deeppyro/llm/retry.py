@@ -25,6 +25,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Self, TypeVar
 
+from deeppyro.api.services import bind_service_type
 from deeppyro.core.errors import LlmError
 
 T = TypeVar("T")
@@ -180,3 +181,8 @@ def _as_code(value: Any) -> str:
     if not value:
         raise ValueError("retry code must be a non-empty string")
     return value
+
+
+# The agent loop looks the retry policy up by contract; binding it here keeps the
+# api layer free of a dependency on the LLM stack.
+bind_service_type(RetryPolicy, "retryPolicy")

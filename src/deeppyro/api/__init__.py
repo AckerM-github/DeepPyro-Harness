@@ -14,6 +14,7 @@ from .context import PluginContext
 from .errors import PluginConfigError, PluginDependencyError, PluginError
 from .kernel_types import FiberState
 from .plugin import Plugin, Service
+from .services import ServiceBag, ServiceNotFoundError, ServiceTypeError, bind_service_type
 from .types import (
     AGENT_MODE_DEFAULT,
     AGENT_MODE_TEAM,
@@ -71,5 +72,9 @@ __all__ = [
     "PromptSection",
     "ProviderContribution",
     "Service",
+    "ServiceBag",
+    "ServiceNotFoundError",
+    "ServiceTypeError",
     "ToolContribution",
+    "bind_service_type",
 ]

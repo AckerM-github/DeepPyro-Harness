@@ -29,10 +29,19 @@ import inspect
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar, overload
 
 from deeppyro._vendor.cordis_port import Context, Fiber
-from deeppyro.api import API_VERSION, Plugin, PluginConfigError, PluginContext, PluginStatus
+from deeppyro.api import (
+    API_VERSION,
+    Plugin,
+    PluginConfigError,
+    PluginContext,
+    PluginStatus,
+    ServiceNotFoundError,
+    ServiceTypeError,
+)
+from deeppyro.api.services import contract_path, service_name
 from deeppyro.config import Config, load_config
 from deeppyro.kernel.composition import (
     Composition,
@@ -46,6 +55,8 @@ from deeppyro.kernel.composition import (
 from deeppyro.kernel.config_service import provide_config
 from deeppyro.kernel.config_values import config_dict
 from deeppyro.kernel.manifest import PluginSpec, load_manifest
+
+T = TypeVar("T")
 
 log = logging.getLogger("deeppyro.kernel")
 
@@ -453,20 +464,62 @@ class App:
         return "pending"
 
     # -- service access ----------------------------------------------------
-    def service(self, name: str) -> Any:
-        """Return an active service by name, or raise LookupError.
+    def _service_value(self, name: str) -> Any | None:
+        """Return the active value for a service name, or None.
 
-        cordis ctx.foo returns None for unknown services instead of raising,
-        so we must go through ctx.reflect.get to distinguish a missing service
+        cordis ctx.foo returns None for unknown services instead of raising, so
+        we must go through ctx.reflect.get to distinguish a missing service
         from a falsy one.
         """
-        value = self.ctx.reflect.get(name)
+        return self.ctx.reflect.get(name)
+
+    @overload
+    def get(self, service: str) -> Any | None: ...
+
+    @overload
+    def get(self, service: type[T]) -> T | None: ...
+
+    def get(self, service: str | type[Any]) -> Any | None:
+        """Return an active service by legacy name or by contract class.
+
+        The typed form returns None when the service is absent and also when
+        the class is not a known contract, so optional lookups never raise.
+        """
+        if isinstance(service, str):
+            return self._service_value(service)
+        try:
+            name = service_name(service)
+        except ServiceTypeError:
+            return None
+        return self._service_value(name)
+
+    def require(self, service: type[T]) -> T:
+        """Return the active service for a contract class, or raise.
+
+        Raises:
+            ServiceTypeError: the class is not bound to any service name.
+            ServiceNotFoundError: the name is known but no active plugin
+                registered it (a PluginDependencyError and LookupError).
+        """
+        name = service_name(service)
+        value = self._service_value(name)
+        if value is None:
+            raise ServiceNotFoundError(
+                f"service {name!r} ({contract_path(service)}) is not registered or not active",
+                service=name,
+                contract=service,
+            )
+        return value
+
+    def service(self, name: str) -> Any:
+        """Return an active service by name, or raise LookupError."""
+        value = self._service_value(name)
         if value is None:
             raise LookupError(f"service {name!r} is not registered or not active")
         return value
 
     def has_service(self, name: str) -> bool:
-        return self.ctx.reflect.get(name) is not None
+        return self._service_value(name) is not None
 
     @property
     def started(self) -> dict[str, str]:

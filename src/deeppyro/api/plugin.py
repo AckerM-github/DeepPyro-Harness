@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from deeppyro._vendor.cordis_port import Service as CordisService
 
 from .errors import PluginError
+from .services import bind_service_type
 
 
 class Plugin:
@@ -69,9 +70,22 @@ class Plugin:
 
 
 class Service(Plugin, CordisService):
-    """A plugin that also provides a named Cordis service."""
+    """A plugin that also provides a named Cordis service.
+
+    Declaring provide = "name" in a subclass is enough: the class registers
+    itself in the typed service table at definition time, so callers can write
+    ctx.require(ThatService) without any extra wiring. The historical string
+    name (and ctx.get("name")) keeps working unchanged.
+    """
 
     provide: ClassVar[str] = ""
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Register the subclass as the typed contract for its provide name."""
+        super().__init_subclass__(**kwargs)
+        declared = cls.__dict__.get("provide")
+        if isinstance(declared, str) and declared:
+            bind_service_type(cls, declared)
 
     def __init__(self, ctx: Any, config: Any) -> None:
         if not self.provide:
