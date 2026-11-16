@@ -481,11 +481,11 @@ class SlotsPlugin(Plugin):
         self.ui_packages: list[UIPackageReport] = []
         self._ui_scan_errors: list[str] = []
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
         """Provide the registry and ui channel as cordis services."""
-        if getattr(ctx, "raw", None) is not None:
-            ctx.provide("ui", self.ui)
-        ctx.provide("slots", self.registry)
+        if getattr(self.ctx, "raw", None) is not None:
+            self.ctx.provide("ui", self.ui)
+        self.ctx.provide("slots", self.registry)
         try:
             self.load_ui_packages()
         except Exception as exc:  # noqa: BLE001 - UI packages are optional extensions

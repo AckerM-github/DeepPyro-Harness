@@ -57,9 +57,9 @@ class ApprovalPolicyPlugin(Plugin):
         """The tool names the policy applies to; empty means every tool."""
         return self._tools
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        hooks = ctx.require(HookService)
-        ctx.effect(
+    def setup(self) -> None:
+        hooks = self.ctx.require(HookService)
+        self.ctx.effect(
             lambda: hooks.on(APPROVAL_REQUEST, self._on_request),
             label="approval-policy",
         )

@@ -52,8 +52,8 @@ class AttachmentsPlugin(Plugin):
         super().__init__(ctx, config)
         self.store = AttachmentStore(config=_attachments_config(ctx, config))
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        ctx.provide("attachments", self.store)
+    def setup(self) -> None:
+        self.ctx.provide("attachments", self.store)
 
 
 __all__ = ["AttachmentsPlugin"]

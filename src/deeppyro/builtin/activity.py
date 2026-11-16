@@ -273,8 +273,8 @@ class ActivityPlugin(Plugin):
         super().__init__(ctx, config)
         self.service = ActivityService()
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        ctx.provide("activity", self.service)
+    def setup(self) -> None:
+        self.ctx.provide("activity", self.service)
 
 
 __all__ = [

@@ -87,19 +87,19 @@ class GoalRoundDriverPlugin(Plugin):
         self.enabled = False
         self.driver: RoundDriver | None = None
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        self.enabled = _driver_enabled(_merged_config(ctx, config))
+    def setup(self) -> None:
+        self.enabled = _driver_enabled(_merged_config(self.ctx, self.config))
         if not self.enabled:
             # Off means off: no listeners, no bus traffic, no state at all.
             return
         driver = RoundDriver(
-            hooks=ctx.require(HookService),
-            agents=ctx.require(AgentsPlugin),
-            goals=ctx.get(GoalService),
+            hooks=self.ctx.require(HookService),
+            agents=self.ctx.require(AgentsPlugin),
+            goals=self.ctx.get(GoalService),
         )
         self.driver = driver
         driver.attach()
-        ctx.effect(driver.detach, "goal-round-driver: listeners")
+        self.ctx.effect(driver.detach, "goal-round-driver: listeners")
         logger.debug("goal round driver: attached")
 
 

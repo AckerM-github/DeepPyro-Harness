@@ -44,7 +44,7 @@ class StubContext:
 def build(config: Any = None) -> tuple[GoalPlugin, StubContext]:
     ctx = StubContext()
     plugin = GoalPlugin(ctx, config if config is not None else {})
-    plugin.setup(ctx, config if config is not None else {})
+    plugin.setup()
     return plugin, ctx
 
 

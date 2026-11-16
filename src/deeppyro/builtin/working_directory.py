@@ -50,12 +50,12 @@ class WorkingDirectoryPlugin(Plugin):
         except Exception:  # noqa: BLE001 - the plugin still works without a bus
             return None
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        bus = self._bus(ctx)
+    def setup(self) -> None:
+        bus = self._bus(self.ctx)
         if bus is not None:
             self.service.configure(emit=bus.emit)
-        ctx.provide("working_directory", self.service)
-        ctx.register_tool(lambda _cfg, _workspace: [WorkingDirectoryTool()])
+        self.ctx.provide("working_directory", self.service)
+        self.ctx.register_tool(lambda _cfg, _workspace: [WorkingDirectoryTool()])
 
 
 __all__ = ["WorkingDirectoryPlugin", "WorkingDirectoryService"]

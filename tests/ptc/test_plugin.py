@@ -93,7 +93,7 @@ def test_plugin_identity() -> None:
 def test_native_mode_registers_ptc_preset_scope() -> None:
     ctx = FakeCtx()
     plugin = PtcPlugin(ctx, {})
-    plugin.setup(ctx, {})
+    plugin.setup()
     assert plugin.config.mode == "native"
     assert plugin.config.enabled is False
     assert isinstance(ctx.provided["ptc"], PtcRuntime)
@@ -119,7 +119,7 @@ def test_native_mode_registers_ptc_preset_scope() -> None:
 def test_ptc_mode_registers_run_code() -> None:
     ctx = FakeCtx()
     plugin = PtcPlugin(ctx, {"mode": "ptc"})
-    plugin.setup(ctx, {})
+    plugin.setup()
     assert plugin.config.mode == "ptc"
     assert len(ctx.factories) == 1
     assert ctx.tool_scopes == [None]
@@ -131,7 +131,7 @@ def test_ptc_mode_registers_run_code() -> None:
 def test_legacy_enabled_true_selects_ptc_mode() -> None:
     ctx = FakeCtx()
     plugin = PtcPlugin(ctx, {"enabled": True})
-    plugin.setup(ctx, {})
+    plugin.setup()
     assert plugin.config.mode == "ptc"
     assert plugin.config.enabled is True
     assert len(ctx.factories) == 1
@@ -148,7 +148,7 @@ def test_explicit_mode_beats_legacy_enabled() -> None:
 def test_ptc_mode_registers_prompt_sections() -> None:
     ctx = FakeCtx()
     plugin = PtcPlugin(ctx, {"mode": "ptc"})
-    plugin.setup(ctx, {})
+    plugin.setup()
     assert [(name, order) for name, order, _ in ctx.sections] == [
         (PTC_ONLY_SECTION, PTC_ONLY_ORDER),
         (PTC_SDK_SECTION, PTC_SDK_ORDER),

@@ -61,17 +61,17 @@ class MemoryPlugin(Plugin):
         super().__init__(ctx, config)
         self.service: MemoryService | None = None
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
         service = MemoryService(store=MemoryStore())
         self.service = service
-        ctx.provide("memory", service)
+        self.ctx.provide("memory", service)
         try:
-            ctx.register_tool(lambda _config, _workspace: memory_tools())
+            self.ctx.register_tool(lambda _config, _workspace: memory_tools())
         except PluginDependencyError:
             # The memory snapshot still works without the tools service; the
             # agent-facing tool simply does not exist in that composition.
-            ctx.logger.warning("memory tool unavailable: tools service is not loaded")
-        ctx.register_prompt_section(
+            self.ctx.logger.warning("memory tool unavailable: tools service is not loaded")
+        self.ctx.register_prompt_section(
             MEMORY_PROMPT_SECTION,
             MEMORY_PROMPT_ORDER,
             self._render_section,

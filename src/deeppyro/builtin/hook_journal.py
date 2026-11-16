@@ -42,9 +42,9 @@ class HookJournalPlugin(Plugin):
         super().__init__(ctx, config)
         self.records_written = 0
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        hooks = ctx.require(HookService)
-        ctx.effect(lambda: hooks.add_observer(self._observe), label="hook-journal")
+    def setup(self) -> None:
+        hooks = self.ctx.require(HookService)
+        self.ctx.effect(lambda: hooks.add_observer(self._observe), label="hook-journal")
 
     def _observe(self, observation: HookObservation) -> None:
         """Record one observation, skipping hot hooks and payloads without an agent."""

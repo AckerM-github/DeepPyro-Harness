@@ -42,16 +42,16 @@ class McpPlugin(Service):
             attachments=_service(ctx),
         )
 
-    async def setup(self, ctx: Any, config: Any) -> None:
+    async def setup(self) -> None:
         """Connect now; a failing server only logs a warning unless it is fatal."""
 
-        ctx.effect(lambda: self._disposer(), "mcp: close servers")
+        self.ctx.effect(lambda: self._disposer(), "mcp: close servers")
         await self.service.start()
         if self.service.adapters() or self.service.server_names():
-            ctx.register_tool(
+            self.ctx.register_tool(
                 lambda _config, _workspace: [*self.service.adapters(), *resource_tools(self.service)]
             )
-        register = getattr(ctx, "register_prompt_section", None)
+        register = getattr(self.ctx, "register_prompt_section", None)
         if self.service.server_names() and register is not None:
             register("mcp", PROMPT_ORDER, self._render)
 

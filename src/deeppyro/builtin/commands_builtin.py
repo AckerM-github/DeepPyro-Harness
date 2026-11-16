@@ -153,9 +153,9 @@ class CommandsBuiltinPlugin(Plugin):
     version = "0.1.0"
     description = "built-in slash commands"
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
         for spec in core_command_specs():
-            ctx.register_command(
+            self.ctx.register_command(
                 spec.name,
                 spec.handler,
                 summary=spec.summary,

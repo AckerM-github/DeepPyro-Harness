@@ -62,9 +62,9 @@ class SchedulePlugin(Service):
         raw_config = _schedule_config(ctx, config)
         self.manager = ScheduleManager(config=ScheduleConfig.from_config(raw_config))
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        ctx.register_tool(lambda _config, _workspace: schedule_tools())
-        ctx.register_prompt_section(
+    def setup(self) -> None:
+        self.ctx.register_tool(lambda _config, _workspace: schedule_tools())
+        self.ctx.register_prompt_section(
             SCHEDULE_PROMPT_SECTION,
             SCHEDULE_PROMPT_ORDER,
             authorization_section,

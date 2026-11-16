@@ -48,9 +48,9 @@ class PromptExtensionPlugin(Plugin):
         """The configured extension text (empty when the plugin is inactive)."""
         return self._text
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        hooks = ctx.require(HookService)
-        ctx.effect(
+    def setup(self) -> None:
+        hooks = self.ctx.require(HookService)
+        self.ctx.effect(
             lambda: hooks.on(SYSTEM_PROMPT_ASSEMBLE, self._on_assemble),
             label="prompt-extension",
         )

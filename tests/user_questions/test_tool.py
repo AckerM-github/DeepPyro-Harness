@@ -213,7 +213,7 @@ def test_plugin_provides_service_and_registers_tool(tmp_path: Path) -> None:
     ctx = FakeCtx()
     plugin = UserQuestionsPlugin(ctx, SimpleNamespace())
     assert plugin.provide == "user_questions"
-    plugin.setup(ctx, plugin.config)
+    plugin.setup()
     assert ctx.provided["user_questions"] is plugin.service
     assert isinstance(ctx.provided["user_questions"], UserQuestionsService)
     assert len(ctx.factories) == 1

@@ -10,7 +10,7 @@ it may inject the "kernel" service and ask what is mounted:
         api_version = 2
         inject = ("kernel",)
 
-        def setup(self):
+        def setup(self) -> None:
             for plugin in self.ctx.require(KernelRuntime).mounted_plugins():
                 self.ctx.logger.info(plugin["id"], plugin["state"])
 

@@ -30,7 +30,7 @@ def test_hooks_plugin_provides_the_hook_service() -> None:
     assert plugin.inject == []
     assert isinstance(plugin.service, HookService)
 
-    plugin.setup(ctx, None)
+    plugin.setup()
     assert ctx.provided["hooks"] is plugin.service
 
 

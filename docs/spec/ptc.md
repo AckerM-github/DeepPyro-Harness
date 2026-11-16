@@ -330,13 +330,13 @@ async def __ptc_main__():
 `register_prompt_section` 会解析 `prompt` 服务，服务未挂载时插件加载失败。
 
 ```python
-def setup(self, ctx, config):
-    ctx.provide("ptc", self.service)          # 总是提供，便于 inspect
+def setup(self) -> None:
+    self.ctx.provide("ptc", self.service)     # 总是提供，便于 inspect
     if self.config.mode != "ptc":
         return                                # native：完全不动工具/prompt
-    ctx.register_tool(lambda _cfg, _workspace: [RunCodeTool(self.service)])
-    ctx.register_prompt_section("tools:ptc-only", 41, ...)
-    ctx.register_prompt_section("tools:sdk", 42, ...)
+    self.ctx.register_tool(lambda _cfg, _workspace: [RunCodeTool(self.service)])
+    self.ctx.register_prompt_section("tools:ptc-only", 41, ...)
+    self.ctx.register_prompt_section("tools:sdk", 42, ...)
 ```
 
 接线位置：

@@ -56,11 +56,11 @@ class SandboxPlugin(Plugin):
         )
         self.provider = LocalSandboxProvider()
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        ctx.provide("sandbox", self)
-        ctx.provide("sandboxPolicy", self.policy_service)
-        ctx.provide("approval", self.approval_service)
-        ctx.provide("permissionPresets", self.permission_presets)
+    def setup(self) -> None:
+        self.ctx.provide("sandbox", self)
+        self.ctx.provide("sandboxPolicy", self.policy_service)
+        self.ctx.provide("approval", self.approval_service)
+        self.ctx.provide("permissionPresets", self.permission_presets)
 
     def gate(
         self,

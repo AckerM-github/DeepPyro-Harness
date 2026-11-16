@@ -63,7 +63,7 @@ def make_plugin() -> tuple[HookJournalPlugin, HookService, FakeCtx]:
     hooks = HookService()
     ctx = FakeCtx({"hooks": hooks})
     plugin = HookJournalPlugin(ctx, None)
-    plugin.setup(ctx, None)
+    plugin.setup()
     return plugin, hooks, ctx
 
 
@@ -97,7 +97,7 @@ def test_setup_requires_the_hooks_service() -> None:
     ctx = FakeCtx({})
 
     with pytest.raises(LookupError):
-        HookJournalPlugin(ctx, None).setup(ctx, None)
+        HookJournalPlugin(ctx, None).setup()
 
 
 async def test_emit_hook_journals_invoked_and_result() -> None:

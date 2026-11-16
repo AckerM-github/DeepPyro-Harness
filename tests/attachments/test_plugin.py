@@ -32,7 +32,7 @@ def test_plugin_provides_store_with_default_config(tmp_path: Path, monkeypatch: 
     monkeypatch.setenv("DEEPPYRO_HOME", str(tmp_path))
     ctx = _FakeContext(SimpleNamespace(attachments=None))
     plugin = AttachmentsPlugin(ctx, {})
-    plugin.setup(ctx, {})
+    plugin.setup()
     store = ctx.provided["attachments"]
     assert isinstance(store, AttachmentStore)
     assert store.config == AttachmentConfig()
@@ -49,7 +49,7 @@ def test_plugin_reads_camel_case_attachments_table(tmp_path: Path) -> None:
     }
     ctx = _FakeContext(SimpleNamespace(attachments=table))
     plugin = AttachmentsPlugin(ctx, {})
-    plugin.setup(ctx, {})
+    plugin.setup()
     store = ctx.provided["attachments"]
     assert store.config.max_images_per_message == 3
     assert store.config.max_image_bytes == 1024
@@ -66,7 +66,7 @@ def test_plugin_row_config_is_overridden_by_user_table(tmp_path: Path) -> None:
             "maxDimension": 64,
         },
     )
-    plugin.setup(ctx, {})
+    plugin.setup()
     store = ctx.provided["attachments"]
     assert store.config.max_images_per_message == 7
     assert store.config.max_dimension == 64

@@ -290,8 +290,8 @@ class ProjectionsPlugin(Plugin):
         super().__init__(ctx, config)
         self.service = ProjectionsService()
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        ctx.provide("projections", self.service)
+    def setup(self) -> None:
+        self.ctx.provide("projections", self.service)
 
 
 __all__ = [

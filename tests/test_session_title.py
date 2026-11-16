@@ -164,8 +164,8 @@ async def fire(plugin: SessionTitlePlugin, agent: FakeAgent) -> None:
 
 @pytest.mark.asyncio
 async def test_first_turn_records_the_request_and_the_title() -> None:
-    plugin, ctx, session, provider, agent, hooks = make_plugin()
-    await plugin.setup(ctx, None)
+    plugin, _ctx, session, provider, agent, hooks = make_plugin()
+    await plugin.setup()
     assert hooks.has("agent/turn-stopping")
 
     await fire(plugin, agent)
@@ -202,32 +202,32 @@ def test_prompt_matches_the_dsh_shape() -> None:
 @pytest.mark.asyncio
 async def test_an_existing_title_is_never_overwritten() -> None:
     records = [user_record(), Record(TITLE_EVENT, {"title": "manual", "source": {"kind": "user"}})]
-    plugin, ctx, session, _provider, agent, _hooks = make_plugin(records=records)
-    await plugin.setup(ctx, None)
+    plugin, _ctx, session, _provider, agent, _hooks = make_plugin(records=records)
+    await plugin.setup()
     await fire(plugin, agent)
     assert len(session.records) == 2
 
 
 @pytest.mark.asyncio
 async def test_only_the_first_turn_is_named() -> None:
-    plugin, ctx, session, _provider, agent, _hooks = make_plugin(turn=2)
-    await plugin.setup(ctx, None)
+    plugin, _ctx, session, _provider, agent, _hooks = make_plugin(turn=2)
+    await plugin.setup()
     await fire(plugin, agent)
     assert len(session.records) == 1
 
 
 @pytest.mark.asyncio
 async def test_disabled_skips_registration() -> None:
-    plugin, ctx, _session, _provider, _agent, hooks = make_plugin(title={"enabled": False})
+    plugin, _ctx, _session, _provider, _agent, hooks = make_plugin(title={"enabled": False})
     assert plugin.options.enabled is False
-    await plugin.setup(ctx, None)
+    await plugin.setup()
     assert hooks.handlers == {}
 
 
 @pytest.mark.asyncio
 async def test_failure_keeps_the_fallback_title() -> None:
-    plugin, ctx, session, _provider, agent, _hooks = make_plugin(error=RuntimeError("boom"))
-    await plugin.setup(ctx, None)
+    plugin, _ctx, session, _provider, agent, _hooks = make_plugin(error=RuntimeError("boom"))
+    await plugin.setup()
     await fire(plugin, agent)
     assert [record.type for record in session.records] == [
         "user/message",

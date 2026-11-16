@@ -126,8 +126,8 @@ class BuiltinToolsPlugin(Plugin):
     version = "0.1.0"
     description = "built-in read/write/edit/glob/grep/shell/web/todo/present tools"
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
         def factory(cfg: Any, workspace: str) -> Iterable[Any]:
             return builtin_tools(cfg, workspace)
 
-        ctx.register_tool(factory)
+        self.ctx.register_tool(factory)

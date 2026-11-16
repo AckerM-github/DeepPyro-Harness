@@ -112,13 +112,13 @@ class CompressPlugin(Plugin):
         self.blocks: BlockStore | None = None
         self.refs: RefStore | None = None
 
-    def setup(self, ctx: Any, config: Any = None) -> None:
-        cfg = config if config is not None else self.config
+    def setup(self) -> None:
+        cfg = self.config
         row = _as_mapping(cfg)
-        section = _section(_global_config(ctx))
+        section = _section(_global_config(self.ctx))
         if not _resolve_enabled(section, row):
             return
-        sessions = ctx.require(SessionsPlugin)
+        sessions = self.ctx.require(SessionsPlugin)
         store_root = _store_root(sessions)
         if store_root is None:
             raise ConfigError("compress requires the sessions service to expose a store root")
@@ -128,9 +128,9 @@ class CompressPlugin(Plugin):
         refs = RefStore(blocks_root)
         self.blocks = blocks
         self.refs = refs
-        ctx.register_tool(lambda _cfg, _workspace: [CompressTool(store, blocks, refs)])
+        self.ctx.register_tool(lambda _cfg, _workspace: [CompressTool(store, blocks, refs)])
         # Retrieval over the same block store: search first, decompress only the hit.
-        ctx.register_tool(lambda _cfg, _workspace: [SearchContextTool(blocks), DecompressTool(blocks)])
+        self.ctx.register_tool(lambda _cfg, _workspace: [SearchContextTool(blocks), DecompressTool(blocks)])
 
 
 __all__ = ["CompressConfig", "CompressPlugin"]

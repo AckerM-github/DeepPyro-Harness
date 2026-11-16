@@ -23,11 +23,11 @@ class HooksPlugin(Plugin):
         self.bus = EventBus()
         self.service = HookService(self.bus)
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
         # One registry, two doors: the bus is name-agnostic (any catalog name),
         # the facade keeps the historical hook surface for in-tree subscribers.
-        ctx.provide("bus", self.bus)
-        ctx.provide("hooks", self.service)
+        self.ctx.provide("bus", self.bus)
+        self.ctx.provide("hooks", self.service)
 
 
 __all__ = ["HookService", "HooksPlugin"]

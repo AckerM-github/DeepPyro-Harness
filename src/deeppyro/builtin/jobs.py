@@ -28,9 +28,9 @@ class JobsPlugin(Plugin):
         super().__init__(ctx, config)
         self.service = JobsService()
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        ctx.provide("jobs", self.service)
-        ctx.register_tool(lambda _cfg, _workspace: job_tools())
+    def setup(self) -> None:
+        self.ctx.provide("jobs", self.service)
+        self.ctx.register_tool(lambda _cfg, _workspace: job_tools())
 
 
 __all__ = ["JobsPlugin", "JobsService"]

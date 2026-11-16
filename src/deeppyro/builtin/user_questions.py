@@ -27,9 +27,9 @@ class UserQuestionsPlugin(Plugin):
         super().__init__(ctx, config)
         self.service = UserQuestionsService()
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        ctx.provide("user_questions", self.service)
-        ctx.register_tool(lambda _cfg, _workspace: [AskUserQuestionTool()])
+    def setup(self) -> None:
+        self.ctx.provide("user_questions", self.service)
+        self.ctx.register_tool(lambda _cfg, _workspace: [AskUserQuestionTool()])
 
 
 __all__ = ["UserQuestionsPlugin", "UserQuestionsService"]

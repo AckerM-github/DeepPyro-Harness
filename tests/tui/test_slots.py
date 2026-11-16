@@ -149,7 +149,7 @@ def test_slots_plugin_provides_shared_registry(tmp_path: Path, monkeypatch: pyte
     plugin = SlotsPlugin(ctx, {})
     assert plugin.plugin_id == "slots"
     assert plugin.registry is not None
-    plugin.setup(ctx, {})
+    plugin.setup()
     assert ctx.provided == [("slots", plugin.registry)]
     assert isinstance(plugin.registry, SlotRegistry)
     assert plugin.ui_packages == []
