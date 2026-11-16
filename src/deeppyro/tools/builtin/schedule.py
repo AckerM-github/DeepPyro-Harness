@@ -13,13 +13,15 @@ authorization sentence is also registered as a prompt section by the plugin.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import AliasChoices, Field
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.schedule import ScheduleError, ScheduleInputError
-from deeppyro.tools.args import optional_bool, optional_int, optional_str, require_str
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import OptionalNonEmptyStr, ToolArgs, require_value, schema_enum, schema_number
 
 #: Verbatim sentence the system prompt shows next to the schedule tool; the
 #: model must only schedule work the user explicitly asked for.
@@ -67,12 +69,6 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
 
 
-def _expected_updated_at(args: dict[str, Any]) -> str | None:
-    if "expectedUpdatedAt" in args:
-        return optional_str(args, "expectedUpdatedAt")
-    return optional_str(args, "expected_updated_at")
-
-
 def authorization_section(visible_tools: Any = None, _prompt_ctx: Any = None) -> str:
     """Render the management authorization sentence for the system prompt.
 
@@ -97,79 +93,89 @@ class ScheduleTool(BaseTool):
         "reminder, follow-up or scheduled task."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "action": {
-                "type": "string",
-                "enum": list(ACTIONS),
-                "description": "create = schedule a task; list = read tasks; update = change or pause/resume; delete = remove.",
-            },
-            "id": {
-                "type": "string",
-                "description": "Task id returned by create/list; required for update and delete.",
-            },
-            "title": {
-                "type": "string",
-                "description": "Short task title in the user's language (max 120 characters); required for create.",
-            },
-            "prompt": {
-                "type": "string",
-                "description": "Message delivered when the task fires; required for create.",
-            },
-            "rrule": {
-                "type": "string",
-                "description": RRULE_HELP + " Required for create, optional for update.",
-            },
-            "target": {
-                "type": "string",
-                "enum": list(TARGET_CHOICES),
-                "description": (
-                    "this_session = deliver back to this session (default); new_once = start one new "
-                    "session at the first delivery; new = start a new session for every occurrence."
-                ),
-            },
-            "active": {
-                "type": "boolean",
-                "description": "Update only: false pauses a task, true resumes it.",
-            },
-            "limit": {
-                "type": "number",
-                "description": "List only: page size 1-500 (default 100).",
-            },
-            "offset": {
-                "type": "number",
-                "description": "List only: page offset (default 0).",
-            },
-            "expectedUpdatedAt": {
-                "type": "string",
-                "description": "Update only: updatedAt from a previous read; rejects a concurrent change with schedule_conflict.",
-            },
-        },
-        required=["action"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for the schedule tool."""
+
+        action: Literal["create", "list", "update", "delete"] = Field(
+            description=(
+                "create = schedule a task; list = read tasks; update = change or pause/resume; "
+                "delete = remove."
+            ),
+        )
+        id: str | None = Field(
+            default=None,
+            description="Task id returned by create/list; required for update and delete.",
+        )
+        title: str | None = Field(
+            default=None,
+            description=(
+                "Short task title in the user's language (max 120 characters); required for create."
+            ),
+        )
+        prompt: str | None = Field(
+            default=None,
+            description="Message delivered when the task fires; required for create.",
+        )
+        rrule: str | None = Field(
+            default=None,
+            description=RRULE_HELP + " Required for create, optional for update.",
+        )
+        target: OptionalNonEmptyStr = Field(
+            default=None,
+            json_schema_extra=schema_enum(*TARGET_CHOICES),
+            description=(
+                "this_session = deliver back to this session (default); new_once = start one new "
+                "session at the first delivery; new = start a new session for every occurrence."
+            ),
+        )
+        active: bool | None = Field(
+            default=None,
+            description="Update only: false pauses a task, true resumes it.",
+        )
+        limit: int | None = Field(
+            default=None,
+            ge=1,
+            le=500,
+            json_schema_extra=schema_number(),
+            description="List only: page size 1-500 (default 100).",
+        )
+        offset: int | None = Field(
+            default=None,
+            ge=0,
+            json_schema_extra=schema_number(),
+            description="List only: page offset (default 0).",
+        )
+        expectedUpdatedAt: OptionalNonEmptyStr = Field(  # noqa: N815
+            default=None,
+            validation_alias=AliasChoices("expectedUpdatedAt", "expected_updated_at"),
+            description=(
+                "Update only: updatedAt from a previous read; rejects a concurrent change with "
+                "schedule_conflict."
+            ),
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _service(ctx)
-        action = require_str(args, "action")
-        if action not in ACTIONS:
-            raise ToolError(f"action must be one of: {', '.join(ACTIONS)}")
+        parsed = ScheduleTool.Args.parse(args)
+        action = parsed.action
         if await _delegation_depth(service, ctx) > 0:
             raise ToolError("subagent_session: scheduled tasks are not available in child sessions")
         if action == "create":
-            return await self._create(service, args, ctx)
+            return await self._create(service, parsed, ctx)
         if action == "list":
-            return await self._list(service, args)
+            return await self._list(service, parsed)
         if action == "update":
-            return await self._update(service, args, ctx)
-        return await self._delete(service, args)
+            return await self._update(service, parsed, ctx)
+        return await self._delete(service, parsed)
 
-    async def _create(self, service: Any, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    async def _create(self, service: Any, parsed: ScheduleTool.Args, ctx: ToolContext) -> ToolResult:
         request: dict[str, Any] = {
-            "title": require_str(args, "title"),
-            "prompt": require_str(args, "prompt"),
-            "rrule": require_str(args, "rrule"),
+            "title": require_value(parsed.title, "title"),
+            "prompt": require_value(parsed.prompt, "prompt"),
+            "rrule": require_value(parsed.rrule, "rrule"),
         }
-        target = optional_str(args, "target")
+        target = parsed.target
         if target is not None:
             request["target"] = target
         try:
@@ -181,10 +187,10 @@ class ScheduleTool(BaseTool):
             meta={"scheduleId": record.id, "status": record.status},
         )
 
-    async def _list(self, service: Any, args: dict[str, Any]) -> ToolResult:
-        active = optional_bool(args, "active") if args.get("active") is not None else None
-        limit = optional_int(args, "limit", 100, minimum=1, maximum=500)
-        offset = optional_int(args, "offset", 0, minimum=0)
+    async def _list(self, service: Any, parsed: ScheduleTool.Args) -> ToolResult:
+        active = parsed.active
+        limit = parsed.limit if parsed.limit is not None else 100
+        offset = parsed.offset if parsed.offset is not None else 0
         try:
             page = await service.list(active=active, limit=limit, offset=offset)
         except ScheduleError as exc:
@@ -194,23 +200,24 @@ class ScheduleTool(BaseTool):
             meta={"count": len(page["tasks"]), "total": page["total"]},
         )
 
-    async def _update(self, service: Any, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        task_id = require_str(args, "id")
+    async def _update(self, service: Any, parsed: ScheduleTool.Args, ctx: ToolContext) -> ToolResult:
+        task_id = require_value(parsed.id, "id")
         patch: dict[str, Any] = {}
         for field in ("title", "prompt", "rrule"):
-            if args.get(field) is not None:
-                patch[field] = require_str(args, field)
-        if args.get("target") is not None:
-            patch["target"] = optional_str(args, "target")
-        if args.get("active") is not None:
-            patch["active"] = optional_bool(args, "active")
+            value = getattr(parsed, field)
+            if value is not None:
+                patch[field] = require_value(value, field)
+        if parsed.target is not None:
+            patch["target"] = parsed.target
+        if parsed.active is not None:
+            patch["active"] = parsed.active
         if not patch:
             raise ToolError("update requires at least one of title, prompt, rrule, target or active")
         try:
             record = await service.update(
                 task_id,
                 patch,
-                expected_updated_at=_expected_updated_at(args),
+                expected_updated_at=parsed.expectedUpdatedAt,
                 actor_session_id=ctx.session_id,
             )
         except ScheduleError as exc:
@@ -220,8 +227,8 @@ class ScheduleTool(BaseTool):
             meta={"scheduleId": record.id, "status": record.status},
         )
 
-    async def _delete(self, service: Any, args: dict[str, Any]) -> ToolResult:
-        task_id = require_str(args, "id")
+    async def _delete(self, service: Any, parsed: ScheduleTool.Args) -> ToolResult:
+        task_id = require_value(parsed.id, "id")
         try:
             deleted = await service.delete(task_id)
         except ScheduleError as exc:

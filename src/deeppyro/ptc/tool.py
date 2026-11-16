@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from pydantic import Field
+
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.args import optional_int, require_str
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import ToolArgs, derive_parameters
 from deeppyro.tools.permissions import gate_for
 from deeppyro.tools.registry import ToolRegistry
 
@@ -41,10 +43,18 @@ def _tool_description(runtime: PtcRuntime | None) -> str:
     return f"{_DESCRIPTION_PREFIX} {instructions}{_DESCRIPTION_SUFFIX}"
 
 
+class RunCodeArgs(ToolArgs):
+    """The static arguments of run_code; timeoutMs is appended per instance."""
+
+    code: str = Field(description="The Python program to execute. Top-level await and return are supported.")
+    description: str = Field(description="A short summary of what the program does.")
+
+
 class RunCodeTool(BaseTool):
     """Execute a Python program with async bindings to the session's tools."""
 
     name = RUN_CODE_NAME
+    Args = RunCodeArgs
     parameters: dict[str, Any] = {}
     parallel_safe = False
     reserved_tool = True
@@ -52,33 +62,34 @@ class RunCodeTool(BaseTool):
     def __init__(self, runtime: PtcRuntime | None = None) -> None:
         self.runtime = runtime
         self.description = _tool_description(runtime)
-        properties: dict[str, Any] = {
-            "code": {
-                "type": "string",
-                "description": "The Python program to execute. Top-level await and return are supported.",
-            },
-            "description": {
-                "type": "string",
-                "description": "A short summary of what the program does.",
-            },
-        }
+        # Derived per instance: the timeout field depends on the runtime config.
+        self.parameters = derive_parameters(RunCodeArgs)
         timeout = getattr(runtime, "timeout", None)
         if timeout:
-            properties["timeoutMs"] = {
+            self.parameters["properties"]["timeoutMs"] = {
                 "type": "number",
                 "description": "Timeout for the whole program, including nested tool calls.",
                 "minimum": 1,
                 "maximum": timeout.get("maxMs"),
             }
-        self.parameters = make_parameters(
-            properties,
-            required=["code", "description"],
-            additional_properties=False,
-        )
+
+    def _timeout_ms(self, args: dict[str, Any], default: int, maximum: int) -> int:
+        """Resolve the per-call timeout (its upper bound is runtime configuration)."""
+        raw = args.get("timeoutMs")
+        if raw is None:
+            return default
+        if not isinstance(raw, int) or isinstance(raw, bool):
+            raise ToolError("timeoutMs must be an integer")
+        if raw < 1:
+            raise ToolError("timeoutMs must be greater than or equal to 1")
+        if raw > maximum:
+            raise ToolError(f"timeoutMs must be less than or equal to {maximum}")
+        return raw
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        code = require_str(args, "code", allow_empty=True)
-        description = require_str(args, "description", allow_empty=True)
+        parsed = RunCodeArgs.parse(args)
+        code = parsed.code
+        description = parsed.description
         if not description.strip():
             raise ToolError("invalid description: expected a non-empty string")
         gate = gate_for(ctx)
@@ -92,7 +103,7 @@ class RunCodeTool(BaseTool):
         config = getattr(runtime, "config", None)
         default_timeout = getattr(config, "timeout_ms", 120_000)
         max_timeout = getattr(config, "max_timeout_ms", 600_000)
-        timeout_ms = optional_int(args, "timeoutMs", default_timeout, minimum=1, maximum=max_timeout)
+        timeout_ms = self._timeout_ms(args, default_timeout, max_timeout)
         registry = (ctx.services or {}).get("tool_registry")
         if registry is None:
             registry = ToolRegistry()

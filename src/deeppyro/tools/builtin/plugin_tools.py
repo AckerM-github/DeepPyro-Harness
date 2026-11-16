@@ -15,9 +15,12 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
+from pydantic import Field
+
 from deeppyro.api import Plugin
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import FreeFormObject, ToolArgs, schema_enum
 
 
 def _as_json(value: Any) -> Any:
@@ -53,32 +56,24 @@ class PluginManagerTool(BaseTool):
         "a bundle; action=remove deletes a user bundle. Changes take effect after a restart."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "action": {
-                "type": "string",
-                "enum": ["list", "install", "set", "remove"],
-                "description": "operation to perform",
-            },
-            "source": {
-                "type": "string",
-                "description": "bundle directory or bundle.toml path (install only)",
-            },
-            "id": {
-                "type": "string",
-                "description": "bundle id (set and remove only)",
-            },
-            "enabled": {
-                "type": "boolean",
-                "description": "desired bundle state (set only)",
-            },
-            "force": {
-                "type": "boolean",
-                "description": "replace an already installed bundle (install only)",
-            },
-        },
-        required=["action"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for plugin_manager."""
+
+        action: str = Field(
+            json_schema_extra=schema_enum("list", "install", "set", "remove"),
+            description="operation to perform",
+        )
+        source: str | None = Field(
+            default=None,
+            description="bundle directory or bundle.toml path (install only)",
+        )
+        id: str | None = Field(default=None, description="bundle id (set and remove only)")
+        enabled: bool | None = Field(default=None, description="desired bundle state (set only)")
+        force: bool | None = Field(
+            default=None,
+            description="replace an already installed bundle (install only)",
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = (ctx.services or {}).get("plugin_manager")
@@ -132,23 +127,16 @@ class PluginCreateTool(BaseTool):
         "code, so it requires explicit human approval."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "bundle_id": {
-                "type": "string",
-                "description": "unique bundle id, also the bundle directory name",
-            },
-            "name": {
-                "type": "string",
-                "description": "display name (defaults to bundle_id)",
-            },
-            "dest": {
-                "type": "string",
-                "description": "destination directory (defaults to the user bundle store)",
-            },
-        },
-        required=["bundle_id"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for plugin_create."""
+
+        bundle_id: str = Field(description="unique bundle id, also the bundle directory name")
+        name: str | None = Field(default=None, description="display name (defaults to bundle_id)")
+        dest: str | None = Field(
+            default=None,
+            description="destination directory (defaults to the user bundle store)",
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = (ctx.services or {}).get("plugin_manager")
@@ -202,31 +190,29 @@ class PluginInspectTool(BaseTool):
         "plugin authoring guide."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "what": {
-                "type": "string",
-                "enum": [
-                    "services",
-                    "plugins",
-                    "tools",
-                    "prompts",
-                    "commands",
-                    "providers",
-                    "events",
-                    "slots",
-                    "theme",
-                    "guide",
-                ],
-                "description": "inspection target",
-            },
-            "workspace": {
-                "type": "string",
-                "description": "workspace path used to instantiate tools (tools only)",
-            },
-        },
-        required=["what"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for plugin_inspect."""
+
+        what: str = Field(
+            json_schema_extra=schema_enum(
+                "services",
+                "plugins",
+                "tools",
+                "prompts",
+                "commands",
+                "providers",
+                "events",
+                "slots",
+                "theme",
+                "guide",
+            ),
+            description="inspection target",
+        )
+        workspace: str | None = Field(
+            default=None,
+            description="workspace path used to instantiate tools (tools only)",
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = (ctx.services or {}).get("inspect")
@@ -271,15 +257,11 @@ class SettingsReadTool(BaseTool):
         "when calling settings_write."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "plugin_id": {
-                "type": "string",
-                "description": "plugin row id from plugin_inspect plugins",
-            },
-        },
-        required=["plugin_id"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for settings_read."""
+
+        plugin_id: str = Field(description="plugin row id from plugin_inspect plugins")
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = (ctx.services or {}).get("settings")
@@ -308,23 +290,13 @@ class SettingsWriteTool(BaseTool):
         "with a conflict. Omitted secret fields keep their stored value."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "plugin_id": {
-                "type": "string",
-                "description": "plugin row id to configure",
-            },
-            "patch": {
-                "type": "object",
-                "description": "partial configuration object to merge",
-            },
-            "expected_revision": {
-                "type": "string",
-                "description": "revision returned by settings_read",
-            },
-        },
-        required=["plugin_id", "patch", "expected_revision"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for settings_write."""
+
+        plugin_id: str = Field(description="plugin row id to configure")
+        patch: FreeFormObject = Field(description="partial configuration object to merge")
+        expected_revision: str = Field(description="revision returned by settings_read")
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = (ctx.services or {}).get("settings")

@@ -10,9 +10,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from pydantic import Field
+
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import ToolArgs, schema_enum, schema_number
 
 # -- tool-layer error codes (docs/spec/goal.md section 5.3) ---------------
 GOAL_TOOL_AGENT_REQUIRED = "GOAL_TOOL_AGENT_REQUIRED"
@@ -131,11 +134,9 @@ class GetGoalTool(BaseTool):
     name = "get_goal"
     description = "Read the current session goal, including the id and revision that update_goal requires."
     parallel_safe = True
-    parameters: dict[str, Any] = {
-        "type": "object",
-        "properties": {},
-        "additionalProperties": False,
-    }
+
+    class Args(ToolArgs):
+        """get_goal takes no arguments."""
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         _agent, session = agent_and_session(ctx)
@@ -154,21 +155,18 @@ class CreateGoalTool(BaseTool):
         'objective, even if the user did not say "goal"; not for single-turn work.'
     )
     parallel_safe = False
-    parameters: dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            "objective": {
-                "type": "string",
-                "description": "The objective to keep working towards, in one or two sentences.",
-            },
-            "max_goal_rounds": {
-                "type": "number",
-                "description": "Optional cap on automatic continuation rounds (positive integer).",
-            },
-        },
-        "required": ["objective"],
-        "additionalProperties": False,
-    }
+
+    class Args(ToolArgs):
+        """Arguments for create_goal."""
+
+        objective: str = Field(
+            description="The objective to keep working towards, in one or two sentences.",
+        )
+        max_goal_rounds: int | None = Field(
+            default=None,
+            json_schema_extra=schema_number(),
+            description="Optional cap on automatic continuation rounds (positive integer).",
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         agent, session = agent_and_session(ctx)
@@ -194,32 +192,29 @@ class UpdateGoalTool(BaseTool):
         "also allowed inside a goal round."
     )
     parallel_safe = False
-    parameters: dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            "goal_id": {"type": "string", "description": "The goal id from get_goal."},
-            "revision": {"type": "number", "description": "The goal revision from get_goal."},
-            "action": {
-                "type": "string",
-                "enum": list(UPDATE_ACTIONS),
-                "description": "What to do with the goal.",
-            },
-            "objective": {
-                "type": "string",
-                "description": "New objective, only for action=edit.",
-            },
-            "max_goal_rounds": {
-                "type": "number",
-                "description": "New round cap, only for action=edit.",
-            },
-            "blocked_reason": {
-                "type": "string",
-                "description": "The concrete blocking condition, only for action=blocked.",
-            },
-        },
-        "required": ["goal_id", "revision", "action"],
-        "additionalProperties": False,
-    }
+
+    class Args(ToolArgs):
+        """Arguments for update_goal; the goal ladder validates their meaning."""
+
+        goal_id: str = Field(description="The goal id from get_goal.")
+        revision: int = Field(
+            json_schema_extra=schema_number(),
+            description="The goal revision from get_goal.",
+        )
+        action: str = Field(
+            json_schema_extra=schema_enum(*UPDATE_ACTIONS),
+            description="What to do with the goal.",
+        )
+        objective: str | None = Field(default=None, description="New objective, only for action=edit.")
+        max_goal_rounds: int | None = Field(
+            default=None,
+            json_schema_extra=schema_number(),
+            description="New round cap, only for action=edit.",
+        )
+        blocked_reason: str | None = Field(
+            default=None,
+            description="The concrete blocking condition, only for action=blocked.",
+        )
 
     def __init__(self, *, blocked_after: int = DEFAULT_BLOCKED_AFTER_CONSECUTIVE_ROUNDS) -> None:
         self.blocked_after = blocked_after
@@ -333,20 +328,12 @@ class GoalTool(BaseTool):
         "the session log and shown in every later turn."
     )
     parallel_safe = True
-    parameters: dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            "text": {
-                "type": "string",
-                "description": "The new goal. Omit to read the current one.",
-            },
-            "clear": {
-                "type": "boolean",
-                "description": "Drop the current goal instead of setting one.",
-            },
-        },
-        "additionalProperties": False,
-    }
+
+    class Args(ToolArgs):
+        """Arguments for the deprecated goal shell."""
+
+        text: str | None = Field(default=None, description="The new goal. Omit to read the current one.")
+        clear: bool | None = Field(default=None, description="Drop the current goal instead of setting one.")
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = (ctx.services or {}).get("goal")

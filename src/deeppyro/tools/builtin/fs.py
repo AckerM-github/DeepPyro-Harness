@@ -11,10 +11,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from pydantic import Field
+
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.args import optional_bool, optional_int, require_str
-from deeppyro.tools.base import BaseTool, make_parameters, sandbox_properties
+from deeppyro.tools.base import (
+    JUSTIFICATION_DESCRIPTION,
+    SANDBOX_MODES,
+    SANDBOX_PERMISSIONS_DESCRIPTION,
+    BaseTool,
+)
+from deeppyro.tools.params import NonEmptyStr, ToolArgs, schema_enum
 from deeppyro.tools.paths import resolve_path
 from deeppyro.tools.permissions import check_read, check_write
 
@@ -49,29 +56,30 @@ class ReadTool(BaseTool):
         "Read a UTF-8 text file and return line-numbered content. "
         "Large files are paginated with offset (1-based) and limit (default 2000 lines)."
     )
-    parameters = make_parameters(
-        {
-            "file_path": {
-                "type": "string",
-                "description": "Path to read, resolved by the filesystem backend.",
-            },
-            "offset": {"type": "number", "description": "1-based first line to return. Defaults to 1."},
-            "limit": {
-                "type": "number",
-                "description": "Maximum number of lines to return. Defaults to 2000.",
-            },
-        },
-        required=["file_path"],
-    )
+
+    class Args(ToolArgs):
+        file_path: NonEmptyStr = Field(description="Path to read, resolved by the filesystem backend.")
+        offset: int | None = Field(
+            default=None,
+            ge=1,
+            description="1-based first line to return. Defaults to 1.",
+        )
+        limit: int | None = Field(
+            default=None,
+            ge=1,
+            le=MAX_READ_LIMIT,
+            description="Maximum number of lines to return. Defaults to 2000.",
+        )
 
     def __init__(self, max_line_length: int = MAX_LINE_LENGTH) -> None:
         self.max_line_length = max_line_length
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        path = resolve_path(Path(ctx.cwd), require_str(args, "file_path"))
+        parsed = ReadTool.Args.parse(args)
+        path = resolve_path(Path(ctx.cwd), parsed.file_path)
         check_read(ctx, path)
-        offset = optional_int(args, "offset", 1, minimum=1)
-        limit = optional_int(args, "limit", DEFAULT_READ_LIMIT, minimum=1, maximum=MAX_READ_LIMIT)
+        offset = parsed.offset if parsed.offset is not None else 1
+        limit = parsed.limit if parsed.limit is not None else DEFAULT_READ_LIMIT
         if not path.exists():
             raise ToolError(f'cannot read "{path}": not found')
         if not path.is_file():
@@ -83,8 +91,6 @@ class ReadTool(BaseTool):
         total = len(lines)
         if offset > 1 and offset > total:
             raise ToolError(f'"offset" {offset} is beyond the end of the file: {path} has {total} lines')
-        if limit > MAX_READ_LIMIT:  # defensive: optional_int already caps it
-            raise ToolError(f"limit must be less than or equal to {MAX_READ_LIMIT}")
         selected = lines[offset - 1 : offset - 1 + limit]
         truncated = len(selected) < len(lines[offset - 1 :])
         body = "\n".join(
@@ -111,22 +117,21 @@ class WriteTool(BaseTool):
 
     name = "write"
     description = "Create or fully replace a UTF-8 text file."
-    parameters = make_parameters(
-        sandbox_properties(
-            {
-                "file_path": {
-                    "type": "string",
-                    "description": "Path to write, resolved by the filesystem backend.",
-                },
-                "content": {"type": "string", "description": "Full UTF-8 text content to write."},
-            }
-        ),
-        required=["file_path", "content"],
-    )
+
+    class Args(ToolArgs):
+        file_path: NonEmptyStr = Field(description="Path to write, resolved by the filesystem backend.")
+        content: str = Field(description="Full UTF-8 text content to write.")
+        sandbox_permissions: str | None = Field(
+            default=None,
+            json_schema_extra=schema_enum(*SANDBOX_MODES),
+            description=SANDBOX_PERMISSIONS_DESCRIPTION,
+        )
+        justification: str | None = Field(default=None, description=JUSTIFICATION_DESCRIPTION)
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        path = resolve_path(Path(ctx.cwd), require_str(args, "file_path"))
-        content = require_str(args, "content", allow_empty=True)
+        parsed = WriteTool.Args.parse(args)
+        path = resolve_path(Path(ctx.cwd), parsed.file_path)
+        content = parsed.content
         await check_write(ctx, args, path, action="write", tool=self.name)
         if path.is_dir():
             raise ToolError(f'cannot write "{path}": not a regular file')
@@ -151,29 +156,27 @@ class EditTool(BaseTool):
         "Edit an existing UTF-8 text file by replacing literal text. "
         "By default old_string must match exactly once; set replace_all to replace every occurrence."
     )
-    parameters = make_parameters(
-        sandbox_properties(
-            {
-                "file_path": {
-                    "type": "string",
-                    "description": "Path to edit, resolved by the filesystem backend.",
-                },
-                "old_string": {"type": "string", "description": "Literal text to replace."},
-                "new_string": {
-                    "type": "string",
-                    "description": "Literal replacement text. Use an empty string to delete the match.",
-                },
-                "replace_all": {"type": "boolean", "description": "Replace all matches. Defaults to false."},
-            }
-        ),
-        required=["file_path", "old_string", "new_string"],
-    )
+
+    class Args(ToolArgs):
+        file_path: NonEmptyStr = Field(description="Path to edit, resolved by the filesystem backend.")
+        old_string: NonEmptyStr = Field(description="Literal text to replace.")
+        new_string: str = Field(
+            description="Literal replacement text. Use an empty string to delete the match.",
+        )
+        replace_all: bool | None = Field(default=None, description="Replace all matches. Defaults to false.")
+        sandbox_permissions: str | None = Field(
+            default=None,
+            json_schema_extra=schema_enum(*SANDBOX_MODES),
+            description=SANDBOX_PERMISSIONS_DESCRIPTION,
+        )
+        justification: str | None = Field(default=None, description=JUSTIFICATION_DESCRIPTION)
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        path = resolve_path(Path(ctx.cwd), require_str(args, "file_path"))
-        old_string = require_str(args, "old_string")
-        new_string = require_str(args, "new_string", allow_empty=True)
-        replace_all = optional_bool(args, "replace_all", False)
+        parsed = EditTool.Args.parse(args)
+        path = resolve_path(Path(ctx.cwd), parsed.file_path)
+        old_string = parsed.old_string
+        new_string = parsed.new_string
+        replace_all = bool(parsed.replace_all)
         await check_write(ctx, args, path, action="edit", tool=self.name)
         if path.is_dir():
             raise ToolError(f'cannot edit "{path}": not a regular file')

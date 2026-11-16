@@ -14,9 +14,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from pydantic import Field
+
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import OptionalStrippedStr, StrippedStr, ToolArgs
 
 
 def _subagent(ctx: ToolContext) -> Any:
@@ -24,23 +27,6 @@ def _subagent(ctx: ToolContext) -> Any:
     if service is None:
         raise ToolError("subagent service is not available in this session")
     return service
-
-
-def _required(args: dict[str, Any], name: str) -> str:
-    value = args.get(name)
-    if not isinstance(value, str) or not value.strip():
-        raise ToolError(f"{name} must be a non-empty string")
-    return value.strip()
-
-
-def _optional(args: dict[str, Any], name: str) -> str | None:
-    value = args.get(name)
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ToolError(f"{name} must be a string")
-    text = value.strip()
-    return text or None
 
 
 class SubagentTool(BaseTool):
@@ -56,48 +42,44 @@ class SubagentTool(BaseTool):
         "work and therefore requires human approval."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "prompt": {
-                "type": "string",
-                "description": "self-contained task for the child agent",
-            },
-            "description": {
-                "type": "string",
-                "description": "short description of the delegated work",
-            },
-            "name": {
-                "type": "string",
-                "description": "optional child label (defaults to a generated subagent-N name)",
-            },
-            "provider": {
-                "type": "string",
-                "description": "optional llm provider name (defaults to the current provider)",
-            },
-            "model": {
-                "type": "string",
-                "description": "optional model id (defaults to the current model)",
-            },
-            "preset": {
-                "type": "string",
-                "description": "optional agent preset id (defaults to the current preset)",
-            },
-        },
-        required=["prompt", "description"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for the synchronous subagent tool."""
+
+        prompt: StrippedStr = Field(description="self-contained task for the child agent")
+        description: StrippedStr = Field(description="short description of the delegated work")
+        name: OptionalStrippedStr = Field(
+            default=None,
+            description="optional child label (defaults to a generated subagent-N name)",
+        )
+        provider: OptionalStrippedStr = Field(
+            default=None,
+            description="optional llm provider name (defaults to the current provider)",
+        )
+        model: OptionalStrippedStr = Field(
+            default=None,
+            description="optional model id (defaults to the current model)",
+        )
+        preset: OptionalStrippedStr = Field(
+            default=None,
+            description="optional agent preset id (defaults to the current preset)",
+        )
+
+        @classmethod
+        def missing_message(cls, field: str) -> str:
+            return f"{field} must be a non-empty string"
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _subagent(ctx)
-        prompt = _required(args, "prompt")
-        description = _required(args, "description")
+        parsed = SubagentTool.Args.parse(args)
         try:
             result = await service.run(
-                prompt,
-                description=description,
-                name=_optional(args, "name"),
-                provider=_optional(args, "provider"),
-                model=_optional(args, "model"),
-                preset=_optional(args, "preset"),
+                parsed.prompt,
+                description=parsed.description,
+                name=parsed.name,
+                provider=parsed.provider,
+                model=parsed.model,
+                preset=parsed.preset,
             )
         except Exception as exc:  # noqa: BLE001 - surface as a tool error result
             return ToolResult(text=f"subagent failed: {exc}", is_error=True)
@@ -128,33 +110,29 @@ class SubagentForkTool(BaseTool):
         "overridden."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "prompt": {
-                "type": "string",
-                "description": "self-contained task for the forked child agent",
-            },
-            "description": {
-                "type": "string",
-                "description": "short description of the delegated work",
-            },
-            "name": {
-                "type": "string",
-                "description": "optional child label (defaults to a generated subagent-N name)",
-            },
-        },
-        required=["prompt", "description"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for the forked subagent tool."""
+
+        prompt: StrippedStr = Field(description="self-contained task for the forked child agent")
+        description: StrippedStr = Field(description="short description of the delegated work")
+        name: OptionalStrippedStr = Field(
+            default=None,
+            description="optional child label (defaults to a generated subagent-N name)",
+        )
+
+        @classmethod
+        def missing_message(cls, field: str) -> str:
+            return f"{field} must be a non-empty string"
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _subagent(ctx)
-        prompt = _required(args, "prompt")
-        description = _required(args, "description")
+        parsed = SubagentForkTool.Args.parse(args)
         try:
             activation = await service.start(
-                prompt,
-                description=description,
-                name=_optional(args, "name"),
+                parsed.prompt,
+                description=parsed.description,
+                name=parsed.name,
                 mode="fork",
             )
         except Exception as exc:  # noqa: BLE001 - surface as a tool error result

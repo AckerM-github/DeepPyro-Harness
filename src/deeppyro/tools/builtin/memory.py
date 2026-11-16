@@ -8,14 +8,16 @@ kernel and never reads the projection files; the service is the only writer.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import Field
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.memory.errors import MemoryStoreError
-from deeppyro.memory.types import DEFAULT_IMPORTANCE, IMPORTANCES, TARGETS
-from deeppyro.tools.args import optional_str, require_str
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.memory.types import DEFAULT_IMPORTANCE, IMPORTANCES
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import OptionalNonEmptyStr, ToolArgs, require_value, schema_enum
 
 ACTIONS = ("add", "replace", "remove")
 TOOL_NAME = "mnemon_runtime_memory"
@@ -46,12 +48,6 @@ def _check_importance(importance: str | None) -> str | None:
     return importance
 
 
-def _check_target(target: str) -> str:
-    if target not in TARGETS:
-        raise ToolError(f"target must be one of: {', '.join(TARGETS)}")
-    return target
-
-
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
@@ -62,43 +58,51 @@ class MnemonRuntimeMemoryTool(BaseTool):
     name = TOOL_NAME
     description = DESCRIPTION
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "action": {
-                "type": "string",
-                "enum": list(ACTIONS),
-                "description": "add = append a new entry; replace = rewrite one matched entry; remove = delete one matched entry.",
-            },
-            "target": {
-                "type": "string",
-                "enum": list(TARGETS),
-                "description": "user = who the user is (USER.md); memory = project/environment facts and lessons (MEMORY.md).",
-            },
-            "content": {
-                "type": "string",
-                "description": "The durable fact to store; required for add and replace. Keep it self-contained and concise.",
-            },
-            "old_text": {
-                "type": "string",
-                "description": "Required for replace and remove: a unique substring of the existing entry to change or delete.",
-            },
-            "importance": {
-                "type": "string",
-                "enum": list(IMPORTANCES),
-                "description": "Optional importance hint; defaults to normal. critical means an explicit must/always/never rule.",
-            },
-        },
-        required=["action", "target"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for the runtime memory tool (enum order mirrors the old schema)."""
+
+        action: Literal["add", "replace", "remove"] = Field(
+            description=(
+                "add = append a new entry; replace = rewrite one matched entry; "
+                "remove = delete one matched entry."
+            ),
+        )
+        target: Literal["user", "memory"] = Field(
+            description=(
+                "user = who the user is (USER.md); memory = project/environment facts and "
+                "lessons (MEMORY.md)."
+            ),
+        )
+        content: str | None = Field(
+            default=None,
+            description=(
+                "The durable fact to store; required for add and replace. Keep it self-contained and concise."
+            ),
+        )
+        old_text: str | None = Field(
+            default=None,
+            description=(
+                "Required for replace and remove: a unique substring of the existing entry "
+                "to change or delete."
+            ),
+        )
+        importance: OptionalNonEmptyStr = Field(
+            default=None,
+            json_schema_extra=schema_enum(*IMPORTANCES),
+            description=(
+                "Optional importance hint; defaults to normal. critical means an explicit "
+                "must/always/never rule."
+            ),
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _service(ctx)
-        action = require_str(args, "action")
-        target = _check_target(require_str(args, "target"))
-        if action not in ACTIONS:
-            raise ToolError(f"action must be one of: {', '.join(ACTIONS)}")
+        parsed = MnemonRuntimeMemoryTool.Args.parse(args)
+        action = parsed.action
+        target = parsed.target
         try:
-            receipt = self._dispatch(service, action, target, args)
+            receipt = self._dispatch(service, action, target, parsed)
         except MemoryStoreError as exc:
             raise ToolError(str(exc)) from exc
         return ToolResult(
@@ -110,14 +114,14 @@ class MnemonRuntimeMemoryTool(BaseTool):
             },
         )
 
-    def _dispatch(self, service: Any, action: str, target: str, args: dict[str, Any]) -> Any:
-        importance = _check_importance(optional_str(args, "importance"))
+    def _dispatch(self, service: Any, action: str, target: str, parsed: MnemonRuntimeMemoryTool.Args) -> Any:
+        importance = _check_importance(parsed.importance)
         if action == "add":
-            content = require_str(args, "content")
+            content = require_value(parsed.content, "content")
             return service.remember(target, content, importance or DEFAULT_IMPORTANCE)
-        old_text = require_str(args, "old_text")
+        old_text = require_value(parsed.old_text, "old_text")
         if action == "replace":
-            content = require_str(args, "content")
+            content = require_value(parsed.content, "content")
             entry = service.resolve(target, old_text)
             return service.replace(target, entry.id, content, importance)
         entry = service.resolve(target, old_text)

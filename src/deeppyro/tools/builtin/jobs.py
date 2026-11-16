@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import AliasChoices, Field
+
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.args import optional_bool, optional_int, optional_str, require_str
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import NonEmptyStr, OptionalNonEmptyStr, ToolArgs, schema_number
 from deeppyro.tools.spill import truncate_text
 
 #: Default and maximum wait for job_output(wait=true), in milliseconds.
@@ -38,14 +40,6 @@ def _handle(service: Any, job_id: str) -> Any:
     return handle
 
 
-def _timeout_ms(args: dict[str, Any]) -> int:
-    """Read timeout_ms, accepting the camelCase spelling for tolerance."""
-    if "timeout_ms" not in args and "timeoutMs" in args:
-        args = dict(args)
-        args["timeout_ms"] = args.pop("timeoutMs")
-    return optional_int(args, "timeout_ms", DEFAULT_WAIT_MS, minimum=1, maximum=MAX_WAIT_MS)
-
-
 def _status_line(status: str, exit_code: int | None) -> str:
     if status == "completed" and exit_code is not None:
         return f"[status: {status}, exit code: {exit_code}]"
@@ -64,35 +58,34 @@ class JobOutputTool(BaseTool):
         "Read a background job: output since the previous read for stream jobs, or the result "
         "of a finished final-output job."
     )
-    parameters = make_parameters(
-        {
-            "job_id": {
-                "type": "string",
-                "description": "Job id returned by the tool that started the background work.",
-            },
-            "wait": {
-                "type": "boolean",
-                "description": (
-                    "Block until the job finishes or the timeout expires; a timed-out wait "
-                    "leaves the job running. Defaults to false."
-                ),
-            },
-            "timeout_ms": {
-                "type": "number",
-                "description": (
-                    "Max wait in milliseconds with wait: true. Defaults to and is capped by configuration."
-                ),
-            },
-        },
-        required=["job_id"],
-    )
+
+    class Args(ToolArgs):
+        job_id: NonEmptyStr = Field(
+            description="Job id returned by the tool that started the background work.",
+        )
+        wait: bool | None = Field(
+            default=None,
+            description=(
+                "Block until the job finishes or the timeout expires; a timed-out wait "
+                "leaves the job running. Defaults to false."
+            ),
+        )
+        timeout_ms: int | None = Field(
+            default=None,
+            ge=1,
+            le=MAX_WAIT_MS,
+            validation_alias=AliasChoices("timeout_ms", "timeoutMs"),
+            json_schema_extra=schema_number(),
+            description="Max wait in milliseconds with wait: true. Defaults to and is capped by configuration.",
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _service(ctx)
-        job_id = require_str(args, "job_id")
+        parsed = JobOutputTool.Args.parse(args)
+        job_id = parsed.job_id
         handle = _handle(service, job_id)
-        wait = optional_bool(args, "wait", False)
-        timeout_ms = _timeout_ms(args)
+        wait = bool(parsed.wait)
+        timeout_ms = parsed.timeout_ms if parsed.timeout_ms is not None else DEFAULT_WAIT_MS
         timed_out = False
         if wait and handle.running:
             result = await handle.wait(timeout_ms / 1000)
@@ -121,25 +114,22 @@ class JobKillTool(BaseTool):
 
     name = "job_kill"
     description = "Request cancellation of a running background job."
-    parameters = make_parameters(
-        {
-            "job_id": {
-                "type": "string",
-                "description": "Job id returned by the tool that started the background work.",
-            },
-            "reason": {
-                "type": "string",
-                "description": "Optional short reason, recorded in the log and forwarded to the job.",
-            },
-        },
-        required=["job_id"],
-    )
+
+    class Args(ToolArgs):
+        job_id: NonEmptyStr = Field(
+            description="Job id returned by the tool that started the background work.",
+        )
+        reason: OptionalNonEmptyStr = Field(
+            default=None,
+            description="Optional short reason, recorded in the log and forwarded to the job.",
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _service(ctx)
-        job_id = require_str(args, "job_id")
+        parsed = JobKillTool.Args.parse(args)
+        job_id = parsed.job_id
         handle = _handle(service, job_id)
-        reason = optional_str(args, "reason")
+        reason = parsed.reason
         if handle.running:
             await service.kill(job_id, reason)
         current = service.get(job_id) or handle
@@ -159,7 +149,9 @@ class JobListTool(BaseTool):
 
     name = "job_list"
     description = "List your background jobs (running and finished) with their ids, kinds, and statuses."
-    parameters = make_parameters({})
+
+    class Args(ToolArgs):
+        pass
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _service(ctx)

@@ -14,10 +14,12 @@ import urllib.parse
 from typing import Any
 
 import httpx
+from pydantic import Field
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import NonEmptyStr, ToolArgs
 
 DUCKDUCKGO_HTML_ENDPOINT = "https://html.duckduckgo.com/html/"
 USER_AGENT = "Mozilla/5.0 (compatible; DeepPyro/0.1; +https://github.com/deeppyro)"
@@ -98,19 +100,14 @@ def parse_search_results(markup: str, limit: int) -> list[dict[str, str]]:
     return results
 
 
-def _validate_queries(args: dict[str, Any], max_queries: int) -> list[str]:
-    raw = args.get("queries")
-    if raw is None:
-        raise ToolError("queries must contain at least one query")
-    if not isinstance(raw, list):
-        raise ToolError("queries must be an array of strings")
+def _validate_queries(raw: list[str], max_queries: int) -> list[str]:
     if not raw:
         raise ToolError("queries must contain at least one query")
     if len(raw) > max_queries:
         raise ToolError(f"queries must contain at most {max_queries} queries")
     queries: list[str] = []
     for item in raw:
-        if not isinstance(item, str) or not item.strip():
+        if not item.strip():
             raise ToolError("queries must contain non-empty strings")
         if item not in queries:
             queries.append(item)
@@ -122,18 +119,31 @@ class WebSearchTool(BaseTool):
 
     name = "web_search"
     description = "Search the web for current information. Returns an optional summary answer and a list of source URLs."
-    parameters = make_parameters(
-        {
-            "queries": {
-                "type": "array",
-                "items": {"type": "string"},
-                "minItems": 1,
-                "maxItems": 4,
-                "description": "One to four focused search queries; results are merged.",
-            }
-        },
-        required=["queries"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for web_search."""
+
+        queries: list[str] = Field(
+            json_schema_extra={"minItems": 1, "maxItems": 4},
+            description="One to four focused search queries; results are merged.",
+        )
+
+        @classmethod
+        def missing_message(cls, field: str) -> str:
+            return "queries must contain at least one query"
+
+        @classmethod
+        def field_error_message(cls, field: str, error: dict[str, Any]) -> str | None:
+            if field != "queries":
+                return None
+            kind = str(error.get("type", ""))
+            if error.get("input") is None:
+                return "queries must contain at least one query"
+            if kind in ("list_type", "tuple_type"):
+                return "queries must be an array of strings"
+            if kind in ("string_type", "string_unicode"):
+                return "queries must contain non-empty strings"
+            return None
 
     def __init__(
         self,
@@ -155,7 +165,8 @@ class WebSearchTool(BaseTool):
         return parse_search_results(response.text, self.max_results)
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        queries = _validate_queries(args, self.max_queries)
+        parsed = WebSearchTool.Args.parse(args)
+        queries = _validate_queries(parsed.queries, self.max_queries)
         async with httpx.AsyncClient(
             timeout=self.timeout_ms / 1000,
             follow_redirects=True,
@@ -198,20 +209,29 @@ class WebFetchTool(BaseTool):
 
     name = "web_fetch"
     description = "Fetch the content of a specific HTTP(S) URL and return it decoded to text."
-    parameters = make_parameters(
-        {"url": {"type": "string", "description": "The HTTP(S) URL to fetch."}},
-        required=["url"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for web_fetch."""
+
+        url: NonEmptyStr = Field(description="The HTTP(S) URL to fetch.")
+
+        @classmethod
+        def missing_message(cls, field: str) -> str:
+            return "url must be a non-empty string"
+
+        @classmethod
+        def field_error_message(cls, field: str, error: dict[str, Any]) -> str | None:
+            if field == "url" and str(error.get("type", "")) in ("string_type", "string_unicode"):
+                return "url must be a non-empty string"
+            return None
 
     def __init__(self, max_output_chars: int = DEFAULT_FETCH_MAX_CHARS, timeout_ms: int = 30_000) -> None:
         self.max_output_chars = max_output_chars
         self.timeout_ms = timeout_ms
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        raw_url = args.get("url")
-        if not isinstance(raw_url, str) or not raw_url.strip():
-            raise ToolError("url must be a non-empty string")
-        url = raw_url.strip()
+        parsed_args = WebFetchTool.Args.parse(args)
+        url = parsed_args.url.strip()
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ToolError("url must be an absolute http:// or https:// URL")

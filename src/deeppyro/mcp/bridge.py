@@ -12,7 +12,7 @@ from typing import Any
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
 
 from .jsonrpc import JsonRpcError
 from .transport import McpTransportError
@@ -88,7 +88,7 @@ class McpToolAdapter(BaseTool):
         if schema.get("type") == "object" and isinstance(schema.get("properties"), dict):
             self.parameters = schema
         else:
-            self.parameters = make_parameters({})
+            self.parameters = {"type": "object", "properties": {}, "additionalProperties": False}
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         try:

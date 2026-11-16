@@ -1,0 +1,1088 @@
+{
+  "tools": {
+    "read": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Path to read, resolved by the filesystem backend."
+        },
+        "offset": {
+          "type": "integer",
+          "description": "1-based first line to return. Defaults to 1."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum number of lines to return. Defaults to 2000."
+        }
+      },
+      "required": [
+        "file_path"
+      ],
+      "additionalProperties": false
+    },
+    "write": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Path to write, resolved by the filesystem backend."
+        },
+        "content": {
+          "type": "string",
+          "description": "Full UTF-8 text content to write."
+        },
+        "sandbox_permissions": {
+          "type": "string",
+          "enum": [
+            "workspace-write",
+            "danger-full-access"
+          ],
+          "description": "Narrowest wider sandbox mode to request for this one call; requires justification and fresh user approval."
+        },
+        "justification": {
+          "type": "string",
+          "description": "One sentence explaining to the user why this exact operation needs wider access."
+        }
+      },
+      "required": [
+        "file_path",
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "edit": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Path to edit, resolved by the filesystem backend."
+        },
+        "old_string": {
+          "type": "string",
+          "description": "Literal text to replace."
+        },
+        "new_string": {
+          "type": "string",
+          "description": "Literal replacement text. Use an empty string to delete the match."
+        },
+        "replace_all": {
+          "type": "boolean",
+          "description": "Replace all matches. Defaults to false."
+        },
+        "sandbox_permissions": {
+          "type": "string",
+          "enum": [
+            "workspace-write",
+            "danger-full-access"
+          ],
+          "description": "Narrowest wider sandbox mode to request for this one call; requires justification and fresh user approval."
+        },
+        "justification": {
+          "type": "string",
+          "description": "One sentence explaining to the user why this exact operation needs wider access."
+        }
+      },
+      "required": [
+        "file_path",
+        "old_string",
+        "new_string"
+      ],
+      "additionalProperties": false
+    },
+    "glob": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Glob pattern to match file paths against, e.g. src/**/*.ts."
+        },
+        "path": {
+          "type": "string",
+          "description": "Directory to search in (defaults to the session workspace)."
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "additionalProperties": false
+    },
+    "grep": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Regular expression (ripgrep syntax) to search for."
+        },
+        "path": {
+          "type": "string",
+          "description": "File or directory to search. Defaults to the session workspace."
+        },
+        "include": {
+          "type": "string",
+          "description": "One glob filter for which files to search, e.g. *.ts."
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "additionalProperties": false
+    },
+    "pwsh": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Clear, concise description of what this command does in active voice, 5-10 words."
+        },
+        "command": {
+          "type": "string",
+          "description": "The PowerShell command to execute."
+        },
+        "timeoutMs": {
+          "type": "number",
+          "description": "Timeout in milliseconds (default 120000, max 600000)."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Working directory for this command."
+        },
+        "run_in_background": {
+          "type": "boolean",
+          "description": "Start a background job and return its job id immediately."
+        },
+        "sandbox_permissions": {
+          "type": "string",
+          "enum": [
+            "workspace-write",
+            "danger-full-access"
+          ],
+          "description": "Narrowest wider sandbox mode to request for this one call; requires justification and fresh user approval."
+        },
+        "justification": {
+          "type": "string",
+          "description": "One sentence explaining to the user why this exact operation needs wider access."
+        }
+      },
+      "required": [
+        "description",
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "bash": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "The bash command to execute."
+        },
+        "timeoutMs": {
+          "type": "number",
+          "description": "Timeout in milliseconds (default 120000, max 600000)."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "Working directory for this command."
+        },
+        "run_in_background": {
+          "type": "boolean",
+          "description": "Start a background job and return its job id immediately."
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "web_search": {
+      "type": "object",
+      "properties": {
+        "queries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 4,
+          "description": "One to four focused search queries; results are merged."
+        }
+      },
+      "required": [
+        "queries"
+      ],
+      "additionalProperties": false
+    },
+    "web_fetch": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "The HTTP(S) URL to fetch."
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "todo_write": {
+      "type": "object",
+      "properties": {
+        "todos": {
+          "type": "array",
+          "description": "The complete task list, replacing any previous list.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string",
+                "description": "What the task is - a short imperative line."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "in_progress",
+                  "completed"
+                ],
+                "description": "pending (not started) | in_progress (now) | completed (done)."
+              }
+            },
+            "required": [
+              "content",
+              "status"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "todos"
+      ],
+      "additionalProperties": false
+    },
+    "present": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "description": "Usually the 1-2 most important deliverables; at most 4 per call.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path of an existing regular file."
+              },
+              "description": {
+                "type": "string",
+                "description": "Brief description for the user."
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "additionalProperties": false
+    },
+    "working_directory": {
+      "type": "object",
+      "properties": {
+        "cd": {
+          "type": "string",
+          "description": "Existing directory to enter. Omit to read the current directory."
+        }
+      },
+      "additionalProperties": false
+    },
+    "ask_user_question": {
+      "type": "object",
+      "properties": {
+        "questions": {
+          "type": "array",
+          "description": "Questions to ask the user before continuing.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Stable id for this question; echoed in the answer."
+              },
+              "question": {
+                "type": "string",
+                "description": "The specific question to ask the user."
+              },
+              "header": {
+                "type": "string",
+                "description": "Optional short heading for the question, such as \"Confirm\" or \"Choose Mode\"."
+              },
+              "options": {
+                "type": "array",
+                "description": "Optional choices to show the user. If you recommend one, put it first and append \"(Recommended)\" to that label.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "description": "Short user-facing option label."
+                    },
+                    "description": {
+                      "type": "string",
+                      "description": "One sentence explaining the tradeoff or impact."
+                    }
+                  },
+                  "required": [
+                    "label"
+                  ]
+                }
+              },
+              "multi_select": {
+                "type": "boolean",
+                "description": "Whether the user may select more than one option. Defaults to false."
+              }
+            },
+            "required": [
+              "id",
+              "question"
+            ]
+          }
+        }
+      },
+      "required": [
+        "questions"
+      ]
+    },
+    "job_output": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "description": "Job id returned by the tool that started the background work."
+        },
+        "wait": {
+          "type": "boolean",
+          "description": "Block until the job finishes or the timeout expires; a timed-out wait leaves the job running. Defaults to false."
+        },
+        "timeout_ms": {
+          "type": "number",
+          "description": "Max wait in milliseconds with wait: true. Defaults to and is capped by configuration."
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "additionalProperties": false
+    },
+    "job_kill": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "description": "Job id returned by the tool that started the background work."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short reason, recorded in the log and forwarded to the job."
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "additionalProperties": false
+    },
+    "job_list": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "plugin_manager": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "list",
+            "install",
+            "set",
+            "remove"
+          ],
+          "description": "operation to perform"
+        },
+        "source": {
+          "type": "string",
+          "description": "bundle directory or bundle.toml path (install only)"
+        },
+        "id": {
+          "type": "string",
+          "description": "bundle id (set and remove only)"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "desired bundle state (set only)"
+        },
+        "force": {
+          "type": "boolean",
+          "description": "replace an already installed bundle (install only)"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    "plugin_create": {
+      "type": "object",
+      "properties": {
+        "bundle_id": {
+          "type": "string",
+          "description": "unique bundle id, also the bundle directory name"
+        },
+        "name": {
+          "type": "string",
+          "description": "display name (defaults to bundle_id)"
+        },
+        "dest": {
+          "type": "string",
+          "description": "destination directory (defaults to the user bundle store)"
+        }
+      },
+      "required": [
+        "bundle_id"
+      ],
+      "additionalProperties": false
+    },
+    "plugin_inspect": {
+      "type": "object",
+      "properties": {
+        "what": {
+          "type": "string",
+          "enum": [
+            "services",
+            "plugins",
+            "tools",
+            "prompts",
+            "commands",
+            "providers",
+            "events",
+            "slots",
+            "theme",
+            "guide"
+          ],
+          "description": "inspection target"
+        },
+        "workspace": {
+          "type": "string",
+          "description": "workspace path used to instantiate tools (tools only)"
+        }
+      },
+      "required": [
+        "what"
+      ],
+      "additionalProperties": false
+    },
+    "settings_read": {
+      "type": "object",
+      "properties": {
+        "plugin_id": {
+          "type": "string",
+          "description": "plugin row id from plugin_inspect plugins"
+        }
+      },
+      "required": [
+        "plugin_id"
+      ],
+      "additionalProperties": false
+    },
+    "settings_write": {
+      "type": "object",
+      "properties": {
+        "plugin_id": {
+          "type": "string",
+          "description": "plugin row id to configure"
+        },
+        "patch": {
+          "type": "object",
+          "description": "partial configuration object to merge"
+        },
+        "expected_revision": {
+          "type": "string",
+          "description": "revision returned by settings_read"
+        }
+      },
+      "required": [
+        "plugin_id",
+        "patch",
+        "expected_revision"
+      ],
+      "additionalProperties": false
+    },
+    "mnemon_runtime_memory": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "add",
+            "replace",
+            "remove"
+          ],
+          "description": "add = append a new entry; replace = rewrite one matched entry; remove = delete one matched entry."
+        },
+        "target": {
+          "type": "string",
+          "enum": [
+            "user",
+            "memory"
+          ],
+          "description": "user = who the user is (USER.md); memory = project/environment facts and lessons (MEMORY.md)."
+        },
+        "content": {
+          "type": "string",
+          "description": "The durable fact to store; required for add and replace. Keep it self-contained and concise."
+        },
+        "old_text": {
+          "type": "string",
+          "description": "Required for replace and remove: a unique substring of the existing entry to change or delete."
+        },
+        "importance": {
+          "type": "string",
+          "enum": [
+            "critical",
+            "normal",
+            "low"
+          ],
+          "description": "Optional importance hint; defaults to normal. critical means an explicit must/always/never rule."
+        }
+      },
+      "required": [
+        "action",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "schedule": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "create",
+            "list",
+            "update",
+            "delete"
+          ],
+          "description": "create = schedule a task; list = read tasks; update = change or pause/resume; delete = remove."
+        },
+        "id": {
+          "type": "string",
+          "description": "Task id returned by create/list; required for update and delete."
+        },
+        "title": {
+          "type": "string",
+          "description": "Short task title in the user's language (max 120 characters); required for create."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Message delivered when the task fires; required for create."
+        },
+        "rrule": {
+          "type": "string",
+          "description": "Two lines: 'DTSTART:YYYYMMDDTHHMMSSZ' and 'RRULE:FREQ=...'. Supported FREQ values are DAILY, WEEKLY, MONTHLY and YEARLY with COUNT, UNTIL, INTERVAL, BYDAY, BYMONTHDAY, BYHOUR, BYMINUTE and BYSECOND parts; this is the timing input for every recurring task. Required for create, optional for update."
+        },
+        "target": {
+          "type": "string",
+          "enum": [
+            "this_session",
+            "new_once",
+            "new"
+          ],
+          "description": "this_session = deliver back to this session (default); new_once = start one new session at the first delivery; new = start a new session for every occurrence."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Update only: false pauses a task, true resumes it."
+        },
+        "limit": {
+          "type": "number",
+          "description": "List only: page size 1-500 (default 100)."
+        },
+        "offset": {
+          "type": "number",
+          "description": "List only: page offset (default 0)."
+        },
+        "expectedUpdatedAt": {
+          "type": "string",
+          "description": "Update only: updatedAt from a previous read; rejects a concurrent change with schedule_conflict."
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    "subagent": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "self-contained task for the child agent"
+        },
+        "description": {
+          "type": "string",
+          "description": "short description of the delegated work"
+        },
+        "name": {
+          "type": "string",
+          "description": "optional child label (defaults to a generated subagent-N name)"
+        },
+        "provider": {
+          "type": "string",
+          "description": "optional llm provider name (defaults to the current provider)"
+        },
+        "model": {
+          "type": "string",
+          "description": "optional model id (defaults to the current model)"
+        },
+        "preset": {
+          "type": "string",
+          "description": "optional agent preset id (defaults to the current preset)"
+        }
+      },
+      "required": [
+        "prompt",
+        "description"
+      ],
+      "additionalProperties": false
+    },
+    "subagent_fork": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "self-contained task for the forked child agent"
+        },
+        "description": {
+          "type": "string",
+          "description": "short description of the delegated work"
+        },
+        "name": {
+          "type": "string",
+          "description": "optional child label (defaults to a generated subagent-N name)"
+        }
+      },
+      "required": [
+        "prompt",
+        "description"
+      ],
+      "additionalProperties": false
+    },
+    "team_spawn": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "unique member name"
+        },
+        "description": {
+          "type": "string",
+          "description": "short role description"
+        },
+        "prompt": {
+          "type": "string",
+          "description": "initial task for the member"
+        },
+        "provider": {
+          "type": "string",
+          "description": "optional llm provider name (defaults to the lead provider)"
+        },
+        "model": {
+          "type": "string",
+          "description": "optional model id (defaults to the lead model)"
+        },
+        "preset": {
+          "type": "string",
+          "description": "optional agent preset id (defaults to the lead preset)"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "prompt"
+      ],
+      "additionalProperties": false
+    },
+    "team_send": {
+      "type": "object",
+      "properties": {
+        "member_id": {
+          "type": "string",
+          "description": "team member id"
+        },
+        "message": {
+          "type": "string",
+          "description": "message text"
+        }
+      },
+      "required": [
+        "member_id",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "team_wait": {
+      "type": "object",
+      "properties": {
+        "member_id": {
+          "type": "string",
+          "description": "team member id"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "description": "optional wait timeout in milliseconds"
+        }
+      },
+      "required": [
+        "member_id"
+      ],
+      "additionalProperties": false
+    },
+    "team_cancel": {
+      "type": "object",
+      "properties": {
+        "member_id": {
+          "type": "string",
+          "description": "team member id"
+        }
+      },
+      "required": [
+        "member_id"
+      ],
+      "additionalProperties": false
+    },
+    "team_members": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "team_task_create": {
+      "type": "object",
+      "properties": {
+        "subject": {
+          "type": "string",
+          "description": "task title"
+        },
+        "description": {
+          "type": "string",
+          "description": "task details"
+        },
+        "blockedBy": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "task ids or subjects that must complete first"
+        },
+        "writeScopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "workspace paths this task expects to modify"
+        }
+      },
+      "required": [
+        "subject",
+        "description"
+      ],
+      "additionalProperties": false
+    },
+    "team_task_list": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "in_progress",
+            "completed"
+          ],
+          "description": "optional status filter"
+        }
+      },
+      "additionalProperties": false
+    },
+    "team_task_get": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "team task id"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "additionalProperties": false
+    },
+    "team_task_update": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "team task id"
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "claim",
+            "start",
+            "complete",
+            "reopen",
+            "edit"
+          ],
+          "description": "task transition"
+        },
+        "subject": {
+          "type": "string",
+          "description": "new title (edit only)"
+        },
+        "description": {
+          "type": "string",
+          "description": "new description (edit only)"
+        },
+        "blockedBy": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "replacement blockers (edit only)"
+        },
+        "writeScopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "replacement write scopes (edit only)"
+        }
+      },
+      "required": [
+        "task_id",
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    "get_goal": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "create_goal": {
+      "type": "object",
+      "properties": {
+        "objective": {
+          "type": "string",
+          "description": "The objective to keep working towards, in one or two sentences."
+        },
+        "max_goal_rounds": {
+          "type": "number",
+          "description": "Optional cap on automatic continuation rounds (positive integer)."
+        }
+      },
+      "required": [
+        "objective"
+      ],
+      "additionalProperties": false
+    },
+    "update_goal": {
+      "type": "object",
+      "properties": {
+        "goal_id": {
+          "type": "string",
+          "description": "The goal id from get_goal."
+        },
+        "revision": {
+          "type": "number",
+          "description": "The goal revision from get_goal."
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "edit",
+            "pause",
+            "resume",
+            "complete",
+            "blocked"
+          ],
+          "description": "What to do with the goal."
+        },
+        "objective": {
+          "type": "string",
+          "description": "New objective, only for action=edit."
+        },
+        "max_goal_rounds": {
+          "type": "number",
+          "description": "New round cap, only for action=edit."
+        },
+        "blocked_reason": {
+          "type": "string",
+          "description": "The concrete blocking condition, only for action=blocked."
+        }
+      },
+      "required": [
+        "goal_id",
+        "revision",
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    "goal": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "The new goal. Omit to read the current one."
+        },
+        "clear": {
+          "type": "boolean",
+          "description": "Drop the current goal instead of setting one."
+        }
+      },
+      "additionalProperties": false
+    },
+    "skill": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The exact skill name from the available skills list."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "run_code": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "The Python program to execute. Top-level await and return are supported."
+        },
+        "description": {
+          "type": "string",
+          "description": "A short summary of what the program does."
+        }
+      },
+      "required": [
+        "code",
+        "description"
+      ],
+      "additionalProperties": false
+    },
+    "list_mcp_resources": {
+      "type": "object",
+      "properties": {
+        "server": {
+          "type": "string",
+          "description": "MCP server name"
+        },
+        "cursor": {
+          "type": "string",
+          "description": "nextCursor from a previous page"
+        }
+      },
+      "required": [
+        "server"
+      ],
+      "additionalProperties": false
+    },
+    "list_mcp_resource_templates": {
+      "type": "object",
+      "properties": {
+        "server": {
+          "type": "string",
+          "description": "MCP server name"
+        },
+        "cursor": {
+          "type": "string",
+          "description": "nextCursor from a previous page"
+        }
+      },
+      "required": [
+        "server"
+      ],
+      "additionalProperties": false
+    },
+    "read_mcp_resource": {
+      "type": "object",
+      "properties": {
+        "server": {
+          "type": "string",
+          "description": "MCP server name"
+        },
+        "uri": {
+          "type": "string",
+          "description": "Resource uri, template-expanded when needed"
+        }
+      },
+      "required": [
+        "server",
+        "uri"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "variants": {
+    "run_code[timeout]": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "The Python program to execute. Top-level await and return are supported."
+        },
+        "description": {
+          "type": "string",
+          "description": "A short summary of what the program does."
+        },
+        "timeoutMs": {
+          "type": "number",
+          "description": "Timeout for the whole program, including nested tool calls.",
+          "minimum": 1,
+          "maximum": 600000
+        }
+      },
+      "required": [
+        "code",
+        "description"
+      ],
+      "additionalProperties": false
+    },
+    "mcp_adapter[object]": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search query."
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "mcp_adapter[fallback]": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  }
+}

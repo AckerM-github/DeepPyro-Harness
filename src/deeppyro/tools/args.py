@@ -1,8 +1,10 @@
-"""Argument validation helpers shared by the built-in tools.
+"""Legacy argument validation helpers.
 
-Tools receive already JSON-decoded arguments from the pipeline and must reject
-malformed calls with :class:`deeppyro.core.errors.ToolError` so the pipeline can
-report them to the model as a normal error result.
+The built-in tools validate through their pydantic ``Args`` models now; these
+helpers stay because compaction tools and plugin-authored code still import
+them. Tools receive already JSON-decoded arguments from the pipeline and must
+reject malformed calls with :class:`deeppyro.core.errors.ToolError` so the
+pipeline can report them to the model as a normal error result.
 """
 
 from __future__ import annotations
