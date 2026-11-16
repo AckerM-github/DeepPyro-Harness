@@ -145,6 +145,7 @@ class RetryPolicy:
                 return await operation()
             except asyncio.CancelledError:
                 raise
+            # boundary: operation() performs the provider network call; the retry policy must see every error type
             except Exception as exc:
                 if attempt >= self.max_attempts or not self.should_retry(exc):
                     raise
