@@ -30,7 +30,6 @@ from deeppyro.sandbox.provider import (
     sandbox_denial_marker,
 )
 from deeppyro.sandbox.types import Preset
-from deeppyro.tools.args import optional_bool, optional_int, optional_str, require_str
 from deeppyro.tools.base import (
     JUSTIFICATION_DESCRIPTION,
     SANDBOX_MODES,
@@ -190,11 +189,19 @@ class _ShellTool(BaseTool):
             },
         )
 
+    def _parse(self, args: dict[str, Any]) -> Any:
+        """Validate args against this tool's nested Args model."""
+        model = type(self).Args
+        if model is None:  # pragma: no cover - both shell tools declare Args
+            raise ToolError(f"{self.name} has no argument model")
+        return model.parse(args)
+
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        command = require_str(args, "command")
-        timeout_ms = optional_int(args, "timeoutMs", DEFAULT_TIMEOUT_MS, minimum=1, maximum=MAX_TIMEOUT_MS)
-        background = optional_bool(args, "run_in_background", False)
-        workdir_arg = optional_str(args, "workdir")
+        parsed = self._parse(args)
+        command = parsed.command
+        timeout_ms = parsed.timeoutMs if parsed.timeoutMs is not None else DEFAULT_TIMEOUT_MS
+        background = bool(parsed.run_in_background)
+        workdir_arg = parsed.workdir
         mode = await check_command(ctx, args, command, tool=self.name)
         cwd = resolve_path(Path(ctx.cwd), workdir_arg) if workdir_arg else Path(ctx.cwd).resolve(strict=False)
         if not cwd.is_dir():
@@ -297,10 +304,6 @@ class PwshTool(_ShellTool):
         # on hosts that only ship the in-box engine.
         binary = shutil.which("pwsh") or shutil.which("powershell") or "pwsh"
         return [binary, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]
-
-    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        require_str(args, "description")
-        return await super().run(args, ctx)
 
 
 class BashTool(_ShellTool):

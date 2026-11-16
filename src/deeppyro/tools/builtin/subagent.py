@@ -29,23 +29,6 @@ def _subagent(ctx: ToolContext) -> Any:
     return service
 
 
-def _required(args: dict[str, Any], name: str) -> str:
-    value = args.get(name)
-    if not isinstance(value, str) or not value.strip():
-        raise ToolError(f"{name} must be a non-empty string")
-    return value.strip()
-
-
-def _optional(args: dict[str, Any], name: str) -> str | None:
-    value = args.get(name)
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ToolError(f"{name} must be a string")
-    text = value.strip()
-    return text or None
-
-
 class SubagentTool(BaseTool):
     """Delegate one self-contained task to a child agent and wait for its reply."""
 
@@ -88,16 +71,15 @@ class SubagentTool(BaseTool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _subagent(ctx)
-        prompt = _required(args, "prompt")
-        description = _required(args, "description")
+        parsed = SubagentTool.Args.parse(args)
         try:
             result = await service.run(
-                prompt,
-                description=description,
-                name=_optional(args, "name"),
-                provider=_optional(args, "provider"),
-                model=_optional(args, "model"),
-                preset=_optional(args, "preset"),
+                parsed.prompt,
+                description=parsed.description,
+                name=parsed.name,
+                provider=parsed.provider,
+                model=parsed.model,
+                preset=parsed.preset,
             )
         except Exception as exc:  # noqa: BLE001 - surface as a tool error result
             return ToolResult(text=f"subagent failed: {exc}", is_error=True)
@@ -145,13 +127,12 @@ class SubagentForkTool(BaseTool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _subagent(ctx)
-        prompt = _required(args, "prompt")
-        description = _required(args, "description")
+        parsed = SubagentForkTool.Args.parse(args)
         try:
             activation = await service.start(
-                prompt,
-                description=description,
-                name=_optional(args, "name"),
+                parsed.prompt,
+                description=parsed.description,
+                name=parsed.name,
                 mode="fork",
             )
         except Exception as exc:  # noqa: BLE001 - surface as a tool error result

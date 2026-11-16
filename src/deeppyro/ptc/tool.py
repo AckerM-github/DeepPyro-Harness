@@ -9,7 +9,6 @@ from pydantic import Field
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.args import optional_int, require_str
 from deeppyro.tools.base import BaseTool
 from deeppyro.tools.params import ToolArgs, derive_parameters
 from deeppyro.tools.permissions import gate_for
@@ -74,9 +73,23 @@ class RunCodeTool(BaseTool):
                 "maximum": timeout.get("maxMs"),
             }
 
+    def _timeout_ms(self, args: dict[str, Any], default: int, maximum: int) -> int:
+        """Resolve the per-call timeout (its upper bound is runtime configuration)."""
+        raw = args.get("timeoutMs")
+        if raw is None:
+            return default
+        if not isinstance(raw, int) or isinstance(raw, bool):
+            raise ToolError("timeoutMs must be an integer")
+        if raw < 1:
+            raise ToolError("timeoutMs must be greater than or equal to 1")
+        if raw > maximum:
+            raise ToolError(f"timeoutMs must be less than or equal to {maximum}")
+        return raw
+
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        code = require_str(args, "code", allow_empty=True)
-        description = require_str(args, "description", allow_empty=True)
+        parsed = RunCodeArgs.parse(args)
+        code = parsed.code
+        description = parsed.description
         if not description.strip():
             raise ToolError("invalid description: expected a non-empty string")
         gate = gate_for(ctx)
@@ -90,7 +103,7 @@ class RunCodeTool(BaseTool):
         config = getattr(runtime, "config", None)
         default_timeout = getattr(config, "timeout_ms", 120_000)
         max_timeout = getattr(config, "max_timeout_ms", 600_000)
-        timeout_ms = optional_int(args, "timeoutMs", default_timeout, minimum=1, maximum=max_timeout)
+        timeout_ms = self._timeout_ms(args, default_timeout, max_timeout)
         registry = (ctx.services or {}).get("tool_registry")
         if registry is None:
             registry = ToolRegistry()

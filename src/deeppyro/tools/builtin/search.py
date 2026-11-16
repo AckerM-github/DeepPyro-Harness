@@ -21,7 +21,6 @@ from pydantic import Field
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.args import optional_str, require_str
 from deeppyro.tools.base import BaseTool
 from deeppyro.tools.params import NonEmptyStr, OptionalNonEmptyStr, ToolArgs
 from deeppyro.tools.paths import display_path, resolve_path
@@ -63,10 +62,11 @@ class GlobTool(BaseTool):
         self.max_results = max_results
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        pattern = require_str(args, "pattern").replace("\\", "/")
+        parsed = GlobTool.Args.parse(args)
+        pattern = parsed.pattern.replace("\\", "/")
         if Path(pattern).is_absolute():
             raise ToolError("pattern must be a relative glob, not an absolute path")
-        base = _resolve_base(ctx, optional_str(args, "path"))
+        base = _resolve_base(ctx, parsed.path)
         if not base.exists():
             raise ToolError(f"search path does not exist: {base}")
         if not base.is_dir():
@@ -149,15 +149,16 @@ class GrepTool(BaseTool):
         return files
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        pattern = require_str(args, "pattern")
+        parsed = GrepTool.Args.parse(args)
+        pattern = parsed.pattern
         try:
             compiled = re.compile(pattern)
         except re.error as exc:
             raise ToolError(f"invalid regular expression {pattern!r}: {exc}") from exc
-        base = _resolve_base(ctx, optional_str(args, "path"))
+        base = _resolve_base(ctx, parsed.path)
         if not base.exists():
             raise ToolError(f"search path does not exist: {base}")
-        include = optional_str(args, "include")
+        include = parsed.include
         if include is not None:
             if any(sep in include for sep in (",", ";")):
                 raise ToolError("include must be a single glob pattern, not a list")

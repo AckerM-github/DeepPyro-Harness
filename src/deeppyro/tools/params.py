@@ -74,19 +74,28 @@ class ToolArgs(BaseModel):
     def format_validation_error(cls, exc: ValidationError) -> str:
         error = _primary_error(exc)
         loc: tuple[Any, ...] = tuple(error.get("loc") or ())
-        if error.get("type") == "extra_forbidden" and loc:
-            return f"{_render_path(loc[:-1])} has unexpected fields: {loc[-1]}"
         field = _field_name(loc)
         if field is None:
             return str(error.get("msg", "invalid arguments"))
         custom = cls.field_error_message(field, error)
         if custom is not None:
             return custom
+        if error.get("type") == "extra_forbidden" and loc:
+            return f"{_render_path(loc[:-1])} has unexpected fields: {loc[-1]}"
         if error.get("type") == "missing":
             return cls.missing_message(field)
         if error.get("input") is None and _is_required(cls, field):
             return cls.missing_message(field)
         return _default_message(field, error, loc)
+
+
+def require_value(value: str | None, field: str) -> str:
+    """Conditional-required string check with the legacy require_str wording."""
+    if value is None:
+        raise ToolError(f"{field} is required")
+    if not value.strip():
+        raise ToolError(f"{field} must be a non-empty string")
+    return value
 
 
 def _primary_error(exc: ValidationError) -> dict[str, Any]:
@@ -143,7 +152,7 @@ def _default_message(field: str, error: dict[str, Any], loc: tuple[Any, ...]) ->
     ctx = error.get("ctx") or {}
     if kind == "literal_error":
         expected = str(ctx.get("expected", ""))
-        values = ", ".join(part.strip("'\"") for part in expected.split(","))
+        values = ", ".join(part.strip().strip("'\"") for part in expected.replace(" or ", ", ").split(","))
         return f"{field} must be one of: {values}"
     if kind == "greater_than_equal":
         return f"{field} must be greater than or equal to {ctx.get('ge')}"
@@ -316,6 +325,7 @@ __all__ = [
     "ToolArgs",
     "derive_parameters",
     "derive_property",
+    "require_value",
     "schema_enum",
     "schema_number",
 ]

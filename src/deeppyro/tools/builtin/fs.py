@@ -15,7 +15,6 @@ from pydantic import Field
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.args import optional_bool, optional_int, require_str
 from deeppyro.tools.base import (
     JUSTIFICATION_DESCRIPTION,
     SANDBOX_MODES,
@@ -76,10 +75,11 @@ class ReadTool(BaseTool):
         self.max_line_length = max_line_length
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        path = resolve_path(Path(ctx.cwd), require_str(args, "file_path"))
+        parsed = ReadTool.Args.parse(args)
+        path = resolve_path(Path(ctx.cwd), parsed.file_path)
         check_read(ctx, path)
-        offset = optional_int(args, "offset", 1, minimum=1)
-        limit = optional_int(args, "limit", DEFAULT_READ_LIMIT, minimum=1, maximum=MAX_READ_LIMIT)
+        offset = parsed.offset if parsed.offset is not None else 1
+        limit = parsed.limit if parsed.limit is not None else DEFAULT_READ_LIMIT
         if not path.exists():
             raise ToolError(f'cannot read "{path}": not found')
         if not path.is_file():
@@ -91,8 +91,6 @@ class ReadTool(BaseTool):
         total = len(lines)
         if offset > 1 and offset > total:
             raise ToolError(f'"offset" {offset} is beyond the end of the file: {path} has {total} lines')
-        if limit > MAX_READ_LIMIT:  # defensive: optional_int already caps it
-            raise ToolError(f"limit must be less than or equal to {MAX_READ_LIMIT}")
         selected = lines[offset - 1 : offset - 1 + limit]
         truncated = len(selected) < len(lines[offset - 1 :])
         body = "\n".join(
@@ -131,8 +129,9 @@ class WriteTool(BaseTool):
         justification: str | None = Field(default=None, description=JUSTIFICATION_DESCRIPTION)
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        path = resolve_path(Path(ctx.cwd), require_str(args, "file_path"))
-        content = require_str(args, "content", allow_empty=True)
+        parsed = WriteTool.Args.parse(args)
+        path = resolve_path(Path(ctx.cwd), parsed.file_path)
+        content = parsed.content
         await check_write(ctx, args, path, action="write", tool=self.name)
         if path.is_dir():
             raise ToolError(f'cannot write "{path}": not a regular file')
@@ -173,10 +172,11 @@ class EditTool(BaseTool):
         justification: str | None = Field(default=None, description=JUSTIFICATION_DESCRIPTION)
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        path = resolve_path(Path(ctx.cwd), require_str(args, "file_path"))
-        old_string = require_str(args, "old_string")
-        new_string = require_str(args, "new_string", allow_empty=True)
-        replace_all = optional_bool(args, "replace_all", False)
+        parsed = EditTool.Args.parse(args)
+        path = resolve_path(Path(ctx.cwd), parsed.file_path)
+        old_string = parsed.old_string
+        new_string = parsed.new_string
+        replace_all = bool(parsed.replace_all)
         await check_write(ctx, args, path, action="edit", tool=self.name)
         if path.is_dir():
             raise ToolError(f'cannot edit "{path}": not a regular file')

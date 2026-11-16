@@ -41,37 +41,6 @@ def _team(ctx: ToolContext) -> Any:
     return service
 
 
-def _required(args: dict[str, Any], name: str) -> str:
-    value = args.get(name)
-    if not isinstance(value, str) or not value.strip():
-        raise ToolError(f"{name} must be a non-empty string")
-    return value.strip()
-
-
-def _optional(args: dict[str, Any], name: str) -> str | None:
-    value = args.get(name)
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ToolError(f"{name} must be a string")
-    text = value.strip()
-    return text or None
-
-
-def _string_list(args: dict[str, Any], name: str) -> list[str] | None:
-    value = args.get(name)
-    if value is None:
-        return None
-    if not isinstance(value, (list, tuple)):
-        raise ToolError(f"{name} must be a list of strings")
-    result: list[str] = []
-    for item in value:
-        if not isinstance(item, str) or not item.strip():
-            raise ToolError(f"{name} must be a list of non-empty strings")
-        result.append(item.strip())
-    return result
-
-
 def _parse_string_list(value: Any, info: Any) -> Any:
     """Validate one string-array argument the way the legacy helper did."""
     if value is None:
@@ -131,17 +100,15 @@ class TeamSpawnTool(BaseTool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
-        name = _required(args, "name")
-        description = _required(args, "description")
-        prompt = _required(args, "prompt")
+        parsed = TeamSpawnTool.Args.parse(args)
         try:
             info = service.spawn(
-                name,
-                description,
-                prompt,
-                provider=_optional(args, "provider"),
-                model=_optional(args, "model"),
-                preset=_optional(args, "preset"),
+                parsed.name,
+                parsed.description,
+                parsed.prompt,
+                provider=parsed.provider,
+                model=parsed.model,
+                preset=parsed.preset,
             )
         except Exception as exc:  # noqa: BLE001 - surface as a tool error result
             return ToolResult(text=f"team_spawn failed: {exc}", is_error=True)
@@ -167,10 +134,10 @@ class TeamSendTool(BaseTool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
-        member_id = _required(args, "member_id")
-        message = _required(args, "message")
+        parsed = TeamSendTool.Args.parse(args)
+        member_id = parsed.member_id
         try:
-            status = service.send(member_id, message)
+            status = service.send(member_id, parsed.message)
         except Exception as exc:  # noqa: BLE001 - surface as a tool error result
             return ToolResult(text=f"team_send failed: {exc}", is_error=True)
         return ToolResult(text=_dump({"member_id": member_id, "status": status}))
@@ -200,13 +167,16 @@ class TeamWaitTool(BaseTool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
-        member_id = _required(args, "member_id")
-        timeout_s: float | None = None
-        raw_timeout = args.get("timeoutMs")
-        if raw_timeout is not None:
-            if not isinstance(raw_timeout, (int, float)) or isinstance(raw_timeout, bool):
+        try:
+            parsed = TeamWaitTool.Args.parse(args)
+        except ToolError as exc:
+            if "timeoutMs" in str(exc):
                 return ToolResult(text="timeoutMs must be a number", is_error=True)
-            timeout_s = max(0.0, float(raw_timeout)) / 1000.0
+            raise
+        member_id = parsed.member_id
+        timeout_s: float | None = None
+        if parsed.timeoutMs is not None:
+            timeout_s = max(0.0, float(parsed.timeoutMs)) / 1000.0
         try:
             info = await service.wait(member_id, timeout_s)
         except Exception as exc:  # noqa: BLE001 - surface as a tool error result
@@ -231,7 +201,8 @@ class TeamCancelTool(BaseTool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
-        member_id = _required(args, "member_id")
+        parsed = TeamCancelTool.Args.parse(args)
+        member_id = parsed.member_id
         try:
             cancelled = await service.cancel(member_id)
         except Exception as exc:  # noqa: BLE001 - surface as a tool error result
@@ -281,14 +252,13 @@ class TeamTaskCreateTool(BaseTool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
-        subject = _required(args, "subject")
-        description = _required(args, "description")
+        parsed = TeamTaskCreateTool.Args.parse(args)
         try:
             task = service.create_task(
-                subject,
-                description,
-                blocked_by=_string_list(args, "blockedBy") or (),
-                write_scopes=_string_list(args, "writeScopes") or (),
+                parsed.subject,
+                parsed.description,
+                blocked_by=parsed.blockedBy or (),
+                write_scopes=parsed.writeScopes or (),
             )
         except Exception as exc:  # noqa: BLE001 - surface as a tool error result
             return ToolResult(text=f"team_task_create failed: {exc}", is_error=True)
@@ -316,7 +286,8 @@ class TeamTaskListTool(BaseTool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
-        wanted = _optional(args, "status")
+        parsed = TeamTaskListTool.Args.parse(args)
+        wanted = parsed.status
         tasks = service.tasks()
         if wanted is not None:
             tasks = [task for task in tasks if task.status == wanted]
@@ -337,7 +308,8 @@ class TeamTaskGetTool(BaseTool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
-        task_id = _required(args, "task_id")
+        parsed = TeamTaskGetTool.Args.parse(args)
+        task_id = parsed.task_id
         task = service.get_task(task_id)
         if task is None:
             return ToolResult(text=f"unknown team task {task_id!r}", is_error=True)
@@ -383,16 +355,15 @@ class TeamTaskUpdateTool(BaseTool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
-        task_id = _required(args, "task_id")
-        action = _required(args, "action")
+        parsed = TeamTaskUpdateTool.Args.parse(args)
         try:
             task = service.update_task(
-                task_id,
-                action,
-                subject=_optional(args, "subject"),
-                description=_optional(args, "description"),
-                blocked_by=_string_list(args, "blockedBy"),
-                write_scopes=_string_list(args, "writeScopes"),
+                parsed.task_id,
+                parsed.action,
+                subject=parsed.subject,
+                description=parsed.description,
+                blocked_by=parsed.blockedBy,
+                write_scopes=parsed.writeScopes,
             )
         except Exception as exc:  # noqa: BLE001 - surface as a tool error result
             return ToolResult(text=f"team_task_update failed: {exc}", is_error=True)

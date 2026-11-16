@@ -16,7 +16,7 @@ from pydantic import ConfigDict, Field
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.tools.base import BaseTool
-from deeppyro.tools.params import NonEmptyStr, ToolArgs
+from deeppyro.tools.params import ToolArgs
 from deeppyro.tools.paths import resolve_path
 
 DEFAULT_MAX_FILES = 8
@@ -27,7 +27,7 @@ class PresentationItem(ToolArgs):
 
     model_config = ConfigDict(extra="forbid")
 
-    path: NonEmptyStr = Field(description="Path of an existing regular file.")
+    path: str = Field(description="Path of an existing regular file.")
     description: str | None = Field(default=None, description="Brief description for the user.")
 
 
@@ -50,37 +50,52 @@ class PresentTool(BaseTool):
             description="Usually the 1-2 most important deliverables; at most 4 per call.",
         )
 
+        @classmethod
+        def missing_message(cls, field: str) -> str:
+            return "files must be a non-empty list"
+
+        @classmethod
+        def field_error_message(cls, field: str, error: dict[str, Any]) -> str | None:
+            if field != "files":
+                return None
+            loc: tuple[Any, ...] = tuple(error.get("loc") or ())
+            index = next((part for part in loc if isinstance(part, int)), 0)
+            name = str(loc[-1]) if loc else ""
+            kind = str(error.get("type", ""))
+            if kind == "missing" and name == "files":
+                return "files must be a non-empty list"
+            if kind in ("list_type", "tuple_type") or error.get("input") is None:
+                return "files must be a non-empty list"
+            if kind in ("model_type", "dict_type", "model_attributes_type"):
+                return f"files[{index}] must be an object"
+            if kind == "extra_forbidden":
+                return f"files[{index}] has unexpected fields: {loc[-1]}"
+            if name == "description":
+                return f"files[{index}].description must be a string"
+            return f"files[{index}].path must be a non-empty string"
+
     def __init__(self, max_files: int = DEFAULT_MAX_FILES) -> None:
         self.max_files = max_files
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        raw = args.get("files")
-        if not isinstance(raw, list) or not raw:
+        parsed = PresentTool.Args.parse(args)
+        if not parsed.files:
             raise ToolError("files must be a non-empty list")
-        if len(raw) > self.max_files:
+        if len(parsed.files) > self.max_files:
             raise ToolError(f"present accepts at most {self.max_files} files")
         base = Path(ctx.cwd).resolve(strict=False)
-        records: list[dict[str, str]] = []
-        for index, item in enumerate(raw):
-            if not isinstance(item, dict):
-                raise ToolError(f"files[{index}] must be an object")
-            extra = set(item) - {"path", "description"}
-            if extra:
-                raise ToolError(f"files[{index}] has unexpected fields: {', '.join(sorted(extra))}")
-            path_value = item.get("path")
-            if not isinstance(path_value, str) or not path_value.strip():
+        records: list[dict[str, Any]] = []
+        for index, item in enumerate(parsed.files):
+            if not item.path.strip():
                 raise ToolError(f"files[{index}].path must be a non-empty string")
-            description = item.get("description")
-            if description is not None and not isinstance(description, str):
-                raise ToolError(f"files[{index}].description must be a string")
-            target = resolve_path(base, path_value)
+            target = resolve_path(base, item.path)
             if target.is_symlink():
                 raise ToolError(f'cannot present "{target}": the final path is a symbolic link')
             if not target.exists():
                 raise ToolError(f'cannot present "{target}": not found')
             if not target.is_file():
                 raise ToolError(f'cannot present "{target}": not a regular file')
-            records.append({"path": str(target), "description": description})
+            records.append({"path": str(target), "description": item.description})
         presented = ctx.services.setdefault("presented", [])
         if isinstance(presented, list):
             presented.extend(dict(record) for record in records)

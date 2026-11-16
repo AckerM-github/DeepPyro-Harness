@@ -9,7 +9,7 @@ from pydantic import Field
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.tools.base import BaseTool
-from deeppyro.tools.params import OptionalNonEmptyStr, ToolArgs
+from deeppyro.tools.params import ToolArgs
 
 
 class WorkingDirectoryTool(BaseTool):
@@ -25,7 +25,7 @@ class WorkingDirectoryTool(BaseTool):
     class Args(ToolArgs):
         """Arguments for working_directory; omitting cd reads the directory."""
 
-        cd: OptionalNonEmptyStr = Field(
+        cd: str | None = Field(
             default=None,
             description="Existing directory to enter. Omit to read the current directory.",
         )
@@ -34,10 +34,11 @@ class WorkingDirectoryTool(BaseTool):
         service = (ctx.services or {}).get("working_directory")
         if service is None:
             raise ToolError("working_directory service is not available in this session")
+        parsed = WorkingDirectoryTool.Args.parse(args)
         if "cd" not in args:
             path = service.get(ctx.session_id)
             return ToolResult(text=str(path), meta={"cwd": str(path)})
-        cd = args.get("cd")
+        cd = parsed.cd
         if not isinstance(cd, str):
             raise ToolError("cd must be a string")
         path = await service.set(ctx.session_id, cd, cancel=ctx.cancel)

@@ -14,7 +14,7 @@ from pydantic import ConfigDict, Field
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.tools.base import BaseTool
-from deeppyro.tools.params import NonEmptyStr, ToolArgs
+from deeppyro.tools.params import ToolArgs
 
 TODO_STATUSES = ("pending", "in_progress", "completed")
 
@@ -24,7 +24,7 @@ class TodoItem(ToolArgs):
 
     model_config = ConfigDict(extra="forbid")
 
-    content: NonEmptyStr = Field(description="What the task is - a short imperative line.")
+    content: str = Field(description="What the task is - a short imperative line.")
     status: Literal["pending", "in_progress", "completed"] = Field(
         description="pending (not started) | in_progress (now) | completed (done).",
     )
@@ -48,31 +48,48 @@ class TodoWriteTool(BaseTool):
             description="The complete task list, replacing any previous list.",
         )
 
+        @classmethod
+        def missing_message(cls, field: str) -> str:
+            return "todos must be a list"
+
+        @classmethod
+        def field_error_message(cls, field: str, error: dict[str, Any]) -> str | None:
+            if field != "todos":
+                return None
+            loc: tuple[Any, ...] = tuple(error.get("loc") or ())
+            index = next((part for part in loc if isinstance(part, int)), 0)
+            name = str(loc[-1]) if loc else ""
+            kind = str(error.get("type", ""))
+            if kind in ("list_type", "tuple_type", "missing") or error.get("input") is None:
+                if name == "content":
+                    return f"todo item {index} content must be a non-empty string"
+                if name == "status":
+                    return f"todo item {index} status must be one of: {', '.join(TODO_STATUSES)}"
+                return "todos must be a list"
+            if kind in ("model_type", "dict_type", "model_attributes_type"):
+                return f"todo item {index} must be an object"
+            if kind == "extra_forbidden":
+                return f"todo item {index} has unexpected fields: {loc[-1]}"
+            if kind in ("string_type", "string_unicode"):
+                return f"todo item {index} content must be a non-empty string"
+            if kind == "literal_error":
+                return f"todo item {index} status must be one of: {', '.join(TODO_STATUSES)}"
+            return None
+
     def __init__(self) -> None:
         self.todos: list[dict[str, str]] = []
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        raw = args.get("todos")
-        if not isinstance(raw, list):
-            raise ToolError("todos must be a list")
+        parsed = TodoWriteTool.Args.parse(args)
         normalized: list[dict[str, str]] = []
         seen: set[str] = set()
-        for index, item in enumerate(raw):
-            if not isinstance(item, dict):
-                raise ToolError(f"todo item {index} must be an object")
-            extra = set(item) - {"content", "status"}
-            if extra:
-                raise ToolError(f"todo item {index} has unexpected fields: {', '.join(sorted(extra))}")
-            content = item.get("content")
-            if not isinstance(content, str) or not content.strip():
+        for index, item in enumerate(parsed.todos):
+            if not item.content.strip():
                 raise ToolError(f"todo item {index} content must be a non-empty string")
-            status = item.get("status")
-            if status not in TODO_STATUSES:
-                raise ToolError(f"todo item {index} status must be one of: {', '.join(TODO_STATUSES)}")
-            if content in seen:
-                raise ToolError(f"todo item {index} content is duplicated: {content!r}")
-            seen.add(content)
-            normalized.append({"content": content, "status": status})
+            if item.content in seen:
+                raise ToolError(f"todo item {index} content is duplicated: {item.content!r}")
+            seen.add(item.content)
+            normalized.append({"content": item.content, "status": item.status})
         self.todos = normalized
         ctx.services["todos"] = [dict(item) for item in normalized]
         ctx.log("todo/write", {"todos": [dict(item) for item in normalized]})

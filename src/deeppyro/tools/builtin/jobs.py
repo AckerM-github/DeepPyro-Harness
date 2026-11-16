@@ -14,7 +14,6 @@ from pydantic import AliasChoices, Field
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.args import optional_bool, optional_int, optional_str, require_str
 from deeppyro.tools.base import BaseTool
 from deeppyro.tools.params import NonEmptyStr, OptionalNonEmptyStr, ToolArgs, schema_number
 from deeppyro.tools.spill import truncate_text
@@ -39,14 +38,6 @@ def _handle(service: Any, job_id: str) -> Any:
     if handle is None:
         raise ToolError(f"unknown job: {job_id}")
     return handle
-
-
-def _timeout_ms(args: dict[str, Any]) -> int:
-    """Read timeout_ms, accepting the camelCase spelling for tolerance."""
-    if "timeout_ms" not in args and "timeoutMs" in args:
-        args = dict(args)
-        args["timeout_ms"] = args.pop("timeoutMs")
-    return optional_int(args, "timeout_ms", DEFAULT_WAIT_MS, minimum=1, maximum=MAX_WAIT_MS)
 
 
 def _status_line(status: str, exit_code: int | None) -> str:
@@ -90,10 +81,11 @@ class JobOutputTool(BaseTool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _service(ctx)
-        job_id = require_str(args, "job_id")
+        parsed = JobOutputTool.Args.parse(args)
+        job_id = parsed.job_id
         handle = _handle(service, job_id)
-        wait = optional_bool(args, "wait", False)
-        timeout_ms = _timeout_ms(args)
+        wait = bool(parsed.wait)
+        timeout_ms = parsed.timeout_ms if parsed.timeout_ms is not None else DEFAULT_WAIT_MS
         timed_out = False
         if wait and handle.running:
             result = await handle.wait(timeout_ms / 1000)
@@ -134,9 +126,10 @@ class JobKillTool(BaseTool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _service(ctx)
-        job_id = require_str(args, "job_id")
+        parsed = JobKillTool.Args.parse(args)
+        job_id = parsed.job_id
         handle = _handle(service, job_id)
-        reason = optional_str(args, "reason")
+        reason = parsed.reason
         if handle.running:
             await service.kill(job_id, reason)
         current = service.get(job_id) or handle

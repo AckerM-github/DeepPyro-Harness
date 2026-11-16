@@ -11,9 +11,8 @@ from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.skills.frontmatter import is_valid_skill_name
 from deeppyro.skills.registry import render_skill_content
-from deeppyro.tools.args import require_str
 from deeppyro.tools.base import BaseTool
-from deeppyro.tools.params import StrippedStr, ToolArgs
+from deeppyro.tools.params import ToolArgs
 
 SKILL_TOOL_DESCRIPTION = (
     "Load the full instructions for a skill. Call it before acting on a task "
@@ -31,13 +30,15 @@ class SkillTool(BaseTool):
     class Args(ToolArgs):
         """Arguments for skill."""
 
-        name: StrippedStr = Field(description="The exact skill name from the available skills list.")
+        name: str = Field(description="The exact skill name from the available skills list.")
 
     def __init__(self, service: Any) -> None:
         self._service = service
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        name = require_str(args, "name").strip()
+        name = SkillTool.Args.parse(args).name.strip()
+        if not name:
+            raise ToolError("name must be a non-empty string")
         if not is_valid_skill_name(name):
             raise ToolError(f'invalid skill name "{name}"')
         definition = self._service.get(name, cwd=Path(ctx.cwd))
