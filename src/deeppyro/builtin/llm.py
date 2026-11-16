@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any, ClassVar
 
 from deeppyro.api import PluginDependencyError, Service
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.llm import LlmRegistry, ModelInfo
 
 
@@ -20,7 +21,7 @@ class LlmPlugin(Service):
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
-        cfg = ctx.service("config").value
+        cfg = ctx.require(KernelConfig).value
         self._registry = LlmRegistry(cfg)
         self._factories: dict[str, tuple[Callable[[Any], Any], str, str]] = {}
 

@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from deeppyro.api import Service
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.schedule import ScheduleConfig, ScheduleManager
 from deeppyro.tools.builtin.schedule import (
     SCHEDULE_PROMPT_ORDER,
@@ -28,7 +29,7 @@ from deeppyro.tools.builtin.schedule import (
 def _schedule_config(ctx: Any, row_config: Any) -> Mapping[str, Any] | None:
     """Resolve the [schedule] table from the kernel config, falling back to the row config."""
     raw: Any = None
-    config_service = ctx.get("config")
+    config_service = ctx.get(KernelConfig)
     value = getattr(config_service, "value", None) if config_service is not None else None
     if value is not None:
         raw = getattr(value, "schedule", None)

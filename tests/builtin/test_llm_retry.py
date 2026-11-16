@@ -28,6 +28,7 @@ from tests.agent.fakes import (
     ScriptedTurn,
     finish,
 )
+from tests.service_doubles import service_lookup, service_require
 
 
 # -- helpers ---------------------------------------------------------------
@@ -52,6 +53,12 @@ class FakeCtx:
             self.provided.pop(name, None)
 
         return dispose
+
+    def get(self, service: str | type[Any]) -> Any | None:
+        return service_lookup(self._services, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self._services, service)
 
     def effect(self, execute: Any, label: str = "anonymous") -> Any:
         dispose = execute()

@@ -11,6 +11,7 @@ from deeppyro.builtin.prompt_extension import PromptExtensionPlugin
 from deeppyro.config import Config
 from deeppyro.core.errors import ConfigError
 from deeppyro.hooks import SYSTEM_PROMPT_ASSEMBLE, HookService
+from tests.service_doubles import service_lookup, service_require
 
 
 class FakeCtx:
@@ -25,6 +26,12 @@ class FakeCtx:
         if name not in self._services:
             raise LookupError(f"service {name!r} is not registered")
         return self._services[name]
+
+    def get(self, service: str | type[Any]) -> Any | None:
+        return service_lookup(self._services, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self._services, service)
 
     def effect(self, execute: Any, label: str = "anonymous") -> Any:
         dispose = execute()

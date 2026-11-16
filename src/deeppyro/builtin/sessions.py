@@ -6,6 +6,7 @@ from typing import Any, ClassVar
 
 from deeppyro.api import Service
 from deeppyro.config import session_dir
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.session import SessionStore
 
 
@@ -20,7 +21,7 @@ class SessionsPlugin(Service):
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
-        cfg = ctx.service("config").value
+        cfg = ctx.require(KernelConfig).value
         self.store = SessionStore(root=session_dir(cfg))
 
     def create(self, cwd: str, **kwargs: Any) -> Any:

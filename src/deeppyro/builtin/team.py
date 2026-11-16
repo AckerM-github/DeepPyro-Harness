@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from deeppyro.api import TEAM_PRESET_ID, Plugin
+from deeppyro.builtin.agents import AgentsPlugin
+from deeppyro.builtin.sandbox import SandboxPlugin
+from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.team.manager import TeamService
 from deeppyro.tools.builtin.team import team_tools
 
@@ -23,9 +26,9 @@ class TeamPlugin(Plugin):
 
     def setup(self, ctx: Any, config: Any) -> None:
         service = TeamService(
-            agents=ctx.service("agents"),
-            sessions=ctx.service("sessions"),
-            sandbox=ctx.service("sandbox"),
+            agents=ctx.require(AgentsPlugin),
+            sessions=ctx.require(SessionsPlugin),
+            sandbox=ctx.require(SandboxPlugin),
         )
         self.service = service
         ctx.provide("team", service)

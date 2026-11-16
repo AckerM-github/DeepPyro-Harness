@@ -20,6 +20,12 @@ from deeppyro.api import (
     PluginDependencyError,
     Service,
 )
+from deeppyro.api.services import lookup_service
+from deeppyro.builtin.presets import PresetsPlugin
+from deeppyro.builtin.prompt_service import PromptPlugin
+from deeppyro.builtin.tools import ToolsPlugin
+from deeppyro.kernel.config_service import KernelConfig
+from deeppyro.ptc.runtime import PtcRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +42,13 @@ class AgentsPlugin(Service):
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
         self._ctx = ctx
-        cfg = ctx.service("config").value
+        cfg = ctx.require(KernelConfig).value
         self._agent_config = cfg.agent
-        self._prompt_service = ctx.service("prompt")
-        self._presets = ctx.service("presets")
+        self._prompt_service = ctx.require(PromptPlugin)
+        self._presets = ctx.require(PresetsPlugin)
         # Optional: only needed when the caller lets the service build the
         # preset-scoped tool registry itself.
-        self._tools = ctx.get("tools") if hasattr(ctx, "get") else None
+        self._tools = ctx.get(ToolsPlugin) if hasattr(ctx, "get") else None
         #: Every agent this service built that the garbage collector has not
         #: reclaimed yet.  There is no disposal hook on AgentSession, so hosts
         #: that need "is it still the live instance" read this set.
@@ -121,6 +127,7 @@ class AgentsPlugin(Service):
         services: dict[str, Any] | None = None,
         preset: str | None = None,
         preset_revision: int | None = None,
+        service_access: Any | None = None,
     ) -> AgentSession:
         """Create an agent pinned to the latest (or a specific) preset revision.
 
@@ -162,6 +169,7 @@ class AgentsPlugin(Service):
             prompt_builder=build_prompt,
             surface_registry=surface,
             runtime_context=spec.runtime_context,
+            service_access=service_access if service_access is not None else self._ctx,
         )
         # Kept for tests and hosts that inspect what the model was offered.
         agent.surface_registry = surface
@@ -223,7 +231,7 @@ class AgentsPlugin(Service):
 
     def _legacy_ptc_mode(self) -> bool:
         """Whether the host-wide PTC switch is on (deprecated preset coupling)."""
-        ptc = self._ctx.get("ptc") if hasattr(self._ctx, "get") else None
+        ptc = lookup_service(self._ctx, PtcRuntime) if hasattr(self._ctx, "get") else None
         return ptc is not None and getattr(ptc, "mode", "native") == "ptc"
 
     @staticmethod

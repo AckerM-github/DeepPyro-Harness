@@ -23,6 +23,7 @@ from deeppyro.compact.refs import RefEntry
 from deeppyro.core.errors import ConfigError, SessionError
 from deeppyro.session import Session, SessionStore, fold_surface
 from tests.compact import support
+from tests.service_doubles import service_lookup, service_require
 
 
 def _body(text: str = "Summary of the consumed work.") -> str:
@@ -414,6 +415,12 @@ class _FakeCtx:
             return self._services[name]
         except KeyError as exc:
             raise LookupError(name) from exc
+
+    def get(self, service: str | type[object]) -> object | None:
+        return service_lookup(self._services, service)
+
+    def require(self, service: type[object]) -> object:
+        return service_require(self._services, service)
 
     def register_tool(self, factory: object) -> None:
         self.factories.append(factory)

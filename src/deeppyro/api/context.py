@@ -5,11 +5,16 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, overload
 
+from deeppyro.core.bus import EventBus
 from deeppyro.core.events import is_bus_event
+from deeppyro.hooks.service import HookService
 
 from .errors import PluginDependencyError
+from .services import ServiceNotFoundError, ServiceTypeError, contract_path, note_service_value, service_name
+
+T = TypeVar("T")
 
 
 class _NoopUi:
@@ -136,22 +141,75 @@ class PluginContext:
         return logger
 
     # -- service access ---------------------------------------------------
-    def get(self, name: str) -> Any | None:
+    def _lookup(self, name: str) -> Any | None:
+        """Return the raw service registered under this name, if active."""
         reflect = getattr(self._raw, "reflect", None)
         if reflect is None:
             return None
         return reflect.get(name)
 
+    @overload
+    def get(self, service: str) -> Any | None: ...
+
+    @overload
+    def get(self, service: type[T]) -> T | None: ...
+
+    def get(self, service: str | type[Any]) -> Any | None:
+        """Return a service by legacy name or by contract class.
+
+        The typed form resolves the class to its canonical service name and
+        returns None both when the service is absent and when the class is not
+        a known contract, so optional lookups never raise.
+        """
+        if isinstance(service, str):
+            return self._lookup(service)
+        try:
+            name = service_name(service)
+        except ServiceTypeError:
+            return None
+        return self._lookup(name)
+
     def has(self, name: str) -> bool:
-        return self.get(name) is not None
+        return self._lookup(name) is not None
+
+    def require(self, service: type[T]) -> T:
+        """Return the service for a contract class, raising when it is absent.
+
+        Raises:
+            ServiceTypeError: the class is not bound to any service name.
+            ServiceNotFoundError: the name is known but no active provider
+                registered it (a PluginDependencyError and LookupError).
+        """
+        name = service_name(service)
+        value = self._lookup(name)
+        if value is None:
+            raise ServiceNotFoundError(
+                f"plugin {self.plugin_id!r} requires service {name!r} "
+                f"({contract_path(service)}), which is not available",
+                service=name,
+                contract=service,
+            )
+        return value
 
     def service(self, name: str) -> Any:
-        value = self.get(name)
+        """Return a service by legacy name, raising when it is not available."""
+        value = self._lookup(name)
         if value is None:
             raise PluginDependencyError(
                 f"plugin {self.plugin_id!r} requires service {name!r}, which is not available"
             )
         return value
+
+    def provide(self, name: str, value: Any = None, check: Any = None) -> Any:
+        """Register a service and remember the value type for typed lookups.
+
+        The typed table learns type(value) -> name here, so providers that keep
+        the historical registration style still become available to
+        ctx.get(Contract). The returned disposer is the raw effect's.
+        """
+        dispose = self._raw.provide(name, value, check)
+        note_service_value(value, name)
+        return dispose
 
     @property
     def plugin_dir(self) -> Path | None:
@@ -228,10 +286,12 @@ class PluginContext:
 
     def _bus(self) -> Any | None:
         """The kernel event bus, when this context can reach it."""
-        for name in ("bus", "hooks"):
-            bus = self.get(name)
-            if bus is not None and callable(getattr(bus, "on", None)):
-                return bus
+        bus = self.get(EventBus)
+        if bus is not None and callable(getattr(bus, "on", None)):
+            return bus
+        hooks = self.get(HookService)
+        if hooks is not None and callable(getattr(hooks, "on", None)):
+            return hooks
         return None
 
     def emit(self, *args: Any) -> Any:

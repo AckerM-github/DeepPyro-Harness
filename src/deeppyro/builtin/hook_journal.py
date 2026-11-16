@@ -25,7 +25,7 @@ from deeppyro.hooks.records import (
     is_journaled,
     result_record,
 )
-from deeppyro.hooks.service import HookObservation
+from deeppyro.hooks.service import HookObservation, HookService
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ class HookJournalPlugin(Plugin):
         self.records_written = 0
 
     def setup(self, ctx: Any, config: Any) -> None:
-        hooks = ctx.service("hooks")
+        hooks = ctx.require(HookService)
         ctx.effect(lambda: hooks.add_observer(self._observe), label="hook-journal")
 
     def _observe(self, observation: HookObservation) -> None:

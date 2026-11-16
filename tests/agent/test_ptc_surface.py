@@ -18,6 +18,7 @@ from typing import Any
 
 from deeppyro.agent import AgentOptions, AgentSession
 from deeppyro.api import TEAM_PRESET_ID
+from deeppyro.api.services import ServiceTypeError, service_name
 from deeppyro.builtin.agents import AgentsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.core.protocols import TextDelta, ToolCallArgsDelta, ToolCallStart, ToolResult
@@ -255,7 +256,14 @@ class _PluginContext:
     def service(self, name: str) -> Any:
         return self._app.service(name)
 
-    def get(self, name: str) -> Any | None:
+    def get(self, service: str | type[Any]) -> Any | None:
+        if isinstance(service, str):
+            name = service
+        else:
+            try:
+                name = service_name(service)
+            except ServiceTypeError:
+                return None
         if name == "ptc":
             return self._ptc
         try:

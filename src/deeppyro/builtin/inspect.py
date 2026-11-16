@@ -14,8 +14,15 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from deeppyro.api import FiberState, PluginDependencyError, Service
+from deeppyro.api.services import lookup_service, service_name
+from deeppyro.builtin.commands import CommandsPlugin
+from deeppyro.builtin.llm import LlmPlugin
+from deeppyro.builtin.prompt_service import PromptPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.core.wire import MESSAGE_PROJECTION_TYPES, RECORD_TYPES, SURFACE_EVENT_TYPES
 from deeppyro.kernel.bundle import load_composition
+from deeppyro.kernel.config_service import KernelConfig
+from deeppyro.kernel.runtime import KernelRuntime
 from deeppyro.plugins.settings_store import SettingsStore
 
 
@@ -138,7 +145,7 @@ _GUIDE = "\n".join(
         "## 4. 扩展点",
         "在 setup 中调用 ctx.register_tool、ctx.register_prompt_section、",
         "ctx.register_command、ctx.register_provider 或 ctx.register_preset。",
-        '通过 ctx.get(服务名) 读取其它服务，例如 ctx.get("settings")。',
+        "通过 ctx.require(服务类型) 或 ctx.get(服务名) 读取其它服务，例如 ctx.require(KernelConfig)。",
         "ClassVar inject 列出所需服务名，服务就绪后才调用 setup。",
         "",
         "## 5. 配置生效时机",
@@ -175,10 +182,11 @@ class InspectPlugin(Service):
 
     # -- helpers -----------------------------------------------------------
 
-    def _require(self, name: str) -> Any:
-        value = self.ctx.get(name)
+    def _require(self, service: str | type[Any]) -> Any:
+        value = lookup_service(self.ctx, service)
         if value is None:
-            raise PluginDependencyError(f"service {name!r} is not available")
+            label = service if isinstance(service, str) else service_name(service)
+            raise PluginDependencyError(f"service {label!r} is not available")
         return value
 
     def _settings(self) -> SettingsStore:
@@ -322,7 +330,7 @@ class InspectPlugin(Service):
             entry["state"] = states[0]
 
     def _mounted_plugins(self) -> dict[str, dict[str, str]]:
-        kernel = self.ctx.get("kernel")
+        kernel = lookup_service(self.ctx, KernelRuntime)
         mounted = getattr(kernel, "mounted_plugins", None) if kernel is not None else None
         if not callable(mounted):
             return {}
@@ -347,8 +355,8 @@ class InspectPlugin(Service):
 
     def tools(self, workspace: str | Path | None = None) -> list[dict[str, Any]]:
         """Every tool contributed to the tools service."""
-        tools_service = self._require("tools")
-        config_service = self.ctx.get("config")
+        tools_service = self._require(ToolsPlugin)
+        config_service = lookup_service(self.ctx, KernelConfig)
         config = getattr(config_service, "value", None)
         root = Path(workspace) if workspace is not None else Path(".")
         rows: list[dict[str, Any]] = []
@@ -387,7 +395,7 @@ class InspectPlugin(Service):
 
     def prompt_sections(self) -> list[dict[str, Any]]:
         """Registered system prompt sections in rendering order."""
-        prompt = self._require("prompt")
+        prompt = self._require(PromptPlugin)
         return [
             {
                 "name": section.name,
@@ -400,7 +408,7 @@ class InspectPlugin(Service):
 
     def commands(self) -> list[dict[str, Any]]:
         """Registered slash commands."""
-        commands = self._require("commands")
+        commands = self._require(CommandsPlugin)
         return [
             {
                 "name": spec.name,
@@ -413,12 +421,12 @@ class InspectPlugin(Service):
 
     def providers(self) -> list[dict[str, Any]]:
         """Llm providers: configured models plus dynamically registered ones."""
-        llm = self._require("llm")
+        llm = self._require(LlmPlugin)
         descriptions = {}
         if hasattr(llm, "descriptions"):
             descriptions = llm.descriptions()
         names = set(llm.provider_names())
-        config_service = self.ctx.get("config")
+        config_service = lookup_service(self.ctx, KernelConfig)
         config = getattr(config_service, "value", None)
         configured = getattr(config, "providers", None)
         if isinstance(configured, dict):

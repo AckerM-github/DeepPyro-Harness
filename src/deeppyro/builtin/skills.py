@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from deeppyro.api.plugin import Service
 from deeppyro.core.errors import ConfigError
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.skills.registry import SkillRegistry
 from deeppyro.skills.types import SkillCatalog, SkillConfig, SkillDefinition, SkillSummary
 from deeppyro.tools.builtin.skill import skill_tools
@@ -169,7 +170,7 @@ def _resolve_config(ctx: Any, config: Any) -> SkillConfig:
         return _validated(config.model_dump())
     if isinstance(config, dict) and config:
         return _validated(config)
-    config_service = ctx.service("config")
+    config_service = ctx.require(KernelConfig)
     raw = getattr(config_service.value, "skills", None)
     if raw is None:
         return SkillConfig()

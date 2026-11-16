@@ -37,10 +37,32 @@ from rich.console import Console
 from rich.text import Text
 
 from deeppyro.api import DEFAULT_PRESET_ID, PluginDependencyError
+from deeppyro.attachments import AttachmentStore
+from deeppyro.builtin.agents import AgentsPlugin
+from deeppyro.builtin.inspect import InspectPlugin
+from deeppyro.builtin.llm import LlmPlugin
+from deeppyro.builtin.plugin_manager import PluginManagerPlugin
+from deeppyro.builtin.presets import PresetsPlugin
+from deeppyro.builtin.projections import ProjectionsService
+from deeppyro.builtin.sandbox import SandboxPlugin
+from deeppyro.builtin.schedule import SchedulePlugin
+from deeppyro.builtin.sessions import SessionsPlugin
+from deeppyro.builtin.settings import SettingsPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, load_config
 from deeppyro.core.errors import ConfigError, DeeppyroError
 from deeppyro.hooks import SESSION_CREATED, SESSION_DISPOSED
+from deeppyro.hooks.service import HookService
+from deeppyro.jobs import JobsService
+from deeppyro.llm.retry import RetryPolicy
+from deeppyro.memory import MemoryService
+from deeppyro.ptc import PtcRuntime
+from deeppyro.sandbox import ApprovalService, PermissionPresetsService, SandboxPolicyService
 from deeppyro.sandbox.types import APPROVALS, PRESETS
+from deeppyro.subagent import SubagentService
+from deeppyro.team import TeamService
+from deeppyro.user_questions import UserQuestionsService
+from deeppyro.working_directory import WorkingDirectoryService
 
 logger = logging.getLogger(__name__)
 
@@ -498,11 +520,10 @@ class HeadlessRuntime:
         app = self.kernel_app
         if app is None or session is None:
             return
-        try:
-            service = app.service("permissionPresets")
-        except LookupError:
+        permission_presets = app.get(PermissionPresetsService)
+        if permission_presets is None:
             return
-        pin = getattr(service, "pin_initial", None)
+        pin = getattr(permission_presets, "pin_initial", None)
         if pin is None:
             return
         # optional service must not break headless
@@ -511,11 +532,13 @@ class HeadlessRuntime:
         if self.permission_mode is not None:
             # optional service must not break headless
             with contextlib.suppress(Exception):
-                app.service("permissionPresets").apply(session, self.permission_mode)
+                permission_presets.apply(session, self.permission_mode)
         if self.approval_policy is not None:
+            approval = app.get(ApprovalService)
             # optional service must not break headless
             with contextlib.suppress(Exception):
-                app.service("approval").set_policy(session, self.approval_policy)
+                if approval is not None:
+                    approval.set_policy(session, self.approval_policy)
 
     def bind_session(self, session: Any) -> None:
         """Bind per-session callbacks for services that record into the log."""
@@ -566,30 +589,30 @@ class HeadlessRuntime:
         kernel_app = self.kernel_app
         if kernel_app is None:
             return services
-        for name in (
-            "llm",
-            "hooks",
-            "retryPolicy",
-            "sandbox",
-            "sandboxPolicy",
-            "approval",
-            "permissionPresets",
-            "plugin_manager",
-            "inspect",
-            "settings",
-            "jobs",
-            "team",
-            "subagent",
-            "working_directory",
-            "user_questions",
-            "attachments",
-            "schedule",
-            "memory",
-            "ptc",
-        ):
-            try:
-                value = kernel_app.service(name)
-            except LookupError:
+        contracts: tuple[tuple[str, type[Any]], ...] = (
+            ("llm", LlmPlugin),
+            ("hooks", HookService),
+            ("retryPolicy", RetryPolicy),
+            ("sandbox", SandboxPlugin),
+            ("sandboxPolicy", SandboxPolicyService),
+            ("approval", ApprovalService),
+            ("permissionPresets", PermissionPresetsService),
+            ("plugin_manager", PluginManagerPlugin),
+            ("inspect", InspectPlugin),
+            ("settings", SettingsPlugin),
+            ("jobs", JobsService),
+            ("team", TeamService),
+            ("subagent", SubagentService),
+            ("working_directory", WorkingDirectoryService),
+            ("user_questions", UserQuestionsService),
+            ("attachments", AttachmentStore),
+            ("schedule", SchedulePlugin),
+            ("memory", MemoryService),
+            ("ptc", PtcRuntime),
+        )
+        for name, contract in contracts:
+            value = kernel_app.get(contract)
+            if value is None:
                 continue
             services[name] = value
         return services
@@ -650,22 +673,22 @@ async def boot_runtime(
     model_id = _resolve_model(cfg, provider_name, model=model, allow_unknown=explicit_model)
     kernel_app = await boot(cfg)
     try:
-        names = ("llm", "sessions", "sandbox", "tools", "agents")
-        services = {name: kernel_app.service(name) for name in names}
-        llm_provider = services["llm"].provider(provider_name)
+        llm_service = kernel_app.require(LlmPlugin)
+        sessions_service = kernel_app.require(SessionsPlugin)
+        sandbox_service = kernel_app.require(SandboxPlugin)
+        tools_service = kernel_app.require(ToolsPlugin)
+        agents_service = kernel_app.require(AgentsPlugin)
+        llm_provider = llm_service.provider(provider_name)
         context_window = await _runtime_context_window(
-            services["llm"],
+            llm_service,
             provider_cfg,
             provider_name,
             model_id,
             discover=explicit_model,
         )
-        registry = services["tools"].registry_for(workspace)
-        permission = services["sandbox"].gate(workspace, ask=ask or _denying_ask)
-        try:
-            presets_service = kernel_app.service("presets")
-        except LookupError:
-            presets_service = None
+        registry = tools_service.registry_for(workspace)
+        permission = sandbox_service.gate(workspace, ask=ask or _denying_ask)
+        presets_service = kernel_app.get(PresetsPlugin)
         preset_id, preset_spec = _resolve_preset(presets_service, preset)
         ensure = getattr(presets_service, "ensure", None)
         if preset_spec is not None and callable(ensure):
@@ -673,24 +696,12 @@ async def boot_runtime(
     except BaseException:
         await await_maybe(kernel_app.stop())
         raise
-    jobs = None
-    with contextlib.suppress(LookupError):
-        jobs = kernel_app.service("jobs")
-    team = None
-    with contextlib.suppress(LookupError):
-        team = kernel_app.service("team")
-    subagent = None
-    with contextlib.suppress(LookupError):
-        subagent = kernel_app.service("subagent")
-    working_directory = None
-    with contextlib.suppress(LookupError):
-        working_directory = kernel_app.service("working_directory")
-    user_questions = None
-    with contextlib.suppress(LookupError):
-        user_questions = kernel_app.service("user_questions")
-    projections = None
-    with contextlib.suppress(LookupError):
-        projections = kernel_app.service("projections")
+    jobs = kernel_app.get(JobsService)
+    team = kernel_app.get(TeamService)
+    subagent = kernel_app.get(SubagentService)
+    working_directory = kernel_app.get(WorkingDirectoryService)
+    user_questions = kernel_app.get(UserQuestionsService)
+    projections = kernel_app.get(ProjectionsService)
     runtime = HeadlessRuntime(
         cfg=cfg,
         cwd=workspace,
@@ -698,18 +709,18 @@ async def boot_runtime(
         provider_name=provider_name,
         model=model_id,
         context_window=context_window,
-        store=services["sessions"].store,
+        store=sessions_service.store,
         provider=llm_provider,
         registry=registry,
         permission=permission,
-        agents=services["agents"],
+        agents=agents_service,
         jobs=jobs,
         team=team,
         subagent=subagent,
         working_directory=working_directory,
         user_questions=user_questions,
         projections=projections,
-        tools=services["tools"],
+        tools=tools_service,
         preset=preset_id,
         preset_spec=preset_spec,
         permission_mode=permission_mode,
@@ -812,6 +823,12 @@ async def _cancel_jobs(runtime: HeadlessRuntime, session_id: str) -> int:
 def _hooks_service(runtime: Any) -> Any | None:
     """Resolve the kernel hook service, tolerating runtimes without a kernel."""
     app = getattr(runtime, "kernel_app", None)
+    getter = getattr(app, "get", None)
+    if callable(getter):
+        try:
+            return getter(HookService)
+        except Exception:  # noqa: BLE001 - host doubles may not implement typed lookup
+            return None
     service = getattr(app, "service", None)
     if service is None:
         return None

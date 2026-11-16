@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from deeppyro.api import Plugin
+from deeppyro.core.bus import EventBus
 from deeppyro.tools.builtin.working_directory import WorkingDirectoryTool
 from deeppyro.working_directory import WorkingDirectoryService
 
@@ -45,7 +46,7 @@ class WorkingDirectoryPlugin(Plugin):
 
     def _bus(self, ctx: Any) -> Any | None:
         try:
-            return ctx.get("bus")
+            return ctx.get(EventBus)
         except Exception:  # noqa: BLE001 - the plugin still works without a bus
             return None
 

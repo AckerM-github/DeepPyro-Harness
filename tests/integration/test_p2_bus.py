@@ -26,6 +26,7 @@ from deeppyro.hooks import (
 from deeppyro.sandbox import ApprovalRequest, PermissionGate
 from tests.agent.fakes import RecordingSink
 from tests.integration.test_p1_bus import _stop_turn, make_agent
+from tests.service_doubles import service_lookup, service_require
 
 
 class FakeCtx:
@@ -41,6 +42,12 @@ class FakeCtx:
         if name not in self._services:
             raise LookupError(f"service {name!r} is not registered")
         return self._services[name]
+
+    def get(self, service: str | type[Any]) -> Any | None:
+        return service_lookup(self._services, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self._services, service)
 
     def effect(self, execute: Any, label: str = "anonymous") -> Any:
         dispose = execute()

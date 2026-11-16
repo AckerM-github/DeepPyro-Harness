@@ -22,6 +22,7 @@ from deeppyro.compact.compress_tool import format_local
 from deeppyro.core.errors import ToolError
 from deeppyro.session import SessionStore
 from tests.compact import support
+from tests.service_doubles import service_lookup, service_require
 
 SESSION = "session-block-tools"
 CREATED = 1_700_000_000_000
@@ -418,6 +419,12 @@ class _FakeCtx:
             return self._services[name]
         except KeyError as exc:
             raise LookupError(name) from exc
+
+    def get(self, service: str | type[object]) -> object | None:
+        return service_lookup(self._services, service)
+
+    def require(self, service: type[object]) -> object:
+        return service_require(self._services, service)
 
     def register_tool(self, factory: object) -> None:
         self.factories.append(factory)

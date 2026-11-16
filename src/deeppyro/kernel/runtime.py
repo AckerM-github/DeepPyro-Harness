@@ -4,12 +4,13 @@ The core bundle mounts this module as its very first row, so every plugin after
 it may inject the "kernel" service and ask what is mounted:
 
     from deeppyro.api import Plugin
+    from deeppyro.kernel.runtime import KernelRuntime
 
     class MyPlugin(Plugin):
         inject = ["kernel"]
 
         def setup(self, ctx, config):
-            for plugin in ctx.get("kernel").mounted_plugins():
+            for plugin in ctx.require(KernelRuntime).mounted_plugins():
                 ctx.logger.info(plugin["id"], plugin["state"])
 
 Two methods form the stable contract with the plugin manager, the settings

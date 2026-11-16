@@ -10,6 +10,7 @@ from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.kernel import PluginSpec, boot
 from deeppyro.team import TeamService
 from deeppyro.tools.builtin.team import team_tools
+from tests.service_doubles import service_lookup, service_require
 
 EXPECTED_TOOLS = [
     "team_spawn",
@@ -34,6 +35,12 @@ class FakePluginContext:
 
     def service(self, name: str) -> Any:
         return self._services[name]
+
+    def get(self, service: str | type[Any]) -> Any | None:
+        return service_lookup(self._services, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self._services, service)
 
     def provide(self, name: str, value: Any) -> None:
         self.provided[name] = value

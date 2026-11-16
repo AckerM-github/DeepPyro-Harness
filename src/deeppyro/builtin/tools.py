@@ -5,9 +5,11 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any, ClassVar
 
 from deeppyro.api import Plugin, Service, ToolContribution
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.tools import ToolRegistry, builtin_tools
 
 logger = logging.getLogger("deeppyro.tools")
@@ -24,7 +26,7 @@ class ToolsPlugin(Service):
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
-        cfg = ctx.service("config").value
+        cfg = ctx.require(KernelConfig).value
         self._config = cfg
         self._contributions: list[ToolContribution] = []
 
@@ -78,7 +80,7 @@ class ToolsPlugin(Service):
 
     def registry_for(
         self,
-        workspace: str,
+        workspace: str | Path,
         *,
         scope: str | None = None,
         revision: int | None = None,
@@ -112,7 +114,7 @@ class ToolsPlugin(Service):
                 tools.append(tool)
         return ToolRegistry(tools=tools)
 
-    def names(self, workspace: str) -> list[str]:
+    def names(self, workspace: str | Path) -> list[str]:
         return self.registry_for(workspace).names()
 
 

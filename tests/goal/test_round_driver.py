@@ -20,6 +20,7 @@ from deeppyro.goal.round_driver import (
 )
 from deeppyro.goal.types import GOAL_BUS_EVENT
 from deeppyro.hooks.types import AGENT_ERROR, AGENT_PRE_STEP
+from tests.service_doubles import service_lookup, service_require
 
 
 class _ExplodingAgent(FakeAgent):
@@ -48,8 +49,11 @@ class StubContext:
         self.effects: list[tuple[Any, str]] = []
         self.provided: dict[str, Any] = {}
 
-    def get(self, name: str) -> Any:
-        return self.services.get(name)
+    def get(self, service: str | type[Any]) -> Any:
+        return service_lookup(self.services, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self.services, service)
 
     def service(self, name: str) -> Any:
         if name in self.services:

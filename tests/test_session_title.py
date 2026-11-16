@@ -23,6 +23,7 @@ from deeppyro.session.metadata import (
     TITLE_LLM_REQUEST_EVENT,
     TITLE_PROVIDER_FIRST_PROMPT,
 )
+from tests.service_doubles import service_lookup, service_require
 
 
 @dataclass
@@ -104,6 +105,19 @@ class FakeContext:
         if name == "config":
             return SimpleNamespace(value=SimpleNamespace(title=self.title))
         raise KeyError(name)
+
+    def _service_map(self) -> dict[str, Any]:
+        return {
+            "hooks": self.hooks,
+            "llm": self.llm,
+            "config": SimpleNamespace(value=SimpleNamespace(title=self.title)),
+        }
+
+    def get(self, service: str | type[Any]) -> Any | None:
+        return service_lookup(self._service_map(), service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self._service_map(), service)
 
     def effect(self, callback: Any, label: str = "") -> Any:
         self.effects.append(label)

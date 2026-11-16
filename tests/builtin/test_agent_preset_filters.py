@@ -47,6 +47,7 @@ from tests.agent.fakes import (
     ScriptedTurn,
     finish,
 )
+from tests.service_doubles import service_lookup, service_require
 
 
 # -- helpers ---------------------------------------------------------------
@@ -79,8 +80,11 @@ class _PluginCtx:
     def __init__(self, **services: Any) -> None:
         self._services = services
 
-    def get(self, name: str) -> Any | None:
-        return self._services.get(name)
+    def get(self, service: str | type[Any]) -> Any | None:
+        return service_lookup(self._services, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self._services, service)
 
 
 def _agents_plugin(*, ptc: Any = None) -> AgentsPlugin:

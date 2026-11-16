@@ -18,6 +18,7 @@ from deeppyro.core.errors import ConfigError, DeeppyroError
 from deeppyro.hooks import SESSION_CREATED, SESSION_DISPOSED, HookService
 from deeppyro.llm import LlmRequestError, ModelInfo
 from deeppyro.llm.errors import CODE_TRANSPORT
+from tests.service_doubles import service_lookup, service_require
 
 
 class FakeSession:
@@ -462,6 +463,12 @@ class FakeKernelApp:
             return self._services[name]
         except KeyError:
             raise LookupError(name) from None
+
+    def get(self, service: str | type[Any]) -> Any | None:
+        return service_lookup(self._services, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self._services, service)
 
     async def stop(self) -> None:
         self.stopped = True
@@ -983,12 +990,9 @@ class _PermissionKernel:
         self.permissions = _RecordingPermissionService()
         self.approvals = _RecordingApprovalService()
 
-    def service(self, name: str) -> Any:
-        if name == "permissionPresets":
-            return self.permissions
-        if name == "approval":
-            return self.approvals
-        raise LookupError(name)
+    def get(self, service: str | type[Any]) -> Any | None:
+        services = {"permissionPresets": self.permissions, "approval": self.approvals}
+        return service_lookup(services, service)
 
 
 def test_pin_permission_applies_the_cli_overrides() -> None:
