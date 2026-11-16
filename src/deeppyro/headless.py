@@ -36,7 +36,7 @@ from typing import Any, TextIO
 from rich.console import Console
 from rich.text import Text
 
-from deeppyro.api import DEFAULT_PRESET_ID, PluginDependencyError
+from deeppyro.api import DEFAULT_PRESET_ID, PluginDependencyError, PresetSpec
 from deeppyro.attachments import AttachmentStore
 from deeppyro.builtin.agents import AgentsPlugin
 from deeppyro.builtin.inspect import InspectPlugin
@@ -49,7 +49,7 @@ from deeppyro.builtin.schedule import SchedulePlugin
 from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.builtin.settings import SettingsPlugin
 from deeppyro.builtin.tools import ToolsPlugin
-from deeppyro.config import Config, load_config
+from deeppyro.config import Config, ProviderConfig, load_config
 from deeppyro.core.errors import ConfigError, DeeppyroError
 from deeppyro.hooks import SESSION_CREATED, SESSION_DISPOSED
 from deeppyro.hooks.service import HookService
@@ -128,12 +128,12 @@ async def await_maybe(value: Any) -> Any:
     return value
 
 
-def _context_window(provider_cfg: Any, model_id: str) -> int:
-    models = list(getattr(provider_cfg, "models", []) or [])
+def _context_window(provider_cfg: ProviderConfig, model_id: str) -> int:
+    models = list(provider_cfg.models or [])
     for entry in models:
-        if getattr(entry, "id", None) == model_id and getattr(entry, "contextWindow", 0):
+        if entry.id == model_id and entry.contextWindow:
             return int(entry.contextWindow)
-    if models and getattr(models[0], "contextWindow", 0):
+    if models and models[0].contextWindow:
         return int(models[0].contextWindow)
     return DEFAULT_CONTEXT_WINDOW
 
@@ -172,7 +172,7 @@ def _resolve_model(
     return ""
 
 
-def _resolve_preset(presets: Any, requested: str | None) -> tuple[str, Any]:
+def _resolve_preset(presets: PresetsPlugin | None, requested: str | None) -> tuple[str, PresetSpec | None]:
     """Canonicalize and resolve one agent preset, defaulting to the standard one.
 
     Returns the canonical preset id and the resolved spec (None when the booted
@@ -187,19 +187,17 @@ def _resolve_preset(presets: Any, requested: str | None) -> tuple[str, Any]:
         spec = presets.resolve(canonical)
     except PluginDependencyError as exc:
         raise UnknownPresetError(str(exc)) from exc
-    return str(getattr(spec, "id", "") or canonical), spec
+    return (spec.id or canonical), spec
 
 
-def _configured_model(provider_cfg: Any, model_id: str) -> bool:
+def _configured_model(provider_cfg: ProviderConfig, model_id: str) -> bool:
     """Whether config.toml declares this model for the provider."""
-    return any(
-        str(getattr(entry, "id", "")) == model_id for entry in list(getattr(provider_cfg, "models", []) or [])
-    )
+    return any(str(entry.id) == model_id for entry in list(provider_cfg.models or []))
 
 
-def _unknown_model_error(provider_name: str, model_id: str, provider_cfg: Any) -> ConfigError:
+def _unknown_model_error(provider_name: str, model_id: str, provider_cfg: ProviderConfig) -> ConfigError:
     """The established unknown-model error (kept identical to pre-catalog mode)."""
-    available = [str(entry.id) for entry in list(getattr(provider_cfg, "models", []) or [])]
+    available = [str(entry.id) for entry in list(provider_cfg.models or [])]
     return ConfigError(f"unknown model: {model_id} (provider {provider_name} offers {', '.join(available)})")
 
 
@@ -213,7 +211,7 @@ def _catalog_error(llm_service: Any) -> BaseException | None:
 
 async def _runtime_context_window(
     llm_service: Any,
-    provider_cfg: Any,
+    provider_cfg: ProviderConfig,
     provider_name: str,
     model_id: str,
     *,
@@ -241,7 +239,7 @@ async def _runtime_context_window(
     except Exception:  # noqa: BLE001 - catalog discovery must not block startup
         return DEFAULT_CONTEXT_WINDOW
     if info is not None:
-        window = getattr(info, "context_window", None)
+        window = info.context_window
         if window is not None and int(window) > 0:
             return int(window)
         # The model exists but the listing carries no window: stay conservative
@@ -469,15 +467,15 @@ class HeadlessRuntime:
     registry: Any
     permission: Any
     agents: Any
-    jobs: Any = None
-    team: Any = None
-    subagent: Any = None
+    jobs: JobsService | None = None
+    team: TeamService | None = None
+    subagent: SubagentService | None = None
     working_directory: Any = None
     user_questions: Any = None
     projections: Any = None
     tools: Any = None
     preset: str | None = None
-    preset_spec: Any = None
+    preset_spec: PresetSpec | None = None
     permission_mode: str | None = None
     approval_policy: str | None = None
     _closed: bool = field(default=False, repr=False)
@@ -491,7 +489,7 @@ class HeadlessRuntime:
             overrides["max_steps"] = max_steps
         options = self.agents.options(**overrides)
         preset_id = self.preset or DEFAULT_PRESET_ID
-        revision = getattr(self.preset_spec, "revision", None)
+        revision = self.preset_spec.revision if self.preset_spec is not None else None
         registry = self.registry
         scoped = getattr(self.tools, "registry_for", None)
         if callable(scoped):
@@ -508,11 +506,10 @@ class HeadlessRuntime:
             preset_revision=revision,
             services=self._plugin_services(),
         )
-        bind_parent = getattr(self.subagent, "bind_parent", None)
-        if bind_parent is not None:
+        if self.subagent is not None:
             # the optional subagent service must not break headless
             with contextlib.suppress(Exception):
-                bind_parent(agent)
+                self.subagent.bind_parent(agent)
         return agent
 
     def pin_permission(self, session: Any) -> None:
@@ -622,17 +619,15 @@ class HeadlessRuntime:
             return
         self._closed = True
         subagent = self.subagent
-        close_subagent = getattr(subagent, "close", None)
-        if close_subagent is not None:
+        if subagent is not None:
             # shutdown must not mask an exception
             with contextlib.suppress(Exception):
-                await await_maybe(close_subagent())
+                await await_maybe(subagent.close())
         team = self.team
-        close_team = getattr(team, "close", None)
-        if close_team is not None:
+        if team is not None:
             # shutdown must not mask an exception
             with contextlib.suppress(Exception):
-                await await_maybe(close_team())
+                await await_maybe(team.close())
         kernel_app, self.kernel_app = self.kernel_app, None
         if kernel_app is not None:
             # shutdown must not mask an exception
@@ -690,9 +685,8 @@ async def boot_runtime(
         permission = sandbox_service.gate(workspace, ask=ask or _denying_ask)
         presets_service = kernel_app.get(PresetsPlugin)
         preset_id, preset_spec = _resolve_preset(presets_service, preset)
-        ensure = getattr(presets_service, "ensure", None)
-        if preset_spec is not None and callable(ensure):
-            await await_maybe(ensure(preset_spec.id, revision=getattr(preset_spec, "revision", None)))
+        if presets_service is not None and preset_spec is not None:
+            await await_maybe(presets_service.ensure(preset_spec.id, revision=preset_spec.revision))
     except BaseException:
         await await_maybe(kernel_app.stop())
         raise
@@ -726,11 +720,10 @@ async def boot_runtime(
         permission_mode=permission_mode,
         approval_policy=approval_policy,
     )
-    configure_team = getattr(team, "configure", None)
-    if configure_team is not None:
+    if team is not None:
         # the optional team service must not break headless
         with contextlib.suppress(Exception):
-            configure_team(
+            team.configure(
                 cwd=workspace,
                 provider=llm_provider,
                 registry=registry,
@@ -740,11 +733,10 @@ async def boot_runtime(
                 services=runtime._plugin_services(),
                 ask=ask or _denying_ask,
             )
-    configure_subagent = getattr(subagent, "configure", None)
-    if configure_subagent is not None:
+    if subagent is not None:
         # the optional subagent service must not break headless
         with contextlib.suppress(Exception):
-            configure_subagent(
+            subagent.configure(
                 cwd=workspace,
                 provider=llm_provider,
                 registry=registry,
@@ -808,14 +800,11 @@ def run_once(
 
 async def _cancel_jobs(runtime: HeadlessRuntime, session_id: str) -> int:
     """Cancel every background job this session started (one-shot cleanup)."""
-    jobs = getattr(runtime, "jobs", None)
+    jobs = runtime.jobs
     if jobs is None:
         return 0
-    cancel_owner = getattr(jobs, "cancel_owner", None)
-    if cancel_owner is None:
-        return 0
     try:
-        return int(await await_maybe(cancel_owner(session_id)) or 0)
+        return int(await await_maybe(jobs.cancel_owner(session_id)) or 0)
     except Exception:  # noqa: BLE001 - cleanup must not change the exit code
         return 0
 
@@ -887,11 +876,11 @@ async def _run_async(
 
     sink: Any = JsonLinesSink() if json_output else RichSink(console)
     session_id: str | None = None
-    preset_id = getattr(runtime, "preset", None) or DEFAULT_PRESET_ID
+    preset_id = runtime.preset or DEFAULT_PRESET_ID
     try:
         session = runtime.store.create(str(runtime.cwd), agent_preset=preset_id)
         runtime.pin_permission(session)
-        session_id = str(getattr(session, "session_id", "") or "")
+        session_id = str(session.session_id or "")
         if session_id:
             await _emit_hook(
                 runtime,
@@ -905,10 +894,8 @@ async def _run_async(
                 f"session {session_label}  {runtime.provider_name}/{runtime.model}  cwd {runtime.cwd}",
                 style="dim",
             )
-        team = getattr(runtime, "team", None)
-        bind_team = getattr(team, "bind_session", None)
-        if bind_team is not None:
-            bind_team(session)
+        if runtime.team is not None:
+            runtime.team.bind_session(session)
         subagent = getattr(runtime, "subagent", None)
         bind_subagent = getattr(subagent, "bind_session", None)
         if bind_subagent is not None:
