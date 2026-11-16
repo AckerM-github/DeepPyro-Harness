@@ -66,7 +66,12 @@ def make_parameters(
     *,
     additional_properties: bool = False,
 ) -> dict[str, Any]:
-    """Build a JSON-schema object for a tool's `parameters` field."""
+    """Build a JSON-schema object for a tool's `parameters` field.
+
+    Built-in tools derive their schema from an `Args` model; this helper stays
+    for tools whose schema is assembled by hand (compaction tools, dynamic
+    schemas, plugin-author examples).
+    """
     schema: dict[str, Any] = {"type": "object", "properties": properties}
     if required:
         schema["required"] = list(required)

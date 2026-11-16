@@ -182,13 +182,6 @@ def derive_parameters(model: type[BaseModel]) -> dict[str, Any]:
     return _object_node(schema, definitions, top_level=True, top_level_extra=top_level)
 
 
-def derive_property(model: type[BaseModel], name: str) -> dict[str, Any]:
-    """Render one property node of a model (used for dynamic schemas)."""
-    schema = model.model_json_schema()
-    definitions: dict[str, Any] = schema.get("$defs") or {}
-    return _field_node(schema["properties"][name], definitions)
-
-
 def _resolve(node: Any, definitions: dict[str, Any]) -> dict[str, Any]:
     seen = 0
     while isinstance(node, dict) and "$ref" in node:
@@ -324,7 +317,6 @@ __all__ = [
     "StrippedStr",
     "ToolArgs",
     "derive_parameters",
-    "derive_property",
     "require_value",
     "schema_enum",
     "schema_number",
