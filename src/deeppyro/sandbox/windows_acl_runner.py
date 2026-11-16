@@ -192,7 +192,7 @@ if os.name == "nt":
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
 
-    def _win_call(ok, api: str, detail: str = "") -> None:
+    def _win_call(ok: int, api: str, detail: str = "") -> None:
         if not ok:
             code = ctypes.get_last_error()
             suffix = f" ({detail})" if detail else ""

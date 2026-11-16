@@ -60,6 +60,7 @@ select = [
   "SIM", # simplify: dead branches, redundant control flow
   "RUF", # ruff-native checks
   "BLE", # blind-except: a broad except must say why in a noqa comment
+  "ANN", # annotations: signatures explain themselves without the body
 ]
 ignore = [
   # The source tree is bilingual; Chinese punctuation and dashes are intentional.
@@ -73,9 +74,12 @@ ignore = [
   # UnknownPlugin, InstallFailure, SettingsConflict. The Error suffix stays
   # reserved for the core hierarchy in deeppyro.core.errors.
   "N818",
+  # Require annotations, but allow Any at the dynamic boundaries: the plugin
+  # context facade, hook payloads and the service lookups that accept either a
+  # name or a contract class are deliberately untyped. Removing those Any is
+  # separate typing work.
+  "ANN401",
 ]
-# ANN (annotations) is deliberately not enabled yet: every ANN401 hit in api/ and
-# kernel/ is an Any, and removing those is the P1-3 service-typing work itself.
 
 [tool.ruff.lint.per-file-ignores]
 # camelCase here mirrors the DSH wire format written to session.v4.jsonl and the
@@ -94,6 +98,9 @@ ignore = [
 # Fixtures replay real payloads, so they keep the wire casing too.
 "tests/agent/test_images.py" = ["N815"]
 "tests/builtin/demo_plugins.py" = ["N815"]
+# Test bodies are fixtures, not public contracts: annotating every fake kernel,
+# stub tool and async test helper would add noise without catching bugs.
+"tests/**" = ["ANN"]
 # Tool schemas are class-level constants that are replaced at import and never
 # mutated in place, so RUF012's shared-default warning does not apply. They
 # must stay instance attributes rather than ClassVars: the MCP and PTC adapters

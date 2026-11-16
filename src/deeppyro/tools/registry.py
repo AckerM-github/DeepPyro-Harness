@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import Tool, ToolSchema
@@ -78,5 +78,5 @@ class ToolRegistry:
     def __contains__(self, name: object) -> bool:
         return isinstance(name, str) and name in self._tools
 
-    def __iter__(self):  # type: ignore[no-untyped-def]
+    def __iter__(self) -> Iterator[Tool]:
         return iter(self._tools.values())
