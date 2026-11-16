@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from deeppyro.api import Plugin
+from deeppyro.core.payload import field_of
 from deeppyro.sandbox import PermissionGate
 from deeppyro.sandbox.approval import ApprovalService
 from deeppyro.sandbox.permission import PermissionPresetsService
@@ -103,10 +104,7 @@ class SandboxPlugin(Plugin):
 
 
 def _table(cfg: Any, name: str) -> Mapping[str, Any]:
-    if isinstance(cfg, Mapping):
-        value = cfg.get(name)
-    else:
-        value = getattr(cfg, name, None)
+    value = field_of(cfg, name)
     if value is None:
         return {}
     if isinstance(value, Mapping):
@@ -150,7 +148,7 @@ def _roots(table: Mapping[str, Any]) -> tuple[str, ...]:
     if raw is None:
         return ()
     if isinstance(raw, (str, bytes)) or not isinstance(raw, (list, tuple)):
-        raise ValueError("additionalWritableRoots must be a list of paths")  # noqa: TRY004 - config type
+        raise ValueError("additionalWritableRoots must be a list of paths")
     roots: list[str] = []
     for item in raw:
         if not isinstance(item, str) or not item:

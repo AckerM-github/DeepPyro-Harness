@@ -64,10 +64,8 @@ def test_message_payloads_parse() -> None:
         for line in path.read_text(encoding="utf-8").splitlines()[1:]:
             raw = json.loads(line)
             data = raw.get("data") or {}
-            if raw.get("type") == "user/message":
-                msg = data  # user/message stores the message inline, not under data.message
-            else:
-                msg = data.get("message")
+            # user/message stores the message inline, not under data.message
+            msg = data if raw.get("type") == "user/message" else data.get("message")
             if not isinstance(msg, dict) or "role" not in msg:
                 continue
             message = Message.model_validate(msg)

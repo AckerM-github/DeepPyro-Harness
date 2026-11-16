@@ -21,6 +21,8 @@ dev = [
   "pytest>=8.3",
   "pytest-asyncio>=0.24",
   "respx>=0.22",
+  "ruff>=0.17",
+  "pyright>=1.1.414",
 ]
 
 [build-system]
@@ -45,6 +47,63 @@ line-length = 110
 target-version = "py312"
 # Vendored third-party code (cordis-port, MIT) is kept byte-faithful with upstream.
 extend-exclude = ["src/deeppyro/_vendor"]
+
+[tool.ruff.lint]
+# Ratchet: the rule families that catch the failure modes this port is prone to.
+# Add a rule only together with the fixes it demands, never with a blanket ignore.
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # import sorting
+  "N",   # pep8-naming
+  "UP",  # pyupgrade: modern syntax for the declared target version
+  "B",   # bugbear: real bugs, not style
+  "SIM", # simplify: dead branches, redundant control flow
+  "RUF", # ruff-native checks
+  "BLE", # blind-except: a broad except must say why in a noqa comment
+]
+ignore = [
+  # The source tree is bilingual; Chinese punctuation and dashes are intentional.
+  "RUF001",
+  "RUF002",
+  "RUF003",
+  # The formatter owns line width: long URLs, error strings and Chinese prose
+  # cannot be wrapped, and ruff format already reflows everything it can.
+  "E501",
+  # Domain exceptions read better without the suffix: PermissionDenied,
+  # UnknownPlugin, InstallFailure, SettingsConflict. The Error suffix stays
+  # reserved for the core hierarchy in deeppyro.core.errors.
+  "N818",
+]
+# ANN (annotations) is deliberately not enabled yet: every ANN401 hit in api/ and
+# kernel/ is an Any, and removing those is the P1-3 service-typing work itself.
+
+[tool.ruff.lint.per-file-ignores]
+# camelCase here mirrors the DSH wire format written to session.v4.jsonl and the
+# on-disk TOML config schema. Python-side attributes move to snake_case with a
+# pydantic alias generator; the wire names must not change. Tracked as P1-5.
+"src/deeppyro/core/wire.py" = ["N815"]
+"src/deeppyro/config.py" = ["N815"]
+"src/deeppyro/attachments/types.py" = ["N815"]
+"src/deeppyro/session/store.py" = ["N815"]
+"src/deeppyro/session_query/types.py" = ["N815"]
+"src/deeppyro/builtin/compress.py" = ["N815"]
+"src/deeppyro/builtin/session_title.py" = ["N815"]
+"src/deeppyro/builtin/session_query.py" = ["N815"]
+# ctypes structs must keep the Win32 spelling to stay greppable against the SDK.
+"src/deeppyro/sandbox/windows_acl_runner.py" = ["N801"]
+# Fixtures replay real payloads, so they keep the wire casing too.
+"tests/agent/test_images.py" = ["N815"]
+"tests/builtin/demo_plugins.py" = ["N815"]
+# Tool schemas are class-level constants that are replaced at import and never
+# mutated in place, so RUF012's shared-default warning does not apply. They
+# must stay instance attributes rather than ClassVars: the MCP and PTC adapters
+# build a schema per instance (see BaseTool.__init_subclass__).
+"src/deeppyro/tools/base.py" = ["RUF012"]
+"src/deeppyro/tools/builtin/goal.py" = ["RUF012"]
+"src/deeppyro/tools/builtin/ask_user.py" = ["RUF012"]
+"src/deeppyro/ptc/tool.py" = ["RUF012"]
 
 [tool.ruff.format]
 # Spec docs are prose; format only Python sources.

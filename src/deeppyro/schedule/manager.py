@@ -18,6 +18,7 @@ schedule; the next scan retries after a short back-off.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -369,10 +370,8 @@ class ScheduleManager:
     async def _run(self) -> None:
         try:
             while not self._stopping:
-                try:
+                with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(self._wake.wait(), timeout=self._next_delay())
-                except TimeoutError:
-                    pass
                 self._wake.clear()
                 if self._stopping:
                     break

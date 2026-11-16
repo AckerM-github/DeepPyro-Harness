@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from deeppyro.core.payload import field_of
 from deeppyro.core.protocols import Tool
 from deeppyro.tools.builtin.ask_user import AskUserQuestionTool
 from deeppyro.tools.builtin.fs import EditTool, ReadTool, WriteTool
@@ -21,10 +22,7 @@ def _cfg_value(cfg: Any, key: str, default: Any) -> Any:
     tools_cfg = getattr(cfg, "tools", None)
     if tools_cfg is None:
         return default
-    if isinstance(tools_cfg, dict):
-        value = tools_cfg.get(key)
-    else:
-        value = getattr(tools_cfg, key, None)
+    value = field_of(tools_cfg, key)
     return default if value is None else value
 
 

@@ -88,7 +88,7 @@ def test_observed_hooks_cover_the_remaining_bus_events() -> None:
         APPROVAL_REQUEST,
         AGENT_ERROR,
     }
-    assert WATERFALL_HOOKS == {SYSTEM_PROMPT_ASSEMBLE, APPROVAL_REQUEST}
+    assert {SYSTEM_PROMPT_ASSEMBLE, APPROVAL_REQUEST} == WATERFALL_HOOKS
 
 
 def test_plugin_metadata() -> None:

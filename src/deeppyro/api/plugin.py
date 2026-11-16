@@ -24,6 +24,7 @@ here is already a model instance (or a plain dict when Config is None).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
@@ -45,7 +46,7 @@ class Plugin:
     #: restart. The kernel service applies them through apply_plugin_config;
     #: settings_write reports applied_live when that succeeds.
     volatile: ClassVar[tuple[str, ...]] = ()
-    inject: ClassVar[list[str]] = []
+    inject: ClassVar[Sequence[str]] = ()
 
     #: Set by the adapter before setup runs.
     ctx: Any

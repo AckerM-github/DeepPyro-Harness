@@ -48,6 +48,7 @@ The TUI must boot even when every installed UI package is broken.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import sys
@@ -202,10 +203,8 @@ def load_ui_package_report(
                     slot_ids.append(slot_id)
     finally:
         if inserted_path:
-            try:
+            with contextlib.suppress(ValueError):  # pragma: no cover - another thread removed it
                 sys.path.remove(base_text)
-            except ValueError:  # pragma: no cover - another thread removed it
-                pass
 
     return UIPackageReport(
         id=bundle_id,
@@ -481,10 +480,8 @@ def _resolve_callable(
         return None
     # Keep the source module visible in tracebacks.
     if getattr(target, "__module__", None) is None:
-        try:
+        with contextlib.suppress(AttributeError, TypeError):  # pragma: no cover - builtins
             target.__module__ = module.__name__
-        except (AttributeError, TypeError):  # pragma: no cover - builtins
-            pass
     return target
 
 

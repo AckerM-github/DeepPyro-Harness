@@ -12,6 +12,7 @@ awaited through run()/wait_children().
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 from pathlib import Path
@@ -555,12 +556,11 @@ class SubagentService:
         aclose = getattr(agent, "aclose", None)
         if not callable(aclose):
             return
-        try:
+        # cleanup must not mask the run result
+        with contextlib.suppress(Exception):
             result = aclose()
             if inspect.isawaitable(result):
                 await result
-        except Exception:  # noqa: BLE001, S110 - cleanup must not mask the run result
-            pass
 
     # -- records --------------------------------------------------------
     def _append_record(self, record_type: str, data: dict[str, Any]) -> None:
@@ -662,17 +662,15 @@ def _inherit_permission(sandbox: Any, parent: Any, session: Any) -> None:
     policy_service = getattr(sandbox, "policy_service", None)
     mode = getattr(getattr(parent, "policy", None), "mode", None)
     if policy_service is not None and isinstance(mode, str) and mode:
-        try:
+        # seeding must not break a spawn
+        with contextlib.suppress(Exception):
             policy_service.set_mode(session, mode)
-        except Exception:  # noqa: BLE001, S110 - seeding must not break a spawn
-            pass
     approval_service = getattr(sandbox, "approval_service", None)
     approval = getattr(parent, "approval", None)
     if approval_service is not None and isinstance(approval, str) and approval:
-        try:
+        # seeding must not break a spawn
+        with contextlib.suppress(Exception):
             approval_service.set_policy(session, approval)
-        except Exception:  # noqa: BLE001, S110 - seeding must not break a spawn
-            pass
 
 
 __all__ = ["SubagentService", "filter_child_tools"]

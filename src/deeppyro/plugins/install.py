@@ -24,6 +24,7 @@ binary. ``DPYRO_UV`` overrides the executable path.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import os
@@ -588,11 +589,9 @@ def _preflight_problems(
     if metadata.id in _reserved_ids(manager):
         problems.append(f"metadata-invalid: plugin id {metadata.id!r} is reserved by a bundle")
     if plan.path is not None:
-        try:
+        with contextlib.suppress(OSError):
             if plan.path.resolve() == target.resolve():
                 problems.append(f"source {plan.path} is the install target itself")
-        except OSError:
-            pass
     vendor = find_vendor_dir(metadata)
     for error in requirement_errors(metadata.id, metadata.deps.requires, vendor):
         # Missing vendor packages are installed after preflight; only an
@@ -843,10 +842,8 @@ def target_errors(
         return ()
     finally:
         for text in inserted:
-            try:
+            with contextlib.suppress(ValueError):
                 sys.path.remove(text)
-            except ValueError:
-                pass
         _purge_modules(module_name)
 
 
@@ -924,10 +921,8 @@ def manifest_issues(root: Path | None = None) -> tuple[MetadataError, ...]:
             )
         finally:
             for text in inserted:
-                try:
+                with contextlib.suppress(ValueError):
                     sys.path.remove(text)
-                except ValueError:
-                    pass
     return tuple(issues[key] for key in sorted(issues))
 
 
@@ -992,14 +987,12 @@ def _manifest_bytes(path: Path) -> bytes:
 
 
 def _restore_manifest(path: Path, data: bytes) -> None:
-    try:
+    # Rollback is best effort; the directory swap already happened.
+    with contextlib.suppress(OSError):
         if data:
             path.write_bytes(data)
         elif path.exists():
             path.unlink()
-    except OSError:
-        # Rollback is best effort; the directory swap already happened.
-        pass
 
 
 def _manager(root: Path) -> Any:
@@ -1023,10 +1016,8 @@ def _record(plugin_id: str, directory: Path, vendor: Path | None, *, manager: An
         manager.enable(plugin_id)
     finally:
         for text in added:
-            try:
+            with contextlib.suppress(ValueError):
                 sys.path.remove(text)
-            except ValueError:
-                pass
     after = _manifest_bytes(Path(manager.manifest_path))
     return before != after
 
@@ -1381,14 +1372,12 @@ def _pip_install_file(
 
 
 def _restore_lock(path: Path, data: bytes | None) -> None:
-    try:
+    with contextlib.suppress(OSError):
         if data is None:
             if path.exists():
                 path.unlink()
         else:
             path.write_bytes(data)
-    except OSError:
-        pass
 
 
 def _swap_directory(source: Path, destination: Path) -> None:
@@ -1445,7 +1434,7 @@ def update(
         try:
             if lock_mode:
                 offline_flag = ("--offline",) if offline else ()
-                _run_step(("lock", "--upgrade") + offline_flag, directory, runner, timeout)
+                _run_step(("lock", "--upgrade", *offline_flag), directory, runner, timeout)
                 requirement_file = staging / REQUIREMENTS_FILE
                 _run_step(
                     (
@@ -1455,8 +1444,8 @@ def update(
                         "--no-hashes",
                         "--output-file",
                         str(requirement_file),
-                    )
-                    + offline_flag,
+                        *offline_flag,
+                    ),
                     directory,
                     runner,
                     timeout,
@@ -1680,9 +1669,7 @@ def allow_version(plugin_id: str, version: str, *, root: Path | None = None) -> 
     try:
         load_metadata(toml_path, plugin_id=plugin_id)
     except MetadataError as exc:
-        try:
+        with contextlib.suppress(OSError):
             toml_path.write_text(original, encoding="utf-8")
-        except OSError:
-            pass
         raise PreflightFailure((f"{exc.kind}: {exc.message}",)) from exc
     return AllowVersionReport(plugin_id, version, True)

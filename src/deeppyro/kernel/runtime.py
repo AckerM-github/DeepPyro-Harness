@@ -38,25 +38,11 @@ import logging
 from typing import Any, ClassVar
 
 from deeppyro.api import Service
+from deeppyro.kernel.config_values import config_dict
 
 log = logging.getLogger("deeppyro.kernel")
 
 _MISSING = object()
-
-
-def _config_dict(value: Any) -> dict[str, Any]:
-    """Render a plugin config (pydantic model or mapping) as a plain dict."""
-    if value is None:
-        return {}
-    dump = getattr(value, "model_dump", None)
-    if callable(dump):
-        try:
-            return dict(copy.deepcopy(dump(mode="python")))
-        except TypeError:  # pragma: no cover - very old pydantic models
-            return dict(copy.deepcopy(dump()))
-    if isinstance(value, dict):
-        return copy.deepcopy(value)
-    return {"value": copy.deepcopy(value)}
 
 
 def _same(left: Any, right: Any) -> bool:
@@ -145,12 +131,13 @@ class KernelRuntime(Service):
         cls = record.cls
         if cls is None:
             return False
-        volatile = tuple(getattr(cls, "volatile", ()) or ())
+        declared = getattr(cls, "volatile", None)
+        volatile: tuple[str, ...] = tuple(declared) if declared else ()
         if not volatile:
             self._mark_restart(app, plugin_id, "declares no volatile fields")
             return False
         instance = record.instance
-        current = _config_dict(getattr(instance, "config", None) if instance is not None else record.config)
+        current = config_dict(getattr(instance, "config", None) if instance is not None else record.config)
         changed = {
             key: value for key, value in config.items() if not _same(current.get(key, _MISSING), value)
         }
@@ -198,7 +185,7 @@ class KernelRuntime(Service):
                     context.config = validated
                 except Exception:  # noqa: BLE001 - context without a config attribute
                     log.debug("kernel: context for %r rejected the live config", plugin_id)
-        record.config = _config_dict(validated)
+        record.config = config_dict(validated)
         app.clear_restart_required(plugin_id)
         return True
 

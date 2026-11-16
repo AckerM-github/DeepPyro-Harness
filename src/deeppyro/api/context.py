@@ -128,10 +128,12 @@ class PluginContext:
 
     @property
     def logger(self) -> logging.Logger:
-        if self._logger is None:
+        logger = self._logger
+        if logger is None:
             name = f"deeppyro.plugin.{self.plugin_id}" if self.plugin_id else "deeppyro.plugin"
-            object.__setattr__(self, "_logger", logging.getLogger(name))
-        return self._logger
+            logger = logging.getLogger(name)
+            object.__setattr__(self, "_logger", logger)
+        return logger
 
     # -- service access ---------------------------------------------------
     def get(self, name: str) -> Any | None:

@@ -136,6 +136,8 @@ class PresetsPlugin(Service):
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
+        # The loop keeps only a weak reference to a task; hold our own until done.
+        self._pending: set[asyncio.Task[Any]] = set()
         # The registry is a Cordis service, so methods invoked through a tracked
         # service proxy receive the proxy as ``self``; on a proxy ``self.ctx``
         # resolves to the *use-site* context. Keep the fiber's own raw context
@@ -481,7 +483,9 @@ class PresetsPlugin(Service):
         except RuntimeError:
             self._dispose_no_loop(state)
             return
-        loop.create_task(self._dispose_state(state))
+        task = loop.create_task(self._dispose_state(state))
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
 
     def _dispose_no_loop(self, state: _RealmState) -> None:
         for fiber in reversed(state.fibers):

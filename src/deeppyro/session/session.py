@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import pathlib
 from collections.abc import Callable, Mapping
@@ -104,10 +105,8 @@ class Session:
         self._append_observers.append(observer)
 
         def dispose() -> None:
-            try:
+            with contextlib.suppress(ValueError):
                 self._append_observers.remove(observer)
-            except ValueError:
-                pass
 
         return dispose
 
@@ -129,10 +128,8 @@ class Session:
         dispose = self.add_append_observer(observer)
 
         def unsubscribe() -> None:
-            try:
+            with contextlib.suppress(ValueError):
                 self._subscriptions.remove(entry)
-            except ValueError:
-                pass
             dispose()
 
         entry.append(unsubscribe)

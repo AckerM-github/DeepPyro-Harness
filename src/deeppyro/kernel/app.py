@@ -44,6 +44,7 @@ from deeppyro.kernel.composition import (
     rows_from_specs,
 )
 from deeppyro.kernel.config_service import provide_config
+from deeppyro.kernel.config_values import config_dict
 from deeppyro.kernel.manifest import PluginSpec, load_manifest
 
 log = logging.getLogger("deeppyro.kernel")
@@ -117,7 +118,7 @@ def _api_adapter(cls: type, row: PluginRow, record: MountRecord | None = None) -
         instance = cls(ctx, config)
         if record is not None:
             record.instance = instance
-            record.config = _config_dict(config)
+            record.config = config_dict(config)
         setup = getattr(instance, "setup", None)
         if callable(setup):
             result = setup(ctx, config)
@@ -135,21 +136,6 @@ def _api_adapter(cls: type, row: PluginRow, record: MountRecord | None = None) -
         return _keep_alive
 
     return apply
-
-
-def _config_dict(value: Any) -> dict[str, Any]:
-    """Render a plugin config (pydantic model or mapping) as a plain dict."""
-    if value is None:
-        return {}
-    dump = getattr(value, "model_dump", None)
-    if callable(dump):
-        try:
-            return dict(copy.deepcopy(dump(mode="python")))
-        except TypeError:
-            return dict(copy.deepcopy(dump()))
-    if isinstance(value, dict):
-        return copy.deepcopy(value)
-    return {"value": copy.deepcopy(value)}
 
 
 def _check_name(row: PluginRow, cls: type) -> None:
@@ -320,7 +306,7 @@ class App:
         if records is None:
             records = [
                 MountRecord(row=row, fiber=fiber, config=copy.deepcopy(row.config or {}))
-                for row, fiber in zip(self._rows, self._fibers)
+                for row, fiber in zip(self._rows, self._fibers, strict=False)
             ]
         self._records = records
         self._top = [record for record in records if record.parent is None]

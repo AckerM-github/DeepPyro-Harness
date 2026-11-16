@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, ClassVar
+from typing import Any
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
@@ -22,7 +22,7 @@ class AskUserQuestionTool(BaseTool):
         "skip as permission."
     )
     parallel_safe = False
-    parameters: ClassVar[dict[str, Any]] = {
+    parameters: dict[str, Any] = {
         "type": "object",
         "properties": {
             "questions": {

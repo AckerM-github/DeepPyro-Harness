@@ -43,7 +43,7 @@ import sys
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from deeppyro.api import API_VERSION
 from deeppyro.kernel.manifest import (
@@ -548,8 +548,10 @@ def _resolve_target(target: str, base: Path | None) -> type:
         raise CompositionError(f"plugin class {attribute!r} not found in {module_part!r}")
     if not callable(cls):
         raise CompositionError(f"plugin target {target!r} is not callable")
-    _RESOLVED[key] = cls
-    return cls
+    # A target is always a plugin class; callable() only proves it can be called.
+    plugin_cls = cast("type", cls)
+    _RESOLVED[key] = plugin_cls
+    return plugin_cls
 
 
 def register_target_alias(alias: str, target: str) -> None:

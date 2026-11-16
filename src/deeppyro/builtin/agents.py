@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import weakref
 from collections.abc import Callable
@@ -93,10 +94,8 @@ class AgentsPlugin(Service):
         observers.append(callback)
 
         def dispose() -> None:
-            try:
+            with contextlib.suppress(ValueError):
                 observers.remove(callback)
-            except ValueError:
-                pass
 
         return dispose
 

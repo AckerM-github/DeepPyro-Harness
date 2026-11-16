@@ -133,7 +133,7 @@ def test_version_conflict_raises(tmp_path: Path) -> None:
         "beta",
         _bundle_toml("beta", requires='requires = ["alpha>=0.2"]'),
     )
-    with pytest.raises(CompositionError, match="but version 0.1.0 is installed"):
+    with pytest.raises(CompositionError, match=r"but version 0\.1\.0 is installed"):
         default_composition(bundle_paths=[dependency, dependent])
 
 

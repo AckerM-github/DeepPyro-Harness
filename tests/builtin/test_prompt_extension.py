@@ -94,7 +94,7 @@ def test_invalid_extension_type_is_a_config_error() -> None:
 
 
 def test_prompt_section_must_be_a_table() -> None:
-    with pytest.raises(ConfigError, match="prompt.*must be a table"):
+    with pytest.raises(ConfigError, match=r"prompt.*must be a table"):
         make_plugin(cfg=make_config("not a table"))
 
 

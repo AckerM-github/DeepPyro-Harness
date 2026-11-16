@@ -70,7 +70,7 @@ def test_constants() -> None:
     assert INVOKED_RECORD_TYPE == "hook/invoked"
     assert RESULT_RECORD_TYPE == "hook/result"
     assert MAX_PREVIEW == 120
-    assert HOT_HOOKS == frozenset({LLM_STREAM, AGENT_ASSISTANT_STREAM})
+    assert frozenset({LLM_STREAM, AGENT_ASSISTANT_STREAM}) == HOT_HOOKS
 
 
 def test_is_journaled_skips_hot_hooks() -> None:

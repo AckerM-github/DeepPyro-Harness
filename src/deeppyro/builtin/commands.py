@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 from collections.abc import Callable, Iterable
@@ -57,10 +58,8 @@ class CommandsPlugin(Service):
         self._commands.append(spec)
 
         def remove() -> None:
-            try:
+            with contextlib.suppress(ValueError):
                 self._commands.remove(spec)
-            except ValueError:
-                pass
 
         return remove
 

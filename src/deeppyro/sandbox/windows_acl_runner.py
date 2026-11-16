@@ -21,6 +21,7 @@ os.name == "nt".
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import hashlib
 import os
@@ -754,12 +755,11 @@ if os.name == "nt":
                 else:
                     os.environ[key] = value
             if temp_granted and temp_sid is not None:
-                try:
+                # cleanup is best-effort
+                # The child already ran; a cleanup failure must not turn a
+                # successful command into a failure. The temp dir is private.
+                with contextlib.suppress(Exception):
                     _revoke_dir_ace(temp, temp_sid)
-                except Exception:  # noqa: BLE001, S110 - cleanup is best-effort
-                    # The child already ran; a cleanup failure must not turn a
-                    # successful command into a failure. The temp dir is private.
-                    pass
             for handle in (restricted, current):
                 if handle and handle.value:
                     kernel32.CloseHandle(handle)

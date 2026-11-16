@@ -25,6 +25,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from deeppyro.core.payload import field_of
 from deeppyro.core.protocols import LlmRequest, ToolSchema
 from deeppyro.core.wire import (
     ImagePart,
@@ -43,10 +44,7 @@ def _part_type(part: Any) -> str:
 
 
 def _part_text(part: Any) -> str:
-    if isinstance(part, dict):
-        value = part.get("text", "")
-    else:
-        value = getattr(part, "text", "")
+    value = field_of(part, "text", "")
     return value if isinstance(value, str) else ""
 
 

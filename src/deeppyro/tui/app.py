@@ -12,6 +12,7 @@ Textual: DeepPyroApp is the only place where both worlds meet.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -276,12 +277,11 @@ class DeepPyroApp(App[None]):
         start = getattr(self.runtime, "start_schedule", None)
         if not callable(start):
             return
-        try:
+        # scheduling is best effort
+        with contextlib.suppress(Exception):
             result = start()
             if inspect.isawaitable(result):
                 await result
-        except Exception:  # noqa: BLE001, S110 - scheduling is best effort
-            pass
 
     def _on_schedule_message(self, text: str) -> None:
         """Show a scheduled user message and keep the busy indicator honest."""
@@ -297,10 +297,9 @@ class DeepPyroApp(App[None]):
         agent = getattr(self.runtime, "agent", None)
         wait = getattr(agent, "wait_for_idle", None)
         if callable(wait):
-            try:
+            # the turn already reports errors
+            with contextlib.suppress(Exception):
                 await wait()
-            except Exception:  # noqa: BLE001, S110 - the turn already reports errors
-                pass
         if not getattr(self.runtime, "busy", False):
             self._working = False
             self._phase = "idle"
@@ -311,11 +310,10 @@ class DeepPyroApp(App[None]):
         self._slots = resolve_slot_registry(self.runtime)
         if self._slots is None:
             return
-        try:
+        # optional chrome never blocks boot
+        with contextlib.suppress(Exception):
             bar = self.query_one(PluginStatusBar)
             bar.bind(self._slots, lambda: build_slot_context(self))
-        except Exception:  # noqa: BLE001, S110 - optional chrome never blocks boot
-            pass
 
     def _bind_ui(self) -> None:
         """Attach the optional `ui` service and drain its queue on this thread."""
@@ -335,29 +333,26 @@ class DeepPyroApp(App[None]):
         ui = self._ui
         if ui is None:
             return
-        try:
+        # one drain failure cannot break the timer
+        with contextlib.suppress(Exception):
             ui.drain()
-        except Exception:  # noqa: BLE001, S110 - one drain failure cannot break the timer
-            pass
 
     def _unbind_ui(self) -> None:
         """Stop the drain timer and detach before the runtime closes."""
         timer = self._ui_timer
         self._ui_timer = None
         if timer is not None:
-            try:
+            # a dead timer is already stopped
+            with contextlib.suppress(Exception):
                 timer.stop()
-            except Exception:  # noqa: BLE001, S110 - a dead timer is already stopped
-                pass
         ui = self._ui
         self._ui = None
         if ui is None:
             return
         for step in (ui.unbind, ui.clear):
-            try:
+            # shutdown is best effort
+            with contextlib.suppress(Exception):
                 step()
-            except Exception:  # noqa: BLE001, S110 - shutdown is best effort
-                pass
 
     def handle_ui_action(self, action: UiAction) -> None:
         """Handle one `ui` action on the Textual thread (the drain backend)."""
@@ -435,10 +430,9 @@ class DeepPyroApp(App[None]):
         runtime = self.runtime
         if runtime is None:
             return
-        try:
+        # shutdown never raises into Textual
+        with contextlib.suppress(Exception):
             await runtime.close()
-        except Exception:  # noqa: BLE001, S110 - shutdown never raises into Textual
-            pass
 
     # -- splash ----------------------------------------------------------
     def _splash_screen(self) -> SplashScreen | None:
@@ -480,7 +474,8 @@ class DeepPyroApp(App[None]):
     def handle_event(self, event: dict[str, Any]) -> None:
         """Render one agent event (called by TuiSink on the UI loop)."""
         kind = str(event.get("type") or "")
-        try:
+        # rendering must never kill a turn
+        with contextlib.suppress(Exception):
             conversation = self.conversation
             if kind == "text":
                 conversation.stream_text(str(event.get("text") or ""))
@@ -510,8 +505,6 @@ class DeepPyroApp(App[None]):
             elif kind == "status":
                 self._phase = str(event.get("phase") or "idle")
             apply_conversation_slots(conversation, event, self._slots, context=build_slot_context(self))
-        except Exception:  # noqa: BLE001, S110 - rendering must never kill a turn
-            pass
         self._refresh_activity()
         self.refresh_status()
 
@@ -711,10 +704,9 @@ class DeepPyroApp(App[None]):
         state = self._activity_state()
         if state is None:
             return
-        try:
+        # composition not ready yet
+        with contextlib.suppress(Exception):
             self.query_one(ActivityBar).update_state(state)
-        except Exception:  # noqa: BLE001, S110 - composition not ready yet
-            pass
 
     @on(ActivityBar.SegmentClicked)
     def _on_activity_segment(self, event: ActivityBar.SegmentClicked) -> None:
@@ -1104,12 +1096,11 @@ class DeepPyroApp(App[None]):
         """Configured provider names, falling back to the active one."""
         getter = getattr(self.runtime, "providers", None)
         if callable(getter):
-            try:
+            # the command must keep working
+            with contextlib.suppress(Exception):
                 values = [str(name) for name in getter()]
                 if values:
                     return values
-            except Exception:  # noqa: BLE001, S110 - the command must keep working
-                pass
         active = str(getattr(self.runtime, "provider_name", "") or "")
         return [active] if active else []
 
@@ -1117,17 +1108,13 @@ class DeepPyroApp(App[None]):
         """Every configured (provider, model) pair, if the runtime knows them."""
         getter = getattr(self.runtime, "model_choices", None)
         if callable(getter):
-            try:
+            with contextlib.suppress(Exception):
                 return [(str(provider), str(model)) for provider, model in getter()]
-            except Exception:  # noqa: BLE001, S110
-                pass
         getter = getattr(self.runtime, "models", None)
         if callable(getter):
-            try:
+            with contextlib.suppress(Exception):
                 provider = str(getattr(self.runtime, "provider_name", "") or "")
                 return [(provider, str(model)) for model in getter()]
-            except Exception:  # noqa: BLE001, S110
-                pass
         return []
 
     def _model_value(self, provider: str, model: str) -> str:
@@ -1556,10 +1543,9 @@ class DeepPyroApp(App[None]):
                 getter = getattr(team, getter_name, None)
                 if not callable(getter):
                     continue
-                try:
+                # a broken store must not crash the UI
+                with contextlib.suppress(Exception):
                     target.extend(getter())
-                except Exception:  # noqa: BLE001, S110 - a broken store must not crash the UI
-                    pass
             team_id = str(getattr(team, "team_id", "") or "")
         return members, tasks, team_id
 
@@ -1676,24 +1662,22 @@ class DeepPyroApp(App[None]):
         session = getattr(runtime, "session", None) if runtime is not None else None
         trace = getattr(session, "hook_trace", None)
         if callable(trace):
-            try:
+            # fall back to the raw records
+            with contextlib.suppress(Exception):
                 rows = trace(limit=HOOK_TRACE_LIMIT)
                 if inspect.isawaitable(rows):
                     rows = await rows
                 return _normalize_hook_rows(rows)
-            except Exception:  # noqa: BLE001, S110 - fall back to the raw records
-                pass
         session_id = str(getattr(session, "session_id", "") or "")
         query = self._session_query()
         trace = getattr(query, "hook_trace", None)
         if callable(trace) and session_id:
-            try:
+            # fall back to the raw records
+            with contextlib.suppress(Exception):
                 rows = trace(session_id, limit=HOOK_TRACE_LIMIT)
                 if inspect.isawaitable(rows):
                     rows = await rows
                 return _normalize_hook_rows(rows)
-            except Exception:  # noqa: BLE001, S110 - fall back to the raw records
-                pass
         return _hook_rows_from_records(session)
 
     async def hooks_command(self, argument: str = "") -> None:
@@ -1783,7 +1767,8 @@ class DeepPyroApp(App[None]):
 
     async def show_plugins(self) -> None:
         """Open the external plugin manager, or list kernel plugins as fallback."""
-        try:
+        # outside a worker or manager failure
+        with contextlib.suppress(Exception):
             from deeppyro.tui.screens.plugins import PluginScreen
 
             manager = None
@@ -1801,8 +1786,6 @@ class DeepPyroApp(App[None]):
                     health = None
             await self.push_screen_wait(PluginScreen(manager, health=health))
             return
-        except Exception:  # noqa: BLE001, S110 - outside a worker or manager failure
-            pass
         kernel = getattr(self.runtime, "kernel_app", None)
         specs = list(getattr(kernel, "specs", []) or [])
         started = dict(getattr(kernel, "started", {}) or {})

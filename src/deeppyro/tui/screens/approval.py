@@ -10,7 +10,6 @@ sandbox gate are shown with a red DANGER badge.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from textual.app import ComposeResult
@@ -19,6 +18,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
+from deeppyro.core.payload import field_of
 from deeppyro.sandbox.gate import DANGEROUS_PATTERNS
 
 ALLOW_ONCE = "once"
@@ -43,10 +43,7 @@ _KIND_TOOLS = {
 
 
 def _request_field(request: Any, name: str, default: str | None = "") -> str | None:
-    if isinstance(request, Mapping):
-        value = request.get(name, default)
-    else:
-        value = getattr(request, name, default)
+    value = field_of(request, name, default)
     if isinstance(value, str):
         return value
     return default

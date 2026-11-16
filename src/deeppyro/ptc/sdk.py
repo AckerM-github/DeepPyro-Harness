@@ -37,6 +37,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from deeppyro.core.payload import field_of
 from deeppyro.core.protocols import ToolSchema
 
 # --------------------------------------------------------------------------
@@ -337,10 +338,7 @@ def _describe(node: Any) -> str | None:
     encodable and printable.  A description that collapses to nothing is
     absent, like a missing one.
     """
-    if isinstance(node, Mapping):
-        description = node.get("description")
-    else:
-        description = getattr(node, "description", None)
+    description = field_of(node, "description")
     if not isinstance(description, str):
         return None
     collapsed = _WHITESPACE.sub(" ", description)
@@ -471,7 +469,7 @@ def _render_object(schema: dict[str, Any], class_name: str, state: _RenderState)
     ]
     required = set(schema.get("required") or ())
     lines = [f"class {allocated}(TypedDict):"]
-    for (name, child_schema), field_type in zip(entries, field_types):
+    for (name, child_schema), field_type in zip(entries, field_types, strict=True):
         description = _describe(child_schema)
         if description is not None:
             lines.append(f"{_pad(1)}# {description}")

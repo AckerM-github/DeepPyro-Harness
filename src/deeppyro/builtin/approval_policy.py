@@ -22,6 +22,7 @@ from typing import Any, ClassVar
 
 from deeppyro.api import Plugin
 from deeppyro.core.errors import ConfigError
+from deeppyro.core.payload import field_of
 from deeppyro.hooks import APPROVAL_REQUEST
 from deeppyro.hooks.types import HookNext, HookPayload
 
@@ -109,10 +110,7 @@ def _hook_tools(table: Mapping[str, Any] | None) -> tuple[str, ...]:
 
 def _section(cfg: Any, name: str) -> Mapping[str, Any] | None:
     """Return one optional config table as a mapping."""
-    if isinstance(cfg, Mapping):
-        value = cfg.get(name)
-    else:
-        value = getattr(cfg, name, None)
+    value = field_of(cfg, name)
     if value is None:
         return None
     if isinstance(value, Mapping):

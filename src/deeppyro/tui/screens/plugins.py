@@ -282,10 +282,7 @@ class PluginScreen(ModalScreen[str | None]):
             self.notify("没有可操作的插件", severity="warning")
             return
         try:
-            if enable:
-                info = self._manager.enable(plugin_id)
-            else:
-                info = self._manager.disable(plugin_id)
+            info = self._manager.enable(plugin_id) if enable else self._manager.disable(plugin_id)
         except Exception as exc:  # noqa: BLE001 - every manager failure is reported
             self.notify(str(exc) or type(exc).__name__, severity="error")
             return

@@ -253,7 +253,7 @@ def test_request_header_prohibitions() -> None:
         return support.event("request/header", 0, {"reason": "initial", "header": header})
 
     events.normalize_event(raw({"config": {"provider": "deepseek", "model": "x"}}))
-    with pytest.raises(SessionError, match="header.system"):
+    with pytest.raises(SessionError, match=r"header\.system"):
         events.normalize_event(raw({"system": "prompt"}))
     with pytest.raises(SessionError, match="empty tools"):
         events.normalize_event(raw({"tools": []}))
@@ -322,11 +322,11 @@ def test_header_line_dict_is_canonical() -> None:
 def test_known_event_types_cover_canonical_compaction_records() -> None:
     for name in ("compaction/start", "compaction/summary", "compaction/end", "compaction/prune"):
         assert name in events.KNOWN_EVENT_TYPES
-    assert events.SURFACE_EVENTS == {
+    assert {
         "system/message",
         "developer/message",
         "user/message",
         "assistant/message",
         "tool/result",
-    }
-    assert events.PROJECTION_EVENTS == {"image/offload"}
+    } == events.SURFACE_EVENTS
+    assert {"image/offload"} == events.PROJECTION_EVENTS

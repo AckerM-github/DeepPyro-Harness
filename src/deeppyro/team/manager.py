@@ -10,6 +10,7 @@ service is unit-testable without a provider or a kernel boot.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import inspect
 import logging
@@ -354,12 +355,11 @@ class TeamService:
             task.cancel()
         interrupt = getattr(member.agent, "interrupt", None)
         if interrupt is not None:
-            try:
+            # cancellation must not raise
+            with contextlib.suppress(Exception):
                 result = interrupt()
                 if inspect.isawaitable(result):
                     await result
-            except Exception:  # noqa: BLE001, S110 - cancellation must not raise
-                pass
         return True
 
     async def close(self) -> None:
@@ -493,12 +493,11 @@ class TeamService:
         aclose = getattr(agent, "aclose", None)
         if not callable(aclose):
             return
-        try:
+        # shutdown must not raise
+        with contextlib.suppress(Exception):
             result = aclose()
             if inspect.isawaitable(result):
                 await result
-        except Exception:  # noqa: BLE001, S110 - shutdown must not raise
-            pass
 
     # -- child wiring ---------------------------------------------------
     def _create_child_session(self, preset_id: str) -> Session:
@@ -655,10 +654,9 @@ class TeamService:
         append = getattr(parent, "append", None)
         if append is None:
             return
-        try:
+        # logging must not break team ops
+        with contextlib.suppress(Exception):
             append(record_type, data)
-        except Exception:  # noqa: BLE001, S110 - logging must not break team ops
-            pass
 
     def _record_member(self, member: _Member) -> None:
         self._append_record(
@@ -929,17 +927,15 @@ def _inherit_permission(sandbox: Any, parent: Any, session: Any) -> None:
     policy_service = getattr(sandbox, "policy_service", None)
     mode = getattr(getattr(parent, "policy", None), "mode", None)
     if policy_service is not None and isinstance(mode, str) and mode:
-        try:
+        # seeding must not break a spawn
+        with contextlib.suppress(Exception):
             policy_service.set_mode(session, mode)
-        except Exception:  # noqa: BLE001, S110 - seeding must not break a spawn
-            pass
     approval_service = getattr(sandbox, "approval_service", None)
     approval = getattr(parent, "approval", None)
     if approval_service is not None and isinstance(approval, str) and approval:
-        try:
+        # seeding must not break a spawn
+        with contextlib.suppress(Exception):
             approval_service.set_policy(session, approval)
-        except Exception:  # noqa: BLE001, S110 - seeding must not break a spawn
-            pass
 
 
 __all__ = ["TeamService"]

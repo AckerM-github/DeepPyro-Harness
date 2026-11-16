@@ -10,6 +10,7 @@ and the settlement record is still appended.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 from collections.abc import Callable
 from typing import Any
@@ -363,14 +364,13 @@ class JobsService:
                     "detail": handle._detail,
                 }
             )
-        try:
+        # recording is best effort
+        with contextlib.suppress(Exception):
             result = callback("job/settled" if settled else "job/registered", payload)
             if inspect.isawaitable(result):
                 close = getattr(result, "close", None)
                 if callable(close):
                     close()
-        except Exception:  # noqa: BLE001, S110 - recording is best effort
-            pass
 
 
 __all__ = ["KILL_SETTLE_TIMEOUT", "JobHandle", "JobsService", "RecordCallback", "Runner"]

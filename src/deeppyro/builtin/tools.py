@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable, Iterable
 from typing import Any, ClassVar
@@ -50,10 +51,8 @@ class ToolsPlugin(Service):
         self._contributions.append(contribution)
 
         def remove() -> None:
-            try:
+            with contextlib.suppress(ValueError):
                 self._contributions.remove(contribution)
-            except ValueError:
-                pass
 
         return remove
 

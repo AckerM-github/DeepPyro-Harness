@@ -8,6 +8,7 @@ aborts the scan: the error is collected and the next candidate is tried.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,10 +58,8 @@ class SkillScan:
 def find_project_root(cwd: str | Path) -> Path:
     """Find the nearest ancestor containing .git, else the cwd itself."""
     candidate = Path(cwd).expanduser()
-    try:
+    with contextlib.suppress(OSError, RuntimeError):  # pragma: no cover - platform edge
         candidate = candidate.resolve(strict=False)
-    except (OSError, RuntimeError):  # pragma: no cover - platform edge
-        pass
     for current in (candidate, *candidate.parents):
         try:
             if (current / ".git").exists():

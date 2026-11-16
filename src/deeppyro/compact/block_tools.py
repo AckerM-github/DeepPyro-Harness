@@ -18,7 +18,7 @@ so a damaged store degrades to "no match" rather than an exception.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any
 
 from deeppyro.compact.blocks import BlockRecord, BlockStore
 from deeppyro.compact.compress_tool import format_local
@@ -214,7 +214,7 @@ class SearchContextTool(BaseTool):
     name = "search_context"
     description = SEARCH_DESCRIPTION
     parallel_safe = True
-    parameters: ClassVar[dict[str, Any]] = _SEARCH_PARAMETERS
+    parameters: dict[str, Any] = _SEARCH_PARAMETERS
 
     def __init__(self, blocks: BlockStore) -> None:
         self.blocks = blocks
@@ -266,7 +266,7 @@ class DecompressTool(BaseTool):
     name = "decompress"
     description = DECOMPRESS_DESCRIPTION
     parallel_safe = True
-    parameters: ClassVar[dict[str, Any]] = _DECOMPRESS_PARAMETERS
+    parameters: dict[str, Any] = _DECOMPRESS_PARAMETERS
 
     def __init__(self, blocks: BlockStore) -> None:
         self.blocks = blocks

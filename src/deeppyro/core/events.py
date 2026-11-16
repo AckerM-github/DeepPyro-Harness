@@ -206,16 +206,15 @@ def _build_specs() -> dict[str, EventSpec]:
     """Merge the three sources: what deeppyro dispatches, the DSH catalog, extras."""
 
     specs: dict[str, EventSpec] = {}
-    for name, mode in HOOK_MODES.items():
+    for name in HOOK_MODES:
         if name not in _PRODUCERS:
             raise RuntimeError(f"bus event {name!r} has a mode but no producer")
     # Producers that are not legacy hook names take their mode from the DSH
     # catalog: the name policy in hooks/types.py only covers the old surface.
     for name in _PRODUCERS.keys() - HOOK_MODES.keys():
-        if True:
-            modes, _site = _catalog_entry(name)
-            if not modes and name not in _EXTRA_MODES:
-                raise RuntimeError(f"bus event {name!r} has no mode: add it to the catalog")
+        modes, _site = _catalog_entry(name)
+        if not modes and name not in _EXTRA_MODES:
+            raise RuntimeError(f"bus event {name!r} has no mode: add it to the catalog")
     for name, mode in HOOK_MODES.items():
         modes, site = _catalog_entry(name)
         specs[name] = EventSpec(

@@ -12,6 +12,7 @@ A failed write leaves the previous file intact.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -335,10 +336,8 @@ class MemoryStore:
             raise MemoryStoreError(f"cannot write memory file {path}: {exc}") from exc
         finally:
             if temp_path is not None and temp_path.exists():
-                try:
+                with contextlib.suppress(OSError):
                     temp_path.unlink()
-                except OSError:
-                    pass
 
 
 def _parse_payload(payload: Any, path: Path) -> _PersistedState:

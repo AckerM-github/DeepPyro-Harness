@@ -103,4 +103,4 @@ async def test_the_harness_sees_only_declared_hook_names(tmp_path: Path) -> None
     declared = set(bus_names(include_reserved=False))
     assert seen <= declared, sorted(seen - declared)
     assert set(HOOK_NAMES) <= declared, sorted(set(HOOK_NAMES) - declared)
-    assert MINIMUM_COVERAGE <= seen, sorted(MINIMUM_COVERAGE - seen)
+    assert seen >= MINIMUM_COVERAGE, sorted(MINIMUM_COVERAGE - seen)

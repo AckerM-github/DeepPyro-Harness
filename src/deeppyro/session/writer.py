@@ -8,6 +8,7 @@ visible.  zstd files use one independent, checksummed frame per durable batch.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
@@ -94,10 +95,7 @@ def write_new_session(
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     header_bytes = encode_header_line(header)
-    if zstd:
-        header_block = _compressor().compress(header_bytes)
-    else:
-        header_block = header_bytes
+    header_block = _compressor().compress(header_bytes) if zstd else header_bytes
     events_block = _encode_events_block(events, zstd=zstd)
     temporary = path.with_name(f"{path.name}.tmp-{uuid.uuid4().hex}")
     try:
@@ -134,9 +132,7 @@ def append_events(
             handle.flush()
             os.fsync(handle.fileno())
     except OSError as exc:
-        try:
-            with path.open("r+b") as handle:
-                handle.truncate(original_size)
-        except OSError:  # pragma: no cover - best-effort rollback
-            pass
+        # Best effort: the SessionError below is what the caller actually sees.
+        with contextlib.suppress(OSError), path.open("r+b") as handle:  # pragma: no cover
+            handle.truncate(original_size)
         raise SessionError(f"cannot append to session log {path}: {exc}") from exc

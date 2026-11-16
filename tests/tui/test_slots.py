@@ -100,8 +100,7 @@ def test_default_ids_are_deterministic() -> None:
 def test_lambda_ids_include_source_line() -> None:
     registry = SlotRegistry()
     first = registry.add_status_item(lambda ctx: "a")
-    second = lambda ctx: "b"
-    registry.add_status_item(second)
+    registry.add_status_item(lambda ctx: "b")
     ids = [item.id for item in registry.status_items()]
     assert len(ids) == 2
     assert ids[0] != ids[1]

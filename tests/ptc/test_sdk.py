@@ -89,7 +89,7 @@ def _block(text: str) -> str:
 def _exec_block(text: str) -> dict:
     """Execute the fenced block and return its namespace, proving it is valid Python."""
     namespace: dict = {}
-    exec(compile(_block(text), "<tools-sdk>", "exec"), namespace)  # noqa: S102 - generated stub text
+    exec(compile(_block(text), "<tools-sdk>", "exec"), namespace)
     return namespace
 
 
@@ -112,7 +112,7 @@ def test_preamble_text_is_stable() -> None:
     assert SDK_INSTRUCTIONS.endswith("\n\nThe available tools:")
     assert "STATIC STUB" in SDK_INSTRUCTIONS
     assert "raises `NameError`" in SDK_INSTRUCTIONS
-    assert SDK_INSTRUCTIONS == SDK_INSTRUCTIONS.rstrip()
+    assert SDK_INSTRUCTIONS.rstrip() == SDK_INSTRUCTIONS
 
 
 def test_read_file_rich_schema_is_byte_identical_to_dsh() -> None:

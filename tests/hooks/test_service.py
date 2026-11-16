@@ -882,32 +882,35 @@ async def test_concurrent_dispatches_do_not_share_next_state() -> None:
 
 
 def test_hook_names_are_fixed() -> None:
-    assert HOOK_NAMES == frozenset(
-        {
-            "agent/pre-step",
-            "agent/request",
-            "agent/request-error",
-            "agent/turn-stopping",
-            "agent/assistant-stream",
-            "agent/status",
-            "system-prompt/assemble",
-            "llm/stream",
-            "session/created",
-            "session/disposed",
-            "agent/error",
-            "tools/pre-execute",
-            "tools/execute",
-            "tools/post-execute",
-            "approval/request",
-        }
+    assert (
+        frozenset(
+            {
+                "agent/pre-step",
+                "agent/request",
+                "agent/request-error",
+                "agent/turn-stopping",
+                "agent/assistant-stream",
+                "agent/status",
+                "system-prompt/assemble",
+                "llm/stream",
+                "session/created",
+                "session/disposed",
+                "agent/error",
+                "tools/pre-execute",
+                "tools/execute",
+                "tools/post-execute",
+                "approval/request",
+            }
+        )
+        == HOOK_NAMES
     )
 
 
 def test_record_only_names_are_deprecated_but_still_importable() -> None:
     # DSH records these names instead of dispatching them; the constants survive
     # one minor so plugins keep importing, but the bus rejects them.
-    assert DEPRECATED_NAMES == frozenset(
-        {"model/selection", "tool/call", "approval/asked", "approval/decided"}
+    assert (
+        frozenset({"model/selection", "tool/call", "approval/asked", "approval/decided"}) == DEPRECATED_NAMES
     )
     assert not (DEPRECATED_NAMES & HOOK_NAMES)
     service = HookService()

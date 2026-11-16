@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -62,10 +63,8 @@ class PromptPlugin(Service):
         self._sections.append(section)
 
         def remove() -> None:
-            try:
+            with contextlib.suppress(ValueError):
                 self._sections.remove(section)
-            except ValueError:
-                pass
 
         return remove
 

@@ -36,6 +36,7 @@ Transient text/thinking frames are emitted live while the provider streams.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -405,10 +406,8 @@ class AgentSession:
         if task is not None and task is not current and not task.done():
             task.cancel()
         if self._driving:
-            try:
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
                 await asyncio.wait_for(self._idle.wait(), timeout=5.0)
-            except (TimeoutError, asyncio.CancelledError):
-                pass
 
     def record_hook_event(self, record_type: str, data: Mapping[str, Any]) -> int:
         """Persist one hook observation and publish it to the live sink.

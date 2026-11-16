@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from deeppyro._vendor.cordis_port import Service
 from deeppyro.api import Plugin
+from deeppyro.core.payload import field_of
 
 
 class CounterPlugin(Service):
@@ -54,11 +55,7 @@ class OrderedPlugin(Plugin):
 
     def __init__(self, ctx: Any, config: Any = None) -> None:
         super().__init__(ctx, config)
-        if isinstance(config, dict):
-            tag = config.get("tag", "")
-        else:
-            tag = getattr(config, "tag", "")
-        self.tag = str(tag or "")
+        self.tag = str(field_of(config, "tag", "") or "")
         MOUNT_ORDER.append(self.tag)
 
     def setup(self, ctx: Any, config: Any) -> None:

@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from deeppyro.agent.inbox import CLAIMED_EVENT, DISCARDED_EVENT, INSERTED_EVENT
+from deeppyro.core.payload import field_of
 from deeppyro.core.wire import Message
 from deeppyro.goal.types import GOAL_BUS_EVENT, BlockedReason, GoalRef, GoalSnapshot
 from deeppyro.hooks import AGENT_ERROR, AGENT_PRE_STEP, AGENT_STATUS
@@ -101,10 +102,7 @@ def render_goal_round_prompt(goal: GoalSnapshot, round: int) -> str:
 
 # -- message helpers ------------------------------------------------------
 def _source_of(message: Any) -> Mapping[str, Any]:
-    if isinstance(message, Mapping):
-        source = message.get("source")
-    else:
-        source = getattr(message, "source", None)
+    source = field_of(message, "source")
     return source if isinstance(source, Mapping) else {}
 
 
@@ -119,10 +117,7 @@ def is_goal_round_source(source: Any) -> bool:
 
 
 def _message_id(message: Any) -> str:
-    if isinstance(message, Mapping):
-        value = message.get("id")
-    else:
-        value = getattr(message, "id", None)
+    value = field_of(message, "id")
     return value if isinstance(value, str) else ""
 
 
@@ -296,6 +291,8 @@ class RoundDriver:
         self._states: dict[str, DriverState] = {}
         self._disposers: list[Callable[[], None]] = []
         self._attached = False
+        # The loop keeps only a weak reference to a task; hold our own until done.
+        self._pending: set[asyncio.Task[Any]] = set()
 
     # -- wiring ------------------------------------------------------------
     def attach(self) -> Callable[[], None]:
@@ -833,7 +830,9 @@ class RoundDriver:
             loop = asyncio.get_running_loop()
         except RuntimeError:  # pragma: no cover - no loop, nothing to cancel
             return
-        loop.create_task(cancel())
+        task = loop.create_task(cancel())
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
 
     def _disarm(self, state: DriverState) -> None:
         goals = self._goals

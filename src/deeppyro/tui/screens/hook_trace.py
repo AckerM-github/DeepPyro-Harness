@@ -14,6 +14,7 @@ required.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Iterable, Mapping
 from typing import Any, ClassVar
 
@@ -239,10 +240,9 @@ class HookTraceScreen(ModalScreen[None]):
     def on_mount(self) -> None:
         # The focus is optional chrome: a screen that is dismissed before its
         # children mount must not fail, and a missing body is harmless.
-        try:
+        # optional chrome never blocks rendering
+        with contextlib.suppress(Exception):
             self.query_one("#hooks-body", VerticalScroll).focus()
-        except Exception:  # noqa: BLE001, S110 - optional chrome never blocks rendering
-            pass
 
     def action_close(self) -> None:
         self.dismiss(None)

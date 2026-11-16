@@ -16,6 +16,7 @@ policy boundary.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import os
@@ -299,17 +300,15 @@ class PtcRuntime:
     def _close_transports(process: asyncio.subprocess.Process) -> None:
         stdin = process.stdin
         if stdin is not None:
-            try:
+            # best-effort pipe cleanup
+            with contextlib.suppress(Exception):
                 stdin.close()
-            except Exception:  # noqa: BLE001, S110 - best-effort pipe cleanup
-                pass
         for stream in (process.stdout, process.stderr):
             transport = getattr(stream, "_transport", None)
             if transport is not None:
-                try:
+                # best-effort pipe cleanup
+                with contextlib.suppress(Exception):
                     transport.close()
-                except Exception:  # noqa: BLE001, S110 - best-effort pipe cleanup
-                    pass
 
     @staticmethod
     def _result(logs: tuple[str, ...], failure: PtcFailure | None, value: Any = None) -> PtcRunResult:

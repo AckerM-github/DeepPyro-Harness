@@ -307,10 +307,7 @@ class OpenAICompatProvider:
                 code=CODE_PROTOCOL if produced else CODE_EMPTY_RESPONSE,
             )
         kind: FinishKind
-        if finish_reason is not None:
-            kind = _map_finish(finish_reason)
-        else:
-            kind = "tool-calls" if calls else "stop"
+        kind = _map_finish(finish_reason) if finish_reason is not None else "tool-calls" if calls else "stop"
         if not produced and kind in ("stop", "tool-calls"):
             raise LlmRequestError(
                 f"{self.name}: provider returned an empty response",

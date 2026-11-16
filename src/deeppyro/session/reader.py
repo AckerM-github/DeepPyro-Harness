@@ -64,10 +64,7 @@ def read_session_file(path: pathlib.Path) -> SessionRead:
         raw = path.read_bytes()
     except OSError as exc:
         raise SessionError(f"cannot read session log {path}: {exc}") from exc
-    if path.name.endswith(".zstd"):
-        data = decompress_zstd_frames(raw)
-    else:
-        data = raw
+    data = decompress_zstd_frames(raw) if path.name.endswith(".zstd") else raw
     if data.startswith(b"\xef\xbb\xbf"):
         data = data[3:]
     lines, torn = _split_lines(data)

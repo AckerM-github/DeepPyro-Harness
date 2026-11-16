@@ -34,6 +34,7 @@ authors adding several items should pass `plugin_id=ctx.plugin_id` and a stable
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import re
 import threading
@@ -569,13 +570,12 @@ def _report_slot_error(conversation: Any, contribution: SlotContribution, exc: B
     add_error = getattr(conversation, "add_error", None)
     if not callable(add_error):
         return
-    try:
+    # error reporting is best effort
+    with contextlib.suppress(Exception):
         add_error(
             f"plugin slot {contribution.plugin_id or '?'}/{contribution.id} failed: "
             f"{type(exc).__name__}: {exc}"
         )
-    except Exception:  # noqa: BLE001, S110 - error reporting is best effort
-        pass
 
 
 def resolve_slot_registry(source: Any) -> SlotRegistry | None:

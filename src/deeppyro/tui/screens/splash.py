@@ -158,10 +158,7 @@ class SplashScreen(ModalScreen[None]):
         else:
             runtime_line = "loading runtime…"
         cwd = compact_text(self._cwd, max_lines=1, max_chars=58) or self._cwd
-        if self._version:
-            cwd_line = f"{cwd} · v{self._version}" if cwd else f"v{self._version}"
-        else:
-            cwd_line = cwd
+        cwd_line = (f"{cwd} · v{self._version}" if cwd else f"v{self._version}") if self._version else cwd
         spark_style = "bold " + color_at(FIRE_STOPS, 1.0)
         rows: list[Text] = [Text(_SPARK, style=spark_style)]
         if self._compact:

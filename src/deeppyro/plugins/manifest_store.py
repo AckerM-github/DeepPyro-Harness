@@ -11,6 +11,7 @@ directory and then moved over the target with os.replace.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import os
@@ -125,15 +126,11 @@ def save_user_manifest(path: str | Path, specs: Iterable[PluginSpec]) -> None:
         raise ManifestWriteError(f"cannot write manifest {target}: {exc}") from exc
     finally:
         if handle is not None:
-            try:
+            with contextlib.suppress(OSError):
                 handle.close()
-            except OSError:
-                pass
         if tmp_path is not None:
-            try:
+            with contextlib.suppress(OSError):
                 tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 __all__ = ["dump_manifest", "read_manifest", "save_user_manifest"]

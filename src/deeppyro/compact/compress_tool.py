@@ -19,6 +19,7 @@ rejected call never writes a session event.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import time
 import uuid
@@ -339,7 +340,7 @@ class CompressTool(BaseTool):
         )
 
     def _close_failed(self, session: Any, compaction_id: str) -> None:
-        try:
+        with contextlib.suppress(OSError, TypeError, ValueError, SessionError):
             session.append(
                 "compaction/end",
                 {
@@ -348,8 +349,6 @@ class CompressTool(BaseTool):
                     "error": {"message": "compress failed"},
                 },
             )
-        except (OSError, TypeError, ValueError, SessionError):
-            pass
 
     # -- validation --------------------------------------------------------
     def _validate(self, session: Any, blocks: list[CompressBlock]) -> list[_Range]:

@@ -23,6 +23,7 @@ graph and one domain behaviour.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -487,10 +488,9 @@ class HeadlessRuntime:
         )
         bind_parent = getattr(self.subagent, "bind_parent", None)
         if bind_parent is not None:
-            try:
+            # the optional subagent service must not break headless
+            with contextlib.suppress(Exception):
                 bind_parent(agent)
-            except Exception:  # noqa: BLE001, S110 - the optional subagent service must not break headless
-                pass
         return agent
 
     def pin_permission(self, session: Any) -> None:
@@ -505,20 +505,17 @@ class HeadlessRuntime:
         pin = getattr(service, "pin_initial", None)
         if pin is None:
             return
-        try:
+        # optional service must not break headless
+        with contextlib.suppress(Exception):
             pin(session)
-        except Exception:  # noqa: BLE001, S110 - optional service must not break headless
-            pass
         if self.permission_mode is not None:
-            try:
+            # optional service must not break headless
+            with contextlib.suppress(Exception):
                 app.service("permissionPresets").apply(session, self.permission_mode)
-            except Exception:  # noqa: BLE001, S110 - optional service must not break headless
-                pass
         if self.approval_policy is not None:
-            try:
+            # optional service must not break headless
+            with contextlib.suppress(Exception):
                 app.service("approval").set_policy(session, self.approval_policy)
-            except Exception:  # noqa: BLE001, S110 - optional service must not break headless
-                pass
 
     def bind_session(self, session: Any) -> None:
         """Bind per-session callbacks for services that record into the log."""
@@ -527,15 +524,14 @@ class HeadlessRuntime:
         service = self.working_directory
         bind = getattr(service, "bind", None)
         if bind is not None:
-            try:
+            # optional service must not break headless
+            with contextlib.suppress(Exception):
                 bind(
                     session,
                     cwd=self.cwd,
                     record=session.append,
                     inject_notice=lambda text: session.inject(text, source={"kind": "working-directory"}),
                 )
-            except Exception:  # noqa: BLE001, S110 - optional service must not break headless
-                pass
         self._restore_projections(session)
 
     def _restore_projections(self, session: Any) -> None:
@@ -544,10 +540,9 @@ class HeadlessRuntime:
         attach = getattr(service, "attach", None)
         if attach is None:
             return
-        try:
+        # optional service must not break headless
+        with contextlib.suppress(Exception):
             attach(session)
-        except Exception:  # noqa: BLE001, S110 - optional service must not break headless
-            pass
 
     def save_projections(self, session: Any) -> None:
         """Write the projection sidecar and stop observing the session."""
@@ -557,15 +552,13 @@ class HeadlessRuntime:
         save = getattr(service, "save", None)
         detach = getattr(service, "detach", None)
         if save is not None:
-            try:
+            # optional service must not break headless
+            with contextlib.suppress(Exception):
                 save(session)
-            except Exception:  # noqa: BLE001, S110 - optional service must not break headless
-                pass
         if detach is not None:
-            try:
+            # optional service must not break headless
+            with contextlib.suppress(Exception):
                 detach(session)
-            except Exception:  # noqa: BLE001, S110 - optional service must not break headless
-                pass
 
     def _plugin_services(self) -> dict[str, Any]:
         """Plugin services the agent tools read from ToolContext.services."""
@@ -608,23 +601,20 @@ class HeadlessRuntime:
         subagent = self.subagent
         close_subagent = getattr(subagent, "close", None)
         if close_subagent is not None:
-            try:
+            # shutdown must not mask an exception
+            with contextlib.suppress(Exception):
                 await await_maybe(close_subagent())
-            except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
-                pass
         team = self.team
         close_team = getattr(team, "close", None)
         if close_team is not None:
-            try:
+            # shutdown must not mask an exception
+            with contextlib.suppress(Exception):
                 await await_maybe(close_team())
-            except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
-                pass
         kernel_app, self.kernel_app = self.kernel_app, None
         if kernel_app is not None:
-            try:
+            # shutdown must not mask an exception
+            with contextlib.suppress(Exception):
                 await await_maybe(kernel_app.stop())
-            except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
-                pass
 
 
 async def boot_runtime(
@@ -684,35 +674,23 @@ async def boot_runtime(
         await await_maybe(kernel_app.stop())
         raise
     jobs = None
-    try:
+    with contextlib.suppress(LookupError):
         jobs = kernel_app.service("jobs")
-    except LookupError:
-        pass
     team = None
-    try:
+    with contextlib.suppress(LookupError):
         team = kernel_app.service("team")
-    except LookupError:
-        pass
     subagent = None
-    try:
+    with contextlib.suppress(LookupError):
         subagent = kernel_app.service("subagent")
-    except LookupError:
-        pass
     working_directory = None
-    try:
+    with contextlib.suppress(LookupError):
         working_directory = kernel_app.service("working_directory")
-    except LookupError:
-        pass
     user_questions = None
-    try:
+    with contextlib.suppress(LookupError):
         user_questions = kernel_app.service("user_questions")
-    except LookupError:
-        pass
     projections = None
-    try:
+    with contextlib.suppress(LookupError):
         projections = kernel_app.service("projections")
-    except LookupError:
-        pass
     runtime = HeadlessRuntime(
         cfg=cfg,
         cwd=workspace,
@@ -739,7 +717,8 @@ async def boot_runtime(
     )
     configure_team = getattr(team, "configure", None)
     if configure_team is not None:
-        try:
+        # the optional team service must not break headless
+        with contextlib.suppress(Exception):
             configure_team(
                 cwd=workspace,
                 provider=llm_provider,
@@ -750,11 +729,10 @@ async def boot_runtime(
                 services=runtime._plugin_services(),
                 ask=ask or _denying_ask,
             )
-        except Exception:  # noqa: BLE001, S110 - the optional team service must not break headless
-            pass
     configure_subagent = getattr(subagent, "configure", None)
     if configure_subagent is not None:
-        try:
+        # the optional subagent service must not break headless
+        with contextlib.suppress(Exception):
             configure_subagent(
                 cwd=workspace,
                 provider=llm_provider,
@@ -765,8 +743,6 @@ async def boot_runtime(
                 services=runtime._plugin_services(),
                 ask=ask or _denying_ask,
             )
-        except Exception:  # noqa: BLE001, S110 - the optional subagent service must not break headless
-            pass
     return runtime
 
 
@@ -928,10 +904,9 @@ async def _run_async(
         try:
             await await_maybe(agent.send(text))
         except KeyboardInterrupt:
-            try:
+            # interruption is best effort
+            with contextlib.suppress(Exception):
                 await await_maybe(agent.interrupt())
-            except Exception:  # noqa: BLE001, S110 - interruption is best effort
-                pass
             sink.end_turn()
             console.print("interrupted", style="yellow")
             return EXIT_INTERRUPTED

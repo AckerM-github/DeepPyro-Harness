@@ -31,7 +31,7 @@ import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 class ManifestError(ValueError):
@@ -87,7 +87,8 @@ def resolve_plugin_name(name: str) -> type:
         raise ManifestError(f"module {module_name!r} has no attribute {attr!r}") from exc
     if not callable(obj):
         raise ManifestError(f"plugin target {target!r} is not callable")
-    return obj
+    # A target is always a plugin class; callable() only proves it can be called.
+    return cast("type", obj)
 
 
 def _spec_from_entry(entry: dict[str, Any], *, origin: str) -> PluginSpec:

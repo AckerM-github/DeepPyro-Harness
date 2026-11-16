@@ -206,7 +206,7 @@ class RuntimeContextProjection:
 
     def __init__(self, records: Sequence[LogRecord]) -> None:
         self._records = records
-        self._retained: RetainedSnapshot | None | object = _MISSING
+        self._retained: RetainedSnapshot | object | None = _MISSING
         self.refresh()
 
     @property
@@ -219,7 +219,7 @@ class RuntimeContextProjection:
         if records is not None:
             self._records = records
         surface_seqs = {node.seq for node in fold_surface(self._records)}
-        retained: RetainedSnapshot | None | object = _MISSING
+        retained: RetainedSnapshot | object | None = _MISSING
         for record in reversed(self._records):
             if record.type != "user/message":
                 continue

@@ -8,7 +8,7 @@ one minor release as a deprecated forwarding shell.
 from __future__ import annotations
 
 import json
-from typing import Any, ClassVar
+from typing import Any
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
@@ -131,7 +131,7 @@ class GetGoalTool(BaseTool):
     name = "get_goal"
     description = "Read the current session goal, including the id and revision that update_goal requires."
     parallel_safe = True
-    parameters: ClassVar[dict[str, Any]] = {
+    parameters: dict[str, Any] = {
         "type": "object",
         "properties": {},
         "additionalProperties": False,
@@ -154,7 +154,7 @@ class CreateGoalTool(BaseTool):
         'objective, even if the user did not say "goal"; not for single-turn work.'
     )
     parallel_safe = False
-    parameters: ClassVar[dict[str, Any]] = {
+    parameters: dict[str, Any] = {
         "type": "object",
         "properties": {
             "objective": {
@@ -194,7 +194,7 @@ class UpdateGoalTool(BaseTool):
         "also allowed inside a goal round."
     )
     parallel_safe = False
-    parameters: ClassVar[dict[str, Any]] = {
+    parameters: dict[str, Any] = {
         "type": "object",
         "properties": {
             "goal_id": {"type": "string", "description": "The goal id from get_goal."},
@@ -333,7 +333,7 @@ class GoalTool(BaseTool):
         "the session log and shown in every later turn."
     )
     parallel_safe = True
-    parameters: ClassVar[dict[str, Any]] = {
+    parameters: dict[str, Any] = {
         "type": "object",
         "properties": {
             "text": {

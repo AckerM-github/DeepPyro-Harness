@@ -75,7 +75,7 @@ def _event_row(record_type: str) -> dict[str, Any]:
     }
 
 
-_GUIDE = "\n".join(  # noqa: FLY002 - readability of the multi-line guide
+_GUIDE = "\n".join(
     (
         "# DeepPyro 插件开发指南",
         "",

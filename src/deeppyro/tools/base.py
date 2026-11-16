@@ -9,18 +9,30 @@ schema is easy to review.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any
 
 
 class BaseTool:
-    """Base implementation of the `Tool` protocol."""
+    """Base implementation of the `Tool` protocol.
 
-    name: ClassVar[str] = ""
-    description: ClassVar[str] = ""
-    parallel_safe: ClassVar[bool] = True
-    parameters: ClassVar[dict[str, Any]] = {}
+    These are the protocol's instance attributes, not ClassVars: most tools
+    declare them as class attributes, but a tool that wraps a remote schema
+    (MCP tools, the PTC bridge) fills them in per instance.
+    """
+
+    name: str = ""
+    description: str = ""
+    parallel_safe: bool = True
+    parameters: dict[str, Any] = {}
     #: Optional JSON schema for the tool's result, used by the PTC SDK renderer.
-    output_schema: ClassVar[dict[str, Any] | None] = None
+    output_schema: dict[str, Any] | None = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # Give every subclass its own schema dict: the BaseTool one is shared, so a
+        # tool that filled it in place would edit every other tool's schema.
+        if "parameters" not in cls.__dict__:
+            cls.parameters = {}
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__} name={self.name!r} parallel_safe={self.parallel_safe}>"

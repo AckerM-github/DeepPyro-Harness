@@ -47,10 +47,7 @@ class SseDecoder:
     # -- incremental feeding ------------------------------------------------
     def feed(self, chunk: bytes | bytearray | str) -> list[SseEvent]:
         """Decode chunk and return every event it completed."""
-        if isinstance(chunk, (bytes, bytearray)):
-            text = self._decoder.decode(bytes(chunk))
-        else:
-            text = chunk
+        text = self._decoder.decode(bytes(chunk)) if isinstance(chunk, (bytes, bytearray)) else chunk
         self._buffer += text
         events: list[SseEvent] = []
         while True:

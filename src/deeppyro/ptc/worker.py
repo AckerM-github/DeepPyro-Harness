@@ -291,7 +291,7 @@ class _Program:
         body = self._program if self._program.strip() else "pass"
         source = "async def __ptc_main__():\n" + textwrap_indent(body, "    ")
         code = compile(source, "<run_code>", "exec")
-        exec(code, namespace)  # noqa: S102 - deliberate: this is the PTC execution model
+        exec(code, namespace)
         main = namespace["__ptc_main__"]
         return await main()
 

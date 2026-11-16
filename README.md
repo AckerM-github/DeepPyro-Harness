@@ -132,6 +132,16 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
     uv run dpyro --headless --json "1+1=?"        # NDJSON 事件流
     echo "1+1=?" | uv run dpyro --headless --json # stdin 管道
 
+提交前跑三个门禁（与 CI 相同）：
+
+    uv run ruff check src tests
+    uv run ruff format --check src tests
+    uv run python scripts/typecheck.py   # pyright 与 pyright-baseline.json 比对
+
+`ruff` 的规则集在 `pyproject.toml` 的 `[tool.ruff.lint]`，配置里写了每条规则阻挡的失败模式；
+`pyright` 以 `basic` 模式检查 `src/`，历史错误登记在 `pyright-baseline.json`，只允许减少、不允许增加
+——消掉错误后用 `python scripts/typecheck.py --write` 收紧基线（diff 必须只删行）。
+
 TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /preset /permission /cwd
 /status /plan /jobs /team /thinking /hooks /compact /clear /plugins /panel /exit`）；`/provider`、`/model`、
 `/preset`、`/permission`、`/cwd`、`/team` 等无参时打开选择器或面板，带参数的切换立即生效

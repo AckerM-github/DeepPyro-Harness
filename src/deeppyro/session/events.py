@@ -369,10 +369,7 @@ def assert_source_event_references(
 ) -> None:
     """Require a replacement's sourceEventSeqs to cover every shadowed node."""
     sources = event.get("sourceEventSeqs")
-    if not sources:
-        missing = list(shadowed_seqs)
-    else:
-        missing = [seq for seq in shadowed_seqs if seq not in sources]
+    missing = list(shadowed_seqs) if not sources else [seq for seq in shadowed_seqs if seq not in sources]
     if missing:
         raise SessionError(
             f"{subject} surface replace: sourceEventSeqs must include every shadowed surface node; "

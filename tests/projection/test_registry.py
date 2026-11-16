@@ -37,7 +37,11 @@ def make_definition(
         return state
 
     if wire is None:
-        wire = lambda state: tuple(state["events"])
+
+        def default_wire(state: dict[str, Any]) -> tuple[Any, ...]:
+            return tuple(state["events"])
+
+        wire = default_wire
     elif wire is False:
         wire = None
     return ProjectionDefinition(

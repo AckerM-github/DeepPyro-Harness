@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, ClassVar
+from typing import Any
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
@@ -45,7 +45,7 @@ class RunCodeTool(BaseTool):
     """Execute a Python program with async bindings to the session's tools."""
 
     name = RUN_CODE_NAME
-    parameters: ClassVar[dict[str, Any]] = {}
+    parameters: dict[str, Any] = {}
     parallel_safe = False
     reserved_tool = True
 

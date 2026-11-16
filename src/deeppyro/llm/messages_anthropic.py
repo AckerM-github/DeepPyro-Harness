@@ -105,10 +105,7 @@ def convert_anthropic_messages(
                         # No signature in P1: see the module docstring / risk R1.
                         blocks.append({"type": "thinking", "thinking": text})
                 elif part_type == "tool-call":
-                    if isinstance(part, ToolCallPart):
-                        call = part
-                    else:
-                        call = ToolCallPart.model_validate(part)
+                    call = part if isinstance(part, ToolCallPart) else ToolCallPart.model_validate(part)
                     if call.id in seen_calls:
                         raise LlmRequestError(
                             f"duplicate tool_use id in conversation: {call.id!r}",

@@ -13,6 +13,7 @@ and a stream failure are classified identically.
 
 from __future__ import annotations
 
+import contextlib
 import email.utils
 import json
 from collections.abc import Mapping
@@ -232,10 +233,8 @@ def parse_retry_after(value: str | None) -> float | None:
     if not value:
         return None
     candidate = value.strip()
-    try:
+    with contextlib.suppress(ValueError):
         return max(0.0, float(candidate))
-    except ValueError:
-        pass
     try:
         parsed = email.utils.parsedate_to_datetime(candidate)
     except (TypeError, ValueError):

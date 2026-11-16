@@ -33,6 +33,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from deeppyro.core.payload import field_of
 from deeppyro.core.wire import ImagePart, Message
 
 # DSH dsh-llm-deepseek/lib/types/defaults.js
@@ -202,10 +203,7 @@ def _prefix_count(
     removed_bytes = 0
     for image_bytes in lengths:
         count_done = count >= remove_count
-        if byte_quantum == 1:
-            bytes_done = removed_bytes >= remove_bytes
-        else:
-            bytes_done = removed_bytes > remove_bytes
+        bytes_done = removed_bytes >= remove_bytes if byte_quantum == 1 else removed_bytes > remove_bytes
         if count_done and (remove_bytes == 0 or bytes_done):
             break
         removed_bytes += image_bytes
@@ -227,10 +225,7 @@ def _lengths(lengths: Sequence[int]) -> list[int]:
 
 
 def _part_kind(part: Any) -> str:
-    if isinstance(part, dict):
-        value = part.get("type", "")
-    else:
-        value = getattr(part, "type", "")
+    value = field_of(part, "type", "")
     return value if isinstance(value, str) else ""
 
 

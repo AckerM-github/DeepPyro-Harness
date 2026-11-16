@@ -132,7 +132,7 @@ def validate_escalation_args(args: dict[str, Any]) -> tuple[str | None, str | No
             )
         return None, None
     if not isinstance(requested, str):
-        raise ValueError("invalid escalation: sandbox_permissions must be a string")  # noqa: TRY004
+        raise ValueError("invalid escalation: sandbox_permissions must be a string")
     if requested not in ESCALATION_TARGETS:
         raise ValueError(f'invalid escalation target: "{requested}"')
     if not isinstance(justification, str) or not justification.strip():

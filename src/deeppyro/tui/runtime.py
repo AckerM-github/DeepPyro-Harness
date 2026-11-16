@@ -17,6 +17,7 @@ deeppyro.headless.boot_runtime.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
@@ -164,45 +165,29 @@ class TuiRuntime:
             await await_maybe(kernel_app.stop())
             raise
         activity = None
-        try:
+        with contextlib.suppress(LookupError):
             activity = kernel_app.service("activity")
-        except LookupError:
-            pass
         jobs = None
-        try:
+        with contextlib.suppress(LookupError):
             jobs = kernel_app.service("jobs")
-        except LookupError:
-            pass
         team = None
-        try:
+        with contextlib.suppress(LookupError):
             team = kernel_app.service("team")
-        except LookupError:
-            pass
         subagent = None
-        try:
+        with contextlib.suppress(LookupError):
             subagent = kernel_app.service("subagent")
-        except LookupError:
-            pass
         working_directory = None
-        try:
+        with contextlib.suppress(LookupError):
             working_directory = kernel_app.service("working_directory")
-        except LookupError:
-            pass
         user_questions = None
-        try:
+        with contextlib.suppress(LookupError):
             user_questions = kernel_app.service("user_questions")
-        except LookupError:
-            pass
         projections = None
-        try:
+        with contextlib.suppress(LookupError):
             projections = kernel_app.service("projections")
-        except LookupError:
-            pass
         schedule = None
-        try:
+        with contextlib.suppress(LookupError):
             schedule = kernel_app.service("schedule")
-        except LookupError:
-            pass
         runtime = cls(
             cfg=cfg,
             cwd=workspace,
@@ -257,16 +242,14 @@ class TuiRuntime:
             return
         configure_host = getattr(service, "configure_host", None)
         if callable(configure_host):
-            try:
+            # an optional service must not break the UI
+            with contextlib.suppress(Exception):
                 configure_host(_TuiScheduleHost(self))
-            except Exception:  # noqa: BLE001, S110 - an optional service must not break the UI
-                pass
         start = getattr(service, "start", None)
         if callable(start):
-            try:
+            # an optional service must not break the UI
+            with contextlib.suppress(Exception):
                 await await_maybe(start())
-            except Exception:  # noqa: BLE001, S110 - an optional service must not break the UI
-                pass
 
     async def stop_schedule(self) -> None:
         """Stop the schedule timer and any background agent it spawned."""
@@ -274,18 +257,16 @@ class TuiRuntime:
         if service is not None:
             stop = getattr(service, "stop", None)
             if callable(stop):
-                try:
+                # shutdown must not mask an exception
+                with contextlib.suppress(Exception):
                     await await_maybe(stop())
-                except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
-                    pass
         tasks = list(self._schedule_tasks)
         for task in tasks:
             task.cancel()
         if tasks:
-            try:
+            # shutdown must not mask an exception
+            with contextlib.suppress(Exception):
                 await asyncio.gather(*tasks, return_exceptions=True)
-            except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
-                pass
         self._schedule_tasks.clear()
 
     async def open_schedule_session(self, session_id: str) -> Any:
@@ -336,15 +317,14 @@ class TuiRuntime:
             wait = getattr(session, "wait_for_idle", None)
             if callable(wait):
                 await await_maybe(wait())
-        except Exception:  # noqa: BLE001, S110 - background cleanup is best effort
+        except Exception:  # noqa: BLE001 - background cleanup is best effort
             pass
         finally:
             close = getattr(agent, "aclose", None)
             if callable(close):
-                try:
+                # background cleanup is best effort
+                with contextlib.suppress(Exception):
                     await await_maybe(close())
-                except Exception:  # noqa: BLE001, S110 - background cleanup is best effort
-                    pass
 
     def _registry_for_preset(self, preset: str) -> Any:
         """Tool registry narrowed to one agent preset."""
@@ -386,14 +366,13 @@ class TuiRuntime:
         if selection is not None:
             provider_name, model_id = selection
             if provider_name in self.cfg.providers:
-                try:
+                # resume must not brick the UI
+                with contextlib.suppress(Exception):
                     self._activate_provider(
                         provider_name,
                         model_id,
                         info=self._cached_model(provider_name, model_id),
                     )
-                except Exception:  # noqa: BLE001, S110 - resume must not brick the UI
-                    pass
         header_preset = (
             self._canonical_preset(getattr(session.header, "agentPreset", "")) or DEFAULT_PRESET_ID
         )
@@ -462,16 +441,14 @@ class TuiRuntime:
             return
         save = getattr(service, "save", None)
         detach = getattr(service, "detach", None)
-        try:
+        # an optional service must not break a session
+        with contextlib.suppress(Exception):
             if save is not None:
                 save(session)
-        except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
-            pass
-        try:
+        # an optional service must not break a session
+        with contextlib.suppress(Exception):
             if detach is not None:
                 detach(session)
-        except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
-            pass
 
     def _restore_projections(self, session: Any) -> None:
         """Restore the session's projection sidecar and start observing appends."""
@@ -481,10 +458,9 @@ class TuiRuntime:
         attach = getattr(service, "attach", None)
         if attach is None:
             return
-        try:
+        # an optional service must not break a session
+        with contextlib.suppress(Exception):
             attach(session)
-        except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
-            pass
 
     def _configure_working_directory(self, session: Any) -> None:
         """Bind the live session so cd records and notices reach its log."""
@@ -496,15 +472,14 @@ class TuiRuntime:
             return
         header = getattr(session, "header", None)
         session_cwd = getattr(header, "cwd", None) or self.cwd
-        try:
+        # an optional service must not break a session
+        with contextlib.suppress(Exception):
             bind(
                 session,
                 cwd=session_cwd,
                 record=session.append,
                 inject_notice=lambda text: session.inject(text, source={"kind": "working-directory"}),
             )
-        except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
-            pass
 
     def _configure_team(self, session: Any) -> None:
         """Keep the team service pointed at the live lead session context."""
@@ -512,7 +487,8 @@ class TuiRuntime:
         if service is None:
             return
         configure = getattr(service, "configure", None)
-        try:
+        # an optional service must not break a session
+        with contextlib.suppress(Exception):
             if configure is not None:
                 configure(
                     cwd=self.cwd,
@@ -529,8 +505,6 @@ class TuiRuntime:
             bind = getattr(service, "bind_session", None)
             if bind is not None and session is not None:
                 bind(session)
-        except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
-            pass
 
     def _configure_subagent(self, session: Any) -> None:
         """Keep the subagent service pointed at the live lead session context."""
@@ -538,7 +512,8 @@ class TuiRuntime:
         if service is None:
             return
         configure = getattr(service, "configure", None)
-        try:
+        # an optional service must not break a session
+        with contextlib.suppress(Exception):
             if configure is not None:
                 configure(
                     cwd=self.cwd,
@@ -558,8 +533,6 @@ class TuiRuntime:
             bind_parent = getattr(service, "bind_parent", None)
             if bind_parent is not None and self.agent is not None:
                 bind_parent(self.agent)
-        except Exception:  # noqa: BLE001, S110 - an optional service must not break a session
-            pass
 
     async def _restore_team(self, session: Any) -> None:
         """Rebuild team state from the lead session log (cold resume).
@@ -728,10 +701,7 @@ class TuiRuntime:
             return []
         try:
             visible = getattr(service, "visible", None)
-            if callable(visible):
-                specs = list(visible())
-            else:
-                specs = list(service.all())
+            specs = list(visible()) if callable(visible) else list(service.all())
         except Exception:  # noqa: BLE001 - the picker must keep working
             return []
         return [spec for spec in specs if not getattr(spec, "hidden", False)]
@@ -1126,10 +1096,9 @@ class TuiRuntime:
         pin = getattr(service, "pin_initial", None)
         if not callable(pin) or session is None:
             return
-        try:
+        # pinning must not brick a session
+        with contextlib.suppress(Exception):
             pin(session)
-        except Exception:  # noqa: BLE001, S110 - pinning must not brick a session
-            pass
 
     def permission_preset(self) -> str:
         """The current named permission preset (or "custom")."""
@@ -1290,30 +1259,26 @@ class TuiRuntime:
         jobs = self.jobs
         cancel_all = getattr(jobs, "cancel_all", None)
         if cancel_all is not None:
-            try:
+            # shutdown must not mask an exception
+            with contextlib.suppress(Exception):
                 await await_maybe(cancel_all())
-            except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
-                pass
         subagent = self.subagent
         close_subagent = getattr(subagent, "close", None)
         if close_subagent is not None:
-            try:
+            # shutdown must not mask an exception
+            with contextlib.suppress(Exception):
                 await await_maybe(close_subagent())
-            except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
-                pass
         team = self.team
         close_team = getattr(team, "close", None)
         if close_team is not None:
-            try:
+            # shutdown must not mask an exception
+            with contextlib.suppress(Exception):
                 await await_maybe(close_team())
-            except Exception:  # noqa: BLE001, S110 - shutdown must not mask an exception
-                pass
         kernel_app, self.kernel_app = self.kernel_app, None
         if kernel_app is not None:
-            try:
+            # shutdown must never mask an exception
+            with contextlib.suppress(Exception):
                 await await_maybe(kernel_app.stop())
-            except Exception:  # noqa: BLE001, S110 - shutdown must never mask an exception
-                pass
 
 
 class _ScheduleSink:
@@ -1391,10 +1356,9 @@ class _TuiScheduleHost:
         except Exception:
             close = getattr(agent, "aclose", None)
             if callable(close):
-                try:
+                # cleanup is best effort
+                with contextlib.suppress(Exception):
                     await await_maybe(close())
-                except Exception:  # noqa: BLE001, S110 - cleanup is best effort
-                    pass
             raise
         runtime.track_schedule_agent(session, agent)
         return DeliveryReceipt(
@@ -1431,10 +1395,9 @@ class _TuiScheduleHost:
         except Exception:
             close = getattr(agent, "aclose", None)
             if callable(close):
-                try:
+                # cleanup is best effort
+                with contextlib.suppress(Exception):
                     await await_maybe(close())
-                except Exception:  # noqa: BLE001, S110 - cleanup is best effort
-                    pass
             raise
         runtime.track_schedule_agent(session, agent)
         return DeliveryReceipt(

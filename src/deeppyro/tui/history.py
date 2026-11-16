@@ -12,6 +12,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from deeppyro.core.payload import field_of
+
 #: User-message source kind used by the PTC transport for image attachments.
 PTC_MODE_SOURCE_KIND = "ptc-mode"
 
@@ -65,11 +67,7 @@ def source_kind(source: Any) -> str:
     """
     if source is None:
         return ""
-    if isinstance(source, Mapping):
-        kind = source.get("kind")
-    else:
-        kind = getattr(source, "kind", None)
-    return str(kind or "").strip()
+    return str(field_of(source, "kind") or "").strip()
 
 
 def is_ptc_mode_source(source: Any) -> bool:

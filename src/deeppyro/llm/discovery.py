@@ -22,6 +22,7 @@ Design notes (docs/plan/p1-providers.md, docs/spec/llm.md section 13):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from collections.abc import Callable, Mapping
@@ -139,11 +140,9 @@ async def fetch_listing(
 
     declared = response.headers.get("content-length")
     if declared is not None:
-        try:
+        with contextlib.suppress(ValueError):
             if int(declared) > MAX_LISTING_BYTES:
                 raise _oversized(provider, url, int(declared))
-        except ValueError:
-            pass
     body_bytes = response.content
     if len(body_bytes) > MAX_LISTING_BYTES:
         raise _oversized(provider, url, len(body_bytes))

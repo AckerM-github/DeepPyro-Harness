@@ -8,6 +8,7 @@ services can call :meth:`ActivityService.refresh` after appending a record.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -135,10 +136,8 @@ class ActivityService:
         self._listeners.append(listener)
 
         def unsubscribe() -> None:
-            try:
+            with contextlib.suppress(ValueError):
                 self._listeners.remove(listener)
-            except ValueError:
-                pass
 
         return unsubscribe
 
@@ -257,10 +256,9 @@ class ActivityService:
 
     def _notify(self, state: ActivityState) -> None:
         for listener in list(self._listeners):
-            try:
+            # a bad listener must not break refresh
+            with contextlib.suppress(Exception):
                 listener(state)
-            except Exception:  # noqa: BLE001, S110 - a bad listener must not break refresh
-                pass
 
 
 class ActivityPlugin(Plugin):
