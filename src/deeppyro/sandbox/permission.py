@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from deeppyro.api.services import bind_service_type
 from deeppyro.core.errors import ConfigError
 from deeppyro.sandbox.approval import ApprovalService
 from deeppyro.sandbox.policy import SandboxPolicyService
@@ -159,5 +160,9 @@ def _validate(spec: PermissionPresetSpec) -> None:
     if spec.approval not in APPROVALS:
         raise ConfigError(f"invalid approval policy for permission preset {spec.name!r}: {spec.approval!r}")
 
+
+# Typed contract for consumers such as headless.pin_permission; discovery through
+# provide() alone would depend on plugin import order.
+bind_service_type(PermissionPresetsService, "permissionPresets")
 
 __all__ = ["PERMISSION_PRESET_EVENT", "PermissionPresetsService"]

@@ -18,6 +18,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from deeppyro.api.services import bind_service_type
 from deeppyro.core.errors import ConfigError, SessionError
 from deeppyro.hooks.types import APPROVAL_REQUEST
 from deeppyro.sandbox.types import APPROVALS, Approval, ApprovalRequest
@@ -222,5 +223,9 @@ async def _maybe_await(value: Any) -> Any:
         return await value
     return value
 
+
+# Typed contract for consumers such as headless.pin_permission; discovery through
+# provide() alone would depend on plugin import order.
+bind_service_type(ApprovalService, "approval")
 
 __all__ = ["APPROVAL_POLICY_EVENT", "Answerer", "ApprovalService"]
