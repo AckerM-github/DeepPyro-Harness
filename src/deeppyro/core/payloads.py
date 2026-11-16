@@ -22,6 +22,14 @@ Tool pipeline
 deeppyro.tools.pipeline builds the three tools/* hook payloads and the
 wire-shaped tool call, which deeppyro.agent.session consumes to persist the
 tool/call record.
+
+Session log envelope
+--------------------
+deeppyro.session.events validates a raw JSON line into SessionEvent, the
+in-memory form whose sourceEventSeqs are flattened to plain ints;
+deeppyro.session.writer turns a LogRecord back into SessionEventLine, the
+on-disk form whose sourceEventSeqs use [start, end] range pairs.  The first
+line of every session log is a SessionHeaderLine.
 """
 
 from __future__ import annotations
@@ -40,6 +48,10 @@ __all__ = [
     "PostExecuteHookPayload",
     "PreExecuteDecision",
     "PreExecuteHookPayload",
+    "SessionEvent",
+    "SessionEventLine",
+    "SessionHeaderLine",
+    "SessionReplaceSurface",
     "ToolCallPayload",
     "ToolHookContext",
     "ToolHookPayload",
@@ -132,3 +144,58 @@ class PostExecuteDecision(TypedDict, total=False):
     feedback: object
     content: object
     value: object
+
+
+class SessionReplaceSurface(TypedDict):
+    """The replace variant of the surfaceOp envelope key."""
+
+    op: Literal["replace"]
+    startSeq: int
+    endSeq: int
+
+
+class SessionEvent(TypedDict):
+    """A session record envelope in its validated in-memory form.
+
+    sourceEventSeqs is flattened to plain ints here: range pairs are decoded
+    when the record enters the log (deeppyro.session.events.normalize_event).
+    """
+
+    type: str
+    seq: int
+    time: int
+    data: dict[str, Any]
+    surfaceOp: NotRequired[Literal["append"] | SessionReplaceSurface]
+    sourceEventSeqs: NotRequired[list[int]]
+    ignorable: NotRequired[Literal[True]]
+
+
+class SessionEventLine(TypedDict):
+    """One non-header session log line as persisted to disk.
+
+    Unlike SessionEvent, sourceEventSeqs keeps DSH's compact [start, end]
+    range pairs (deeppyro.session.events.encode_source_event_seqs).
+    """
+
+    type: str
+    seq: int
+    time: int
+    data: dict[str, Any]
+    surfaceOp: NotRequired[Literal["append"] | SessionReplaceSurface]
+    sourceEventSeqs: NotRequired[list[int | list[int]]]
+    ignorable: NotRequired[Literal[True]]
+
+
+class SessionHeaderLine(TypedDict):
+    """Line 0 of a session.v4.jsonl log (the session header)."""
+
+    type: Literal["session"]
+    version: Literal[4]
+    id: str
+    createdAt: int
+    cwd: NotRequired[str]
+    parentSession: NotRequired[str]
+    isSeeded: bool
+    origin: NotRequired[Literal["subagent"]]
+    delegationDepth: int
+    agentPreset: NotRequired[str]

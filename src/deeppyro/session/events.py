@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import pathlib
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 from deeppyro.core.errors import SessionError
+from deeppyro.core.payloads import SessionEvent, SessionHeaderLine
 from deeppyro.core.wire import (
     MESSAGE_PROJECTION_TYPES,
     RECORD_TYPES,
@@ -178,23 +179,30 @@ def is_absolute_path(value: str) -> bool:
         return False
 
 
-def header_line_dict(header: Mapping[str, Any]) -> dict[str, Any]:
+def header_line_dict(header: Mapping[str, Any]) -> SessionHeaderLine:
     """Encode a logical header into the canonical first-line JSON object."""
-    return {
-        "type": "session",
-        "version": 4,
-        "id": header["id"],
-        "createdAt": header["createdAt"],
-        **({"cwd": header["cwd"]} if header.get("cwd") else {}),
-        **({"parentSession": header["parentSession"]} if header.get("parentSession") is not None else {}),
-        "isSeeded": bool(header.get("isSeeded", False)),
-        **({"origin": header["origin"]} if header.get("origin") is not None else {}),
-        "delegationDepth": header.get("delegationDepth", 0),
-        **({"agentPreset": header["agentPreset"]} if header.get("agentPreset") is not None else {}),
-    }
+    # The conditional ** spreads above only add an optional key when its header
+    # value is present, which keeps the wire order of the canonical header; a
+    # declared TypedDict literal cannot express that, so the shape is asserted
+    # here after validation (deeppyro.session.events.validate_header).
+    return cast(
+        SessionHeaderLine,
+        {
+            "type": "session",
+            "version": 4,
+            "id": header["id"],
+            "createdAt": header["createdAt"],
+            **({"cwd": header["cwd"]} if header.get("cwd") else {}),
+            **({"parentSession": header["parentSession"]} if header.get("parentSession") is not None else {}),
+            "isSeeded": bool(header.get("isSeeded", False)),
+            **({"origin": header["origin"]} if header.get("origin") is not None else {}),
+            "delegationDepth": header.get("delegationDepth", 0),
+            **({"agentPreset": header["agentPreset"]} if header.get("agentPreset") is not None else {}),
+        },
+    )
 
 
-def normalize_event(raw: Mapping[str, Any], *, subject: str = "event") -> dict[str, Any]:
+def normalize_event(raw: Mapping[str, Any], *, subject: str = "event") -> SessionEvent:
     """Validate one raw record and return its canonical Python form.
 
     The returned mapping has top-level sourceEventSeqs flattened to ints
@@ -267,8 +275,8 @@ def normalize_event(raw: Mapping[str, Any], *, subject: str = "event") -> dict[s
     return _copy_event(raw, sources)
 
 
-def _copy_event(raw: Mapping[str, Any], sources: list[int] | None) -> dict[str, Any]:
-    output: dict[str, Any] = {
+def _copy_event(raw: Mapping[str, Any], sources: list[int] | None) -> SessionEvent:
+    output: SessionEvent = {
         "type": raw["type"],
         "seq": raw["seq"],
         "time": raw["time"],

@@ -13,8 +13,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from deeppyro.core.payloads import ToolCallPayload
+from deeppyro.core.payloads import SessionEvent, SessionEventLine, ToolCallPayload
 from deeppyro.core.protocols import ToolResult
+from deeppyro.core.wire import LogRecord
+from deeppyro.session.events import header_line_dict, normalize_event
+from deeppyro.session.writer import event_to_dict
 from deeppyro.tools.pipeline import ToolCallRequest, _call_payload, run_tool_batch
 from deeppyro.tools.registry import ToolRegistry
 from tests.tools.helpers import make_context
@@ -111,3 +114,75 @@ async def test_agent_and_tool_set_flow_into_context_and_scope() -> None:
     preset = RecordingHooks()
     await run(preset, agent=SimpleNamespace(session_id="s1", preset="reviewer"))
     assert preset.scopes["tools/execute"] == {"session": "s1", "preset": "reviewer"}
+
+
+def test_header_line_locks_canonical_key_order_and_json() -> None:
+    line = header_line_dict(
+        {
+            "id": "s1",
+            "createdAt": 5,
+            "cwd": "C:/work",
+            "parentSession": "parent",
+            "origin": "subagent",
+            "agentPreset": "reviewer",
+            "isSeeded": True,
+            "delegationDepth": 2,
+        }
+    )
+    assert list(line) == [
+        "type",
+        "version",
+        "id",
+        "createdAt",
+        "cwd",
+        "parentSession",
+        "isSeeded",
+        "origin",
+        "delegationDepth",
+        "agentPreset",
+    ]
+    assert line == {
+        "type": "session",
+        "version": 4,
+        "id": "s1",
+        "createdAt": 5,
+        "cwd": "C:/work",
+        "parentSession": "parent",
+        "isSeeded": True,
+        "origin": "subagent",
+        "delegationDepth": 2,
+        "agentPreset": "reviewer",
+    }
+    assert json.dumps(line, ensure_ascii=False, separators=(",", ":")) == (
+        '{"type":"session","version":4,"id":"s1","createdAt":5,"cwd":"C:/work",'
+        '"parentSession":"parent","isSeeded":true,"origin":"subagent","delegationDepth":2,'
+        '"agentPreset":"reviewer"}'
+    )
+
+
+def test_session_event_envelope_round_trips_through_writer() -> None:
+    raw = {
+        "type": "tool/result",
+        "seq": 4,
+        "time": 7,
+        "data": {
+            "message": {
+                "id": "m1",
+                "role": "tool",
+                "toolCallId": "c1",
+                "source": {"kind": "tool", "callId": "c1"},
+                "content": [],
+            }
+        },
+        "surfaceOp": {"op": "replace", "startSeq": 1, "endSeq": 2},
+        "sourceEventSeqs": [0, [1, 2]],
+    }
+    normalized: SessionEvent = normalize_event(raw)
+    assert list(normalized) == ["type", "seq", "time", "data", "surfaceOp", "sourceEventSeqs"]
+    assert normalized["sourceEventSeqs"] == [0, 1, 2]
+
+    encoded: SessionEventLine = event_to_dict(LogRecord.model_validate(normalized))
+    assert list(encoded) == ["type", "seq", "time", "data", "surfaceOp", "sourceEventSeqs"]
+    assert encoded["surfaceOp"] == {"op": "replace", "startSeq": 1, "endSeq": 2}
+    assert encoded["sourceEventSeqs"] == [[0, 2]]
+    assert json.loads(json.dumps(encoded, ensure_ascii=False)) == encoded

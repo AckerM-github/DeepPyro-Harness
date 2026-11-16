@@ -9,7 +9,7 @@ step/end, and a turn/end whose reason kind is "forked".
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 from deeppyro.core.errors import SessionError
 from deeppyro.core.ids import new_session_id, now_ms
@@ -116,7 +116,7 @@ def _fork_boundary(src_id: str, events: Sequence[LogRecord], requested: int | No
 
 def build_fork_seed(events: Sequence[LogRecord], boundary: int) -> list[dict[str, Any]]:
     """Copy events through *boundary*, add the inherited end-seed, then forked closers."""
-    prefix = [writer.event_to_dict(record) for record in events[: boundary + 1]]
+    prefix = [cast(dict[str, Any], writer.event_to_dict(record)) for record in events[: boundary + 1]]
     prefix.append(
         {
             "type": "session/end-seed",
