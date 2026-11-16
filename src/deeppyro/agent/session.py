@@ -41,10 +41,10 @@ import inspect
 import json
 import logging
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from deeppyro.agent.images import plan_request_images
 from deeppyro.agent.inbox import TARGET_NEXT_STEP, TARGET_NEXT_TURN, Inbox
@@ -1144,7 +1144,7 @@ class AgentSession:
                 logger.warning("failed to read the working directory service", exc_info=True)
             else:
                 if current is not None:
-                    return Path(current)
+                    return Path(cast(str, current))
         return self._cwd
 
     def _request_turn_conclusion(self, reason: dict[str, Any]) -> None:
@@ -1173,7 +1173,7 @@ class AgentSession:
             step=step,
             call_id=call_id,
             cancel=self._cancel_event,
-            log=self._tool_log,
+            log=cast(Callable[[str, dict[str, Any]], None], self._tool_log),
             permission=self._permission,
             services=self._services,
             agent=self,
@@ -1401,7 +1401,7 @@ class AgentSession:
         derive = getattr(self._session, "derive_messages", None)
         if not callable(derive):
             raise SessionError("session object has no derive_messages()")
-        return repair_pending_tool_calls(list(derive()))
+        return repair_pending_tool_calls(list(cast(Iterable[Any], derive())))
 
     def _count_turns(self) -> int:
         return sum(1 for record in self._records() if record.type == "turn/start")
@@ -1667,7 +1667,7 @@ class AgentSession:
         message.  It participates in the normal surface fold like any other
         user message.
         """
-        images = [
+        images: list[Any] = [
             dict(part) for part in result.parts if isinstance(part, Mapping) and part.get("type") == "image"
         ]
         if not images:
@@ -1832,7 +1832,8 @@ def _tool_names(registry: Any) -> tuple[str, ...] | None:
     if not callable(names):
         return None
     try:
-        return tuple(sorted(str(name) for name in names()))
+        listed = cast(Iterable[Any], names())
+        return tuple(sorted(str(name) for name in listed))
     # boundary: the surface registry may be a caller-supplied (custom) registry
     except Exception:  # hook metadata must never break a tool call
         logger.warning("failed to list tool names for the tool hook payload", exc_info=True)
