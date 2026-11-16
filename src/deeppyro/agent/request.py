@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from deeppyro.core.ids import new_message_id
-from deeppyro.core.wire import Message, ToolAdditionPart, ToolRemovalPart
+from deeppyro.core.wire import LogRecord, Message, ToolAdditionPart, ToolRemovalPart
 
 
 def canonical_tools(tools: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -50,12 +50,12 @@ class ToolChange:
         return bool(self.additions or self.removals)
 
 
-def latest_header(records: Sequence[Any]) -> dict[str, Any] | None:
+def latest_header(records: Sequence[LogRecord]) -> dict[str, Any] | None:
     """Return the header of the most recent request/header record."""
     for record in reversed(list(records)):
-        if getattr(record, "type", None) != "request/header":
+        if record.type != "request/header":
             continue
-        data = getattr(record, "data", None)
+        data = record.data
         if isinstance(data, dict):
             header = data.get("header")
             if isinstance(header, dict):
@@ -63,11 +63,11 @@ def latest_header(records: Sequence[Any]) -> dict[str, Any] | None:
     return None
 
 
-def latest_header_seq(records: Sequence[Any]) -> int | None:
+def latest_header_seq(records: Sequence[LogRecord]) -> int | None:
     """Return the seq of the most recent request/header record."""
     for record in reversed(list(records)):
-        if getattr(record, "type", None) == "request/header":
-            seq = getattr(record, "seq", None)
+        if record.type == "request/header":
+            seq = record.seq
             return int(seq) if isinstance(seq, int) else None
     return None
 
@@ -93,7 +93,7 @@ def build_header(
 
 
 def plan_header(
-    records: Sequence[Any],
+    records: Sequence[LogRecord],
     *,
     provider: str,
     model: str,
@@ -181,12 +181,12 @@ def tool_change_data(
     return data
 
 
-def latest_context(records: Sequence[Any]) -> dict[str, Any] | None:
+def latest_context(records: Sequence[LogRecord]) -> dict[str, Any] | None:
     """Return the most recent request/context payload."""
     for record in reversed(list(records)):
-        if getattr(record, "type", None) != "request/context":
+        if record.type != "request/context":
             continue
-        data = getattr(record, "data", None)
+        data = record.data
         if isinstance(data, dict):
             return data
     return None
@@ -204,7 +204,7 @@ def _context_view(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def context_data(
-    records: Sequence[Any],
+    records: Sequence[LogRecord],
     *,
     provider: str,
     model: str,

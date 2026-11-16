@@ -44,7 +44,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from deeppyro.agent.images import plan_request_images
 from deeppyro.agent.inbox import TARGET_NEXT_STEP, TARGET_NEXT_TURN, Inbox
@@ -79,7 +79,7 @@ from deeppyro.core.protocols import (
     ToolResult,
     Usage,
 )
-from deeppyro.core.wire import Message, ReasoningPart, TextPart, ToolCallPart
+from deeppyro.core.wire import LogRecord, Message, ReasoningPart, SessionHeader, TextPart, ToolCallPart
 from deeppyro.hooks.records import INVOKED_RECORD_TYPE, RESULT_RECORD_TYPE
 from deeppyro.hooks.service import HookService
 from deeppyro.hooks.types import (
@@ -241,13 +241,37 @@ def _new_user_message(text: str, *, source: Mapping[str, Any] | None = None) -> 
     return Message(role="user", content=[TextPart(text=text)], id=new_message_id(), source=payload)
 
 
+class SessionHandle(Protocol):
+    """The session-log surface that AgentSession drives.
+
+    The loop appends durable records and folds them back, so it relies on the
+    log exposing its header, its records and append/derive_messages.  Both the
+    durable Session from deeppyro.session.session and the lighter session
+    doubles used by tests satisfy this Protocol; it is a static contract only
+    (no runtime isinstance check), which replaces shape probing with plain
+    attribute access.
+    """
+
+    @property
+    def session_id(self) -> str: ...
+
+    @property
+    def header(self) -> SessionHeader: ...
+
+    records: list[LogRecord]
+
+    def append(self, type: str, data: dict[str, Any], **envelope: object) -> int: ...
+
+    def derive_messages(self, *, strict: bool | None = None) -> list[Message]: ...
+
+
 class AgentSession:
     """Drive one conversation: inbox, turn/step records, provider stream, tools."""
 
     def __init__(
         self,
         *,
-        session: Any,
+        session: SessionHandle,
         provider: LlmProvider,
         registry: Any,
         options: AgentOptions,
@@ -270,6 +294,9 @@ class AgentSession:
         self._surface = surface_registry if surface_registry is not None else registry
         #: The registry this session was asked to present (None means native).
         self.surface_registry = surface_registry
+        #: The preset id that built this agent; the agents service attaches the
+        #: real value right after construction, so the loop reads it lazily.
+        self.preset: str | None = None
         #: Whether each step writes the per-turn runtime-context projection.
         #: Presets that hide host facts (minimal compositions) turn it off.
         self._runtime_context = bool(runtime_context)
@@ -380,7 +407,7 @@ class AgentSession:
     @property
     def provider_name(self) -> str:
         """Name of the provider that serves this agent's requests."""
-        return str(getattr(self._provider, "name", "") or "")
+        return self._provider.name
 
     # -- public API --------------------------------------------------------
     async def send(self, text: str) -> str:
@@ -534,7 +561,7 @@ class AgentSession:
         agents service right after construction, so it is read lazily.
         """
         scope: dict[str, Any] = {"session": self.session_id}
-        preset = getattr(self, "preset", None)
+        preset = self.preset
         if isinstance(preset, str) and preset:
             scope["preset"] = preset
         return scope
@@ -551,7 +578,7 @@ class AgentSession:
             return False
         if hooks.has(name):
             return True
-        return bool(getattr(hooks, "observed", False))
+        return hooks.observed
 
     # -- turn orchestration ------------------------------------------------
     async def _run_turn(self) -> str:
@@ -925,7 +952,7 @@ class AgentSession:
             try:
                 finish = await self._consume_stream(request, accumulator)
             except LlmError as exc:
-                status = getattr(exc, "status", None)
+                status = exc.status
                 failure: dict[str, Any] = {
                     "message": str(exc) or "provider failed",
                     "code": str(getattr(exc, "code", "") or "PROVIDER_ERROR"),
@@ -980,9 +1007,9 @@ class AgentSession:
 
     def _previous_retry(self) -> dict[str, Any] | None:
         for record in reversed(self._records()):
-            if getattr(record, "type", None) != "llm/retry":
+            if record.type != "llm/retry":
                 continue
-            data = getattr(record, "data", None)
+            data = record.data
             if not isinstance(data, dict):
                 continue
             retry = data.get("retry")
@@ -1323,23 +1350,22 @@ class AgentSession:
 
         task.add_done_callback(done)
 
-    def _records(self) -> list[Any]:
-        records = getattr(self._session, "records", None)
-        return records if isinstance(records, list) else []
+    def _records(self) -> list[LogRecord]:
+        return self._session.records
 
-    def current_turn_records(self) -> list[Any]:
+    def current_turn_records(self) -> list[LogRecord]:
         """The records appended by the open turn, in order (empty when idle)."""
         records = self._records()
         start = None
         for index, record in enumerate(records):
-            if getattr(record, "type", None) != "turn/start":
+            if record.type != "turn/start":
                 continue
-            data = getattr(record, "data", None) or {}
+            data = record.data or {}
             if data.get("turn") == self._turn:
                 start = index
                 end = len(records)
                 for later in range(index + 1, len(records)):
-                    if getattr(records[later], "type", None) == "turn/start":
+                    if records[later].type == "turn/start":
                         end = later
                         break
                 return list(records[start:end])
@@ -1348,9 +1374,9 @@ class AgentSession:
     def current_turn_human_input(self) -> bool:
         """Did a human speak in the open turn?"""
         for record in self.current_turn_records():
-            if getattr(record, "type", None) != "user/message":
+            if record.type != "user/message":
                 continue
-            data = getattr(record, "data", None) or {}
+            data = record.data or {}
             source = data.get("source") or {}
             if isinstance(source, dict) and source.get("kind") == "user":
                 return True
@@ -1359,9 +1385,9 @@ class AgentSession:
     def current_turn_goal_round(self) -> dict[str, Any] | None:
         """The goal round that admitted this turn, if any."""
         for record in self.current_turn_records():
-            if getattr(record, "type", None) != "user/message":
+            if record.type != "user/message":
                 continue
-            data = getattr(record, "data", None) or {}
+            data = record.data or {}
             source = data.get("source") or {}
             if isinstance(source, dict) and source.get("kind") == "goal":
                 return {
@@ -1378,12 +1404,11 @@ class AgentSession:
         return repair_pending_tool_calls(list(derive()))
 
     def _count_turns(self) -> int:
-        return sum(1 for record in self._records() if getattr(record, "type", None) == "turn/start")
+        return sum(1 for record in self._records() if record.type == "turn/start")
 
     # -- prompt projections ------------------------------------------------
     def _prompt_context(self) -> PromptContext:
-        header = getattr(self._session, "header", None)
-        started_at = getattr(header, "createdAt", None)
+        started_at = self._session.header.createdAt
         if not isinstance(started_at, int) or isinstance(started_at, bool):
             started_at = now_ms()
         return PromptContext(

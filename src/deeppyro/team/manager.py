@@ -15,13 +15,15 @@ import dataclasses
 import inspect
 import logging
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from deeppyro.api import CHILD_DISABLED_TOOLS, DEFAULT_PRESET_ID
 from deeppyro.core.ids import new_session_id, now_ms
-from deeppyro.core.wire import SessionHeader
+from deeppyro.core.protocols import LlmProvider
+from deeppyro.core.wire import LogRecord, SessionHeader
 from deeppyro.session.fork import open_turn_closers
 from deeppyro.session.layout import flat_session_path
 from deeppyro.session.session import Session
@@ -164,7 +166,7 @@ class TeamService:
         self._preset_revision: int | None = None
         self._services: dict[str, Any] = {}
         self._ask: Any = None
-        self._parent: Any = None
+        self._parent: Session | None = None
         self._members: dict[str, _Member] = {}
         self._board: dict[str, TaskInfo] = {}
         self._restored = False
@@ -182,11 +184,10 @@ class TeamService:
         parent = self._parent
         if parent is None:
             return ""
-        session_id = getattr(parent, "session_id", "")
-        if isinstance(session_id, str) and session_id:
+        session_id = parent.session_id
+        if session_id:
             return session_id
-        header = getattr(parent, "header", None)
-        header_id = getattr(header, "id", "")
+        header_id = parent.header.id
         return header_id if isinstance(header_id, str) else ""
 
     @property
@@ -219,7 +220,7 @@ class TeamService:
         self._services = dict(services or {})
         self._ask = ask
 
-    def bind_session(self, session: Any) -> None:
+    def bind_session(self, session: Session) -> None:
         """Bind the lead session that receives this team's records."""
         self._parent = session
         self._restored = False
@@ -470,7 +471,7 @@ class TeamService:
         return opener(member.session_id)
 
     def _close_open_turn(self, session: Session) -> None:
-        records = getattr(session, "records", None) or []
+        records = session.records
         try:
             closers = open_turn_closers(records, {"kind": "interrupted"})
         except (AttributeError, KeyError, TypeError, ValueError):
@@ -869,7 +870,7 @@ def _message_text(data: dict[str, Any]) -> str:
 
 
 def _fold_team_records(
-    records: Any,
+    records: Iterable[LogRecord],
     team_id: str,
 ) -> tuple[list[str], dict[str, dict[str, Any]], dict[str, list[str]], dict[str, dict[str, Any]]]:
     order: list[str] = []
@@ -877,13 +878,15 @@ def _fold_team_records(
     queues: dict[str, list[str]] = {}
     tasks: dict[str, dict[str, Any]] = {}
     for record in records:
-        data = getattr(record, "data", None)
+        data = record.data
         if not isinstance(data, dict) or data.get("teamId") != team_id:
             continue
-        record_type = getattr(record, "type", "")
+        record_type = record.type
         if record_type == "team/member":
             payload = data.get("member")
-            member_id = payload.get("id") if isinstance(payload, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            member_id = payload.get("id")
             if not isinstance(member_id, str) or not member_id:
                 continue
             if member_id not in members:
@@ -891,7 +894,9 @@ def _fold_team_records(
             members[member_id] = payload
         elif record_type == "team/task":
             payload = data.get("task")
-            task_id = payload.get("id") if isinstance(payload, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            task_id = payload.get("id")
             if not isinstance(task_id, str) or not task_id:
                 continue
             current = tasks.get(task_id)
@@ -925,8 +930,10 @@ def _task_from_record(task_id: str, payload: dict[str, Any]) -> TaskInfo:
     )
 
 
-def _provider_name(provider: Any) -> str:
-    name = getattr(provider, "name", "")
+def _provider_name(provider: LlmProvider | None) -> str:
+    if provider is None:
+        return ""
+    name = provider.name
     return name if isinstance(name, str) else ""
 
 
