@@ -5,8 +5,8 @@ fields take effect on the next boot; fields declared in the plugin class
 volatile attribute are applied to the mounted plugin through the kernel
 service when it exposes apply_plugin_config, and the write result reports
 applied_live/restart_required accordingly. The service is a thin facade over
-SettingsStore so plugins and agent tools can reach it through cordis
-(provide = "settings").
+SettingsStore so plugins and agent tools can reach it through the service
+layer (provide = "settings").
 """
 
 from __future__ import annotations

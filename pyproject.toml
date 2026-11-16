@@ -45,8 +45,6 @@ addopts = "-q"
 [tool.ruff]
 line-length = 110
 target-version = "py312"
-# Vendored third-party code (cordis-port, MIT) is kept byte-faithful with upstream.
-extend-exclude = ["src/deeppyro/_vendor"]
 
 [tool.ruff.lint]
 # Ratchet: the rule families that catch the failure modes this port is prone to.

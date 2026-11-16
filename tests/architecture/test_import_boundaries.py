@@ -1,10 +1,10 @@
 """Architecture gates for imports that cross internal boundaries.
 
-deeppyro._vendor.cordis_port is the vendored cordis port.  It is an
-implementation detail of the kernel bridge: only deeppyro.kernel and the
-deeppyro.api seam may import it.  Every other package must go through a public
-API (for example deeppyro.api.FiberState) so the vendored implementation stays
-replaceable.
+The kernel used to run on a vendored cordis port (``deeppyro._vendor.cordis_port``).
+That port is gone: ``deeppyro.kernel`` now hosts the plugin runtime natively and
+``deeppyro.api`` is the only seam plugins see.  These tests keep the removal from
+regressing: the vendored tree must not come back, and no module under
+``src/deeppyro`` may import it again.
 """
 
 from __future__ import annotations
@@ -14,66 +14,50 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = ROOT / "src" / "deeppyro"
-
-VENDOR_TARGET = "deeppyro._vendor.cordis_port"
-VENDOR_PARENT = "deeppyro._vendor"
-ALLOWED_PACKAGES = frozenset({"api", "kernel"})
+VENDOR_ROOT = SRC_ROOT / "_vendor"
+VENDOR_PACKAGE = "deeppyro._vendor"
 
 
-def _target_from_import(node: ast.Import) -> list[str]:
-    return [alias.name for alias in node.names]
+def _import_targets(node: ast.AST) -> list[str]:
+    """Dotted module names named by one ``import``/``from ... import`` node."""
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    if isinstance(node, ast.ImportFrom):
+        return [node.module] if node.module else []
+    return []
 
 
-def _target_from_import_from(node: ast.ImportFrom) -> list[str]:
-    if node.level:
-        # The codebase uses absolute imports for the vendor package.  A
-        # relative import cannot name deeppyro._vendor from outside that
-        # package anyway, so it needs no special handling here.
-        return []
-    module = node.module or ""
-    if module == VENDOR_PARENT:
-        return [f"{module}.{alias.name}" for alias in node.names if alias.name == "cordis_port"]
-    return [module]
+def find_vendor_imports(root: Path = SRC_ROOT) -> list[str]:
+    """Return "path:line: import ..." for every import of the removed vendor tree.
 
-
-def _is_vendor_target(module: str) -> bool:
-    return module == VENDOR_TARGET or module.startswith(VENDOR_TARGET + ".")
-
-
-def find_vendor_import_violations(root: Path = SRC_ROOT) -> list[str]:
-    """Return "path:line: import ..." for every forbidden vendor import.
-
-    root is the package directory (the directory whose children are kernel/,
-    api/, builtin/, ...).  Callers use the default src/deeppyro root; tests use
-    a temporary tree to prove the detector recognises both import forms.
+    root is the package directory whose children are kernel/, api/, builtin/, ...
+    Tests pass a temporary tree to prove both import forms are detected.
     """
-    violations: list[str] = []
+    offenders: list[str] = []
     for path in sorted(root.rglob("*.py")):
-        relative = path.relative_to(root)
-        package = relative.parts[0] if len(relative.parts) > 1 else ""
-        if package in ALLOWED_PACKAGES:
-            continue
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(path))
         lines = source.splitlines()
         for node in ast.walk(tree):
-            targets: list[str] = []
-            if isinstance(node, ast.Import):
-                targets = _target_from_import(node)
-            elif isinstance(node, ast.ImportFrom):
-                targets = _target_from_import_from(node)
-            for target in targets:
-                if _is_vendor_target(target):
+            for target in _import_targets(node):
+                if target == VENDOR_PACKAGE or target.startswith(VENDOR_PACKAGE + "."):
                     line = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                    violations.append(f"{relative.as_posix()}:{node.lineno}: {line}")
-    return violations
+                    offenders.append(f"{path.relative_to(root).as_posix()}:{node.lineno}: {line}")
+    return offenders
 
 
-def test_vendored_cordis_port_imports_stay_in_kernel_and_api() -> None:
-    violations = find_vendor_import_violations()
-    assert not violations, (
-        "deeppyro._vendor.cordis_port may only be imported from deeppyro/kernel/ "
-        "and deeppyro/api/; route other imports through deeppyro.api.\n" + "\n".join(violations)
+def test_the_vendored_cordis_port_is_gone() -> None:
+    assert not VENDOR_ROOT.exists(), (
+        "src/deeppyro/_vendor still exists: the kernel must run on its native runtime, "
+        "not on a vendored framework port"
+    )
+
+
+def test_no_module_imports_the_removed_vendor_package() -> None:
+    offenders = find_vendor_imports()
+    assert not offenders, (
+        "deeppyro._vendor was removed; import the kernel runtime or deeppyro.api instead:\n"
+        + "\n".join(offenders)
     )
 
 
@@ -88,18 +72,13 @@ def test_detector_flags_both_import_forms(tmp_path: Path) -> None:
         "from deeppyro._vendor.cordis_port import Fiber\n",
         encoding="utf-8",
     )
-    (tmp_path / "builtin" / "bad_parent.py").write_text(
-        "from deeppyro._vendor import cordis_port\n",
-        encoding="utf-8",
-    )
     (tmp_path / "kernel" / "allowed.py").write_text(
-        "from deeppyro._vendor.cordis_port import Context\n",
+        "from deeppyro.kernel.fiber import Fiber\n",
         encoding="utf-8",
     )
 
-    violations = find_vendor_import_violations(tmp_path)
-    assert len(violations) == 3
-    assert any("bad_from.py:1:" in item and "cordis_port" in item for item in violations)
-    assert any("bad_import.py:1:" in item for item in violations)
-    assert any("bad_parent.py:1:" in item for item in violations)
-    assert not any("allowed.py" in item for item in violations)
+    offenders = find_vendor_imports(tmp_path)
+    assert len(offenders) == 2
+    assert any("bad_import.py:1:" in item for item in offenders)
+    assert any("bad_from.py:1:" in item and "cordis_port" in item for item in offenders)
+    assert not any("allowed.py" in item for item in offenders)

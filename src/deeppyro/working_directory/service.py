@@ -95,7 +95,7 @@ def _normalise_path(value: str | Path, *, base: Path) -> Path:
 class WorkingDirectoryService:
     """Committed working-directory state and change operations.
 
-    The class does not inherit cordis Service: the kernel plugin owns
+    The class does not inherit the Service base: the kernel plugin owns
     registration (see deeppyro.builtin.working_directory), matching the jobs
     service pattern.  Keeping the service independent also makes it directly
     testable without a plugin context.

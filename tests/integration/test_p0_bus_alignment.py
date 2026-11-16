@@ -41,11 +41,11 @@ class StubContext:
     def get(self, name: str) -> Any | None:
         return self.hooks if name == "hooks" else None
 
-    def on(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover - cordis fallback
-        raise AssertionError("domain events must not fall back to cordis")
+    def on(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover - runtime fallback
+        raise AssertionError("domain events must not fall back to the runtime dispatcher")
 
-    def once(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover - cordis fallback
-        raise AssertionError("domain events must not fall back to cordis")
+    def once(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover - runtime fallback
+        raise AssertionError("domain events must not fall back to the runtime dispatcher")
 
     def effect(self, execute: Any, label: str = "") -> Any:  # pragma: no cover - unused
         return execute()

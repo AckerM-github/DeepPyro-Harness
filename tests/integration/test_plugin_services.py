@@ -1,6 +1,6 @@
 """Integration: plugin services reach the agent tools and the TUI slot host.
 
-Layer D exposes plugin_manager / inspect / settings as cordis services and four
+Layer D exposes plugin_manager / inspect / settings as kernel services and four
 agent-facing tools. Layer E exposes the `slots` registry. This module proves
 both are wired end to end without network access.
 """
@@ -80,7 +80,7 @@ async def test_plugin_tools_run_with_kernel_services(tmp_path: Path) -> None:
 async def test_runtime_services_expose_manager_objects(tmp_path: Path) -> None:
     """The service registry must expose managers, not the plugin wrappers.
 
-    Regression: JobsPlugin used to be a cordis Service, so service("jobs")
+    Regression: JobsPlugin used to inherit the Service base, so service("jobs")
     returned the plugin object (which has no start/list) and every job tool
     failed with "'JobsPlugin' object has no attribute 'start'".
     """

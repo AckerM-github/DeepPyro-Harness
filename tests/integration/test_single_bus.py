@@ -26,7 +26,7 @@ def _context(bus: EventBus, facade: HookService) -> PluginContext:
             return self.services.get(name)
 
         def on(self, *args, **kwargs):
-            raise AssertionError("catalog names must not fall through to cordis")
+            raise AssertionError("catalog names must not fall through to the runtime dispatcher")
 
         once = on
 

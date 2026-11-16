@@ -17,8 +17,8 @@ All registrations return an idempotent dispose callable. Contributions are
 de-duplicated by `(kind, id)`; the second registration raises `SlotError`
 instead of silently shadowing the first plugin.
 
-The `SlotsPlugin` exposes one shared :class:`SlotRegistry` as the cordis
-service `slots`:
+The `SlotsPlugin` exposes one shared :class:`SlotRegistry` as the service
+`slots`:
 
     slots = ctx.service("slots")
     dispose = slots.add_status_item(lambda context: f"items: {len(items)}")
@@ -482,7 +482,7 @@ class SlotsPlugin(Plugin):
         self._ui_scan_errors: list[str] = []
 
     def setup(self) -> None:
-        """Provide the registry and ui channel as cordis services."""
+        """Provide the registry and ui channel through the runtime context."""
         if getattr(self.ctx, "raw", None) is not None:
             self.ctx.provide("ui", self.ui)
         self.ctx.provide("slots", self.registry)

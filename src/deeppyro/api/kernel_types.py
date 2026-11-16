@@ -1,13 +1,24 @@
-"""Kernel types re-exported through the API boundary.
+"""Public kernel value types.
 
-The cordis port lives under deeppyro._vendor.cordis_port and may only be
-imported from the kernel and API packages (see tests/architecture).  Plugins
-that need a kernel type import it from here or from deeppyro.api instead of
-reaching into the vendored implementation.
+``FiberState`` describes the lifecycle of one mounted plugin. It lives in the
+API package (rather than in ``deeppyro.kernel``) so plugin code can import it
+without depending on the kernel implementation, and so ``deeppyro.kernel.fiber``
+can import this enum without creating a cycle.
 """
 
 from __future__ import annotations
 
-from deeppyro._vendor.cordis_port import FiberState
+import enum
 
 __all__ = ["FiberState"]
+
+
+class FiberState(enum.IntEnum):
+    """Lifecycle states of a mounted plugin fiber."""
+
+    PENDING = 0
+    LOADING = 1
+    ACTIVE = 2
+    FAILED = 3
+    DISPOSED = 4
+    UNLOADING = 5

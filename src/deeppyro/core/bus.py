@@ -1,9 +1,10 @@
 """The kernel event bus: one registry, five dispatch modes, no domain names.
 
-DSH dispatches every domain event through a single cordis ``EventsService``. This
-module is the transport half of that shape: it knows how to register listeners,
-filter them by scope, freeze payloads, notify observers, and run the five cordis
-modes (emit, serial, waterfall, bail, parallel). It deliberately knows *nothing*
+DSH dispatches every domain event through a single cordis ``EventsService``;
+DeepPyro keeps that single-bus shape natively. This module is the transport half:
+it knows how to register listeners, filter them by scope, freeze payloads,
+notify observers, and run the five dispatch modes (emit, serial, waterfall,
+bail, parallel). It deliberately knows *nothing*
 about which names exist -- that is :mod:`deeppyro.core.events` -- and nothing
 about which names are still allowed on the hook facade -- that is
 :class:`deeppyro.hooks.service.HookService`.
@@ -174,7 +175,7 @@ class EventBus:
         """Return True when at least one dispatch observer is registered.
 
         Dispatch call sites that skip work when no listener is registered should
-        still dispatch while observed is True: the journal and the cordis bridge
+        still dispatch while observed is True: the journal and other observers
         can only record fallback and veto decisions when the hook runs at all.
         Hot hooks stay listener-gated because they fire once per model frame.
         """

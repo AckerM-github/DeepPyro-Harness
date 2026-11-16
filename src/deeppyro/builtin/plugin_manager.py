@@ -1,7 +1,7 @@
 """The plugin manager service: external plugin and user bundle lifecycle.
 
 The service wraps PluginManager so other plugins and agent tools can reach it
-through the cordis service layer (provide = "plugin_manager") instead of
+through the service layer (provide = "plugin_manager") instead of
 importing the manager directly.
 """
 

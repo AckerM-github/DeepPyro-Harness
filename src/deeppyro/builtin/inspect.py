@@ -4,7 +4,7 @@ Unlike the plugin manager, which looks at installable external plugins, the
 inspect service reports the current process: registered services, loaded
 plugin rows and their fiber states, contributed tools, prompt sections,
 commands and llm providers. It never imports the kernel app; it only reads
-through the cordis context it is mounted on.
+through the runtime context it is mounted on.
 """
 
 from __future__ import annotations
@@ -35,23 +35,17 @@ def _service_name(value: Any) -> str:
     return qualname or module or ""
 
 
-def _fiber_state_name(fiber: Any) -> str:
-    try:
-        state = fiber.get_state()
-    except Exception:  # noqa: BLE001 - inspection must never crash
-        return "unknown"
-    return getattr(state, "name", str(state)).lower()
-
-
-def _mounted_item(item: Any) -> tuple[str, str, str]:
+def _mounted_item(item: Any) -> tuple[str, str, str, str]:
+    """Normalize one mounted entry to (id, loader state, error, runtime state)."""
     if isinstance(item, str):
-        return item.strip(), "", ""
+        return item.strip(), "", "", ""
     if isinstance(item, Mapping):
         data = dict(item)
         plugin_id = data.get("id") or data.get("plugin_id") or data.get("name") or ""
         state = data.get("state") or data.get("loader_state") or data.get("status") or ""
         error = data.get("error") or ""
-        return str(plugin_id).strip(), str(state), str(error)
+        runtime_state = data.get("runtime_state") or ""
+        return str(plugin_id).strip(), str(state), str(error), str(runtime_state)
     if isinstance(item, (tuple, list)):
         plugin_id = str(item[0] or "").strip() if item else ""
         value = item[1] if len(item) > 1 else None
@@ -61,16 +55,32 @@ def _mounted_item(item: Any) -> tuple[str, str, str]:
             data.setdefault("id", plugin_id)
             return _mounted_item(data)
         if isinstance(value, str):
-            return plugin_id, value, error
+            return plugin_id, value, error, ""
         if value is not None:
             state = getattr(value, "state", None) or getattr(value, "status", None) or ""
+            runtime_state = getattr(value, "runtime_state", None) or ""
             nested_error = getattr(value, "error", "") or error
-            return plugin_id, str(state), str(nested_error)
-        return plugin_id, "", error
+            return plugin_id, str(state), str(nested_error), str(runtime_state)
+        return plugin_id, "", error, ""
     plugin_id = getattr(item, "id", None) or getattr(item, "plugin_id", None) or getattr(item, "name", "")
     state = getattr(item, "state", None) or getattr(item, "status", None) or ""
     error = getattr(item, "error", "") or ""
-    return str(plugin_id or "").strip(), str(state or ""), str(error or "")
+    runtime_state = getattr(item, "runtime_state", None) or ""
+    return str(plugin_id or "").strip(), str(state or ""), str(error or ""), str(runtime_state or "")
+
+
+#: Loader states that also describe the plugin's live row state.
+_LOADER_STATES = frozenset({"active", "loading", "unloading", "pending", "failed"})
+
+
+def _loaded_state(mount: Mapping[str, str]) -> str:
+    """Translate a mount entry (row state + fiber runtime state) to a row state."""
+    runtime_state = mount.get("runtime_state") or ""
+    if runtime_state in _LOADER_STATES:
+        return runtime_state
+    if runtime_state:
+        return "unmounted"
+    return "configured"
 
 
 def _event_row(record_type: str) -> dict[str, Any]:
@@ -196,15 +206,18 @@ class InspectPlugin(Service):
     # -- services ----------------------------------------------------------
 
     def services(self) -> list[dict[str, Any]]:
-        """Registered cordis services with activation state."""
-        reflect = self._require("reflect")
+        """Registered services with activation state."""
+        records = getattr(self.ctx.raw, "service_records", None)
+        if not callable(records):
+            raise PluginDependencyError("service context does not expose its registrations")
         rows: list[dict[str, Any]] = []
-        for impl in reflect.store.values():
-            name = getattr(impl, "name", "")
+        snapshot: Any = records()
+        for record in snapshot:
+            name = getattr(record, "name", "")
             if not isinstance(name, str) or not name:
                 continue
             state = "active"
-            check = getattr(impl, "check", None)
+            check = getattr(record, "check", None)
             if check is not None:
                 try:
                     available = bool(check())
@@ -213,16 +226,14 @@ class InspectPlugin(Service):
                 if not available:
                     state = "unavailable"
             if state == "active":
-                ctx = getattr(impl, "ctx", None)
-                fiber = getattr(ctx, "fiber", None) if ctx is not None else None
+                fiber = getattr(record, "fiber", None)
                 if fiber is not None and getattr(fiber, "state", None) is not FiberState.ACTIVE:
                     state = "pending"
-            value = getattr(impl, "value", None)
             rows.append(
                 {
                     "name": name,
                     "state": state,
-                    "provider": _service_name(value),
+                    "provider": _service_name(getattr(record, "value", None)),
                 }
             )
         rows.sort(key=lambda row: row["name"])
@@ -236,44 +247,19 @@ class InspectPlugin(Service):
             composition = load_composition()
         except Exception as exc:
             raise PluginDependencyError(f"cannot load composition: {exc}") from exc
-        runtimes = self._runtimes()
         rows: list[dict[str, Any]] = []
-        seen: set[str] = set()
         for plugin_row in composition.rows():
-            seen.add(plugin_row.id)
-            entry = {
-                "id": plugin_row.id,
-                "plugin": plugin_row.plugin,
-                "state": "disabled" if plugin_row.disabled is True else "configured",
-                "critical": plugin_row.critical is True,
-                "origin": plugin_row.origin,
-                "error": "",
-                "loader_state": "",
-            }
-            if plugin_row.disabled is True:
-                rows.append(entry)
-                continue
-            runtime = runtimes.get(plugin_row.id)
-            if runtime is None:
-                entry["state"] = "unmounted"
-                rows.append(entry)
-                continue
-            self._apply_runtime_state(entry, runtime)
-            rows.append(entry)
-        for name, runtime in sorted(runtimes.items()):
-            if name in seen:
-                continue
-            entry = {
-                "id": name,
-                "plugin": "",
-                "state": "configured",
-                "critical": False,
-                "origin": "",
-                "error": "",
-                "loader_state": "",
-            }
-            self._apply_runtime_state(entry, runtime)
-            rows.append(entry)
+            rows.append(
+                {
+                    "id": plugin_row.id,
+                    "plugin": plugin_row.plugin,
+                    "state": "disabled" if plugin_row.disabled is True else "unmounted",
+                    "critical": plugin_row.critical is True,
+                    "origin": plugin_row.origin,
+                    "error": "",
+                    "loader_state": "",
+                }
+            )
         mounted = self._mounted_plugins()
         if mounted:
             by_id = {row["id"]: row for row in rows}
@@ -291,44 +277,12 @@ class InspectPlugin(Service):
                     }
                     rows.append(entry)
                 entry["loader_state"] = mount["state"]
+                if entry["state"] != "disabled":
+                    entry["state"] = _loaded_state(mount)
                 if mount["error"] and not entry["error"]:
                     entry["error"] = mount["error"]
             rows.sort(key=lambda row: row["id"])
         return rows
-
-    def _runtimes(self) -> dict[str, Any]:
-        registry = self.ctx.get("registry")
-        if registry is None:
-            return {}
-        runtimes: dict[str, Any] = {}
-        for runtime in registry.values():
-            name = getattr(runtime, "name", "")
-            if isinstance(name, str) and name:
-                runtimes[name] = runtime
-        return runtimes
-
-    def _apply_runtime_state(self, entry: dict[str, Any], runtime: Any) -> None:
-        fibers = list(getattr(runtime, "fibers", ()) or ())
-        states = [_fiber_state_name(fiber) for fiber in fibers]
-        errors = []
-        for fiber in fibers:
-            error = getattr(fiber, "_error", None)
-            if error:
-                errors.append(str(error))
-        if errors:
-            entry["error"] = "; ".join(errors)
-        if not states:
-            entry["state"] = "unmounted"
-        elif "failed" in states:
-            entry["state"] = "failed"
-        elif "active" in states:
-            entry["state"] = "active"
-        elif "loading" in states:
-            entry["state"] = "loading"
-        elif "unloading" in states:
-            entry["state"] = "unloading"
-        else:
-            entry["state"] = states[0]
 
     def _mounted_plugins(self) -> dict[str, dict[str, str]]:
         kernel = lookup_service(self.ctx, KernelRuntime)
@@ -347,9 +301,9 @@ class InspectPlugin(Service):
             items = ()
         result: dict[str, dict[str, str]] = {}
         for item in items:
-            plugin_id, state, error = _mounted_item(item)
+            plugin_id, state, error, runtime_state = _mounted_item(item)
             if plugin_id and plugin_id not in result:
-                result[plugin_id] = {"state": state, "error": error}
+                result[plugin_id] = {"state": state, "error": error, "runtime_state": runtime_state}
         return result
 
     # -- contributions -----------------------------------------------------

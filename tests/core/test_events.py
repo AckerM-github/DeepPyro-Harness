@@ -56,18 +56,13 @@ def test_the_two_tables_do_not_overlap() -> None:
     assert len(events.EVENT_SPECS) == len(BUS_EVENTS) + 21
 
 
-def test_the_ten_cordis_plumbing_events_are_catalogued_but_not_bus_events() -> None:
-    # D2 of the alignment plan: internal/* must be implemented (the vendored port
-    # raises all ten), but they are plumbing over cordis objects, so they stay out
-    # of EVENT_SPECS -- a plugin cannot bind a domain handler to them.
-    names = sorted(events.INTERNAL_NAMES)
-    assert len(names) == 10
-    for name in names:
-        spec = events.internal_spec(name)
-        assert spec is not None and spec.implemented
-        assert spec.producer.startswith("cordis.")
-        assert spec.dsh_ref.startswith("'internal/")
-        assert not events.is_bus_event(name)
+def test_no_cordis_plumbing_events_are_catalogued() -> None:
+    # The native runtime raises no internal/* plumbing: a plugin can only bind a
+    # domain handler to a bus name, so the catalog is domain events only.
+    assert not hasattr(events, "INTERNAL_NAMES")
+    assert not hasattr(events, "internal_spec")
+    assert [name for name in events.names() if name.startswith("internal/")] == []
+    assert [name for name in events.EVENT_SPECS if name.startswith("internal/")] == []
 
 
 # The P1 namespaces named by the alignment brief. They are declared, not built:

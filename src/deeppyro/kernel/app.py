@@ -3,7 +3,7 @@
 The kernel is a plugin host. Boot has four stages:
 
 1. build the composition (core bundle, user bundles, patch manifests);
-2. create the root cordis Context and register the kernel config service;
+2. create the native runtime root context and register the kernel config service;
 3. mount every enabled row in order, awaiting each fiber so load errors surface
    at boot instead of mid-turn;
 4. expose App.ctx / App.service(name) and dispose fibers in reverse order.
@@ -13,7 +13,7 @@ plugins that already started. Non-critical rows from external bundles are
 recorded in App.failures and the rest of the app keeps running.
 
 Group rows are containers, not plugin instances: the loader builds a child
-cordis context for the group (applying the group's isolate/intercept layers),
+runtime context for the group (applying the group's isolate/intercept layers),
 mounts the nested rows in that context in order, and exposes the whole group as
 one App.rows entry. The live state of a group is the aggregate of its children.
 
@@ -31,7 +31,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar, overload
 
-from deeppyro._vendor.cordis_port import Context, Fiber
 from deeppyro.api import (
     API_VERSION,
     Plugin,
@@ -57,6 +56,8 @@ from deeppyro.kernel.composition import (
 )
 from deeppyro.kernel.config_service import provide_config
 from deeppyro.kernel.config_values import config_dict
+from deeppyro.kernel.context import RuntimeContext
+from deeppyro.kernel.fiber import Fiber
 from deeppyro.kernel.manifest import PluginSpec, load_manifest
 from deeppyro.kernel.runtime import KernelRuntime
 
@@ -200,7 +201,7 @@ def _plugin_for(
     return cls, raw_config, cls
 
 
-def _mount_context(ctx: Context, row: PluginRow) -> Context:
+def _mount_context(ctx: RuntimeContext, row: PluginRow) -> RuntimeContext:
     """Apply a row's isolate/intercept layers to a context."""
     mount_ctx = ctx
     for name in row.isolate:
@@ -210,7 +211,7 @@ def _mount_context(ctx: Context, row: PluginRow) -> Context:
     return mount_ctx
 
 
-def _mount(ctx: Context, row: PluginRow, plugin: Any, config: dict[str, Any]) -> Fiber:
+def _mount(ctx: RuntimeContext, row: PluginRow, plugin: Any, config: dict[str, Any]) -> Fiber:
     """Mount a plugin on ctx after applying the row's isolate/intercept layers."""
     return _mount_context(ctx, row).plugin(plugin, config)
 
@@ -228,7 +229,7 @@ def _effective_critical(row: PluginRow, parent_critical: bool) -> bool:
 
 
 async def _mount_row(
-    parent_ctx: Context,
+    parent_ctx: RuntimeContext,
     row: PluginRow,
     *,
     parent: MountRecord | None,
@@ -311,7 +312,7 @@ class App:
 
     def __init__(
         self,
-        ctx: Context,
+        ctx: RuntimeContext,
         rows: Iterable[PluginRow],
         fibers: list[Fiber],
         config: Config,
@@ -477,11 +478,11 @@ class App:
     def _service_value(self, name: str) -> Any | None:
         """Return the active value for a service name, or None.
 
-        cordis ctx.foo returns None for unknown services instead of raising, so
-        we must go through ctx.reflect.get to distinguish a missing service
-        from a falsy one.
+        The runtime context returns None for unknown or inactive services
+        instead of raising, so a falsy value stays distinguishable from a
+        missing one.
         """
-        return self.ctx.reflect.get(name)
+        return self.ctx.get(name)
 
     @overload
     def get(self, service: str) -> Any | None: ...
@@ -668,7 +669,7 @@ async def create_app(
             activate_plugins=activate_plugins,
         )
 
-    ctx = Context()
+    ctx = RuntimeContext.create_root()
     provide_config(ctx, resolved)
 
     fibers: list[Fiber] = []

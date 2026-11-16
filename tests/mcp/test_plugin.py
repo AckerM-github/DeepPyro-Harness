@@ -9,23 +9,19 @@ from deeppyro.mcp.service import McpService
 from deeppyro.mcp.types import McpServerConfig, McpToolInfo
 
 
-class StubReflect:
-    def __init__(self) -> None:
-        self.provided: list[tuple[str, Any]] = []
-
-    def provide(self, name: str, service: Any, check: Any = None) -> None:
-        self.provided.append((name, service))
-
-
 class StubContext:
-    """Just enough context for a Service plugin: reflect.provide, effect, register_tool."""
+    """Just enough context for a Service plugin: provide, effect, register_tool."""
 
     def __init__(self) -> None:
         self.raw = self
-        self.reflect = StubReflect()
+        self.provided: list[tuple[str, Any]] = []
         self.registered: list[Any] = []
         self.effects: list[tuple[Any, str]] = []
         self.sections: list[tuple[str, int, Any]] = []
+
+    def provide(self, name: str, value: Any = None, check: Any = None) -> Any:
+        self.provided.append((name, value))
+        return value
 
     def service(self, name: str) -> Any:
         raise KeyError(name)
@@ -66,7 +62,7 @@ async def test_plugin_declares_the_service_and_injects_config_and_tools() -> Non
     assert plugin.provide == "mcp"
     assert plugin.plugin_id == "mcp"
     assert list(plugin.inject) == ["config", "tools", "prompt"]
-    assert [name for name, _ in ctx.reflect.provided] == ["mcp"]
+    assert [name for name, _ in ctx.provided] == ["mcp"]
 
 
 async def test_setup_registers_the_bridged_tools_and_exposes_status() -> None:

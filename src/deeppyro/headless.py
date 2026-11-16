@@ -16,7 +16,7 @@ Exit codes are part of the contract:
 * 130 interrupted by the user (Ctrl+C)
 
 The module owns its sinks (the agent loop only receives an injected EventSink)
-and boots the same cordis kernel as the TUI, so every mode shares one service
+and boots the same kernel as the TUI, so every mode shares one service
 graph and one domain behaviour.
 """
 

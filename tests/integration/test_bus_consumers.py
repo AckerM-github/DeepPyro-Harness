@@ -33,10 +33,10 @@ class _Stub:
         return self._hooks if name == "hooks" else None
 
     def on(self, *args, **kwargs):
-        raise AssertionError("a catalog name must not fall through to cordis")
+        raise AssertionError("a catalog name must not fall through to the runtime dispatcher")
 
     def once(self, *args, **kwargs):
-        raise AssertionError("a catalog name must not fall through to cordis")
+        raise AssertionError("a catalog name must not fall through to the runtime dispatcher")
 
 
 def _context(hooks: HookService) -> PluginContext:

@@ -15,7 +15,7 @@ Rows may be containers:
 
 * group = true turns a row into a group. Nested rows come from an inline
   rows = [...] array or TOML [[plugins.rows]] tables; a group creates a child
-  cordis context (carrying the group's isolate/intercept) and mounts its
+  runtime context (carrying the group's isolate/intercept) and mounts its
   children in order.
 * include = "rows.toml" / "rows.json" loads an ordered row list from a file
   relative to the declaring file and splices it in place. A group row with
