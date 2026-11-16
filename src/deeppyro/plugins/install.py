@@ -35,17 +35,33 @@ import sys
 import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from deeppyro import paths
-from deeppyro.kernel.composition import CompositionError, core_bundle_path, default_composition, load_bundle
+from deeppyro.kernel.composition import CompositionError, load_bundle
 from deeppyro.plugins.bootstrap import PluginPackage, scan_plugin_packages
+from deeppyro.plugins.install_commit import (
+    InstallReport,
+    _commit,
+    _manager,
+    _manifest_bytes,
+    _record,
+    _restore_manifest,
+    _rollback_commit,
+)
 from deeppyro.plugins.install_errors import InstallerError, InstallFailure, PreflightFailure, UnknownPlugin
 from deeppyro.plugins.install_importcheck import target_errors
 from deeppyro.plugins.install_manifest import FAILURE_MANIFEST_DANGLING, MANIFEST_REMEDIATION, manifest_issues
 from deeppyro.plugins.install_payload import _load_payload_metadata, _materialise
+from deeppyro.plugins.install_preflight import (
+    CUSTOMIZED_CORE,
+    _installed_conflicts,
+    _preflight_problems,
+    bundle_row_ids,
+    core_row_ids,
+    customized_core,
+)
 from deeppyro.plugins.install_requirements import (
     SourcePlan,
     normalise_name,
@@ -70,16 +86,7 @@ from deeppyro.plugins.install_uv import (
     _uv_preflight_problem,
 )
 from deeppyro.plugins.install_vendor import requirement_errors, vendor_conflict_map, vendor_versions
-from deeppyro.plugins.metadata import (
-    FAILURE_DEP_CONFLICT,
-    FAILURE_METADATA,
-    MetadataError,
-    PluginMetadata,
-    check_compat,
-    find_vendor_dir,
-    load_metadata,
-    python_tag,
-)
+from deeppyro.plugins.metadata import MetadataError, find_vendor_dir, load_metadata, python_tag
 
 __all__ = [
     "CUSTOMIZED_CORE",
@@ -132,8 +139,6 @@ __all__ = [
     "vendor_versions",
     "with_exempt_version",
 ]
-
-CUSTOMIZED_CORE = "customized-core"
 
 
 def _tail(text: str | bytes | None, *, lines: int, chars: int) -> str:
@@ -206,168 +211,6 @@ def run_uv(
         _tail(completed.stderr, lines=STDERR_TAIL_LINES, chars=STDERR_TAIL_CHARS),
         False,
     )
-
-
-@lru_cache(maxsize=1)
-def core_row_ids() -> frozenset[str]:
-    """Row ids declared by the built-in core bundle."""
-    try:
-        return frozenset(row.id for row in load_bundle(core_bundle_path()).rows)
-    except (CompositionError, OSError):
-        return frozenset()
-
-
-def _reserved_ids(manager: Any | None) -> frozenset[str]:
-    if manager is not None:
-        return frozenset(str(item) for item in manager.bundle_ids)
-    return core_row_ids()
-
-
-def _installed_conflicts(plugin_id: str, vendor: Path | None, root: Path) -> list[MetadataError]:
-    """Vendor names whose version differs from an already installed package."""
-    mine = vendor_versions(vendor)
-    if not mine:
-        return []
-    errors: list[MetadataError] = []
-    for package in scan_plugin_packages(root):
-        if package.id == plugin_id:
-            continue
-        theirs = vendor_versions(package.vendor)
-        for name, version in mine.items():
-            other = theirs.get(name)
-            if other is None or other == version:
-                continue
-            detail = f"{plugin_id} {version or '?'}, {package.id} {other or '?'}"
-            errors.append(
-                MetadataError(
-                    FAILURE_DEP_CONFLICT,
-                    f"{name} is vendored at different versions: {detail}",
-                    plugin_id=plugin_id,
-                )
-            )
-    return errors
-
-
-def _preflight_problems(
-    metadata: PluginMetadata,
-    plan: SourcePlan,
-    root: Path,
-    *,
-    force: bool,
-    manager: Any | None,
-) -> list[str]:
-    problems: list[str] = []
-    version_problem = validate_version(metadata.version)
-    if version_problem is not None:
-        problems.append(f"metadata-invalid: {version_problem}")
-    try:
-        compat_errors = check_compat(metadata)
-    except ValueError as exc:
-        problems.append(f"metadata-invalid: {exc}")
-    else:
-        for error in compat_errors:
-            problems.append(f"{error.kind}: {error.message}")
-    target = root / metadata.id
-    if target.exists() and not force:
-        problems.append(f"{target} already exists (use --force to replace it)")
-    if metadata.id in _reserved_ids(manager):
-        problems.append(f"metadata-invalid: plugin id {metadata.id!r} is reserved by a bundle")
-    if plan.path is not None:
-        with contextlib.suppress(OSError):
-            if plan.path.resolve() == target.resolve():
-                problems.append(f"source {plan.path} is the install target itself")
-    vendor = find_vendor_dir(metadata)
-    for error in requirement_errors(metadata.id, metadata.deps.requires, vendor):
-        # Missing vendor packages are installed after preflight; only an
-        # unparseable requirement is a static preflight failure.
-        if error.kind == FAILURE_METADATA:
-            problems.append(f"{error.kind}: {error.message}")
-    for conflict in _installed_conflicts(metadata.id, vendor, root):
-        problems.append(f"{conflict.kind}: {conflict.message}")
-    return problems
-
-
-@dataclass(frozen=True, slots=True)
-class InstallReport:
-    """Outcome of a successful :func:`add`."""
-
-    plugin_id: str
-    version: str
-    directory: Path
-    replaced: bool
-    manifest_changed: bool
-    vendor: dict[str, str]
-    warnings: tuple[str, ...] = ()
-
-
-def _manifest_bytes(path: Path) -> bytes:
-    try:
-        return path.read_bytes()
-    except FileNotFoundError:
-        return b""
-
-
-def _restore_manifest(path: Path, data: bytes) -> None:
-    # Rollback is best effort; the directory swap already happened.
-    with contextlib.suppress(OSError):
-        if data:
-            path.write_bytes(data)
-        elif path.exists():
-            path.unlink()
-
-
-def _manager(root: Path) -> Any:
-    from deeppyro.plugins.manager import PluginManager
-
-    return PluginManager(plugins_dir=root)
-
-
-def _record(plugin_id: str, directory: Path, vendor: Path | None, *, manager: Any) -> bool:
-    entries = [vendor, directory]
-    added: list[str] = []
-    for candidate in entries:
-        if candidate is None:
-            continue
-        text = str(candidate)
-        if text not in sys.path:
-            sys.path.insert(0, text)
-            added.append(text)
-    before = _manifest_bytes(Path(manager.manifest_path))
-    try:
-        manager.enable(plugin_id)
-    finally:
-        for text in added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(text)
-    after = _manifest_bytes(Path(manager.manifest_path))
-    return before != after
-
-
-def _commit(payload: Path, target: Path, *, force: bool) -> Path | None:
-    backup: Path | None = None
-    if target.exists():
-        if not force:
-            raise PreflightFailure((f"{target} already exists (use --force to replace it)",))
-        backup = target.parent.parent / f".dpyro-backup-{target.name}-{os.getpid()}-{id(payload)}"
-        os.replace(target, backup)
-    try:
-        os.replace(payload, target)
-    except OSError as exc:
-        rolled_back = True
-        if backup is not None:
-            try:
-                os.replace(backup, target)
-            except OSError:
-                rolled_back = False
-        raise InstallFailure(f"could not install {target}: {exc}", rolled_back=rolled_back) from exc
-    return backup
-
-
-def _rollback_commit(target: Path, backup: Path | None) -> None:
-    if target.exists():
-        shutil.rmtree(target, ignore_errors=True)
-    if backup is not None and backup.exists():
-        os.replace(backup, target)
 
 
 def add(
@@ -466,44 +309,6 @@ def add(
         )
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-
-
-def bundle_row_ids(package: PluginPackage) -> frozenset[str]:
-    """Row ids declared by a package's optional bundle.toml."""
-    path = package.directory / "bundle.toml"
-    if not path.is_file():
-        return frozenset()
-    try:
-        return frozenset(row.id for row in load_bundle(path).rows)
-    except (CompositionError, OSError):
-        return frozenset()
-
-
-def _overrides_core(rows: Iterable[str]) -> bool:
-    try:
-        composition = default_composition()
-    except Exception:  # noqa: BLE001 - diagnostics must never fail
-        # Diagnostics must never fail; assume the rows are customised.
-        return True
-    for row_id in rows:
-        row = composition.get(row_id)
-        if row is None or not row.overridden:
-            continue
-        parts = [part for part in row.origin.split("|") if part]
-        if any(part != "bundle:core" for part in parts[1:]):
-            return True
-    return False
-
-
-def customized_core(packages: Iterable[PluginPackage]) -> tuple[str, ...]:
-    """Packages whose bundle overrides at least one core composition row."""
-    core_ids = core_row_ids()
-    flagged: list[str] = []
-    for package in packages:
-        rows = bundle_row_ids(package) & core_ids
-        if rows and _overrides_core(rows):
-            flagged.append(package.id)
-    return tuple(sorted(set(flagged)))
 
 
 @dataclass(frozen=True, slots=True)
