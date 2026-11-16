@@ -26,17 +26,13 @@ DPYRO_UV overrides the executable path.
 from __future__ import annotations
 
 import contextlib
-import importlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
-import tomllib
-import zipfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
@@ -47,6 +43,9 @@ from deeppyro import paths
 from deeppyro.kernel.composition import CompositionError, core_bundle_path, default_composition, load_bundle
 from deeppyro.plugins.bootstrap import PluginPackage, scan_plugin_packages
 from deeppyro.plugins.install_errors import InstallerError, InstallFailure, PreflightFailure, UnknownPlugin
+from deeppyro.plugins.install_importcheck import target_errors
+from deeppyro.plugins.install_manifest import FAILURE_MANIFEST_DANGLING, MANIFEST_REMEDIATION, manifest_issues
+from deeppyro.plugins.install_payload import _load_payload_metadata, _materialise
 from deeppyro.plugins.install_requirements import (
     SourcePlan,
     normalise_name,
@@ -73,15 +72,12 @@ from deeppyro.plugins.install_uv import (
 from deeppyro.plugins.install_vendor import requirement_errors, vendor_conflict_map, vendor_versions
 from deeppyro.plugins.metadata import (
     FAILURE_DEP_CONFLICT,
-    FAILURE_IMPORT,
     FAILURE_METADATA,
-    REMEDIATION,
     MetadataError,
     PluginMetadata,
     check_compat,
     find_vendor_dir,
     load_metadata,
-    parse_toml,
     python_tag,
 )
 
@@ -138,12 +134,6 @@ __all__ = [
 ]
 
 CUSTOMIZED_CORE = "customized-core"
-
-FAILURE_MANIFEST_DANGLING = "manifest-dangling"
-
-MANIFEST_REMEDIATION = (
-    "remove the row from the user manifest or reinstall the package with 'dpyro plugin add <id>'"
-)
 
 
 def _tail(text: str | bytes | None, *, lines: int, chars: int) -> str:
@@ -295,320 +285,6 @@ def _preflight_problems(
     for conflict in _installed_conflicts(metadata.id, vendor, root):
         problems.append(f"{conflict.kind}: {conflict.message}")
     return problems
-
-
-def _safe_extract_zip(archive: Path, destination: Path) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
-    base = destination.resolve()
-    try:
-        with zipfile.ZipFile(archive) as bundle:
-            for info in bundle.infolist():
-                member = (destination / info.filename).resolve()
-                if member != base and base not in member.parents:
-                    raise PreflightFailure((f"archive member escapes the extraction root: {info.filename}",))
-            bundle.extractall(destination)
-    except zipfile.BadZipFile as exc:
-        raise PreflightFailure((f"cannot read {archive}: {exc}",)) from exc
-    except OSError as exc:
-        raise PreflightFailure((f"cannot extract {archive}: {exc}",)) from exc
-
-
-def _safe_extract_tar(archive: Path, destination: Path) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
-    try:
-        with tarfile.open(archive, "r:*") as bundle:
-            bundle.extractall(destination, filter="data")
-    except (tarfile.TarError, OSError) as exc:
-        raise PreflightFailure((f"cannot extract {archive}: {exc}",)) from exc
-
-
-def _safe_extract(archive: Path, destination: Path) -> None:
-    name = archive.name.lower()
-    if name.endswith((".whl", ".zip")):
-        _safe_extract_zip(archive, destination)
-    elif name.endswith((".tar.gz", ".tgz", ".tar")):
-        _safe_extract_tar(archive, destination)
-    else:
-        raise PreflightFailure((f"unsupported archive {archive}",))
-
-
-def _payload_root(extracted: Path) -> Path:
-    if (extracted / "plugin.toml").is_file():
-        return extracted
-    candidates = [
-        child
-        for child in sorted(extracted.iterdir())
-        if child.is_dir() and not child.name.startswith((".", "__")) and (child / "plugin.toml").is_file()
-    ]
-    if len(candidates) == 1:
-        return candidates[0]
-    raise PreflightFailure(
-        (
-            f"metadata-invalid: {extracted} does not contain plugin.toml at its root",
-            "hint: place plugin.toml at the archive root or inside one top-level directory",
-        )
-    )
-
-
-def _materialise(
-    plan: SourcePlan,
-    staging: Path,
-    *,
-    runner: Runner | None,
-    offline: bool,
-    timeout: float | None,
-) -> Path:
-    payload = staging / "payload"
-    if plan.kind == "directory":
-        assert plan.path is not None
-        shutil.copytree(
-            plan.path,
-            payload,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "plugin.toml.bak"),
-        )
-        return payload
-    if plan.kind == "archive":
-        assert plan.path is not None
-        extracted = staging / "extract"
-        _safe_extract(plan.path, extracted)
-        os.replace(_payload_root(extracted), payload)
-        return payload
-    dist = staging / "dist"
-    dist.mkdir()
-    command = UvCommand(
-        (
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            "--target",
-            str(dist),
-            "--no-deps",
-            plan.spec or plan.source,
-        )
-        + (("--offline",) if offline else ())
-    )
-    result = _execute(runner, command, timeout)
-    if not result.ok:
-        raise InstallFailure(
-            f"uv pip install failed for {plan.source!r} (exit {result.returncode})",
-            stderr_tail=result.stderr,
-        )
-    os.replace(_payload_root(dist), payload)
-    return payload
-
-
-def _declared_id(payload: Path) -> str | None:
-    try:
-        document = parse_toml((payload / "plugin.toml").read_bytes())
-    except (OSError, tomllib.TOMLDecodeError):
-        return None
-    package = document.get("package")
-    if isinstance(package, Mapping):
-        value = package.get("id")
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    value = document.get("id")
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
-
-
-def _payload_id(plan: SourcePlan, payload: Path) -> str:
-    declared = _declared_id(payload)
-    if declared is not None:
-        return declared
-    if plan.expected_id:
-        return plan.expected_id
-    return payload.name
-
-
-def _load_payload_metadata(payload: Path, plan: SourcePlan) -> PluginMetadata:
-    expected = _payload_id(plan, payload)
-    problem = validate_plugin_id(expected)
-    if problem is not None:
-        raise PreflightFailure((f"metadata-invalid: {problem}",))
-    try:
-        return load_metadata(payload, plugin_id=expected)
-    except MetadataError as exc:
-        raise PreflightFailure((f"{exc.kind}: {exc.message}",)) from exc
-
-
-def _purge_modules(module_name: str) -> None:
-    """Forget a module and its submodules so validation imports from disk again."""
-    prefix = f"{module_name}."
-    for key in [name for name in sys.modules if name == module_name or name.startswith(prefix)]:
-        sys.modules.pop(key, None)
-
-
-def _plugin_base() -> type | None:
-    try:
-        from deeppyro.api import Plugin
-    except Exception:  # noqa: BLE001 - the API may be unavailable during bootstrap
-        return None
-    return Plugin if isinstance(Plugin, type) else None
-
-
-def _declared_import_names(metadata: PluginMetadata) -> frozenset[str]:
-    names: set[str] = set()
-    for requirement in metadata.deps.requires:
-        try:
-            name, _ = parse_requirement(requirement)
-        except ValueError:
-            continue
-        names.add(normalise_name(name.split(".")[0]))
-    return frozenset(names)
-
-
-def _import_error(metadata: PluginMetadata, message: str) -> MetadataError:
-    return MetadataError(
-        FAILURE_IMPORT,
-        message,
-        plugin_id=metadata.id,
-        remediation=REMEDIATION.get(FAILURE_IMPORT),
-    )
-
-
-def target_errors(
-    metadata: PluginMetadata,
-    directory: Path,
-    *,
-    defer_missing: bool = False,
-) -> tuple[MetadataError, ...]:
-    """Check that ``directory`` really provides the declared plugin class.
-
-    The directory and its vendor tree are put on ``sys.path`` while importing;
-    ``sys.path`` and ``sys.modules`` are restored afterwards. With
-    ``defer_missing`` a missing top-level module that matches a declared
-    requirement is not an error yet: dependencies are installed after preflight
-    and the check runs again once they are available.
-    """
-    module_name = metadata.module.strip()
-    attribute = metadata.class_name.strip()
-    if not module_name or not attribute:
-        return (_import_error(metadata, "plugin.toml declares no module/class target"),)
-    base_dir = Path(directory)
-    vendor = find_vendor_dir(metadata.with_directory(base_dir))
-    entries = [base_dir] + ([vendor] if vendor is not None else [])
-    inserted: list[str] = []
-    for entry in reversed(entries):
-        text = str(entry)
-        if text not in sys.path:
-            sys.path.insert(0, text)
-            inserted.append(text)
-    _purge_modules(module_name)
-    try:
-        try:
-            module = importlib.import_module(module_name)
-        except ModuleNotFoundError as exc:
-            missing = exc.name or ""
-            own = missing == module_name or module_name.startswith(f"{missing}.")
-            deferred = (
-                defer_missing
-                and not own
-                and normalise_name(missing.split(".")[0]) in _declared_import_names(metadata)
-            )
-            if deferred:
-                return ()
-            return (_import_error(metadata, f"cannot import {module_name!r}: {exc}"),)
-        except Exception as exc:  # noqa: BLE001 - any import failure is a finding
-            return (_import_error(metadata, f"cannot import {module_name!r}: {exc}"),)
-        try:
-            target = getattr(module, attribute)
-        except AttributeError:
-            return (_import_error(metadata, f"module {module_name!r} has no attribute {attribute!r}"),)
-        if not isinstance(target, type):
-            return (_import_error(metadata, f"{module_name}.{attribute} is not a class"),)
-        plugin_base = _plugin_base()
-        if plugin_base is not None and not issubclass(target, plugin_base):
-            return (
-                _import_error(
-                    metadata,
-                    f"{module_name}.{attribute} does not subclass deeppyro.api.Plugin",
-                ),
-            )
-        return ()
-    finally:
-        for text in inserted:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(text)
-        _purge_modules(module_name)
-
-
-def _manifest_error(plugin_id: str, message: str) -> MetadataError:
-    return MetadataError(
-        FAILURE_MANIFEST_DANGLING,
-        message,
-        plugin_id=plugin_id,
-        remediation=MANIFEST_REMEDIATION,
-    )
-
-
-def _insert_paths(entries: Iterable[Path]) -> list[str]:
-    inserted: list[str] = []
-    for entry in entries:
-        text = str(entry)
-        if entry.is_dir() and text not in sys.path:
-            sys.path.insert(0, text)
-            inserted.append(text)
-    return inserted
-
-
-def _consistent_manifest(plugin_root: Path, manifest_path: Path) -> bool:
-    """Only diagnose a manifest that belongs to the scanned plugin root."""
-    return manifest_path.parent == plugin_root.parent
-
-
-def manifest_issues(root: Path | None = None) -> tuple[MetadataError, ...]:
-    """Manifest rows whose package directory is gone or whose target cannot import."""
-    from deeppyro.kernel.manifest import ManifestError, load_manifest, resolve_plugin_name
-
-    plugin_root = Path(root) if root is not None else paths.plugins_dir()
-    manifest_path = paths.plugins_manifest_path()
-    if not _consistent_manifest(plugin_root, manifest_path):
-        return ()
-    try:
-        specs = load_manifest(manifest_path)
-    except (OSError, ManifestError) as exc:
-        return (
-            MetadataError(
-                FAILURE_METADATA,
-                f"cannot read plugin manifest {manifest_path}: {exc}",
-                remediation=REMEDIATION.get(FAILURE_METADATA),
-            ),
-        )
-    issues: dict[str, MetadataError] = {}
-    for spec in specs:
-        plugin_id = spec.id
-        if plugin_id in issues:
-            continue
-        directory = plugin_root / plugin_id
-        if validate_plugin_id(plugin_id) is not None or not (directory / "plugin.toml").is_file():
-            issues[plugin_id] = _manifest_error(
-                plugin_id,
-                f"manifest lists {plugin_id!r} but {directory} is not an installed plugin package",
-            )
-            continue
-        if not spec.name:
-            issues[plugin_id] = _manifest_error(
-                plugin_id,
-                f"manifest row {plugin_id!r} declares no plugin target",
-            )
-            continue
-        vendor = directory / "_vendor" / python_tag()
-        inserted = _insert_paths([directory, vendor, directory / "_vendor"])
-        try:
-            resolve_plugin_name(spec.name)
-        except Exception as exc:  # noqa: BLE001 - any import failure is a finding
-            issues[plugin_id] = _manifest_error(
-                plugin_id,
-                f"cannot import target {spec.name!r}: {exc}",
-            )
-        finally:
-            for text in inserted:
-                with contextlib.suppress(ValueError):
-                    sys.path.remove(text)
-    return tuple(issues[key] for key in sorted(issues))
 
 
 @dataclass(frozen=True, slots=True)
