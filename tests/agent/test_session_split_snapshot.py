@@ -265,9 +265,10 @@ async def test_current_turn_helpers_filter_hook_and_goal_records(tmp_path: Path)
         "goal work",
         source={"kind": "goal", "goalId": "g1", "revision": 2, "round": 3},
     )
-    # Let the woken driver claim the idle gate before waiting on it: the gate
-    # is still set from the previous drive until the new one starts.
-    await asyncio.sleep(0)
+    # Waking the driver must close the idle gate: a stale event from the
+    # previous drive would make wait_for_idle spin without yielding to the
+    # driver task, so assert the gate is shut before waiting on it.
+    assert agent._idle.is_set() is False
     await agent.wait_for_idle()
 
     goal_turn = captures[1]

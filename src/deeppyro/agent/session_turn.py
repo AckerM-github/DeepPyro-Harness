@@ -125,6 +125,9 @@ class TurnLayer(StreamLayer):
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
+        # A previous drive leaves the idle gate set; clear it before the new
+        # task can start so wait_for_idle does not spin on the stale event.
+        self._idle.clear()
         self._driver_task = loop.create_task(self._drive_background())
 
     async def _drive_background(self) -> None:
