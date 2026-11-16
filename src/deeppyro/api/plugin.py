@@ -37,8 +37,10 @@ from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel
 
+from .context import PluginContext
 from .errors import PluginError
 from .services import ServiceTypeError, bind_service_type, note_service_value, service_name
+from .types import PluginConfig
 
 #: Classes already told about the v1 setup signature (one warning per class).
 _WARNED_LEGACY_SETUP: set[type[Any]] = set()
@@ -61,10 +63,10 @@ class Plugin:
     inject: ClassVar[Sequence[str | type[Any]]] = ()
 
     #: Set by the adapter before setup runs.
-    ctx: Any
-    config: Any
+    ctx: PluginContext
+    config: PluginConfig
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         self.ctx = ctx
         self.config = config
 
@@ -103,7 +105,7 @@ def inject_names(cls: type[Any]) -> list[str]:
     return names
 
 
-def invoke_setup(instance: Any, ctx: Any, config: Any) -> Any:
+def invoke_setup(instance: Any, ctx: PluginContext, config: PluginConfig) -> Any:
     """Call a plugin's setup hook with the right argument list.
 
     API v2 plugins implement ``setup(self)`` and read ctx/config from the
@@ -183,7 +185,7 @@ class Service(Plugin):
         if isinstance(declared, str) and declared:
             bind_service_type(cls, declared)
 
-    def __init__(self, ctx: Any, config: Any = None) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig = None) -> None:
         if not self.provide:
             raise PluginError(f"{type(self).__name__}.provide must name a service")
         Plugin.__init__(self, ctx, config)
