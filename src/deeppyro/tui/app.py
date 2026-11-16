@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import contextlib
 import inspect
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
@@ -37,8 +36,8 @@ from deeppyro.tui.app_support import _goal_service as _goal_service
 from deeppyro.tui.app_support import _hook_rows_from_records as _hook_rows_from_records
 from deeppyro.tui.app_support import _normalize_hook_rows as _normalize_hook_rows
 from deeppyro.tui.app_support import _record_field as _record_field
-from deeppyro.tui.app_ui import UiLayer
-from deeppyro.tui.commands import dispatch, help_text, live_commands
+from deeppyro.tui.app_turns import TurnLayer
+from deeppyro.tui.commands import help_text, live_commands
 from deeppyro.tui.format import context_percent, short_session_id
 from deeppyro.tui.history import is_ptc_mode_message, process_map, reasoning_from_session
 from deeppyro.tui.screens.hook_trace import EMPTY_TEXT as HOOK_TRACE_EMPTY_TEXT
@@ -62,7 +61,7 @@ from deeppyro.tui.widgets.prompt_area import PromptArea
 from deeppyro.tui.widgets.status_bar import StatusBar
 
 
-class DeepPyroApp(UiLayer):
+class DeepPyroApp(TurnLayer):
     """Full-screen terminal client for one DeepPyro session."""
 
     CSS_PATH = "theme.tcss"
@@ -156,46 +155,6 @@ class DeepPyroApp(UiLayer):
         self.set_interval(1.0, self._refresh_activity)
         self.refresh_status()
 
-    def _configure_schedule(self) -> None:
-        """Route scheduled-message notices into the conversation."""
-        configure = getattr(self.runtime, "configure_schedule_notice", None)
-        if callable(configure):
-            configure(self._on_schedule_message)
-
-    async def _start_schedule(self) -> None:
-        """Start the schedule timer when the runtime loaded the service."""
-        start = getattr(self.runtime, "start_schedule", None)
-        if not callable(start):
-            return
-        # scheduling is best effort
-        with contextlib.suppress(Exception):
-            result = start()
-            if inspect.isawaitable(result):
-                await result
-
-    def _on_schedule_message(self, text: str) -> None:
-        """Show a scheduled user message and keep the busy indicator honest."""
-        self.conversation.add_user(text)
-        if self._working:
-            return
-        self._working = True
-        self._phase = "thinking"
-        self.refresh_status()
-        self.run_worker(self._await_schedule_turn(), group="schedule")
-
-    async def _await_schedule_turn(self) -> None:
-        agent = getattr(self.runtime, "agent", None)
-        wait = getattr(agent, "wait_for_idle", None)
-        if callable(wait):
-            read: Callable[[], Any] = wait
-            # the turn already reports errors
-            with contextlib.suppress(Exception):
-                await read()
-        if not getattr(self.runtime, "busy", False):
-            self._working = False
-            self._phase = "idle"
-            self.refresh_status()
-
     async def on_unmount(self) -> None:
         self._unbind_ui()
         runtime = self.runtime
@@ -227,82 +186,6 @@ class DeepPyroApp(UiLayer):
         screen = self._splash_screen()
         if screen is not None:
             screen.action_dismiss_splash()
-
-    # -- input -----------------------------------------------------------
-    @on(PromptArea.Submitted)
-    def _on_submit(self, event: PromptArea.Submitted) -> None:
-        text = str(event.text or "").strip()
-        if not text:
-            return
-        if self._working:
-            self.notify("a turn is already running", severity="warning")
-            return
-        self.conversation.add_user(text)
-        if text.startswith("/"):
-            self.run_worker(self._run_command(text), group="command")
-            return
-        self._working = True
-        self._phase = "thinking"
-        self.refresh_status()
-        self.run_worker(self._run_turn(text), group="turn", exclusive=True)
-
-    async def _run_turn(self, text: str) -> None:
-        self._sink.begin_turn()
-        try:
-            await self.runtime.agent.send(text)
-        except Exception as exc:  # noqa: BLE001 - turn errors belong in the log
-            self.conversation.add_error(f"{type(exc).__name__}: {exc}")
-        finally:
-            if getattr(self.runtime, "busy", False):
-                self.run_worker(self._await_schedule_turn(), group="schedule")
-            else:
-                self._working = False
-                self._phase = "idle"
-                self.refresh_status()
-
-    async def _run_command(self, line: str) -> None:
-        try:
-            handled = await dispatch(self, line)
-        except Exception as exc:  # noqa: BLE001 - command errors stay in the log
-            self.conversation.add_error(f"{type(exc).__name__}: {exc}")
-            return
-        if not handled:
-            name = line.split(maxsplit=1)[0]
-            self.conversation.add_error(f"unknown command: {name} (try /help)")
-
-    # -- bindings --------------------------------------------------------
-    def action_focus_prompt(self) -> None:
-        if self._prompt is not None:
-            self._prompt.focus()
-
-    def action_quit(self) -> None:
-        self.exit()
-
-    def action_cancel_or_quit(self) -> None:
-        now = time.monotonic()
-        if self._working:
-            self._last_ctrl_c = now
-            self.run_worker(self._interrupt_turn(), group="interrupt")
-            return
-        prompt = self._prompt
-        if prompt is not None and prompt.text:
-            prompt.clear()
-            self._last_ctrl_c = 0.0
-            self.notify("input cleared")
-            return
-        if now - self._last_ctrl_c < 1.2:
-            self.exit()
-            return
-        self._last_ctrl_c = now
-        self.notify("press Ctrl+C again to quit")
-
-    async def _interrupt_turn(self) -> None:
-        try:
-            await self.runtime.agent.interrupt()
-        except Exception as exc:  # noqa: BLE001
-            self.conversation.add_error(f"interrupt failed: {exc}")
-            return
-        self.notify("interrupt requested")
 
     @on(ActivityBar.SegmentClicked)
     def _on_activity_segment(self, event: ActivityBar.SegmentClicked) -> None:
