@@ -32,7 +32,7 @@
     description = "QQ/Discord bridge"
     module = "dpyro_im"             # 也可以是 "dpyro_im.plugin:ImPlugin"
     class = "ImPlugin"
-    api_version = 1                 # 必填，整数，不得大于宿主 API_VERSION
+    api_version = 2                 # 必填，整数，不得大于宿主 API_VERSION
     provides = ["im"]               # 可选，仅用于展示
 
     [compat]

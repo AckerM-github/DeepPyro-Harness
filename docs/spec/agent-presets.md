@@ -20,7 +20,7 @@ An agent preset is an immutable snapshot of a per-session composition:
   **presentation** (`native` or `ptc`) and whether the runtime-context message is committed
   (`runtime_context`). These fields are frozen with the revision like any other snapshot data.
 - A **realm** is the isolated mounting of a revision's `PresetPluginRow` rows. Rows run in a child
-  cordis context of the `presets` fiber, and every registration made through their
+  runtime context of the `presets` fiber, and every registration made through their
   `PluginContext` is automatically tagged with `(preset id, revision)`.
 
 ## 2. Built-in presets and agent modes
@@ -176,7 +176,7 @@ ctx.register_preset(PresetSpec(
   use a second resolver.
 - `config` is validated with the plugin's `Config` model exactly like the kernel does.
 - `disabled=True` skips a row without failing the realm.
-- `isolate` lists cordis service names that the row mounts in its own isolation layer
+- `isolate` lists service names that the row mounts in its own isolation layer
   (`ctx.isolate(name)`), mirroring bundle `isolate` rows.
 
 ## 5. Activation: schedule, then await
@@ -288,7 +288,7 @@ agent.preset_spec       # the immutable PresetSpec used
 ## 10. Deviations and known limits
 
 - **Realm service isolation is opt-in.** Only service names listed in `PresetPluginRow.isolate`
-  get their own cordis isolation layer. Other services a realm row contributes (commands, LLM
+  get their own isolation layer. Other services a realm row contributes (commands, LLM
   providers, arbitrary services) are registered in the host realm and are not filtered by preset
   scope; tools and prompt sections are the fully scoped contribution types in this iteration.
 - Realm activation is asynchronous and explicit; there is no blocking "activate on boot" pass

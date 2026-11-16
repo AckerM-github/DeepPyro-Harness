@@ -154,7 +154,7 @@ bundle 生命周期门面：list_bundles()、install_bundle(source, *, force=Fal
 
 ## 6. 设置服务：SettingsStore 与 SettingsPlugin
 
-SettingsStore 负责插件配置的描述、读取与带 CAS 的写入；SettingsPlugin 把它暴露为 cordis 服务（provide = settings），供 agent 工具和其它插件使用。详细规则见 @docs/spec/plugin-settings.md，这里给出要点。
+SettingsStore 负责插件配置的描述、读取与带 CAS 的写入；SettingsPlugin 把它暴露为 kernel 服务（provide = settings），供 agent 工具和其它插件使用。详细规则见 @docs/spec/plugin-settings.md，这里给出要点。
 
     SettingsStore(*, manifest_path=None, plugins_dir=None, bundle_paths=())
 
@@ -180,7 +180,7 @@ SettingsPlugin：provide = settings，plugin_id = settings，version = 0.1.0，i
 
 ## 7. 检视服务：InspectPlugin
 
-InspectPlugin（provide = inspect，plugin_id = inspect，version = 0.1.0，inject = []）只读访问当前进程的 cordis 宿主，不 import kernel.app。所有方法在依赖服务缺失时抛 PluginDependencyError。
+InspectPlugin（provide = inspect，plugin_id = inspect，version = 0.1.0，inject = []）只读访问当前进程的运行时服务表，不 import kernel.app。所有方法在依赖服务缺失时抛 PluginDependencyError。
 
 | 方法 | 返回 |
 | --- | --- |
@@ -270,7 +270,6 @@ manager 省略时延迟构造真实的 PluginManager（读真实用户目录）�
 - settings/inspect 通过 default composition 读取生效视图；通过 extra_plugins 挂载、且不在用户清单/composition 里的插件，config_schema 走 PluginManager 兜底解析 target，但没有生效 config 行。
 - 用户 bundle 安装只做结构校验，不签名、不沙箱；下一次 boot 会执行其中代码，因此 install 属于需要人工批准的高风险操作。plugin_create 只生成代码不执行，但生成的 bundle 一旦安装就会在下次 boot 运行。
 - 脚手架示例工具名 sample_greeting 是固定值，多个由模板生成的 bundle 同时启用时可能与其他 bundle 的工具重名；示例 volatile 字段 greeting 也会在改配置时触发 live apply，仅作演示。
-- inspect 读取失败 fiber 的错误文本用到了 vendor cordis 的私有属性（fiber._error），vendor 升级时可能失效。
 - 删除 bundle 或目录插件不会停止当前进程里已加载的插件；需要重启。
 - 清单写入没有跨进程锁，假定单 TUI 进程独占用户清单。
 - 目录插件可导入性：正常 boot 进程不会自动把插件目录加入 sys.path；PluginManager 扫描时插入当前进程 sys.path，因此 validate/enable 可用。新进程直接 boot kernel 时，需 PYTHONPATH 或让 plugin-manager 行先加载；entry point 插件属于已安装发行版，无此问题。

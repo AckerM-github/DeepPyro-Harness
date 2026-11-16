@@ -307,7 +307,8 @@ hook/invoked and hook/result records through AgentSession.record_hook_event.
 Records are shaped by src/deeppyro/hooks/records.py and skip the two hot hooks.
 Plugins observe the bus directly with ctx.on(name, handler) — PluginContext
 routes any name declared in deeppyro.core.events to the HookService (M1 single
-bus) and only falls back to cordis for kernel events.
+bus) and only falls back to the runtime context's local dispatcher for kernel
+events.
 
 ## 3. Hook catalogue
 
@@ -852,8 +853,9 @@ M1 also retires the cordis mirror. `hook-bridge` (and `kernel/hook_bridge.py`)
 is gone: `PluginContext.on()` now resolves a name through
 `deeppyro.core.events.EVENT_SPECS` and subscribes to the HookService directly, so
 a third-party plugin sees the bus without a second dispatch path. Names the
-catalogue does not know still fall back to `ctx.on` cordis events, which keeps
-kernel observability (`plugin/status`, `loader/changed`, ...) working. The
+catalogue does not know still fall back to the runtime context's local
+dispatcher (`ctx.on`), which keeps kernel observability (`plugin/status`,
+`loader/changed`, ...) working. The
 durable trace is unchanged: `hook-journal` keeps writing `hook/invoked` and
 `hook/result` session records, and the TUI reads those records rather than a
 republished event stream.

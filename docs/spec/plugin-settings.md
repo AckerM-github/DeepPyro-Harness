@@ -122,7 +122,7 @@ write(plugin_id, patch, expected_revision)：
 
 ## 10. 生效时机：volatile 与 live apply
 
-SettingsStore 只负责磁盘上的配置 patch。SettingsPlugin 把结果暴露为 cordis 服务 settings，agent 工具 settings_read/settings_write 从 ToolContext.services 里取它。默认情况下 boot 时 kernel 按 composition 重新读取 manifest 并 model_validate，新配置在启动完成后才进入插件实例，因此 store 层 describe 的 apply 恒为 next-boot。
+SettingsStore 只负责磁盘上的配置 patch。SettingsPlugin 把结果暴露为 kernel 服务 settings，agent 工具 settings_read/settings_write 从 ToolContext.services 里取它。默认情况下 boot 时 kernel 按 composition 重新读取 manifest 并 model_validate，新配置在启动完成后才进入插件实例，因此 store 层 describe 的 apply 恒为 next-boot。
 
 插件类可以声明可热更新字段：@src/deeppyro/api/plugin.py 的 Plugin 有 ClassVar volatile: tuple[str, ...]（默认空）。describe/read 的 volatile_fields 就是这个声明（排序、去重），不是「生效配置的顶层键」。SettingsPlugin.write 的流程：
 

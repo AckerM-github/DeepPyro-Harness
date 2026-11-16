@@ -121,7 +121,7 @@ maxDimension = 16384
 
 ## 6. 公开 API
 
-`AttachmentStore` 是普通类（不是 cordis Service），可独立构造与测试；插件层负责把它 provide 成服务。
+`AttachmentStore` 是普通类（不是 Plugin/Service 子类），可独立构造与测试；插件层负责把它 provide 成服务。
 
 ```python
 class AttachmentStore:

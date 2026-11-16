@@ -157,7 +157,7 @@ registry.translate("acme.greeting", default=None) -> str
 ## 3. Kernel service: SlotsPlugin
 
 `SlotsPlugin` is a normal `deeppyro.api.Plugin` that provides the shared
-registry as the cordis service `slots`:
+registry as the `slots` service:
 
 ```python
 class SlotsPlugin(Plugin):
@@ -174,7 +174,7 @@ class SlotsPlugin(Plugin):
         self.load_ui_packages()   # scans <home>/bundles/*/ui.toml, errors recorded
 ```
 
-`self.ctx.provide` goes through the vendored cordis `Context.provide`, so the
+`self.ctx.provide` registers through the native runtime context, so the
 service is registered immediately and unregistered with the plugin fiber. A
 real-kernel probe (external bundle row below) returned a `SlotRegistry` with
 `app.started["slots"] == "ACTIVE"`.
@@ -747,7 +747,7 @@ want localized text. `"!key"` interpolation is intentionally not implemented
 id = "acme"
 name = "Acme UI"
 version = "0.1.0"
-api_version = 1
+api_version = 2
 ```
 
 `ui.toml`:
