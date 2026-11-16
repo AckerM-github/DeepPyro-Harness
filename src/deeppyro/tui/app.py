@@ -22,6 +22,7 @@ from typing import Any, ClassVar
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.notifications import SeverityLevel
 from textual.widgets import Footer, Header
 
 from deeppyro import __version__
@@ -297,9 +298,10 @@ class DeepPyroApp(App[None]):
         agent = getattr(self.runtime, "agent", None)
         wait = getattr(agent, "wait_for_idle", None)
         if callable(wait):
+            read: Callable[[], Any] = wait
             # the turn already reports errors
             with contextlib.suppress(Exception):
-                await wait()
+                await read()
         if not getattr(self.runtime, "busy", False):
             self._working = False
             self._phase = "idle"
@@ -380,7 +382,8 @@ class DeepPyroApp(App[None]):
 
     def _notify_ui(self, payload: Mapping[str, Any]) -> None:
         level = str(payload.get("level") or "info").lower()
-        severity = {"warning": "warning", "error": "error"}.get(level, "information")
+        severities: dict[str, SeverityLevel] = {"warning": "warning", "error": "error"}
+        severity = severities.get(level, "information")
         text = str(payload.get("text") or "").strip()
         if text:
             self.notify(text, severity=severity)
@@ -659,7 +662,11 @@ class DeepPyroApp(App[None]):
         usage = runtime.session_usage()
         window = int(getattr(runtime, "context_window", 0) or 0)
         context_reader = getattr(runtime, "context_tokens", None)
-        context_used = int(context_reader()) if callable(context_reader) else usage["input"]
+        if callable(context_reader):
+            read: Callable[[], Any] = context_reader
+            context_used = int(read())
+        else:
+            context_used = usage["input"]
         status.show(
             session_id=runtime.session_id,
             provider=runtime.provider_name,
@@ -771,7 +778,11 @@ class DeepPyroApp(App[None]):
     async def permission_command(self, argument: str) -> None:
         """Show or switch the permission preset (/permission)."""
         names_reader = getattr(self.runtime, "permission_names", None)
-        presets = list(names_reader()) if callable(names_reader) else []
+        if callable(names_reader):
+            read: Callable[[], Any] = names_reader
+            presets = list(read())
+        else:
+            presets = []
         if not presets:
             presets = ["read-only", "workspace-write", "danger-full-access"]
         if not argument:
@@ -805,7 +816,11 @@ class DeepPyroApp(App[None]):
         current = str(getattr(runtime, "cwd", "") or "")
         if not argument:
             known = getattr(runtime, "known_workspaces", None)
-            workspaces = list(known() if callable(known) else [])
+            if callable(known):
+                read: Callable[[], Any] = known
+                workspaces = list(read())
+            else:
+                workspaces = []
             options: list[tuple[str, str, str]] = []
             for path in [current, *workspaces]:
                 if path and path not in [item[0] for item in options]:
@@ -1096,9 +1111,10 @@ class DeepPyroApp(App[None]):
         """Configured provider names, falling back to the active one."""
         getter = getattr(self.runtime, "providers", None)
         if callable(getter):
+            read: Callable[[], Any] = getter
             # the command must keep working
             with contextlib.suppress(Exception):
-                values = [str(name) for name in getter()]
+                values = [str(name) for name in read()]
                 if values:
                     return values
         active = str(getattr(self.runtime, "provider_name", "") or "")
@@ -1108,13 +1124,15 @@ class DeepPyroApp(App[None]):
         """Every configured (provider, model) pair, if the runtime knows them."""
         getter = getattr(self.runtime, "model_choices", None)
         if callable(getter):
+            read_choices: Callable[[], Any] = getter
             with contextlib.suppress(Exception):
-                return [(str(provider), str(model)) for provider, model in getter()]
-        getter = getattr(self.runtime, "models", None)
-        if callable(getter):
+                return [(str(provider), str(model)) for provider, model in read_choices()]
+        models_getter = getattr(self.runtime, "models", None)
+        if callable(models_getter):
+            read_models: Callable[[], Any] = models_getter
             with contextlib.suppress(Exception):
                 provider = str(getattr(self.runtime, "provider_name", "") or "")
-                return [(provider, str(model)) for model in getter()]
+                return [(provider, str(model)) for model in read_models()]
         return []
 
     def _model_value(self, provider: str, model: str) -> str:
@@ -1135,8 +1153,9 @@ class DeepPyroApp(App[None]):
         refresher = getattr(self.runtime, "refresh_models", None)
         if not callable(refresher):
             return
+        read: Callable[[], Any] = refresher
         try:
-            await refresher()
+            await read()
         except Exception:  # noqa: BLE001 - the configured catalog stays usable
             return
 
@@ -1271,8 +1290,9 @@ class DeepPyroApp(App[None]):
     def _preset_specs(self) -> list[Any]:
         value = getattr(self.runtime, "presets", None)
         if callable(value):
+            read: Callable[[], Any] = value
             try:
-                value = value()
+                value = read()
             except Exception:  # noqa: BLE001 - the command must keep working
                 return []
         return list(value or [])
@@ -1543,9 +1563,10 @@ class DeepPyroApp(App[None]):
                 getter = getattr(team, getter_name, None)
                 if not callable(getter):
                     continue
+                read: Callable[[], Any] = getter
                 # a broken store must not crash the UI
                 with contextlib.suppress(Exception):
-                    target.extend(getter())
+                    target.extend(read())
             team_id = str(getattr(team, "team_id", "") or "")
         return members, tasks, team_id
 
