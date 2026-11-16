@@ -1,28 +1,10 @@
-"""Runtime assembly for the terminal UI.
-
-The TUI boots the native kernel (the same bundle the one-shot headless path
-uses) and resolves the services; everything workspace-scoped is built here once
-and then reused for the whole UI session:
-
-* one SessionStore for creating/opening sessions,
-* one ToolRegistry bound to the workspace cwd,
-* one PermissionGate whose approval callback is served by the UI modal,
-* one LlmProvider,
-* one AgentSession per active session.
-
-This module is the TUI's only seam to the domain layers, mirroring
-deeppyro.headless.boot_runtime.
-"""
+"""Runtime assembly for the terminal UI. This module is the facade of the layered TuiRuntime: it keeps the construction entry point, provider/model commands, and shutdown, and re-exports the module-level helpers and the schedule host that were historically defined here. It is the TUI's only seam to the domain layers, mirroring deeppyro.headless.boot_runtime."""
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
-import inspect
-import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -36,102 +18,27 @@ from deeppyro.api import (
 )
 from deeppyro.config import Config, load_config, save_agent_selection
 from deeppyro.core.errors import ConfigError, DeeppyroError
-from deeppyro.hooks import SESSION_CREATED, SESSION_DISPOSED
-from deeppyro.schedule import DeliveryReceipt, NewOnceTarget, NewTarget, SessionTarget
-from deeppyro.schedule.timeutil import format_instant
+from deeppyro.hooks import SESSION_DISPOSED
 from deeppyro.team.types import LIVE_PHASES
-
-logger = logging.getLogger(__name__)
-
-DEFAULT_CONTEXT_WINDOW = 32768
-
-
-def resolve_workspace(path: str | Path | None = None) -> Path:
-    """Resolve the workspace directory, rejecting missing paths."""
-    workspace = Path(path).expanduser() if path else Path.cwd()
-    workspace = workspace.resolve()
-    if not workspace.is_dir():
-        raise ConfigError(f"workspace directory does not exist: {workspace}")
-    return workspace
-
-
-def _context_window(provider_cfg: Any, model_id: str) -> int:
-    """Pick the model context window, falling back to the provider default."""
-    models = list(getattr(provider_cfg, "models", []) or [])
-    for entry in models:
-        if getattr(entry, "id", None) == model_id and getattr(entry, "contextWindow", 0):
-            return int(entry.contextWindow)
-    if models and getattr(models[0], "contextWindow", 0):
-        return int(models[0].contextWindow)
-    return DEFAULT_CONTEXT_WINDOW
-
-
-def _context_window_for(provider_cfg: Any, model_id: str, info: Any = None) -> int:
-    """Context window for a model, honoring a catalog entry for discovered ids.
-
-    Configured models keep the configuration answer exactly as before; only a
-    model that config does not declare falls back to the catalog window and
-    finally to DEFAULT_CONTEXT_WINDOW (no borrowed provider default, matching
-    the headless resolver).
-    """
-    configured = [str(getattr(entry, "id", "")) for entry in list(getattr(provider_cfg, "models", []) or [])]
-    if model_id in configured:
-        return _context_window(provider_cfg, model_id)
-    window = getattr(info, "context_window", None) if info is not None else None
-    if window is not None and int(window) > 0:
-        return int(window)
-    return DEFAULT_CONTEXT_WINDOW
-
-
-async def await_maybe(value: Any) -> Any:
-    """Await an awaitable or return a plain value (test doubles)."""
-    if inspect.isawaitable(value):
-        return await value
-    return value
+from deeppyro.tui.runtime_schedule_host import _now_rfc3339 as _now_rfc3339
+from deeppyro.tui.runtime_schedule_host import _ScheduleSink as _ScheduleSink
+from deeppyro.tui.runtime_schedule_host import _TuiScheduleHost as _TuiScheduleHost
+from deeppyro.tui.runtime_session import SessionLayer
+from deeppyro.tui.runtime_support import DEFAULT_CONTEXT_WINDOW as DEFAULT_CONTEXT_WINDOW
+from deeppyro.tui.runtime_support import _context_window as _context_window
+from deeppyro.tui.runtime_support import _context_window_for as _context_window_for
+from deeppyro.tui.runtime_support import _recorded_model_selection as _recorded_model_selection
+from deeppyro.tui.runtime_support import _recorded_preset as _recorded_preset
+from deeppyro.tui.runtime_support import _resolve_model as _resolve_model
+from deeppyro.tui.runtime_support import await_maybe as await_maybe
+from deeppyro.tui.runtime_support import logger as logger
+from deeppyro.tui.runtime_support import resolve_workspace as resolve_workspace
 
 
 @dataclass
-class TuiRuntime:
+class TuiRuntime(SessionLayer):
     """Booted kernel plus the live session/agent pair for the TUI."""
 
-    cfg: Config
-    cwd: Path
-    kernel_app: Any
-    provider_name: str
-    model: str
-    context_window: int
-    store: Any
-    provider: Any
-    registry: Any
-    permission: Any
-    agents: Any
-    sink: Any
-    ask: Callable[[Any], Awaitable[bool]]
-    activity: Any = None
-    jobs: Any = None
-    team: Any = None
-    subagent: Any = None
-    working_directory: Any = None
-    user_questions: Any = None
-    projections: Any = None
-    schedule: Any = None
-    schedule_notice: Callable[[str], None] | None = None
-    llm: Any = None
-    agent_preset: str = DEFAULT_PRESET_ID
-    preset_revision: int | None = None
-    team_previous_preset: str = DEFAULT_PRESET_ID
-    session: Any = None
-    agent: Any = None
-    last_persist_error: str | None = None
-    last_catalog_error: str | None = None
-    _catalog: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
-    _schedule_tasks: set[asyncio.Task[Any]] = field(default_factory=set, repr=False)
-    _schedule_once: dict[str, str] = field(default_factory=dict, repr=False)
-    _created_sessions: set[str] = field(default_factory=set, repr=False)
-    _restored_team_sessions: set[str] = field(default_factory=set, repr=False)
-    _closed: bool = field(default=False, repr=False)
-
-    # -- construction ---------------------------------------------------
     @classmethod
     async def boot(
         cls,
@@ -218,23 +125,6 @@ class TuiRuntime:
         await runtime.new_session()
         return runtime
 
-    def configure_user_questions(self, handler: Any | None = None) -> None:
-        """Route ask_user_question requests to a handler.
-
-        No-op when the bundle did not load the user_questions service or when
-        the service object has no configure hook, so older bundles keep working.
-        """
-        service = self.user_questions
-        if service is None:
-            return
-        configure = getattr(service, "configure", None)
-        if callable(configure):
-            configure(handler)
-
-    def configure_schedule_notice(self, handler: Callable[[str], None] | None = None) -> None:
-        """Route scheduled-message notices to the UI."""
-        self.schedule_notice = handler
-
     async def start_schedule(self) -> None:
         """Attach the TUI schedule host and start the timer (best effort)."""
         service = self.schedule
@@ -250,112 +140,6 @@ class TuiRuntime:
             # an optional service must not break the UI
             with contextlib.suppress(Exception):
                 await await_maybe(start())
-
-    async def stop_schedule(self) -> None:
-        """Stop the schedule timer and any background agent it spawned."""
-        service = self.schedule
-        if service is not None:
-            stop = getattr(service, "stop", None)
-            if callable(stop):
-                # shutdown must not mask an exception
-                with contextlib.suppress(Exception):
-                    await await_maybe(stop())
-        tasks = list(self._schedule_tasks)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            # shutdown must not mask an exception
-            with contextlib.suppress(Exception):
-                await asyncio.gather(*tasks, return_exceptions=True)
-        self._schedule_tasks.clear()
-
-    async def open_schedule_session(self, session_id: str) -> Any:
-        """Open a persisted session for a schedule delivery."""
-        return self.store.open(session_id)
-
-    async def create_schedule_session(self, spec: Any, preset: str) -> Any:
-        """Create a fresh session for a schedule delivery."""
-        directory = str(getattr(spec, "cwd", "") or "")
-        cwd = self.cwd
-        if directory:
-            candidate = Path(directory).expanduser()
-            try:
-                candidate = candidate.resolve()
-            except OSError:
-                candidate = self.cwd
-            if candidate.is_dir():
-                cwd = candidate
-        session = self.store.create(str(cwd), agent_preset=preset)
-        self._pin_permission(session)
-        await self._session_created(session, cwd=str(cwd), preset=preset)
-        return session
-
-    async def create_schedule_agent(self, session: Any, *, preset: str) -> Any:
-        """Build a silent agent for a scheduled turn."""
-        await self._ensure_preset(preset, None)
-        options = self.agents.options(model=self.model, context_window=self.context_window)
-        return self.agents.create(
-            session=session,
-            provider=self.provider,
-            registry=self._registry_for_preset(preset),
-            options=options,
-            sink=_ScheduleSink(),
-            permission=self.permission,
-            cwd=str(self.cwd),
-            services=self._plugin_services(),
-            preset=preset,
-        )
-
-    def track_schedule_agent(self, session: Any, agent: Any) -> None:
-        """Close a background agent once its scheduled turn is idle."""
-        task = asyncio.create_task(self._finish_schedule_agent(session, agent))
-        self._schedule_tasks.add(task)
-        task.add_done_callback(self._schedule_tasks.discard)
-
-    async def _finish_schedule_agent(self, session: Any, agent: Any) -> None:
-        try:
-            wait = getattr(session, "wait_for_idle", None)
-            if callable(wait):
-                await await_maybe(wait())
-        except Exception:  # noqa: BLE001 - background cleanup is best effort
-            pass
-        finally:
-            close = getattr(agent, "aclose", None)
-            if callable(close):
-                # background cleanup is best effort
-                with contextlib.suppress(Exception):
-                    await await_maybe(close())
-
-    def _registry_for_preset(self, preset: str) -> Any:
-        """Tool registry narrowed to one agent preset."""
-        service = self._service("tools")
-        registry_for = getattr(service, "registry_for", None)
-        if callable(registry_for):
-            try:
-                return registry_for(Path(self.cwd), scope=preset)
-            except TypeError:
-                try:
-                    return registry_for(Path(self.cwd))
-                except Exception:  # noqa: BLE001 - fall back to the base registry
-                    return self.registry
-            except Exception:  # noqa: BLE001 - fall back to the base registry
-                return self.registry
-        return self.registry
-
-    # -- sessions -------------------------------------------------------
-    async def new_session(self) -> Any:
-        """Create a fresh durable session and rebuild the agent."""
-        self._save_projections()
-        preset = self._canonical_preset(self.agent_preset) or DEFAULT_PRESET_ID
-        self.agent_preset = preset
-        self.preset_revision = None
-        session = self.store.create(str(self.cwd), agent_preset=preset)
-        self._pin_permission(session)
-        await self._session_created(session, cwd=str(self.cwd), preset=preset)
-        await self._attach(session)
-        self._record_model_selection()
-        self._record_preset()
-        return session
 
     async def open_session(self, session_id: str) -> Any:
         """Open an existing session and rebuild the agent around it."""
@@ -403,194 +187,6 @@ class TuiRuntime:
             await self._attach(session)
         return session
 
-    async def _attach(self, session: Any) -> None:
-        options = self.agents.options(
-            model=self.model,
-            context_window=self.context_window,
-        )
-        agent = self.agents.create(
-            session=session,
-            provider=self.provider,
-            registry=self._scoped_registry(self.cwd),
-            options=options,
-            sink=self.sink,
-            permission=self.permission,
-            cwd=str(self.cwd),
-            services=self._plugin_services(),
-            preset=self.agent_preset,
-            preset_revision=self.preset_revision,
-        )
-        close_agent = getattr(self.agent, "aclose", None)
-        if close_agent is not None:
-            await await_maybe(close_agent())
-        self.session = session
-        self.agent = agent
-        self.preset_revision = getattr(agent, "preset_revision", None)
-        self._configure_team(session)
-        self._configure_subagent(session)
-        self._configure_working_directory(session)
-        self._restore_projections(session)
-        if self.agent_mode == AGENT_MODE_TEAM:
-            await self._restore_team(session)
-
-    def _save_projections(self) -> None:
-        """Write the live session's projection sidecar and stop observing it."""
-        service = self.projections
-        session = self.session
-        if service is None or session is None:
-            return
-        save = getattr(service, "save", None)
-        detach = getattr(service, "detach", None)
-        # an optional service must not break a session
-        with contextlib.suppress(Exception):
-            if save is not None:
-                save(session)
-        # an optional service must not break a session
-        with contextlib.suppress(Exception):
-            if detach is not None:
-                detach(session)
-
-    def _restore_projections(self, session: Any) -> None:
-        """Restore the session's projection sidecar and start observing appends."""
-        service = self.projections
-        if service is None or session is None:
-            return
-        attach = getattr(service, "attach", None)
-        if attach is None:
-            return
-        # an optional service must not break a session
-        with contextlib.suppress(Exception):
-            attach(session)
-
-    def _configure_working_directory(self, session: Any) -> None:
-        """Bind the live session so cd records and notices reach its log."""
-        service = self.working_directory
-        if service is None or session is None:
-            return
-        bind = getattr(service, "bind", None)
-        if bind is None:
-            return
-        header = getattr(session, "header", None)
-        session_cwd = getattr(header, "cwd", None) or self.cwd
-        # an optional service must not break a session
-        with contextlib.suppress(Exception):
-            bind(
-                session,
-                cwd=session_cwd,
-                record=session.append,
-                inject_notice=lambda text: session.inject(text, source={"kind": "working-directory"}),
-            )
-
-    def _configure_team(self, session: Any) -> None:
-        """Keep the team service pointed at the live lead session context."""
-        service = self.team
-        if service is None:
-            return
-        configure = getattr(service, "configure", None)
-        # an optional service must not break a session
-        with contextlib.suppress(Exception):
-            if configure is not None:
-                configure(
-                    cwd=self.cwd,
-                    provider=self.provider,
-                    registry=self._scoped_registry(self.cwd),
-                    permission=self.permission,
-                    model=self.model,
-                    context_window=self.context_window,
-                    preset=self.agent_preset,
-                    preset_revision=self.preset_revision,
-                    services=self._plugin_services(),
-                    ask=self.ask,
-                )
-            bind = getattr(service, "bind_session", None)
-            if bind is not None and session is not None:
-                bind(session)
-
-    def _configure_subagent(self, session: Any) -> None:
-        """Keep the subagent service pointed at the live lead session context."""
-        service = self.subagent
-        if service is None:
-            return
-        configure = getattr(service, "configure", None)
-        # an optional service must not break a session
-        with contextlib.suppress(Exception):
-            if configure is not None:
-                configure(
-                    cwd=self.cwd,
-                    provider=self.provider,
-                    registry=self._scoped_registry(self.cwd),
-                    permission=self.permission,
-                    model=self.model,
-                    context_window=self.context_window,
-                    preset=self.agent_preset,
-                    preset_revision=self.preset_revision,
-                    services=self._plugin_services(),
-                    ask=self.ask,
-                )
-            bind = getattr(service, "bind_session", None)
-            if bind is not None and session is not None:
-                bind(session)
-            bind_parent = getattr(service, "bind_parent", None)
-            if bind_parent is not None and self.agent is not None:
-                bind_parent(self.agent)
-
-    async def _restore_team(self, session: Any) -> None:
-        """Rebuild team state from the lead session log (cold resume).
-
-        A session is restored at most once per process: switching presets or
-        rebinding a workspace re-attaches the same session and must not clear a
-        live roster.  The team service itself is idempotent, but auto-resumed
-        members would be orphaned by a second replay, hence the session guard.
-        """
-        service = self.team
-        if service is None:
-            return
-        restore = getattr(service, "restore", None)
-        if not callable(restore):
-            return
-        header = getattr(session, "header", None)
-        session_id = str(getattr(header, "id", "") or getattr(session, "session_id", "") or "").strip()
-        if session_id:
-            if session_id in self._restored_team_sessions:
-                return
-            self._restored_team_sessions.add(session_id)
-        try:
-            await await_maybe(restore())
-        except Exception:
-            logger.warning("failed to restore team state", exc_info=True)
-
-    def _canonical_preset(self, preset: Any) -> str | None:
-        """Normalize a preset id through the presets service aliases."""
-        value = str(preset or "").strip()
-        if not value:
-            return None
-        service = self._service("presets")
-        canonical = getattr(service, "canonical", None)
-        if callable(canonical):
-            try:
-                normalized = canonical(value)
-            except Exception:  # noqa: BLE001 - normalization is best effort
-                return value
-            return str(normalized).strip() if normalized else None
-        return value
-
-    def _agent_preset_spec(self) -> Any | None:
-        """Resolve the active preset spec (None when the service is unavailable)."""
-        service = self._service("presets")
-        resolver = getattr(service, "resolve", None)
-        if not callable(resolver):
-            return None
-        try:
-            return resolver(self.agent_preset, revision=self.preset_revision)
-        except Exception:  # noqa: BLE001 - status display must never fail
-            return None
-
-    @property
-    def agent_mode(self) -> str:
-        """Mode of the active agent preset ("default" or "team")."""
-        spec = self._agent_preset_spec()
-        return str(getattr(spec, "mode", "default") or "default")
-
     @property
     def agent_presentation(self) -> str:
         """Tool presentation of the active agent ("native" or "ptc")."""
@@ -616,51 +212,6 @@ class TuiRuntime:
         name = str(getattr(spec, "name", "") or "").strip()
         return name or self.agent_preset
 
-    def _plugin_services(self) -> dict[str, Any]:
-        """Plugin services the agent tools read from ToolContext.services."""
-        services: dict[str, Any] = {}
-        for name in (
-            "llm",
-            "hooks",
-            "retryPolicy",
-            "sandbox",
-            "sandboxPolicy",
-            "approval",
-            "permissionPresets",
-            "plugin_manager",
-            "inspect",
-            "settings",
-            "jobs",
-            "team",
-            "subagent",
-            "working_directory",
-            "user_questions",
-            "attachments",
-            "schedule",
-            "memory",
-            "ptc",
-        ):
-            service = self._service(name)
-            if service is not None:
-                services[name] = service
-        return services
-
-    def _service(self, name: str) -> Any | None:
-        app = self.kernel_app
-        if app is None:
-            return None
-        try:
-            return app.service(name)
-        except LookupError:
-            return None
-
-    async def _session_created(self, session: Any, *, cwd: str, preset: str | None) -> None:
-        session_id = str(getattr(session, "session_id", "") or "")
-        if not session_id:
-            return
-        self._created_sessions.add(session_id)
-        await self._emit_hook(SESSION_CREATED, {"sessionId": session_id, "cwd": cwd, "preset": preset})
-
     async def _dispose_sessions(self) -> None:
         # Sorted so shutdown is deterministic even though the set does not keep
         # insertion order.
@@ -669,30 +220,6 @@ class TuiRuntime:
         for session_id in session_ids:
             await self._emit_hook(SESSION_DISPOSED, {"sessionId": session_id})
 
-    async def _emit_hook(self, name: str, payload: dict[str, Any]) -> None:
-        hooks = self._service("hooks")
-        if hooks is None or not hooks.has(name):
-            return
-        try:
-            await hooks.emit(name, payload)
-        except Exception:
-            logger.exception("hook %r dispatch failed", name)
-
-    def _scoped_registry(self, workspace: Any) -> Any:
-        """Tools registry narrowed to contributions visible to the preset."""
-        service = self._service("tools")
-        if service is None:
-            return self.registry
-        registry_for = getattr(service, "registry_for", None)
-        if registry_for is None:
-            return self.registry
-        scope = self._canonical_preset(self.agent_preset) or DEFAULT_PRESET_ID
-        try:
-            return registry_for(Path(workspace), scope=scope)
-        except TypeError:
-            return registry_for(Path(workspace))
-
-    # -- services -------------------------------------------------------
     @property
     def presets(self) -> list[Any]:
         """Agent presets offered by the bundle, ordered by the service."""
@@ -808,7 +335,7 @@ class TuiRuntime:
                 # rebuild it so the UI keeps a working agent after a rollback.
                 try:
                     await self._attach(self.session)
-                except Exception:
+                except Exception:  # noqa: BLE001 - rollback must not mask the preset failure
                     logger.exception("failed to restore the agent after a preset switch failure")
             raise
 
@@ -837,7 +364,6 @@ class TuiRuntime:
         except LookupError:
             return None
 
-    # -- provider / model switching -------------------------------------
     def providers(self) -> list[str]:
         """Configured provider names, in config order."""
         return [str(name) for name in self.cfg.providers]
@@ -866,7 +392,6 @@ class TuiRuntime:
                     choices.append(pair)
         return choices
 
-    # -- model catalog ----------------------------------------------------
     def _llm_service(self) -> Any | None:
         """The kernel llm service, when the bundle loaded one."""
         service = self.llm
@@ -1089,17 +614,6 @@ class TuiRuntime:
         else:
             self.last_persist_error = None
 
-    # -- policy / workspace switching -----------------------------------
-    def _pin_permission(self, session: Any) -> None:
-        """Seed a new session with the default permission preset and knobs."""
-        service = self._service("permissionPresets")
-        pin = getattr(service, "pin_initial", None)
-        if not callable(pin) or session is None:
-            return
-        # pinning must not brick a session
-        with contextlib.suppress(Exception):
-            pin(session)
-
     def permission_preset(self) -> str:
         """The current named permission preset (or "custom")."""
         service = self._service("permissionPresets")
@@ -1107,7 +621,7 @@ class TuiRuntime:
         if callable(current) and self.session is not None:
             try:
                 return str(current(self.session))
-            except Exception:
+            except Exception:  # noqa: BLE001 - an optional service must not break the UI
                 logger.debug("permission preset unavailable", exc_info=True)
         return str(getattr(self.permission, "preset", "workspace-write"))
 
@@ -1117,7 +631,7 @@ class TuiRuntime:
         if callable(names):
             try:
                 return tuple(str(name) for name in names())
-            except Exception:
+            except Exception:  # noqa: BLE001 - an optional service must not break the UI
                 logger.debug("permission preset names unavailable", exc_info=True)
         return ("read-only", "workspace-write", "danger-full-access")
 
@@ -1169,35 +683,6 @@ class TuiRuntime:
         if callable(ensure_all):
             await await_maybe(ensure_all())
 
-    async def _ensure_preset(self, preset_id: str, revision: int | None) -> None:
-        """Materialize one preset revision (no-op without a presets service)."""
-        service = self._service("presets")
-        ensure = getattr(service, "ensure", None)
-        if callable(ensure):
-            canonical = self._canonical_preset(preset_id) or preset_id
-            await await_maybe(ensure(canonical, revision=revision))
-
-    def _record_preset(self) -> None:
-        """Persist the pinned preset revision so a resume reproduces it."""
-        mode = self.agent_mode
-        preset = self._canonical_preset(self.agent_preset) or DEFAULT_PRESET_ID
-        data: dict[str, Any] = {"preset": preset, "mode": mode}
-        if self.preset_revision is not None:
-            data["revision"] = self.preset_revision
-        if mode == AGENT_MODE_TEAM:
-            data["previous"] = self._canonical_preset(self.team_previous_preset) or DEFAULT_PRESET_ID
-        self._record("agent-preset/selected", data)
-
-    def _record_model_selection(self) -> None:
-        """Persist the active provider/model so a resume reproduces it."""
-        self._record("model/selection", {"provider": self.provider_name, "model": self.model})
-
-    def _record(self, record_type: str, data: dict[str, Any]) -> None:
-        """Append one non-surface event to the active session (best effort)."""
-        append = getattr(self.session, "append", None)
-        if callable(append):
-            append(record_type, data)
-
     @property
     def session_id(self) -> str:
         return str(getattr(self.session, "session_id", "") or "")
@@ -1247,7 +732,6 @@ class TuiRuntime:
         messages = session.derive_messages()
         return bool(await compactor.compact(session, messages))
 
-    # -- shutdown -------------------------------------------------------
     async def close(self) -> None:
         """Dispose the kernel app (reverse plugin order, best effort)."""
         if self._closed:
@@ -1279,200 +763,6 @@ class TuiRuntime:
             # shutdown must never mask an exception
             with contextlib.suppress(Exception):
                 await await_maybe(kernel_app.stop())
-
-
-class _ScheduleSink:
-    """EventSink that discards events from background scheduled turns."""
-
-    def begin_turn(self) -> None:
-        return None
-
-    def end_turn(self) -> None:
-        return None
-
-    def emit(self, event: dict[str, Any]) -> None:
-        return None
-
-
-def _now_rfc3339() -> str:
-    return format_instant(datetime.now(UTC))
-
-
-class _TuiScheduleHost:
-    """ScheduleHost that delivers occurrences into TUI sessions."""
-
-    def __init__(self, runtime: TuiRuntime) -> None:
-        self._runtime = runtime
-
-    async def session_exists(self, session_id: str) -> bool:
-        runtime = self._runtime
-        if not session_id:
-            return False
-        if session_id == runtime.session_id:
-            return True
-        try:
-            runtime.store.open(session_id)
-        except Exception:  # noqa: BLE001 - an unreadable session cannot receive messages
-            return False
-        return True
-
-    async def delegation_depth(self, session_id: str) -> int:
-        return 0
-
-    async def deliver(self, task: Any, message: str) -> DeliveryReceipt | None:
-        target = task.target
-        source = {"kind": "schedule", "taskId": task.id, "occurrence": task.scheduled_at}
-        if isinstance(target, SessionTarget):
-            return await self._deliver_to_session(target.session_id, task, message, source)
-        if isinstance(target, (NewOnceTarget, NewTarget)):
-            return await self._deliver_to_new(target, task, message, source)
-        raise DeeppyroError(f"unsupported schedule target: {target!r}")
-
-    async def _deliver_to_session(
-        self,
-        session_id: str,
-        task: Any,
-        message: str,
-        source: dict[str, Any],
-    ) -> DeliveryReceipt:
-        runtime = self._runtime
-        if session_id == runtime.session_id and runtime.session is not None:
-            notice = runtime.schedule_notice
-            if notice is not None:
-                try:
-                    notice(message)
-                except Exception:
-                    logger.debug("schedule notice failed", exc_info=True)
-            runtime.session.followup(message, source=source)
-            return DeliveryReceipt(
-                scheduled_at="",
-                delivered_at=_now_rfc3339(),
-                target_session_id=session_id,
-            )
-        session = await runtime.open_schedule_session(session_id)
-        agent = await runtime.create_schedule_agent(session, preset=runtime.agent_preset)
-        try:
-            session.followup(message, source=source)
-        except Exception:
-            close = getattr(agent, "aclose", None)
-            if callable(close):
-                # cleanup is best effort
-                with contextlib.suppress(Exception):
-                    await await_maybe(close())
-            raise
-        runtime.track_schedule_agent(session, agent)
-        return DeliveryReceipt(
-            scheduled_at="",
-            delivered_at=_now_rfc3339(),
-            target_session_id=session_id,
-        )
-
-    async def _deliver_to_new(
-        self,
-        target: Any,
-        task: Any,
-        message: str,
-        source: dict[str, Any],
-    ) -> DeliveryReceipt:
-        runtime = self._runtime
-        spec = target.create
-        preset = str(getattr(spec, "agent_preset", "") or runtime.agent_preset)
-        session = None
-        if isinstance(target, NewOnceTarget):
-            session_id = str(target.session_id or runtime._schedule_once.get(task.id, ""))
-            if session_id:
-                try:
-                    session = await runtime.open_schedule_session(session_id)
-                except Exception:  # noqa: BLE001 - recreate a missing once-target session
-                    session = None
-        if session is None:
-            session = await runtime.create_schedule_session(spec, preset)
-            if isinstance(target, NewOnceTarget):
-                runtime._schedule_once[task.id] = str(getattr(session, "session_id", "") or "")
-        agent = await runtime.create_schedule_agent(session, preset=preset)
-        try:
-            session.followup(message, source=source)
-        except Exception:
-            close = getattr(agent, "aclose", None)
-            if callable(close):
-                # cleanup is best effort
-                with contextlib.suppress(Exception):
-                    await await_maybe(close())
-            raise
-        runtime.track_schedule_agent(session, agent)
-        return DeliveryReceipt(
-            scheduled_at="",
-            delivered_at=_now_rfc3339(),
-            target_session_id=str(getattr(session, "session_id", "") or ""),
-        )
-
-
-def _recorded_preset(session: Any) -> tuple[str, int | None, str | None] | None:
-    """Last agent-preset/selected record: (preset, revision, previous).
-
-    The header only carries the preset a session was created with, so the
-    record is what makes a later switch (including /team on) survive resume.
-    """
-    records = getattr(session, "records", None) or []
-    for record in reversed(list(records)):
-        if getattr(record, "type", "") != "agent-preset/selected":
-            continue
-        data = getattr(record, "data", None)
-        if not isinstance(data, dict):
-            return None
-        preset = data.get("preset")
-        revision = data.get("revision")
-        previous = data.get("previous")
-        return (
-            preset if isinstance(preset, str) else "",
-            revision if isinstance(revision, int) else None,
-            previous if isinstance(previous, str) and previous else None,
-        )
-    return None
-
-
-def _recorded_model_selection(session: Any) -> tuple[str, str] | None:
-    """The last model/selection written to the session, if still readable."""
-    records = getattr(session, "records", None) or []
-    for record in reversed(list(records)):
-        if getattr(record, "type", "") != "model/selection":
-            continue
-        data = getattr(record, "data", None)
-        if isinstance(data, dict):
-            provider = data.get("provider")
-            model = data.get("model")
-            if isinstance(provider, str) and isinstance(model, str) and provider and model:
-                return provider, model
-        return None
-    return None
-
-
-def _resolve_model(cfg: Config, provider_name: str, *, model: str | None) -> str:
-    """Resolve the model from an override, the configured provider, or its default.
-
-    The [agent] model belongs to the configured provider: when another provider
-    is selected explicitly (--provider or /provider) its own default is used
-    instead of leaking the configured model onto a different endpoint.
-    """
-    provider_cfg = cfg.providers[provider_name]
-    available = [str(entry.id) for entry in list(provider_cfg.models or [])]
-    if model:
-        if available and model not in available:
-            raise ConfigError(
-                f"unknown model: {model} (provider {provider_name} offers {', '.join(available)})"
-            )
-        return model
-    if provider_name == cfg.agent.provider and cfg.agent.model:
-        return cfg.agent.model
-    if available:
-        return available[0]
-    if provider_name == cfg.agent.provider:
-        try:
-            _, resolved = cfg.resolve()
-        except KeyError as exc:
-            raise ConfigError(f"unknown provider: {exc.args[0]}") from exc
-        return resolved
-    return ""
 
 
 __all__ = ["DEFAULT_CONTEXT_WINDOW", "TuiRuntime", "await_maybe", "resolve_workspace"]
