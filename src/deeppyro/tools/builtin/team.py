@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, is_dataclass
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import BeforeValidator, Field
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import OptionalStrippedStr, StrippedStr, ToolArgs, schema_enum
 
 
 def _as_json(value: Any) -> Any:
@@ -69,6 +72,31 @@ def _string_list(args: dict[str, Any], name: str) -> list[str] | None:
     return result
 
 
+def _parse_string_list(value: Any, info: Any) -> Any:
+    """Validate one string-array argument the way the legacy helper did."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        raise ToolError(f"{info.field_name} must be a list of strings")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ToolError(f"{info.field_name} must be a list of non-empty strings")
+        result.append(item.strip())
+    return result
+
+
+StringList = Annotated[list[str] | None, BeforeValidator(_parse_string_list)]
+
+
+class _TeamArgs(ToolArgs):
+    """Team arguments keep the legacy required-field wording."""
+
+    @classmethod
+    def missing_message(cls, field: str) -> str:
+        return f"{field} must be a non-empty string"
+
+
 class TeamSpawnTool(BaseTool):
     """Spawn one child agent that works in its own session."""
 
@@ -81,26 +109,25 @@ class TeamSpawnTool(BaseTool):
         "therefore requires human approval."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "name": {"type": "string", "description": "unique member name"},
-            "description": {"type": "string", "description": "short role description"},
-            "prompt": {"type": "string", "description": "initial task for the member"},
-            "provider": {
-                "type": "string",
-                "description": "optional llm provider name (defaults to the lead provider)",
-            },
-            "model": {
-                "type": "string",
-                "description": "optional model id (defaults to the lead model)",
-            },
-            "preset": {
-                "type": "string",
-                "description": "optional agent preset id (defaults to the lead preset)",
-            },
-        },
-        required=["name", "description", "prompt"],
-    )
+
+    class Args(_TeamArgs):
+        """Arguments for team_spawn."""
+
+        name: StrippedStr = Field(description="unique member name")
+        description: StrippedStr = Field(description="short role description")
+        prompt: StrippedStr = Field(description="initial task for the member")
+        provider: OptionalStrippedStr = Field(
+            default=None,
+            description="optional llm provider name (defaults to the lead provider)",
+        )
+        model: OptionalStrippedStr = Field(
+            default=None,
+            description="optional model id (defaults to the lead model)",
+        )
+        preset: OptionalStrippedStr = Field(
+            default=None,
+            description="optional agent preset id (defaults to the lead preset)",
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
@@ -131,13 +158,12 @@ class TeamSendTool(BaseTool):
         "to collect the reply."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "member_id": {"type": "string", "description": "team member id"},
-            "message": {"type": "string", "description": "message text"},
-        },
-        required=["member_id", "message"],
-    )
+
+    class Args(_TeamArgs):
+        """Arguments for team_send."""
+
+        member_id: StrippedStr = Field(description="team member id")
+        message: StrippedStr = Field(description="message text")
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
@@ -160,16 +186,17 @@ class TeamWaitTool(BaseTool):
         "until the member settles."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "member_id": {"type": "string", "description": "team member id"},
-            "timeoutMs": {
-                "type": "integer",
-                "description": "optional wait timeout in milliseconds",
-            },
-        },
-        required=["member_id"],
-    )
+
+    class Args(_TeamArgs):
+        """Arguments for team_wait."""
+
+        member_id: StrippedStr = Field(description="team member id")
+        # int first keeps the historical "integer" wire schema; the service also
+        # accepts fractional milliseconds, so float stays valid.
+        timeoutMs: int | float | None = Field(  # noqa: N815
+            default=None,
+            description="optional wait timeout in milliseconds",
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
@@ -196,10 +223,11 @@ class TeamCancelTool(BaseTool):
         "as cancelled. Returns cancelled=false when the member does not exist or already failed."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {"member_id": {"type": "string", "description": "team member id"}},
-        required=["member_id"],
-    )
+
+    class Args(_TeamArgs):
+        """Arguments for team_cancel."""
+
+        member_id: StrippedStr = Field(description="team member id")
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
@@ -217,7 +245,9 @@ class TeamMembersTool(BaseTool):
     name = "team_members"
     description = "List every team member with its phase, provider, model and last reply."
     parallel_safe = False
-    parameters = make_parameters({}, required=[])
+
+    class Args(ToolArgs):
+        """team_members takes no arguments."""
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
@@ -234,23 +264,20 @@ class TeamTaskCreateTool(BaseTool):
         "to modify."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "subject": {"type": "string", "description": "task title"},
-            "description": {"type": "string", "description": "task details"},
-            "blockedBy": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "task ids or subjects that must complete first",
-            },
-            "writeScopes": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "workspace paths this task expects to modify",
-            },
-        },
-        required=["subject", "description"],
-    )
+
+    class Args(_TeamArgs):
+        """Arguments for team_task_create."""
+
+        subject: StrippedStr = Field(description="task title")
+        description: StrippedStr = Field(description="task details")
+        blockedBy: StringList = Field(  # noqa: N815
+            default=None,
+            description="task ids or subjects that must complete first",
+        )
+        writeScopes: StringList = Field(  # noqa: N815
+            default=None,
+            description="workspace paths this task expects to modify",
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
@@ -277,16 +304,15 @@ class TeamTaskListTool(BaseTool):
         "status filters to one of pending, in_progress or completed."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "status": {
-                "type": "string",
-                "enum": ["pending", "in_progress", "completed"],
-                "description": "optional status filter",
-            }
-        },
-        required=[],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for team_task_list."""
+
+        status: OptionalStrippedStr = Field(
+            default=None,
+            json_schema_extra=schema_enum("pending", "in_progress", "completed"),
+            description="optional status filter",
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
@@ -303,10 +329,11 @@ class TeamTaskGetTool(BaseTool):
     name = "team_task_get"
     description = "Read one shared team task by id."
     parallel_safe = False
-    parameters = make_parameters(
-        {"task_id": {"type": "string", "description": "team task id"}},
-        required=["task_id"],
-    )
+
+    class Args(_TeamArgs):
+        """Arguments for team_task_get."""
+
+        task_id: StrippedStr = Field(description="team task id")
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)
@@ -328,29 +355,31 @@ class TeamTaskUpdateTool(BaseTool):
         "description, blockedBy or writeScopes. Every change bumps revision."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "task_id": {"type": "string", "description": "team task id"},
-            "action": {
-                "type": "string",
-                "enum": ["claim", "start", "complete", "reopen", "edit"],
-                "description": "task transition",
-            },
-            "subject": {"type": "string", "description": "new title (edit only)"},
-            "description": {"type": "string", "description": "new description (edit only)"},
-            "blockedBy": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "replacement blockers (edit only)",
-            },
-            "writeScopes": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "replacement write scopes (edit only)",
-            },
-        },
-        required=["task_id", "action"],
-    )
+
+    class Args(_TeamArgs):
+        """Arguments for team_task_update."""
+
+        task_id: StrippedStr = Field(description="team task id")
+        action: StrippedStr = Field(
+            json_schema_extra=schema_enum("claim", "start", "complete", "reopen", "edit"),
+            description="task transition",
+        )
+        subject: OptionalStrippedStr = Field(
+            default=None,
+            description="new title (edit only)",
+        )
+        description: OptionalStrippedStr = Field(
+            default=None,
+            description="new description (edit only)",
+        )
+        blockedBy: StringList = Field(  # noqa: N815
+            default=None,
+            description="replacement blockers (edit only)",
+        )
+        writeScopes: StringList = Field(  # noqa: N815
+            default=None,
+            description="replacement write scopes (edit only)",
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _team(ctx)

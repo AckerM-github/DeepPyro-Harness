@@ -14,9 +14,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from pydantic import Field
+
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import OptionalStrippedStr, StrippedStr, ToolArgs
 
 
 def _subagent(ctx: ToolContext) -> Any:
@@ -56,35 +59,32 @@ class SubagentTool(BaseTool):
         "work and therefore requires human approval."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "prompt": {
-                "type": "string",
-                "description": "self-contained task for the child agent",
-            },
-            "description": {
-                "type": "string",
-                "description": "short description of the delegated work",
-            },
-            "name": {
-                "type": "string",
-                "description": "optional child label (defaults to a generated subagent-N name)",
-            },
-            "provider": {
-                "type": "string",
-                "description": "optional llm provider name (defaults to the current provider)",
-            },
-            "model": {
-                "type": "string",
-                "description": "optional model id (defaults to the current model)",
-            },
-            "preset": {
-                "type": "string",
-                "description": "optional agent preset id (defaults to the current preset)",
-            },
-        },
-        required=["prompt", "description"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for the synchronous subagent tool."""
+
+        prompt: StrippedStr = Field(description="self-contained task for the child agent")
+        description: StrippedStr = Field(description="short description of the delegated work")
+        name: OptionalStrippedStr = Field(
+            default=None,
+            description="optional child label (defaults to a generated subagent-N name)",
+        )
+        provider: OptionalStrippedStr = Field(
+            default=None,
+            description="optional llm provider name (defaults to the current provider)",
+        )
+        model: OptionalStrippedStr = Field(
+            default=None,
+            description="optional model id (defaults to the current model)",
+        )
+        preset: OptionalStrippedStr = Field(
+            default=None,
+            description="optional agent preset id (defaults to the current preset)",
+        )
+
+        @classmethod
+        def missing_message(cls, field: str) -> str:
+            return f"{field} must be a non-empty string"
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _subagent(ctx)
@@ -128,23 +128,20 @@ class SubagentForkTool(BaseTool):
         "overridden."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "prompt": {
-                "type": "string",
-                "description": "self-contained task for the forked child agent",
-            },
-            "description": {
-                "type": "string",
-                "description": "short description of the delegated work",
-            },
-            "name": {
-                "type": "string",
-                "description": "optional child label (defaults to a generated subagent-N name)",
-            },
-        },
-        required=["prompt", "description"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for the forked subagent tool."""
+
+        prompt: StrippedStr = Field(description="self-contained task for the forked child agent")
+        description: StrippedStr = Field(description="short description of the delegated work")
+        name: OptionalStrippedStr = Field(
+            default=None,
+            description="optional child label (defaults to a generated subagent-N name)",
+        )
+
+        @classmethod
+        def missing_message(cls, field: str) -> str:
+            return f"{field} must be a non-empty string"
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _subagent(ctx)

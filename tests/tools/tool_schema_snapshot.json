@@ -8,11 +8,11 @@
           "description": "Path to read, resolved by the filesystem backend."
         },
         "offset": {
-          "type": "number",
+          "type": "integer",
           "description": "1-based first line to return. Defaults to 1."
         },
         "limit": {
-          "type": "number",
+          "type": "integer",
           "description": "Maximum number of lines to return. Defaults to 2000."
         }
       },

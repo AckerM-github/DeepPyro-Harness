@@ -7,13 +7,27 @@ mirrored into `ctx.services["todos"]` for the session/TUI.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import ConfigDict, Field
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import NonEmptyStr, ToolArgs
 
 TODO_STATUSES = ("pending", "in_progress", "completed")
+
+
+class TodoItem(ToolArgs):
+    """One entry of the todo list (the wire schema forbids extra fields)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: NonEmptyStr = Field(description="What the task is - a short imperative line.")
+    status: Literal["pending", "in_progress", "completed"] = Field(
+        description="pending (not started) | in_progress (now) | completed (done).",
+    )
 
 
 class TodoWriteTool(BaseTool):
@@ -26,31 +40,13 @@ class TodoWriteTool(BaseTool):
         "previous list."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "todos": {
-                "type": "array",
-                "description": "The complete task list, replacing any previous list.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "content": {
-                            "type": "string",
-                            "description": "What the task is - a short imperative line.",
-                        },
-                        "status": {
-                            "type": "string",
-                            "enum": list(TODO_STATUSES),
-                            "description": "pending (not started) | in_progress (now) | completed (done).",
-                        },
-                    },
-                    "required": ["content", "status"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        required=["todos"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for todo_write."""
+
+        todos: list[TodoItem] = Field(
+            description="The complete task list, replacing any previous list.",
+        )
 
     def __init__(self) -> None:
         self.todos: list[dict[str, str]] = []

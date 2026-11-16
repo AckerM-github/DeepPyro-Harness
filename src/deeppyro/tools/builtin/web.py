@@ -14,10 +14,12 @@ import urllib.parse
 from typing import Any
 
 import httpx
+from pydantic import Field
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import NonEmptyStr, ToolArgs
 
 DUCKDUCKGO_HTML_ENDPOINT = "https://html.duckduckgo.com/html/"
 USER_AGENT = "Mozilla/5.0 (compatible; DeepPyro/0.1; +https://github.com/deeppyro)"
@@ -122,18 +124,15 @@ class WebSearchTool(BaseTool):
 
     name = "web_search"
     description = "Search the web for current information. Returns an optional summary answer and a list of source URLs."
-    parameters = make_parameters(
-        {
-            "queries": {
-                "type": "array",
-                "items": {"type": "string"},
-                "minItems": 1,
-                "maxItems": 4,
-                "description": "One to four focused search queries; results are merged.",
-            }
-        },
-        required=["queries"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for web_search."""
+
+        queries: list[NonEmptyStr] = Field(
+            min_length=1,
+            max_length=4,
+            description="One to four focused search queries; results are merged.",
+        )
 
     def __init__(
         self,
@@ -198,10 +197,11 @@ class WebFetchTool(BaseTool):
 
     name = "web_fetch"
     description = "Fetch the content of a specific HTTP(S) URL and return it decoded to text."
-    parameters = make_parameters(
-        {"url": {"type": "string", "description": "The HTTP(S) URL to fetch."}},
-        required=["url"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for web_fetch."""
+
+        url: NonEmptyStr = Field(description="The HTTP(S) URL to fetch.")
 
     def __init__(self, max_output_chars: int = DEFAULT_FETCH_MAX_CHARS, timeout_ms: int = 30_000) -> None:
         self.max_output_chars = max_output_chars

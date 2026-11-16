@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from pydantic import Field
+
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.sandbox.policy import SandboxPolicy
@@ -29,7 +31,13 @@ from deeppyro.sandbox.provider import (
 )
 from deeppyro.sandbox.types import Preset
 from deeppyro.tools.args import optional_bool, optional_int, optional_str, require_str
-from deeppyro.tools.base import BaseTool, make_parameters, sandbox_properties
+from deeppyro.tools.base import (
+    JUSTIFICATION_DESCRIPTION,
+    SANDBOX_MODES,
+    SANDBOX_PERMISSIONS_DESCRIPTION,
+    BaseTool,
+)
+from deeppyro.tools.params import NonEmptyStr, OptionalNonEmptyStr, ToolArgs, schema_enum, schema_number
 from deeppyro.tools.paths import resolve_path
 from deeppyro.tools.permissions import check_command, gate_for
 
@@ -256,27 +264,33 @@ class PwshTool(_ShellTool):
         "settles as `[exit code: N]` without a signal marker - treat that as an interruption, not a command "
         "failure. Provide `description` before `command` in the arguments."
     )
-    parameters = make_parameters(
-        sandbox_properties(
-            {
-                "description": {
-                    "type": "string",
-                    "description": "Clear, concise description of what this command does in active voice, 5-10 words.",
-                },
-                "command": {"type": "string", "description": "The PowerShell command to execute."},
-                "timeoutMs": {
-                    "type": "number",
-                    "description": "Timeout in milliseconds (default 120000, max 600000).",
-                },
-                "workdir": {"type": "string", "description": "Working directory for this command."},
-                "run_in_background": {
-                    "type": "boolean",
-                    "description": "Start a background job and return its job id immediately.",
-                },
-            }
-        ),
-        required=["description", "command"],
-    )
+
+    class Args(ToolArgs):
+        description: NonEmptyStr = Field(
+            description="Clear, concise description of what this command does in active voice, 5-10 words.",
+        )
+        command: NonEmptyStr = Field(description="The PowerShell command to execute.")
+        timeoutMs: int | None = Field(  # noqa: N815
+            default=None,
+            ge=1,
+            le=MAX_TIMEOUT_MS,
+            json_schema_extra=schema_number(),
+            description="Timeout in milliseconds (default 120000, max 600000).",
+        )
+        workdir: OptionalNonEmptyStr = Field(
+            default=None,
+            description="Working directory for this command.",
+        )
+        run_in_background: bool | None = Field(
+            default=None,
+            description="Start a background job and return its job id immediately.",
+        )
+        sandbox_permissions: str | None = Field(
+            default=None,
+            json_schema_extra=schema_enum(*SANDBOX_MODES),
+            description=SANDBOX_PERMISSIONS_DESCRIPTION,
+        )
+        justification: str | None = Field(default=None, description=JUSTIFICATION_DESCRIPTION)
 
     def argv(self, command: str) -> list[str]:
         # Prefer PowerShell 7; fall back to Windows PowerShell so the tool works
@@ -297,21 +311,24 @@ class BashTool(_ShellTool):
         "Run a bash command and return its stdout/stderr. Each call runs in a fresh bash process; pass workdir "
         "instead of using cd. A non-zero exit code is appended as [exit code: N]."
     )
-    parameters = make_parameters(
-        {
-            "command": {"type": "string", "description": "The bash command to execute."},
-            "timeoutMs": {
-                "type": "number",
-                "description": "Timeout in milliseconds (default 120000, max 600000).",
-            },
-            "workdir": {"type": "string", "description": "Working directory for this command."},
-            "run_in_background": {
-                "type": "boolean",
-                "description": "Start a background job and return its job id immediately.",
-            },
-        },
-        required=["command"],
-    )
+
+    class Args(ToolArgs):
+        command: NonEmptyStr = Field(description="The bash command to execute.")
+        timeoutMs: int | None = Field(  # noqa: N815
+            default=None,
+            ge=1,
+            le=MAX_TIMEOUT_MS,
+            json_schema_extra=schema_number(),
+            description="Timeout in milliseconds (default 120000, max 600000).",
+        )
+        workdir: OptionalNonEmptyStr = Field(
+            default=None,
+            description="Working directory for this command.",
+        )
+        run_in_background: bool | None = Field(
+            default=None,
+            description="Start a background job and return its job id immediately.",
+        )
 
     def argv(self, command: str) -> list[str]:
         binary = shutil.which("bash") or shutil.which("sh") or "bash"

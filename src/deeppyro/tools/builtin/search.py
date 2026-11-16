@@ -17,10 +17,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+from pydantic import Field
+
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.tools.args import optional_str, require_str
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import NonEmptyStr, OptionalNonEmptyStr, ToolArgs
 from deeppyro.tools.paths import display_path, resolve_path
 
 VCS_DIRS = frozenset({".git", ".hg", ".svn", ".bzr", "CVS"})
@@ -46,19 +49,15 @@ class GlobTool(BaseTool):
         "where the complete list was saved. Patterns without a path separator match the basename at any depth "
         "under path (which defaults to the session working directory)."
     )
-    parameters = make_parameters(
-        {
-            "pattern": {
-                "type": "string",
-                "description": "Glob pattern to match file paths against, e.g. src/**/*.ts.",
-            },
-            "path": {
-                "type": "string",
-                "description": "Directory to search in (defaults to the session workspace).",
-            },
-        },
-        required=["pattern"],
-    )
+
+    class Args(ToolArgs):
+        pattern: NonEmptyStr = Field(
+            description="Glob pattern to match file paths against, e.g. src/**/*.ts.",
+        )
+        path: OptionalNonEmptyStr = Field(
+            default=None,
+            description="Directory to search in (defaults to the session workspace).",
+        )
 
     def __init__(self, max_results: int = DEFAULT_GLOB_MAX_RESULTS) -> None:
         self.max_results = max_results
@@ -113,23 +112,19 @@ class GrepTool(BaseTool):
         "grouped by file. Returns up to 250 matches; a larger result reports where the complete match list "
         "was saved. include is a single positive glob filter and does not support lists or negation."
     )
-    parameters = make_parameters(
-        {
-            "pattern": {
-                "type": "string",
-                "description": "Regular expression (ripgrep syntax) to search for.",
-            },
-            "path": {
-                "type": "string",
-                "description": "File or directory to search. Defaults to the session workspace.",
-            },
-            "include": {
-                "type": "string",
-                "description": "One glob filter for which files to search, e.g. *.ts.",
-            },
-        },
-        required=["pattern"],
-    )
+
+    class Args(ToolArgs):
+        pattern: NonEmptyStr = Field(
+            description="Regular expression (ripgrep syntax) to search for.",
+        )
+        path: OptionalNonEmptyStr = Field(
+            default=None,
+            description="File or directory to search. Defaults to the session workspace.",
+        )
+        include: OptionalNonEmptyStr = Field(
+            default=None,
+            description="One glob filter for which files to search, e.g. *.ts.",
+        )
 
     def __init__(
         self,

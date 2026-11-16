@@ -11,12 +11,24 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from pydantic import ConfigDict, Field
+
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import NonEmptyStr, ToolArgs
 from deeppyro.tools.paths import resolve_path
 
 DEFAULT_MAX_FILES = 8
+
+
+class PresentationItem(ToolArgs):
+    """One presented file (the wire schema forbids extra fields)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: NonEmptyStr = Field(description="Path of an existing regular file.")
+    description: str | None = Field(default=None, description="Brief description for the user.")
 
 
 class PresentTool(BaseTool):
@@ -30,24 +42,13 @@ class PresentTool(BaseTool):
         "suffices."
     )
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "files": {
-                "type": "array",
-                "description": "Usually the 1-2 most important deliverables; at most 4 per call.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Path of an existing regular file."},
-                        "description": {"type": "string", "description": "Brief description for the user."},
-                    },
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        required=["files"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for present."""
+
+        files: list[PresentationItem] = Field(
+            description="Usually the 1-2 most important deliverables; at most 4 per call.",
+        )
 
     def __init__(self, max_files: int = DEFAULT_MAX_FILES) -> None:
         self.max_files = max_files

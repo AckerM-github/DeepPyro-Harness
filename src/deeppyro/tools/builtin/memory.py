@@ -8,14 +8,17 @@ kernel and never reads the projection files; the service is the only writer.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import Field
 
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.memory.errors import MemoryStoreError
 from deeppyro.memory.types import DEFAULT_IMPORTANCE, IMPORTANCES, TARGETS
 from deeppyro.tools.args import optional_str, require_str
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import OptionalNonEmptyStr, ToolArgs, schema_enum
 
 ACTIONS = ("add", "replace", "remove")
 TOOL_NAME = "mnemon_runtime_memory"
@@ -62,34 +65,43 @@ class MnemonRuntimeMemoryTool(BaseTool):
     name = TOOL_NAME
     description = DESCRIPTION
     parallel_safe = False
-    parameters = make_parameters(
-        {
-            "action": {
-                "type": "string",
-                "enum": list(ACTIONS),
-                "description": "add = append a new entry; replace = rewrite one matched entry; remove = delete one matched entry.",
-            },
-            "target": {
-                "type": "string",
-                "enum": list(TARGETS),
-                "description": "user = who the user is (USER.md); memory = project/environment facts and lessons (MEMORY.md).",
-            },
-            "content": {
-                "type": "string",
-                "description": "The durable fact to store; required for add and replace. Keep it self-contained and concise.",
-            },
-            "old_text": {
-                "type": "string",
-                "description": "Required for replace and remove: a unique substring of the existing entry to change or delete.",
-            },
-            "importance": {
-                "type": "string",
-                "enum": list(IMPORTANCES),
-                "description": "Optional importance hint; defaults to normal. critical means an explicit must/always/never rule.",
-            },
-        },
-        required=["action", "target"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for the runtime memory tool (enum order mirrors the old schema)."""
+
+        action: Literal["add", "replace", "remove"] = Field(
+            description=(
+                "add = append a new entry; replace = rewrite one matched entry; "
+                "remove = delete one matched entry."
+            ),
+        )
+        target: Literal["user", "memory"] = Field(
+            description=(
+                "user = who the user is (USER.md); memory = project/environment facts and "
+                "lessons (MEMORY.md)."
+            ),
+        )
+        content: str | None = Field(
+            default=None,
+            description=(
+                "The durable fact to store; required for add and replace. Keep it self-contained and concise."
+            ),
+        )
+        old_text: str | None = Field(
+            default=None,
+            description=(
+                "Required for replace and remove: a unique substring of the existing entry "
+                "to change or delete."
+            ),
+        )
+        importance: OptionalNonEmptyStr = Field(
+            default=None,
+            json_schema_extra=schema_enum(*IMPORTANCES),
+            description=(
+                "Optional importance hint; defaults to normal. critical means an explicit "
+                "must/always/never rule."
+            ),
+        )
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         service = _service(ctx)

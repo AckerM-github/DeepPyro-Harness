@@ -103,9 +103,7 @@ def _render(schemas: dict[str, Any]) -> dict[str, str]:
 def test_tool_schemas_match_the_snapshot() -> None:
     current = {"tools": _tools(), "variants": _variants()}
     if os.environ.get(UPDATE_ENV):
-        SNAPSHOT.write_text(
-            json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
+        SNAPSHOT.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     snapshot = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
 
     expected = {**_render(snapshot["tools"]), **_render(snapshot["variants"])}

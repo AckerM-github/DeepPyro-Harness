@@ -5,12 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from pydantic import Field
+
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.skills.frontmatter import is_valid_skill_name
 from deeppyro.skills.registry import render_skill_content
 from deeppyro.tools.args import require_str
-from deeppyro.tools.base import BaseTool, make_parameters
+from deeppyro.tools.base import BaseTool
+from deeppyro.tools.params import StrippedStr, ToolArgs
 
 SKILL_TOOL_DESCRIPTION = (
     "Load the full instructions for a skill. Call it before acting on a task "
@@ -24,15 +27,11 @@ class SkillTool(BaseTool):
     name = "skill"
     description = SKILL_TOOL_DESCRIPTION
     parallel_safe = True
-    parameters = make_parameters(
-        {
-            "name": {
-                "type": "string",
-                "description": "The exact skill name from the available skills list.",
-            }
-        },
-        required=["name"],
-    )
+
+    class Args(ToolArgs):
+        """Arguments for skill."""
+
+        name: StrippedStr = Field(description="The exact skill name from the available skills list.")
 
     def __init__(self, service: Any) -> None:
         self._service = service
