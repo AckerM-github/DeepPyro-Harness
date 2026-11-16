@@ -142,13 +142,21 @@ def test_root_fiber_is_active() -> None:
     assert root.name == "root"
 
 
-async def test_fiber_records_inject_names_as_advisory_metadata() -> None:
+async def test_inject_dependencies_keep_a_fiber_pending_until_provided() -> None:
     ctx = _context()
     fiber = ctx.plugin(
         {"name": "with-inject", "apply": lambda _ctx, _config: None, "inject": ["tools", "prompt"]}, {}
     )
     assert fiber.inject == ("tools", "prompt")
-    await fiber  # missing services do not block the load
+    await fiber  # missing services do not block the mount
+    assert fiber.state is FiberState.PENDING
+
+    ctx.provide("tools", object())
+    await asyncio.sleep(0)  # the waiter wakes on the next tick
+    assert fiber.state is FiberState.PENDING  # "prompt" is still missing
+
+    ctx.provide("prompt", object())
+    await asyncio.sleep(0)
     assert fiber.state is FiberState.ACTIVE
 
 

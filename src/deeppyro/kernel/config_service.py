@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from deeppyro._vendor.cordis_port import Service
+from deeppyro.api.plugin import Service
 from deeppyro.config import Config, load_config
 
 

@@ -33,14 +33,12 @@ from __future__ import annotations
 import inspect
 import warnings
 from collections.abc import Callable, Sequence
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel
 
-from deeppyro._vendor.cordis_port import Service as CordisService
-
 from .errors import PluginError
-from .services import ServiceTypeError, bind_service_type, service_name
+from .services import ServiceTypeError, bind_service_type, note_service_value, service_name
 
 #: Classes already told about the v1 setup signature (one warning per class).
 _WARNED_LEGACY_SETUP: set[type[Any]] = set()
@@ -58,7 +56,7 @@ class Plugin:
     #: restart. The kernel service applies them through apply_plugin_config;
     #: settings_write reports applied_live when that succeeds.
     volatile: ClassVar[tuple[str, ...]] = ()
-    #: Services this plugin depends on, as contract classes or plain cordis
+    #: Services this plugin depends on, as contract classes or plain service
     #: names. Contract classes are resolved to their provide name at mount time.
     inject: ClassVar[Sequence[str | type[Any]]] = ()
 
@@ -160,16 +158,23 @@ def _warn_legacy_setup(instance: Any) -> None:
     )
 
 
-class Service(Plugin, CordisService):
-    """A plugin that also provides a named Cordis service.
+class Service(Plugin):
+    """A plugin that also provides a named service.
 
     Declaring provide = "name" in a subclass is enough: the class registers
     itself in the typed service table at definition time, so callers can write
-    ctx.require(ThatService) without any extra wiring. The historical string
-    name (and ctx.get("name")) keeps working unchanged.
+    ctx.require(ThatService) without any extra wiring. Constructing the service
+    registers the instance itself with the host, and unmounting the plugin
+    removes it again. The historical string name (and ctx.get("name")) keeps
+    working unchanged.
     """
 
     provide: ClassVar[str] = ""
+    #: The service name this instance is registered under.
+    name: str
+    #: Intercept config layers applied to this service name by the host
+    #: (kernel group rows and preset realms), merged nearest layer first.
+    intercept_config: dict[str, Any]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Register the subclass as the typed contract for its provide name."""
@@ -178,14 +183,25 @@ class Service(Plugin, CordisService):
         if isinstance(declared, str) and declared:
             bind_service_type(cls, declared)
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: Any, config: Any = None) -> None:
         if not self.provide:
             raise PluginError(f"{type(self).__name__}.provide must name a service")
-        raw = getattr(ctx, "raw", ctx)
-        # PluginContext proxies unknown attributes to the raw context, so the
-        # service keeps access to the full Cordis surface through self.ctx.
-        CordisService.__init__(self, raw, name=self.provide)
         Plugin.__init__(self, ctx, config)
+        self.name = self.provide
+        raw = getattr(ctx, "raw", ctx)
+        self._raw_ctx = raw
+        resolver = getattr(raw, "resolve_intercept", None)
+        intercept_config: dict[str, Any] = {}
+        if callable(resolver):
+            resolved = cast(Callable[[str], Any], resolver)(self.provide)
+            if resolved:
+                intercept_config = dict(cast("dict[str, Any]", resolved))
+        self.intercept_config = intercept_config
+        self._provide_disposer: Any = None
+        provide = getattr(raw, "provide", None)
+        if callable(provide):
+            self._provide_disposer = provide(self.provide, self)
+            note_service_value(self, self.provide)
 
 
 __all__ = ["Plugin", "Service", "inject_names", "invoke_setup"]

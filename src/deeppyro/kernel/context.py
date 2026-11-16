@@ -208,6 +208,8 @@ class RuntimeContext:
             check=check,
             isolate=self.resolve_isolate(name),
         )
+        # Plugins waiting for this dependency retry their load once it exists.
+        self._container.notify_waiters()
         return self.effect(lambda: self._container.remove(record), label=f"ctx.provide({name!r})")
 
     def get(self, name: str, default: Any = None) -> Any | None:
@@ -226,6 +228,38 @@ class RuntimeContext:
     def service_records(self) -> list[ServiceRecord]:
         """Snapshot of every registered service (the inspect service's view)."""
         return self._container.records()
+
+    def service_record(self, name: str) -> ServiceRecord | None:
+        """Return the registration usable here, or None.
+
+        A provider that is still loading, failed or disposed does not satisfy a
+        dependency; only an ACTIVE provider (or a kernel-provided root value,
+        which has no plugin fiber) does.
+        """
+        record = self._container.get(name, self.resolve_isolate(name))
+        if record is None:
+            return None
+        if record.fiber is not None and record.fiber.state is not FiberState.ACTIVE:
+            return None
+        return record
+
+    def missing_services(self, names: Iterable[str]) -> tuple[str, ...]:
+        """Return the inject names this context cannot satisfy yet."""
+        return tuple(name for name in names if self.service_record(name) is None)
+
+    # -- dependency waiters ----------------------------------------------
+
+    def register_waiter(self, fiber: Fiber) -> None:
+        """Register a pending fiber to retry when a service appears."""
+        self._container.add_waiter(fiber)
+
+    def unregister_waiter(self, fiber: Fiber) -> None:
+        """Forget a pending fiber (it loaded, failed or was disposed)."""
+        self._container.remove_waiter(fiber)
+
+    def notify_waiters(self) -> None:
+        """Wake every pending fiber so it can retry loading."""
+        self._container.notify_waiters()
 
     # -- effects and mounting --------------------------------------------
 

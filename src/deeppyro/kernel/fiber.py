@@ -20,9 +20,13 @@ all of which are observable through ``api.FiberState``, ``App.row_states``,
   returns None or an awaitable (the caller awaits it in a running loop; with no
   loop the fiber drains async teardowns itself).
 
-Dependencies from ``plugin.inject`` are advisory ordering metadata: a fiber
-loads as soon as the host mounts it, and a missing service fails the plugin's
-own setup naturally instead of silently leaving the fiber pending.
+``plugin.inject`` names behave like cordis dependencies: a fiber loads as soon
+as its inject services are active.  When one is missing at mount time the fiber
+stays PENDING (boot is not blocked, so a disabled provider leaves its consumers
+pending instead of aborting startup) and a dependency waiter retries the load
+when a provider appears.  The inject names themselves are still advisory
+ordering metadata: a plugin that resolves its dependencies lazily can be
+mounted before them and simply start later.
 """
 
 from __future__ import annotations
@@ -142,7 +146,12 @@ class Fiber:
     # -- load -------------------------------------------------------------
 
     async def wait(self) -> Fiber:
-        """Load the plugin (once) and return this fiber; re-raise load errors."""
+        """Load the plugin (once) and return this fiber; re-raise load errors.
+
+        A plugin whose required inject services are missing stays PENDING: the
+        mount succeeds (a disabled provider does not block boot) and the fiber
+        is woken when a provider appears.
+        """
         if self._state is FiberState.FAILED and self._error is not None:
             raise self._error
         if self._state is FiberState.DISPOSED:
@@ -152,6 +161,11 @@ class Fiber:
         async with self._lock:
             if self._loaded:
                 return self
+            if self._state is FiberState.FAILED and self._error is not None:
+                raise self._error
+            if not self._ready():
+                self._register_waiter()
+                return self
             await self._load()
         if self._state is FiberState.FAILED and self._error is not None:
             raise self._error
@@ -159,6 +173,38 @@ class Fiber:
 
     def __await__(self) -> Any:
         return self.wait().__await__()
+
+    def _ready(self) -> bool:
+        """Whether every inject dependency has an active provider."""
+        if self._parent_ctx is None or not self._inject:
+            return True
+        return not self._parent_ctx.missing_services(self._inject)
+
+    def _register_waiter(self) -> None:
+        if self._parent_ctx is not None:
+            self._parent_ctx.register_waiter(self)
+
+    def _unregister_waiter(self) -> None:
+        if self._parent_ctx is not None:
+            self._parent_ctx.unregister_waiter(self)
+
+    async def resume(self) -> None:
+        """Retry a PENDING load after one of its dependencies was provided.
+
+        Background activation failures mark the fiber FAILED and are logged;
+        they never propagate into the boot loop, which already moved on.
+        """
+        if self._state is not FiberState.PENDING:
+            return
+        async with self._lock:
+            if self._state is not FiberState.PENDING:
+                return
+            if not self._ready():
+                return
+            try:
+                await self._load()
+            except Exception:
+                log.exception("plugin %s failed to load after its dependencies appeared", self.name)
 
     async def _load(self) -> None:
         self._state = FiberState.LOADING
@@ -176,12 +222,17 @@ class Fiber:
             self._loaded = True
         except asyncio.CancelledError:
             self._state = FiberState.FAILED
+            self._unregister_waiter()
             raise
         except Exception as exc:
             self._error = exc
             self._state = FiberState.FAILED
+            self._unregister_waiter()
             log.debug("plugin fiber %s failed to load: %s", self.name, exc)
             raise
+        self._unregister_waiter()
+        if self._parent_ctx is not None:
+            self._parent_ctx.notify_waiters()
 
     # -- disposal ---------------------------------------------------------
 
@@ -196,6 +247,7 @@ class Fiber:
         if self._state is FiberState.DISPOSED:
             return None
         self._state = FiberState.DISPOSED
+        self._unregister_waiter()
         pending: list[Any] = []
         for child in reversed(self._children):
             try:

@@ -46,6 +46,7 @@ prototype chains, no trackers, no getattr routing.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import threading
@@ -82,11 +83,19 @@ class Disposer:
         return self._done
 
     def dispose(self) -> Any:
-        """Run the callback once; return an awaitable when it is asynchronous."""
+        """Run the callback once; return an awaitable when it is asynchronous.
+
+        Cordis-style effects do not run their cleanup directly: they return a
+        teardown callable which the owner invokes during disposal.  A callable
+        result is therefore called here, and an awaitable result (from either
+        layer) is handed back to the fiber to drain.
+        """
         if self._done:
             return None
         self._done = True
         result = self._execute()
+        if callable(result):
+            result = result()
         return result if inspect.isawaitable(result) else None
 
     def __call__(self) -> Any:
@@ -122,10 +131,12 @@ class ServiceRecord:
 class ServiceContainer:
     """Name-keyed store of service values for one context tree."""
 
-    __slots__ = ("_lock", "_records")
+    __slots__ = ("_lock", "_records", "_tasks", "_waiters")
 
     def __init__(self) -> None:
         self._records: dict[tuple[str, object | None], ServiceRecord] = {}
+        self._waiters: set[Any] = set()
+        self._tasks: set[asyncio.Task[None]] = set()
         self._lock = threading.RLock()
 
     def provide(
@@ -169,6 +180,39 @@ class ServiceContainer:
         """Snapshot every record in registration order."""
         with self._lock:
             return list(self._records.values())
+
+    # -- dependency waiters ----------------------------------------------
+    #
+    # A plugin whose 'inject' services are not mounted yet stays PENDING
+    # instead of failing: it registers as a waiter, and every provide (or
+    # provider activation) wakes the waiters to retry their load.  That keeps
+    # the observable cordis behaviour where a disabled provider leaves its
+    # consumers listed as PENDING instead of aborting boot.
+
+    def add_waiter(self, waiter: Any) -> None:
+        """Register a pending fiber that retries loading after a provide."""
+        with self._lock:
+            self._waiters.add(waiter)
+
+    def remove_waiter(self, waiter: Any) -> None:
+        """Forget a waiter (it loaded, failed or was disposed)."""
+        with self._lock:
+            self._waiters.discard(waiter)
+
+    def notify_waiters(self) -> None:
+        """Schedule every pending waiter to re-check its dependencies."""
+        with self._lock:
+            waiters = tuple(self._waiters)
+        if not waiters:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - a sync bootstrap has no waiters
+            return
+        for waiter in waiters:
+            task = loop.create_task(waiter.resume())
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
 
     def __len__(self) -> int:
         with self._lock:

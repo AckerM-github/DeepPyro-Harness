@@ -1,4 +1,4 @@
-"""Dummy cordis plugins used by kernel tests (never shipped)."""
+"""Dummy plugins used by kernel tests (never shipped)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
-from deeppyro._vendor.cordis_port import Service
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, Service
 from deeppyro.core.payload import field_of
 
 
@@ -77,13 +76,13 @@ class InterceptProbePlugin(Plugin):
 
 
 class InterceptAwareService(Service):
-    """Cordis service that records its resolved intercept config."""
+    """Service that records its resolved intercept config."""
 
     provide = "intercept-aware"
 
     def __init__(self, ctx: Any, config: Any = None) -> None:
         super().__init__(ctx)
-        self.resolved: dict[str, Any] = dict(self.__resolve_intercept__() or {})
+        self.resolved: dict[str, Any] = dict(self.intercept_config or {})
 
 
 class VolatileConfig(BaseModel):

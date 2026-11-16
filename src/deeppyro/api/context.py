@@ -142,11 +142,27 @@ class PluginContext:
 
     # -- service access ---------------------------------------------------
     def _lookup(self, name: str) -> Any | None:
-        """Return the raw service registered under this name, if active."""
-        reflect = getattr(self._raw, "reflect", None)
-        if reflect is None:
-            return None
-        return reflect.get(name)
+        """Return the active service registered under this name, if any.
+
+        The native kernel context exposes ``get``; raw contexts built by tests
+        and third-party hosts may only expose the pre-native ``reflect.get``
+        lookup, so that remains as a fallback.
+        """
+        raw = self._raw
+        lookup = getattr(raw, "get", None)
+        if callable(lookup):
+            try:
+                value = lookup(name)
+            except LookupError:
+                value = None
+            if value is not None:
+                return value
+        reflect = getattr(raw, "reflect", None)
+        if reflect is not None:
+            getter = getattr(reflect, "get", None)
+            if callable(getter):
+                return getter(name)
+        return None
 
     @overload
     def get(self, service: str) -> Any | None: ...
