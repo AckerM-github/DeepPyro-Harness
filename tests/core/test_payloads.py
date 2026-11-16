@@ -13,10 +13,22 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from deeppyro.core.payloads import SessionEvent, SessionEventLine, ToolCallPayload
+from deeppyro.builtin.session_title import TITLE_PROMPT_SOURCE, SessionTitlePlugin
+from deeppyro.core.payloads import (
+    HookInvokedRecord,
+    HookResultRecord,
+    SessionEvent,
+    SessionEventLine,
+    SessionTitleLlmRequestData,
+    ToolCallPayload,
+)
 from deeppyro.core.protocols import ToolResult
 from deeppyro.core.wire import LogRecord
+from deeppyro.hooks import HookObservation
+from deeppyro.hooks.records import invoked_record, result_record
+from deeppyro.hooks.types import TOOLS_EXECUTE, TOOLS_PRE_EXECUTE
 from deeppyro.session.events import header_line_dict, normalize_event
+from deeppyro.session.metadata import TITLE_PROVIDER_FIRST_PROMPT
 from deeppyro.session.writer import event_to_dict
 from deeppyro.tools.pipeline import ToolCallRequest, _call_payload, run_tool_batch
 from deeppyro.tools.registry import ToolRegistry
@@ -186,3 +198,111 @@ def test_session_event_envelope_round_trips_through_writer() -> None:
     assert encoded["surfaceOp"] == {"op": "replace", "startSeq": 1, "endSeq": 2}
     assert encoded["sourceEventSeqs"] == [[0, 2]]
     assert json.loads(json.dumps(encoded, ensure_ascii=False)) == encoded
+
+
+def test_hook_records_lock_key_order_and_outcome_shape() -> None:
+    invoked: HookInvokedRecord = invoked_record(
+        HookObservation(
+            kind="invoked",
+            hook=TOOLS_PRE_EXECUTE,
+            mode="waterfall",
+            scope={"session": "s1", "preset": "reviewer"},
+            payload={
+                "turn": 1,
+                "step": 2,
+                "tool": "echo",
+                "call": {"callId": "c1"},
+                "model": "m",
+            },
+        )
+    )
+    assert list(invoked) == [
+        "hook",
+        "mode",
+        "scope",
+        "turn",
+        "step",
+        "tool",
+        "callId",
+        "model",
+    ]
+    assert invoked["scope"] == {"session": "s1", "preset": "reviewer"}
+    assert round_trip(invoked) == invoked
+
+    resolved: HookResultRecord = result_record(
+        HookObservation(
+            kind="resolved",
+            hook=TOOLS_EXECUTE,
+            mode="waterfall",
+            scope=None,
+            payload={"call": {"callId": "c1"}},
+            result="hooked",
+            duration_ms=3.9,
+        )
+    )
+    assert list(resolved) == [
+        "hook",
+        "mode",
+        "ok",
+        "outcome",
+        "durationMs",
+        "preview",
+        "callId",
+    ]
+    assert resolved == {
+        "hook": "tools/execute",
+        "mode": "waterfall",
+        "ok": True,
+        "outcome": "value",
+        "durationMs": 3,
+        "preview": "hooked",
+        "callId": "c1",
+    }
+    assert round_trip(resolved) == resolved
+
+    failed: HookResultRecord = result_record(
+        HookObservation(
+            kind="resolved",
+            hook=TOOLS_EXECUTE,
+            mode="waterfall",
+            scope=None,
+            payload={},
+            error=RuntimeError("boom"),
+        )
+    )
+    assert list(failed) == ["hook", "mode", "ok", "outcome", "durationMs", "error"]
+    assert failed["ok"] is False
+    assert failed["outcome"] == "error"
+    assert failed["error"] == {"name": "RuntimeError", "message": "boom"}
+    assert "preview" not in failed
+
+
+def test_session_title_request_locks_the_session_record_shape() -> None:
+    plugin = SimpleNamespace(options=SimpleNamespace(maxTokens=64))
+    data: SessionTitleLlmRequestData = SessionTitlePlugin._request(
+        plugin,
+        "hello",
+        "deepseek",
+        "deepseek-chat",
+        3,
+    )
+    assert list(data) == [
+        "titleProvider",
+        "messageSeqs",
+        "route",
+        "system",
+        "messages",
+        "maxTokens",
+        "reasoningEffort",
+    ]
+    assert data["titleProvider"] == TITLE_PROVIDER_FIRST_PROMPT
+    assert data["messageSeqs"] == [3]
+    assert list(data["route"]) == ["provider", "model"]
+    assert data["route"] == {"provider": "deepseek", "model": "deepseek-chat"}
+    assert data["maxTokens"] == 64
+    assert data["reasoningEffort"] == "off"
+    message = data["messages"][0]
+    assert message["role"] == "user"
+    assert message["content"] == [{"type": "text", "text": "hello"}]
+    assert message["source"] == {"kind": TITLE_PROMPT_SOURCE}
+    assert round_trip(data) == data

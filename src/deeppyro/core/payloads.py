@@ -30,6 +30,14 @@ in-memory form whose sourceEventSeqs are flattened to plain ints;
 deeppyro.session.writer turns a LogRecord back into SessionEventLine, the
 on-disk form whose sourceEventSeqs use [start, end] range pairs.  The first
 line of every session log is a SessionHeaderLine.
+
+Hook records and builtin payloads
+---------------------------------
+deeppyro.hooks.records shapes hook observations into HookInvokedRecord and
+HookResultRecord, the two deeppyro-specific record types the builtin hook
+journal writes.  The session title plugin stores its one-shot LLM request as
+SessionTitleLlmRequestData, and the approval/request waterfall carries the
+ApprovalRequestHookPayload that deeppyro.builtin.approval_policy consumes.
 """
 
 from __future__ import annotations
@@ -41,8 +49,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AnyToolHookPayload",
+    "ApprovalHookApproval",
+    "ApprovalRequestHookPayload",
     "ExecuteDecision",
     "ExecuteHookPayload",
+    "HookInvokedRecord",
+    "HookRecordFields",
+    "HookResultRecord",
     "HookScope",
     "PostExecuteDecision",
     "PostExecuteHookPayload",
@@ -52,6 +65,8 @@ __all__ = [
     "SessionEventLine",
     "SessionHeaderLine",
     "SessionReplaceSurface",
+    "SessionTitleLlmRequestData",
+    "SessionTitleRoute",
     "ToolCallPayload",
     "ToolHookContext",
     "ToolHookPayload",
@@ -199,3 +214,93 @@ class SessionHeaderLine(TypedDict):
     origin: NotRequired[Literal["subagent"]]
     delegationDepth: int
     agentPreset: NotRequired[str]
+
+
+class HookRecordFields(TypedDict):
+    """Fields shared by the two hook journal record types.
+
+    deeppyro.hooks.records copies only primitive payload values, and only the
+    ones present, so everything except hook and mode is optional.  callId is
+    read from the nested call of a tool hook payload, not from the top level.
+    """
+
+    hook: str
+    mode: str
+    scope: NotRequired[HookScope]
+    turn: NotRequired[int]
+    step: NotRequired[int]
+    tool: NotRequired[str]
+    callId: NotRequired[str]
+    provider: NotRequired[str]
+    model: NotRequired[str]
+    phase: NotRequired[str]
+    status: NotRequired[str]
+
+
+class HookInvokedRecord(HookRecordFields):
+    """The hook/invoked session record written by the builtin hook journal."""
+
+
+class HookResultRecord(HookRecordFields):
+    """The hook/result session record written by the builtin hook journal.
+
+    outcome is "error" when the dispatch raised, "none" when it produced no
+    value, and "value" otherwise; durationMs is the integer dispatch duration.
+    valueType and preview describe a non-string result; error carries the
+    exception name and message.
+    """
+
+    ok: bool
+    outcome: Literal["error", "none", "value"]
+    durationMs: int
+    valueType: NotRequired[str]
+    preview: NotRequired[str]
+    error: NotRequired[dict[str, Any]]
+
+
+class SessionTitleRoute(TypedDict):
+    """The provider route embedded in a session/title-llm-request payload."""
+
+    provider: str
+    model: str
+
+
+class SessionTitleLlmRequestData(TypedDict):
+    """Data of the session/title-llm-request session record.
+
+    deeppyro.builtin.session_title records one small title request; messages are
+    the JSON form of deeppyro.core.wire.Message steps and maxTokens comes from
+    the [title] options.
+    """
+
+    titleProvider: Literal["session-title-first-prompt-llm"]
+    messageSeqs: list[int]
+    route: SessionTitleRoute
+    system: str
+    messages: list[dict[str, Any]]
+    maxTokens: int
+    reasoningEffort: Literal["off"]
+
+
+class ApprovalHookApproval(TypedDict):
+    """The approval summary embedded in the approval/request hook payload."""
+
+    id: str
+    toolName: str
+    callId: str | None
+
+
+class ApprovalRequestHookPayload(TypedDict):
+    """Payload of the approval/request waterfall.
+
+    ApprovalService (deeppyro.sandbox.approval) builds it and the builtin
+    approval policy consumes it; request is an ApprovalRequest, agent, policy
+    and signal are optional services the caller passes through.
+    """
+
+    id: str
+    request: object
+    approval: ApprovalHookApproval
+    agent: Any
+    policy: Any
+    signal: Any
