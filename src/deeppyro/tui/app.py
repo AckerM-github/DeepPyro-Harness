@@ -11,24 +11,21 @@ Textual: DeepPyroApp is the only place where both worlds meet.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import inspect
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.notifications import SeverityLevel
 from textual.widgets import Footer, Header
 
 from deeppyro import __version__
 from deeppyro.goal import GoalError
 from deeppyro.session.metadata import record_archive, record_title
-from deeppyro.tui.app_events import EventLayer
 from deeppyro.tui.app_support import _HOOK_INVOKED_RECORD as _HOOK_INVOKED_RECORD
 from deeppyro.tui.app_support import _HOOK_RESULT_RECORD as _HOOK_RESULT_RECORD
 from deeppyro.tui.app_support import CUSTOM_WORKSPACE as CUSTOM_WORKSPACE
@@ -40,44 +37,32 @@ from deeppyro.tui.app_support import _goal_service as _goal_service
 from deeppyro.tui.app_support import _hook_rows_from_records as _hook_rows_from_records
 from deeppyro.tui.app_support import _normalize_hook_rows as _normalize_hook_rows
 from deeppyro.tui.app_support import _record_field as _record_field
+from deeppyro.tui.app_ui import UiLayer
 from deeppyro.tui.commands import dispatch, help_text, live_commands
 from deeppyro.tui.format import context_percent, short_session_id
 from deeppyro.tui.history import is_ptc_mode_message, process_map, reasoning_from_session
-from deeppyro.tui.screens.approval import ALLOW_ONCE, ApprovalScreen
 from deeppyro.tui.screens.hook_trace import EMPTY_TEXT as HOOK_TRACE_EMPTY_TEXT
 from deeppyro.tui.screens.hook_trace import HookTraceScreen, hook_trace_line
 from deeppyro.tui.screens.jobs import JobsPanelScreen
 from deeppyro.tui.screens.path_prompt import PathPromptScreen
 from deeppyro.tui.screens.plan import PlanScreen, plan_summary
 from deeppyro.tui.screens.plugin_panel import open_plugin_panel
-from deeppyro.tui.screens.question import QuestionScreen
 from deeppyro.tui.screens.slot_screen import open_slot_screen
 from deeppyro.tui.screens.splash import SplashScreen
 from deeppyro.tui.screens.team import TaskBoardScreen, TeamPanelScreen
 from deeppyro.tui.screens.thinking import ThinkingScreen
 from deeppyro.tui.session_view import GOAL_USAGE, goal_summary_line, listing_lines, matches, picker_items
 from deeppyro.tui.sink import TuiSink
-from deeppyro.tui.slots import SCREEN, SETTINGS, SlotRegistry, build_slot_context, resolve_slot_registry
-from deeppyro.tui.ui import (
-    ADD_ROW,
-    NOTIFY,
-    OPEN_PANEL,
-    OPEN_SCREEN,
-    REFRESH,
-    SET_STATUS,
-    UiAction,
-    resolve_ui_service,
-)
+from deeppyro.tui.slots import SCREEN, SETTINGS, SlotRegistry, build_slot_context
 from deeppyro.tui.widgets.activity_bar import AGENTS, JOBS, PLAN, ActivityBar
 from deeppyro.tui.widgets.agent_process import AgentProcess
 from deeppyro.tui.widgets.conversation import ConversationView
 from deeppyro.tui.widgets.plugin_slots import PluginStatusBar
 from deeppyro.tui.widgets.prompt_area import PromptArea
 from deeppyro.tui.widgets.status_bar import StatusBar
-from deeppyro.user_questions.types import Answer, AskRequest
 
 
-class DeepPyroApp(EventLayer):
+class DeepPyroApp(UiLayer):
     """Full-screen terminal client for one DeepPyro session."""
 
     CSS_PATH = "theme.tcss"
@@ -171,12 +156,6 @@ class DeepPyroApp(EventLayer):
         self.set_interval(1.0, self._refresh_activity)
         self.refresh_status()
 
-    def _configure_user_questions(self) -> None:
-        """Route ask_user_question requests to the TUI modal handler."""
-        configure = getattr(self.runtime, "configure_user_questions", None)
-        if callable(configure):
-            configure(self.ask_question)
-
     def _configure_schedule(self) -> None:
         """Route scheduled-message notices into the conversation."""
         configure = getattr(self.runtime, "configure_schedule_notice", None)
@@ -216,127 +195,6 @@ class DeepPyroApp(EventLayer):
             self._working = False
             self._phase = "idle"
             self.refresh_status()
-
-    def _bind_slots(self) -> None:
-        """Attach the optional `slots` service to the plugin chrome."""
-        self._slots = resolve_slot_registry(self.runtime)
-        if self._slots is None:
-            return
-        # optional chrome never blocks boot
-        with contextlib.suppress(Exception):
-            bar = self.query_one(PluginStatusBar)
-            bar.bind(self._slots, lambda: build_slot_context(self))
-
-    def _bind_ui(self) -> None:
-        """Attach the optional `ui` service and drain its queue on this thread."""
-        ui = resolve_ui_service(self.runtime)
-        if ui is None:
-            return
-        try:
-            ui.bind(self)
-            self._ui = ui
-            self._ui_timer = self.set_interval(0.1, self._drain_ui)
-        except Exception:  # noqa: BLE001 - optional chrome never blocks boot
-            self._ui = None
-            self._ui_timer = None
-
-    def _drain_ui(self) -> None:
-        """Deliver queued plugin actions; always runs on the Textual thread."""
-        ui = self._ui
-        if ui is None:
-            return
-        # one drain failure cannot break the timer
-        with contextlib.suppress(Exception):
-            ui.drain()
-
-    def _unbind_ui(self) -> None:
-        """Stop the drain timer and detach before the runtime closes."""
-        timer = self._ui_timer
-        self._ui_timer = None
-        if timer is not None:
-            # a dead timer is already stopped
-            with contextlib.suppress(Exception):
-                timer.stop()
-        ui = self._ui
-        self._ui = None
-        if ui is None:
-            return
-        for step in (ui.unbind, ui.clear):
-            # shutdown is best effort
-            with contextlib.suppress(Exception):
-                step()
-
-    def handle_ui_action(self, action: UiAction) -> None:
-        """Handle one `ui` action on the Textual thread (the drain backend)."""
-        payload = action.payload
-        kind = action.kind
-        if kind == NOTIFY:
-            self._notify_ui(payload)
-            return
-        if kind == OPEN_SCREEN:
-            self._open_ui_screen(payload)
-            return
-        if kind == OPEN_PANEL:
-            self._open_ui_panel(payload)
-            return
-        if kind == SET_STATUS:
-            self._set_ui_status(payload)
-            return
-        if kind == ADD_ROW:
-            self._add_ui_row(payload)
-            return
-        if kind == REFRESH:
-            self.refresh_status()
-            return
-        self.notify(f"unknown plugin ui action: {kind}", severity="warning")
-
-    def _notify_ui(self, payload: Mapping[str, Any]) -> None:
-        level = str(payload.get("level") or "info").lower()
-        severities: dict[str, SeverityLevel] = {"warning": "warning", "error": "error"}
-        severity = severities.get(level, "information")
-        text = str(payload.get("text") or "").strip()
-        if text:
-            self.notify(text, severity=severity)
-
-    def _open_ui_screen(self, payload: Mapping[str, Any]) -> None:
-        registry = self._slots
-        if registry is None:
-            self.notify("plugin screens are not available in this session", severity="warning")
-            return
-        slot_id = str(payload.get("slot_id") or "").strip() or None
-        screen = open_slot_screen(self, registry, slot_id=slot_id, context=build_slot_context(self))
-        if screen is None:
-            self.notify(f"no plugin screen: {slot_id or 'default'}", severity="warning")
-
-    def _open_ui_panel(self, payload: Mapping[str, Any]) -> None:
-        registry = self._slots
-        if registry is None:
-            self.notify("plugin panels are not available in this session", severity="warning")
-            return
-        slot_id = str(payload.get("slot_id") or "").strip() or None
-        screen = open_plugin_panel(self, registry, slot_id=slot_id, context=build_slot_context(self))
-        if screen is None:
-            self.notify(f"no plugin panel: {slot_id or 'default'}", severity="warning")
-
-    def _set_ui_status(self, payload: Mapping[str, Any]) -> None:
-        slot_id = str(payload.get("id") or "").strip()
-        if not slot_id:
-            return
-        text = str(payload.get("text") or "").strip()
-        if text:
-            self._ui_status[slot_id] = text
-        else:
-            self._ui_status.pop(slot_id, None)
-        self._refresh_plugin_status()
-
-    def _add_ui_row(self, payload: Mapping[str, Any]) -> None:
-        text = str(payload.get("text") or "").strip()
-        if not text:
-            return
-        if str(payload.get("level") or "info").lower() == "error":
-            self.conversation.add_error(text)
-        else:
-            self.conversation.add_info(text)
 
     async def on_unmount(self) -> None:
         self._unbind_ui()
@@ -445,58 +303,6 @@ class DeepPyroApp(EventLayer):
             self.conversation.add_error(f"interrupt failed: {exc}")
             return
         self.notify("interrupt requested")
-
-    # -- approval --------------------------------------------------------
-    async def ask_approval(self, request: Any) -> bool:
-        """Serve one permission request with the approval modal."""
-        try:
-            decision = await self.push_screen_wait(ApprovalScreen(request))
-        except Exception:  # noqa: BLE001 - outside a worker there is no modal
-            return False
-        return decision in (ALLOW_ONCE, "once")
-
-    # -- questions -------------------------------------------------------
-    async def ask_question(self, request: AskRequest) -> list[Answer]:
-        """Serve one ask_user_question request with a modal per question.
-
-        Escape/Cancel in a modal stops the request: answers already collected
-        are returned and the remaining questions are not shown, which the
-        user_questions service normalises into skipped answers. A failing or
-        closed modal never raises into the agent turn: the answers collected
-        so far (possibly none) are returned instead.
-        """
-        questions = tuple(getattr(request, "questions", ()) or ())
-        answers: list[Answer] = []
-        if not questions:
-            return answers
-        total = len(questions)
-        for index, question in enumerate(questions):
-            try:
-                answer = await self.push_screen_wait(QuestionScreen(question, index=index, total=total))
-            except asyncio.CancelledError:
-                # An interrupted turn cancels the wait: drop the orphaned modal
-                # so the next turn does not start behind a stale screen.
-                self._dismiss_question_screen()
-                return answers
-            except Exception:  # noqa: BLE001 - UI failure must not hang the agent
-                return answers
-            if answer is None:
-                break
-            answers.append(answer)
-        return answers
-
-    def _dismiss_question_screen(self) -> None:
-        """Pop the question modal if a cancelled wait left it on top."""
-        try:
-            screen = self.screen
-        except Exception:  # noqa: BLE001 - the screen stack may already be tearing down
-            return
-        if not isinstance(screen, QuestionScreen):
-            return
-        try:
-            self.pop_screen()
-        except Exception:  # noqa: BLE001 - a modal already gone must not raise
-            return
 
     @on(ActivityBar.SegmentClicked)
     def _on_activity_segment(self, event: ActivityBar.SegmentClicked) -> None:
