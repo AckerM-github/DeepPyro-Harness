@@ -15,7 +15,7 @@ import asyncio
 import contextlib
 import inspect
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -29,17 +29,23 @@ from deeppyro import __version__
 from deeppyro.api import DEFAULT_PRESET_ID
 from deeppyro.goal import GoalError
 from deeppyro.session.metadata import record_archive, record_title
+from deeppyro.tui.app_support import _HOOK_INVOKED_RECORD as _HOOK_INVOKED_RECORD
+from deeppyro.tui.app_support import _HOOK_RESULT_RECORD as _HOOK_RESULT_RECORD
+from deeppyro.tui.app_support import CUSTOM_WORKSPACE as CUSTOM_WORKSPACE
+from deeppyro.tui.app_support import CUSTOM_WORKSPACE_LABEL as CUSTOM_WORKSPACE_LABEL
+from deeppyro.tui.app_support import HOOK_TRACE_LIMIT as HOOK_TRACE_LIMIT
+from deeppyro.tui.app_support import RuntimeFactory as RuntimeFactory
+from deeppyro.tui.app_support import _emit_goal as _emit_goal
+from deeppyro.tui.app_support import _goal_service as _goal_service
+from deeppyro.tui.app_support import _hook_rows_from_records as _hook_rows_from_records
+from deeppyro.tui.app_support import _normalize_hook_rows as _normalize_hook_rows
+from deeppyro.tui.app_support import _record_field as _record_field
 from deeppyro.tui.commands import dispatch, help_text, live_commands
 from deeppyro.tui.format import context_percent, short_session_id
 from deeppyro.tui.history import is_ptc_mode_message, process_map, reasoning_from_session
 from deeppyro.tui.screens.approval import ALLOW_ONCE, ApprovalScreen
-from deeppyro.tui.screens.hook_trace import (
-    EMPTY_TEXT as HOOK_TRACE_EMPTY_TEXT,
-)
-from deeppyro.tui.screens.hook_trace import (
-    HookTraceScreen,
-    hook_trace_line,
-)
+from deeppyro.tui.screens.hook_trace import EMPTY_TEXT as HOOK_TRACE_EMPTY_TEXT
+from deeppyro.tui.screens.hook_trace import HookTraceScreen, hook_trace_line
 from deeppyro.tui.screens.jobs import JobsPanelScreen
 from deeppyro.tui.screens.path_prompt import PathPromptScreen
 from deeppyro.tui.screens.picker import PickerScreen
@@ -50,14 +56,7 @@ from deeppyro.tui.screens.slot_screen import open_slot_screen
 from deeppyro.tui.screens.splash import SplashScreen
 from deeppyro.tui.screens.team import TaskBoardScreen, TeamPanelScreen
 from deeppyro.tui.screens.thinking import ThinkingScreen
-from deeppyro.tui.session_view import (
-    GOAL_USAGE,
-    goal_lines,
-    goal_summary_line,
-    listing_lines,
-    matches,
-    picker_items,
-)
+from deeppyro.tui.session_view import GOAL_USAGE, goal_summary_line, listing_lines, matches, picker_items
 from deeppyro.tui.sink import TuiSink
 from deeppyro.tui.slots import (
     SCREEN,
@@ -84,87 +83,6 @@ from deeppyro.tui.widgets.plugin_slots import PluginStatusBar
 from deeppyro.tui.widgets.prompt_area import PromptArea
 from deeppyro.tui.widgets.status_bar import StatusBar
 from deeppyro.user_questions.types import Answer, AskRequest
-
-RuntimeFactory = Callable[["DeepPyroApp"], Awaitable[Any]]
-
-#: Sentinel returned by the /cwd picker when the user wants a free-text path.
-CUSTOM_WORKSPACE = "\x00custom-workspace"
-CUSTOM_WORKSPACE_LABEL = "Enter path..."
-
-#: How many paired hook decisions the /hooks viewer reads and shows.
-HOOK_TRACE_LIMIT = 50
-
-#: Session record types that bracket one hook invocation.
-_HOOK_INVOKED_RECORD = "hook/invoked"
-_HOOK_RESULT_RECORD = "hook/result"
-
-
-def _record_field(record: Any, name: str) -> Any:
-    """Read a session record field from a mapping or an object."""
-    if isinstance(record, Mapping):
-        return record.get(name)
-    return getattr(record, name, None)
-
-
-def _goal_service(runtime: Any) -> Any | None:
-    """Resolve the optional goal service from the booted runtime."""
-    if runtime is None:
-        return None
-    direct = getattr(runtime, "goal", None)
-    if direct is not None:
-        return direct
-    resolver = getattr(runtime, "_service", None)
-    if callable(resolver):
-        try:
-            service = resolver("goal")
-        except Exception:  # noqa: BLE001 - the service is optional
-            service = None
-        if service is not None:
-            return service
-    kernel_app = getattr(runtime, "kernel_app", None)
-    resolve = getattr(kernel_app, "service", None)
-    if not callable(resolve):
-        return None
-    try:
-        return resolve("goal")
-    except Exception:  # noqa: BLE001 - the service is optional
-        return None
-
-
-def _emit_goal(conversation: ConversationView, view: Any) -> None:
-    """Write the fixed `/goal` block into the conversation."""
-    for line in goal_lines(view):
-        conversation.add_info(line)
-
-
-def _normalize_hook_rows(rows: Any) -> list[dict[str, Any]]:
-    """Keep the mapping rows of a SessionQuery.hook_trace result."""
-    if not isinstance(rows, (list, tuple)):
-        return []
-    return [dict(row) for row in rows if isinstance(row, Mapping)]
-
-
-def _hook_rows_from_records(session: Any) -> list[dict[str, Any]]:
-    """Pair hook records from raw session records, newest last."""
-    records = getattr(session, "records", None)
-    if not isinstance(records, (list, tuple)):
-        return []
-    pending: list[dict[str, Any]] = []
-    for record in records:
-        record_type = _record_field(record, "type")
-        data = _record_field(record, "data")
-        if not isinstance(data, Mapping):
-            continue
-        hook = str(data.get("hook") or "")
-        mode = str(data.get("mode") or "")
-        if record_type == _HOOK_INVOKED_RECORD:
-            pending.append({"hook": hook, "mode": mode, "invoked": dict(data), "result": None})
-        elif record_type == _HOOK_RESULT_RECORD:
-            for row in reversed(pending):
-                if row["result"] is None and row["hook"] == hook:
-                    row["result"] = dict(data)
-                    break
-    return pending[-HOOK_TRACE_LIMIT:]
 
 
 class DeepPyroApp(App[None]):
