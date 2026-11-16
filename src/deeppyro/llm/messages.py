@@ -28,6 +28,7 @@ from typing import Any
 from deeppyro.core.payload import field_of
 from deeppyro.core.protocols import LlmRequest, ToolSchema
 from deeppyro.core.wire import (
+    ContentPart,
     ImagePart,
     Message,
     ReasoningPart,
@@ -37,10 +38,10 @@ from deeppyro.core.wire import (
 from deeppyro.llm.errors import CODE_BAD_REQUEST, LlmRequestError
 
 
-def _part_type(part: Any) -> str:
+def _part_type(part: ContentPart | dict[str, Any]) -> str:
     if isinstance(part, dict):
         return str(part.get("type", ""))
-    return str(getattr(part, "type", ""))
+    return str(part.type)
 
 
 def _part_text(part: Any) -> str:

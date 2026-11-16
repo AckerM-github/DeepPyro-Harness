@@ -20,6 +20,7 @@ from typing import Any
 
 from deeppyro.api.types import CHILD_DISABLED_TOOLS, DEFAULT_PRESET_ID
 from deeppyro.core.ids import new_session_id, now_ms
+from deeppyro.core.protocols import LlmProvider
 from deeppyro.core.wire import SessionHeader
 from deeppyro.session.fork import build_fork_seed
 from deeppyro.session.layout import flat_session_path
@@ -53,10 +54,10 @@ def _required_text(value: Any, field_name: str) -> str:
     return text
 
 
-def _provider_name(provider: Any) -> str:
+def _provider_name(provider: LlmProvider | None) -> str:
     if provider is None:
         return _ORPHAN
-    name = getattr(provider, "name", None)
+    name = provider.name
     if isinstance(name, str):
         return name
     return str(name or "")
@@ -113,7 +114,7 @@ class SubagentService:
         self._preset_revision: int | None = None
         self._services: dict[str, Any] = {}
         self._ask: Any = None
-        self._parent: Any = None
+        self._parent: Session | None = None
         self._parent_agent: Any = None
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._child_agents: dict[str, Any] = {}
@@ -136,11 +137,10 @@ class SubagentService:
         parent = self._parent
         if parent is None:
             return _ORPHAN
-        session_id = getattr(parent, "session_id", "")
-        if isinstance(session_id, str) and session_id:
+        session_id = parent.session_id
+        if session_id:
             return session_id
-        header = getattr(parent, "header", None)
-        header_id = getattr(header, "id", "")
+        header_id = parent.header.id
         return header_id if isinstance(header_id, str) else _ORPHAN
 
     def configure(
@@ -169,7 +169,7 @@ class SubagentService:
         self._services = dict(services or {})
         self._ask = ask
 
-    def bind_session(self, session: Any) -> None:
+    def bind_session(self, session: Session | None) -> None:
         """Bind the parent session that receives subagent catalog/descriptor records."""
         self._parent = session
         self._parent_agent = None
@@ -455,12 +455,14 @@ class SubagentService:
         if not parent_id:
             raise SubagentError("subagent service has no bound parent session")
         parent = self._parent
-        records = list(getattr(parent, "records", []) or [])
+        if parent is None:
+            raise SubagentError("subagent service has no bound parent session")
+        records = list(parent.records or [])
         boundary: int | None = None
         for record in reversed(records):
-            if getattr(record, "type", "") != "turn/end":
+            if record.type != "turn/end":
                 continue
-            seq = getattr(record, "seq", None)
+            seq = record.seq
             if isinstance(seq, int) and not isinstance(seq, bool):
                 boundary = seq
                 break
@@ -471,8 +473,7 @@ class SubagentService:
         else:
             seed = build_fork_seed(records[: boundary + 1], boundary)
             inherited_event_count = boundary + 1
-            parent_header = getattr(parent, "header", None)
-            parent_depth = getattr(parent_header, "delegationDepth", 0)
+            parent_depth = parent.header.delegationDepth
             depth = (parent_depth if isinstance(parent_depth, int) else 0) + 1
         header = SessionHeader(
             id=new_session_id(),
