@@ -87,10 +87,10 @@ def _bus_options(options: Any) -> dict[str, Any]:
 
 
 class PluginContext:
-    """A thin, plugin-friendly facade over the raw Cordis context.
+    """A thin, plugin-friendly facade over the kernel context.
 
-    Attributes not defined here are looked up on the raw context, so plugin
-    authors can still use events, fibers and the runtime directly. The
+    Attributes not defined here are looked up on the raw RuntimeContext, so
+    plugin authors can still use events, fibers and the runtime directly. The
     registration helpers add one important behaviour: whatever they register
     is torn down when the plugin fiber unloads.
     """

@@ -138,10 +138,10 @@ class PresetsPlugin(Service):
         super().__init__(ctx, config)
         # The loop keeps only a weak reference to a task; hold our own until done.
         self._pending: set[asyncio.Task[Any]] = set()
-        # The registry is a Cordis service, so methods invoked through a tracked
-        # service proxy receive the proxy as ``self``; on a proxy ``self.ctx``
-        # resolves to the *use-site* context. Keep the fiber's own raw context
-        # captured at construction time for mounting preset realms.
+        # Preset realms mount on this plugin's own runtime context: each row
+        # derives its isolate scopes from that base. Keep the raw context
+        # captured at construction time (before any realm exists) so every
+        # realm mounts with the same stable base.
         self._raw_ctx: Any = getattr(ctx, "raw", None)
         if self._raw_ctx is None:
             self._raw_ctx = ctx

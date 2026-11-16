@@ -1,7 +1,7 @@
 """Plain data types shared by plugins and the host.
 
-Nothing here imports the kernel or the vendored Cordis runtime, so an external
-plugin only needs the installed deeppyro package for these declarations.
+Nothing here imports the kernel runtime, so an external plugin only needs the
+installed deeppyro package for these declarations.
 """
 
 from __future__ import annotations

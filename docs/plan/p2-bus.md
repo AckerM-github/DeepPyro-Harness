@@ -277,6 +277,10 @@ class HookBridge:
   `ctx.effect` 即可工作；架构闸门
   tests/architecture/test_import_boundaries.py 保证 api/kernel 之外的模块不能
   import `_vendor`，合并会直接破坏该约束并重演框架耦合。
+  （2026-11-17 注记：第 5 步已整体删除 `_vendor`，kernel 改原生运行时；
+  该闸门随之重新锚定到 `deeppyro.kernel.{app,container,context,fiber,host}`——
+  除 kernel 包本身与 `headless.py`、`tui/runtime.py` 两个装配入口外，领域模块
+  不得 import 运行时模块。D1=A 决策本身不变。）
 - 重新评估的触发条件：出现必须用 cordis filter/scope 语义才能表达的消费者、
   或 HookService dispatch 成为性能瓶颈（当前 hot hook 已排除在桥接/落盘外）、
   或需要第三方插件直接订阅 kernel 事件。届时以独立 plan 评估，不在 P2 内改。
