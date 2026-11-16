@@ -21,7 +21,9 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from deeppyro.api import Service
+from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.core.errors import ConfigError
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.session_query import EventFilter, SessionQuery
 
 DEFAULT_READ_WINDOW_MAX = 50
@@ -45,7 +47,7 @@ class SessionQueryPlugin(Service):
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
-        sessions = ctx.service("sessions")
+        sessions = ctx.require(SessionsPlugin)
         store = getattr(sessions, "store", sessions)
         read_window = _resolve_read_window(config, _global_config(ctx))
         self.query = SessionQuery(store, read_window_max=read_window)
@@ -85,7 +87,7 @@ class SessionQueryPlugin(Service):
 
 def _global_config(ctx: Any) -> Any:
     try:
-        return ctx.service("config").value
+        return ctx.require(KernelConfig).value
     except (AttributeError, KeyError):  # pragma: no cover - embedded contexts without config
         return None
 

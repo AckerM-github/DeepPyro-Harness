@@ -8,6 +8,7 @@ from typing import Any
 
 from deeppyro.attachments import AttachmentConfig, AttachmentStore
 from deeppyro.builtin.attachments import AttachmentsPlugin
+from tests.service_doubles import service_lookup, service_require
 
 
 class _FakeContext:
@@ -17,8 +18,11 @@ class _FakeContext:
         self._config_service = SimpleNamespace(value=config_value)
         self.provided: dict[str, Any] = {}
 
-    def get(self, name: str) -> Any:
-        return self._config_service if name == "config" else None
+    def get(self, service: str | type[Any]) -> Any:
+        return service_lookup({"config": self._config_service}, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require({"config": self._config_service}, service)
 
     def provide(self, name: str, value: Any) -> None:
         self.provided[name] = value

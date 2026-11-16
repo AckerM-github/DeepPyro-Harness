@@ -6,6 +6,9 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from deeppyro.api import Plugin
+from deeppyro.api.services import require_service
+from deeppyro.builtin.sessions import SessionsPlugin
+from deeppyro.core.bus import EventBus
 from deeppyro.goal import DEFAULT_MAX_GOAL_ROUNDS, GoalService
 from deeppyro.tools.builtin.goal import (
     DEFAULT_BLOCKED_AFTER_CONSECUTIVE_ROUNDS,
@@ -87,14 +90,14 @@ class GoalPlugin(Plugin):
 
     def _bus(self, ctx: Any) -> Any | None:
         try:
-            return ctx.get("bus")
+            return ctx.get(EventBus)
         except Exception:  # noqa: BLE001 - the plugin still works without a bus
             return None
 
     def _load(self, session_id: str) -> list[Any]:
         """Durable records of one session, so a reopened goal survives."""
         try:
-            sessions = self.ctx.service("sessions")
+            sessions = require_service(self.ctx, SessionsPlugin, owner=self.plugin_id)
             store = getattr(sessions, "store", None)
             if store is None:
                 return []

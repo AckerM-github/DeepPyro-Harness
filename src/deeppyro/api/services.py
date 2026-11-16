@@ -92,6 +92,16 @@ Failure semantics
 * string lookups keep their historical behaviour: ctx.get("hooks") returns None
   or the value, ctx.service("hooks") raises PluginDependencyError, and
   App.service("hooks") raises LookupError.
+
+Typed lookups from inside a service
+===================================
+
+Cordis hands a service instance a shadow context while one of its methods runs:
+self.ctx is the caller's raw cordis Context, not a PluginContext, and it only
+accepts strings. Service methods therefore resolve typed services through
+require_service(self.ctx, Contract) / lookup_service(self.ctx, Contract); the
+helpers normalise the contract to its name first and then use ctx.get(name), so
+caller isolation semantics stay identical to the string path.
 """
 
 from __future__ import annotations
@@ -112,7 +122,9 @@ __all__ = [
     "ServiceTypeError",
     "bind_service_type",
     "contract_path",
+    "lookup_service",
     "note_service_value",
+    "require_service",
     "service_name",
 ]
 
@@ -199,6 +211,53 @@ def service_name(contract: type[Any]) -> str:
     raise ServiceTypeError(
         f"{path} is not bound to a service name; "
         f"call bind_service_type({contract.__name__}, '<service-name>') or register the provider first"
+    )
+
+
+def _name_or_none(service: str | type[Any]) -> str | None:
+    """Resolve a service argument to its name, or None when it cannot."""
+    if isinstance(service, str):
+        return service or None
+    try:
+        return service_name(service)
+    except ServiceTypeError:
+        return None
+
+
+def lookup_service(ctx: Any, service: str | type[Any]) -> Any | None:
+    """Resolve one service through any cordis-flavoured context.
+
+    PluginContext accepts contracts directly, but a service instance method sees
+    a cordis shadow context: inside it self.ctx is the caller's raw Context,
+    which only understands strings. Resolving the contract to its canonical
+    name first lets the same code work in both places (and in test doubles that
+    only implement get(name)).
+    """
+    name = _name_or_none(service)
+    if name is None:
+        return None
+    getter = getattr(ctx, "get", None)
+    if not callable(getter):
+        return None
+    return getter(name)
+
+
+def require_service(ctx: Any, service: str | type[Any], *, owner: str = "plugin") -> Any:
+    """Like lookup_service, but raise when the service is not available.
+
+    String arguments keep the historical PluginDependencyError wording; class
+    arguments raise ServiceNotFoundError with the contract path in the message.
+    """
+    name = service if isinstance(service, str) else service_name(service)
+    value = lookup_service(ctx, name)
+    if value is not None:
+        return value
+    if isinstance(service, str):
+        raise PluginDependencyError(f"plugin {owner!r} requires service {name!r}, which is not available")
+    raise ServiceNotFoundError(
+        f"plugin {owner!r} requires service {name!r} ({contract_path(service)}), which is not available",
+        service=name,
+        contract=service,
     )
 
 

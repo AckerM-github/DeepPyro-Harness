@@ -44,7 +44,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from deeppyro.agent.images import plan_request_images
 from deeppyro.agent.inbox import TARGET_NEXT_STEP, TARGET_NEXT_TURN, Inbox
@@ -59,6 +59,8 @@ from deeppyro.agent.request import (
 )
 from deeppyro.agent.retry import decide_retry
 from deeppyro.agent.stream import AssistantStreamAccumulator
+from deeppyro.api.services import ServiceBag
+from deeppyro.attachments import AttachmentStore
 from deeppyro.compact.compactor import Compactor
 from deeppyro.core.errors import AbortedError, LlmError, SessionError
 from deeppyro.core.ids import new_message_id, now_ms
@@ -79,6 +81,7 @@ from deeppyro.core.protocols import (
 )
 from deeppyro.core.wire import Message, ReasoningPart, TextPart, ToolCallPart
 from deeppyro.hooks.records import INVOKED_RECORD_TYPE, RESULT_RECORD_TYPE
+from deeppyro.hooks.service import HookService
 from deeppyro.hooks.types import (
     AGENT_ASSISTANT_STREAM,
     AGENT_ERROR,
@@ -90,6 +93,7 @@ from deeppyro.hooks.types import (
     LLM_STREAM,
     SYSTEM_PROMPT_ASSEMBLE,
 )
+from deeppyro.llm.retry import RetryPolicy
 from deeppyro.prompt import PromptContext, build_system_prompt, collect_instructions
 from deeppyro.prompt.projection import (
     ProjectionUpdate,
@@ -100,8 +104,14 @@ from deeppyro.prompt.runtime_context import render_runtime_context, runtime_cont
 from deeppyro.sandbox.policy import approval_policy_text, sandbox_policy_text
 from deeppyro.session.derive import repair_pending_tool_calls
 from deeppyro.session.image_projection import IMAGE_OFFLOAD_EVENT
+from deeppyro.working_directory import WorkingDirectoryService
+
+if TYPE_CHECKING:
+    from deeppyro.api import PluginContext
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 #: The only record types :meth:`AgentSession.record_hook_event` may append.
 HOOK_RECORD_TYPES = frozenset({INVOKED_RECORD_TYPE, RESULT_RECORD_TYPE})
@@ -248,6 +258,7 @@ class AgentSession:
         prompt_builder: Any | None = None,
         surface_registry: Any | None = None,
         runtime_context: bool = True,
+        service_access: PluginContext | None = None,
     ) -> None:
         self._session = session
         self._provider = provider
@@ -278,10 +289,16 @@ class AgentSession:
         # PTC and future transports dispatch nested tools through the agent's
         # composed registry, narrowed to this agent's preset.
         self._services.setdefault("tool_registry", registry)
+        # Typed lookups read the live plugin context first (types survive
+        # locally scoped services) and fall back to the plain name dictionary.
+        self._service_access = service_access
+        self._bag = ServiceBag(self._services)
         self._prompt_builder = prompt_builder or build_system_prompt
-        hooks = self._services.get("hooks")
-        self._hooks: Any | None = hooks if hooks is not None else None
-        self._retry_policy: Any | None = self._services.get("retryPolicy")
+        hooks = self._service(HookService)
+        self._hooks: HookService | None = hooks
+        self._retry_policy: Any | None = self._service(RetryPolicy)
+        if self._retry_policy is None:
+            self._retry_policy = self._services.get("retryPolicy")
         if self._retry_policy is None:
             self._retry_policy = self._services.get("retry_policy")
         self._model = options.model or str(getattr(provider, "model", "") or "") or "unknown"
@@ -843,6 +860,14 @@ class AgentSession:
                 scope=self._hook_scope(),
             )
 
+    def _service(self, contract: type[T]) -> T | None:
+        """Resolve one typed service: live plugin context first, name bag second."""
+        if self._service_access is not None:
+            value = self._service_access.get(contract)
+            if value is not None:
+                return value
+        return self._bag.get(contract)
+
     # -- images ------------------------------------------------------------
     def _image_budget(self) -> Any:
         """Return the route image budget: injectable service first, then provider."""
@@ -862,7 +887,7 @@ class AgentSession:
         """
         plan = plan_request_images(
             self._records(),
-            attachments=self._services.get("attachments"),
+            attachments=self._service(AttachmentStore),
             budget=self._image_budget(),
         )
         data = plan.record_data()
@@ -1077,7 +1102,7 @@ class AgentSession:
         return groups
 
     def _current_cwd(self) -> Path:
-        service = self._services.get("working_directory")
+        service = self._service(WorkingDirectoryService)
         getter = getattr(service, "get", None)
         if callable(getter):
             try:

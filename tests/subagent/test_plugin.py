@@ -8,6 +8,7 @@ from deeppyro.builtin.subagent import SubagentPlugin
 from deeppyro.kernel.manifest import resolve_plugin_name
 from deeppyro.subagent import SubagentService
 from deeppyro.tools.builtin.subagent import subagent_tools
+from tests.service_doubles import service_lookup, service_require
 
 
 class FakePluginContext:
@@ -20,6 +21,12 @@ class FakePluginContext:
 
     def service(self, name: str) -> Any:
         return self._services[name]
+
+    def get(self, service: str | type[Any]) -> Any | None:
+        return service_lookup(self._services, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self._services, service)
 
     def provide(self, name: str, value: Any) -> None:
         self.provided[name] = value

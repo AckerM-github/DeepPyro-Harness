@@ -8,6 +8,8 @@ import logging
 from typing import Any, ClassVar
 
 from deeppyro.api.plugin import Service
+from deeppyro.attachments import AttachmentStore
+from deeppyro.core.bus import EventBus
 from deeppyro.mcp.resources import resource_tools
 from deeppyro.mcp.service import McpConfigError, McpService, parse_servers, servers_from_config
 from deeppyro.mcp.types import McpServerConfig, McpServerStatus
@@ -37,7 +39,7 @@ class McpPlugin(Service):
             parse_servers(servers_from_config(ctx, config), logger=self.logger),
             bus=_bus(ctx),
             logger=self.logger,
-            attachments=_service(ctx, "attachments"),
+            attachments=_service(ctx),
         )
 
     async def setup(self, ctx: Any, config: Any) -> None:
@@ -82,16 +84,16 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _service(ctx: Any, name: str) -> Any:
+def _service(ctx: Any) -> Any:
     try:
-        return ctx.service(name)
+        return ctx.get(AttachmentStore)
     except Exception:  # noqa: BLE001 - the plugin still works without attachments
         return None
 
 
 def _bus(ctx: Any) -> Any:
     try:
-        return ctx.get("bus")
+        return ctx.get(EventBus)
     except Exception:  # noqa: BLE001 - the plugin still works without a bus
         return None
 

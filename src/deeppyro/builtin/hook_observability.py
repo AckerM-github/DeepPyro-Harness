@@ -26,6 +26,7 @@ from deeppyro.hooks import (
     SESSION_DISPOSED,
     SYSTEM_PROMPT_ASSEMBLE,
 )
+from deeppyro.hooks.service import HookService
 from deeppyro.hooks.types import HookNext, HookPayload
 
 #: Hooks covered by this plugin, in documentation order.
@@ -103,7 +104,7 @@ class HookObservabilityPlugin(Plugin):
         self._disposers: list[Callable[[], Any]] = []
 
     def setup(self, ctx: Any, config: Any) -> None:
-        hooks = ctx.service("hooks")
+        hooks = ctx.require(HookService)
         for name in OBSERVED_HOOKS:
             handler = self._handler(name)
             disposer = ctx.effect(

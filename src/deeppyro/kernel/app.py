@@ -55,6 +55,7 @@ from deeppyro.kernel.composition import (
 from deeppyro.kernel.config_service import provide_config
 from deeppyro.kernel.config_values import config_dict
 from deeppyro.kernel.manifest import PluginSpec, load_manifest
+from deeppyro.kernel.runtime import KernelRuntime
 
 T = TypeVar("T")
 
@@ -610,9 +611,8 @@ def _build_composition(
 
 def _attach_kernel(app: App) -> None:
     """Give the kernel runtime service a handle on the booted app."""
-    try:
-        service = app.service("kernel")
-    except LookupError:
+    service = app.get(KernelRuntime)
+    if service is None:
         return
     attach = getattr(service, "attach", None)
     if not callable(attach):

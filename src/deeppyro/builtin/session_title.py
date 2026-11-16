@@ -23,10 +23,14 @@ from typing import Any, ClassVar
 from pydantic import BaseModel
 
 from deeppyro.api import Plugin
+from deeppyro.api.services import require_service
+from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.core.ids import new_message_id
 from deeppyro.core.protocols import LlmRequest, TextDelta
 from deeppyro.core.wire import Message, TextPart
 from deeppyro.hooks import AGENT_TURN_STOPPING
+from deeppyro.hooks.service import HookService
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.session.metadata import (
     SOURCE_LLM,
     TITLE_LLM_REQUEST_EVENT,
@@ -86,7 +90,7 @@ class SessionTitlePlugin(Plugin):
         """Subscribe to the end of a turn; do nothing else at mount time."""
         if not self.options.enabled:
             return
-        hooks = ctx.service("hooks")
+        hooks = ctx.require(HookService)
         ctx.effect(
             lambda: hooks.on(AGENT_TURN_STOPPING, self._on_turn_stopping),
             label="session-title",
@@ -166,7 +170,7 @@ class SessionTitlePlugin(Plugin):
         }
 
     async def _complete(self, provider_name: str, model: str, prompt: str) -> str:
-        provider = self._ctx.service("llm").provider(provider_name)
+        provider = require_service(self._ctx, LlmPlugin).provider(provider_name)
         if provider is None:
             raise RuntimeError(f"unknown provider {provider_name!r}")
         request = LlmRequest(
@@ -194,7 +198,7 @@ class SessionTitlePlugin(Plugin):
 def options_for(ctx: Any) -> TitleOptions:
     """Read ``[title]`` from the user config, falling back to the defaults."""
     try:
-        cfg = ctx.service("config").value
+        cfg = ctx.require(KernelConfig).value
     except Exception:  # noqa: BLE001 - the plugin must load without a config service
         return TitleOptions()
     table = getattr(cfg, "title", None)

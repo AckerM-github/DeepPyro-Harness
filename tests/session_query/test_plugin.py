@@ -13,6 +13,7 @@ import pytest
 from deeppyro.core.errors import ConfigError
 from deeppyro.session import SessionStore
 from deeppyro.session_query import INVALID_FILTER, SessionQueryError
+from tests.service_doubles import service_lookup, service_require
 from tests.session_query.support import new_session, tmp_store
 
 BUILTIN_PATH = (
@@ -40,6 +41,12 @@ class _Ctx:
         if name not in self._services:
             raise KeyError(name)
         return self._services[name]
+
+    def get(self, service: str | type[Any]) -> Any | None:
+        return service_lookup(self._services, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self._services, service)
 
 
 def _load_plugin_module() -> Any:

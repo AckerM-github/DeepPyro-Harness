@@ -18,11 +18,13 @@ from typing import Any, ClassVar
 from pydantic import BaseModel
 
 from deeppyro.api import Plugin
+from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.compact.block_tools import DecompressTool, SearchContextTool
 from deeppyro.compact.blocks import BlockStore
 from deeppyro.compact.compress_tool import CompressTool
 from deeppyro.compact.refs import RefStore
 from deeppyro.core.errors import ConfigError
+from deeppyro.kernel.config_service import KernelConfig
 
 
 class CompressConfig(BaseModel):
@@ -34,7 +36,7 @@ class CompressConfig(BaseModel):
 
 def _global_config(ctx: Any) -> Any:
     try:
-        service = ctx.service("config")
+        service = ctx.require(KernelConfig)
     except (AttributeError, LookupError):
         return None
     return getattr(service, "value", None)
@@ -116,7 +118,7 @@ class CompressPlugin(Plugin):
         section = _section(_global_config(ctx))
         if not _resolve_enabled(section, row):
             return
-        sessions = ctx.service("sessions")
+        sessions = ctx.require(SessionsPlugin)
         store_root = _store_root(sessions)
         if store_root is None:
             raise ConfigError("compress requires the sessions service to expose a store root")

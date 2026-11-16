@@ -15,6 +15,7 @@ from typing import Any, ClassVar
 
 from deeppyro.api import Plugin
 from deeppyro.attachments import AttachmentStore
+from deeppyro.kernel.config_service import KernelConfig
 
 
 def _attachments_config(ctx: Any, row_config: Any) -> dict[str, Any]:
@@ -22,7 +23,7 @@ def _attachments_config(ctx: Any, row_config: Any) -> dict[str, Any]:
     merged: dict[str, Any] = {}
     if isinstance(row_config, Mapping):
         merged.update(row_config)
-    config_service = ctx.get("config")
+    config_service = ctx.get(KernelConfig)
     value = getattr(config_service, "value", None) if config_service is not None else None
     raw: Any = None
     if value is not None:

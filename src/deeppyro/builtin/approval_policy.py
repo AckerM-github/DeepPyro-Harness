@@ -24,7 +24,9 @@ from deeppyro.api import Plugin
 from deeppyro.core.errors import ConfigError
 from deeppyro.core.payload import field_of
 from deeppyro.hooks import APPROVAL_REQUEST
+from deeppyro.hooks.service import HookService
 from deeppyro.hooks.types import HookNext, HookPayload
+from deeppyro.kernel.config_service import KernelConfig
 
 DEFAULT_HOOK_MODE = "off"
 _HOOK_MODES = frozenset({"off", "ask", "allow", "deny"})
@@ -40,7 +42,7 @@ class ApprovalPolicyPlugin(Plugin):
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
-        cfg = ctx.service("config").value
+        cfg = ctx.require(KernelConfig).value
         table = _section(cfg, "approval")
         self._mode = _hook_mode(table)
         self._tools = _hook_tools(table)
@@ -56,7 +58,7 @@ class ApprovalPolicyPlugin(Plugin):
         return self._tools
 
     def setup(self, ctx: Any, config: Any) -> None:
-        hooks = ctx.service("hooks")
+        hooks = ctx.require(HookService)
         ctx.effect(
             lambda: hooks.on(APPROVAL_REQUEST, self._on_request),
             label="approval-policy",

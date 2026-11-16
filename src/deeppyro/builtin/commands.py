@@ -10,6 +10,8 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from deeppyro.api import CommandSpec, PluginDependencyError, Service
+from deeppyro.api.services import lookup_service
+from deeppyro.core.bus import EventBus
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,7 @@ class CommandsPlugin(Service):
     def _bus(self) -> Any | None:
         """The event bus, when the kernel has one (it does from HooksPlugin on)."""
         try:
-            return self.ctx.get("bus")
+            return lookup_service(self.ctx, EventBus)
         except Exception:  # noqa: BLE001 - an absent bus must not break a command
             return None
 

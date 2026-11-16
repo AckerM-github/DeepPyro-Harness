@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from deeppyro.api import Plugin
+from deeppyro.api.services import lookup_service
 from deeppyro.core.payload import field_of
+from deeppyro.hooks.service import HookService
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.sandbox import PermissionGate
 from deeppyro.sandbox.approval import ApprovalService
 from deeppyro.sandbox.permission import PermissionPresetsService
@@ -35,7 +38,7 @@ class SandboxPlugin(Plugin):
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
-        cfg = ctx.service("config").value
+        cfg = ctx.require(KernelConfig).value
         sandbox = _table(cfg, "sandbox")
         approval = _table(cfg, "approval")
         permission = _table(cfg, "permission")
@@ -78,7 +81,7 @@ class SandboxPlugin(Plugin):
             permission_presets=self.permission_presets,
             session=session,
         )
-        hooks = self.ctx.get("hooks")
+        hooks = lookup_service(self.ctx, HookService)
         if hooks is not None:
             gate.bind_hooks(hooks)
         if ask is not None:

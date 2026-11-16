@@ -14,7 +14,10 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from deeppyro.api import Plugin
+from deeppyro.builtin.agents import AgentsPlugin
+from deeppyro.goal import GoalService
 from deeppyro.goal.round_driver import RoundDriver
+from deeppyro.hooks.service import HookService
 
 logger = logging.getLogger(__name__)
 
@@ -90,9 +93,9 @@ class GoalRoundDriverPlugin(Plugin):
             # Off means off: no listeners, no bus traffic, no state at all.
             return
         driver = RoundDriver(
-            hooks=ctx.service("hooks"),
-            agents=ctx.service("agents"),
-            goals=ctx.get("goal"),
+            hooks=ctx.require(HookService),
+            agents=ctx.require(AgentsPlugin),
+            goals=ctx.get(GoalService),
         )
         self.driver = driver
         driver.attach()

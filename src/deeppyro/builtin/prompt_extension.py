@@ -25,7 +25,9 @@ from deeppyro.api import Plugin
 from deeppyro.core.errors import ConfigError
 from deeppyro.core.payload import field_of
 from deeppyro.hooks import SYSTEM_PROMPT_ASSEMBLE
+from deeppyro.hooks.service import HookService
 from deeppyro.hooks.types import HookNext, HookPayload
+from deeppyro.kernel.config_service import KernelConfig
 
 
 class PromptExtensionPlugin(Plugin):
@@ -38,7 +40,7 @@ class PromptExtensionPlugin(Plugin):
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
-        cfg = ctx.service("config").value
+        cfg = ctx.require(KernelConfig).value
         self._text = _extension_text(cfg)
 
     @property
@@ -47,7 +49,7 @@ class PromptExtensionPlugin(Plugin):
         return self._text
 
     def setup(self, ctx: Any, config: Any) -> None:
-        hooks = ctx.service("hooks")
+        hooks = ctx.require(HookService)
         ctx.effect(
             lambda: hooks.on(SYSTEM_PROMPT_ASSEMBLE, self._on_assemble),
             label="prompt-extension",

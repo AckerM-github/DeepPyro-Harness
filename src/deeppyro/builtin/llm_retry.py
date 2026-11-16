@@ -44,6 +44,8 @@ from deeppyro.agent.retry import (
 from deeppyro.api import Plugin
 from deeppyro.core.errors import ConfigError
 from deeppyro.hooks import AGENT_REQUEST_ERROR
+from deeppyro.hooks.service import HookService
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.llm.retry import RetryPolicy
 
 DEFAULT_MODE = "normal"
@@ -124,7 +126,7 @@ class LlmRetryPlugin(Plugin):
 
     def __init__(self, ctx: Any, config: Any) -> None:
         super().__init__(ctx, config)
-        cfg = ctx.service("config").value
+        cfg = ctx.require(KernelConfig).value
         self._policy = build_retry_policy(getattr(cfg, "retry", None))
         self._hooks: Any | None = None
 
@@ -134,7 +136,7 @@ class LlmRetryPlugin(Plugin):
         return self._policy
 
     def setup(self, ctx: Any, config: Any) -> None:
-        hooks = ctx.service("hooks")
+        hooks = ctx.require(HookService)
         self._hooks = hooks
         ctx.provide("retryPolicy", self._policy)
         ctx.effect(
