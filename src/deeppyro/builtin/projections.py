@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.builtin.activity import AgentInfo, JobInfo, TodoItem
 from deeppyro.projection import (
     ProjectionCheckpoints,
@@ -286,7 +286,7 @@ class ProjectionsPlugin(Plugin):
     description = "session projections and durable sidecar checkpoints"
     inject: ClassVar[list[str]] = []
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self.service = ProjectionsService()
 

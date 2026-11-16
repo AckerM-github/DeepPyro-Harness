@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 
 TODO_STATUSES = ("pending", "in_progress", "completed")
 
@@ -269,7 +269,7 @@ class ActivityPlugin(Plugin):
     description = "session activity projection: plan, jobs, agent team"
     inject: ClassVar[list[str]] = []
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self.service = ActivityService()
 

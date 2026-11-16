@@ -20,7 +20,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
-from deeppyro.api import Service
+from deeppyro.api import PluginConfig, PluginContext, Service
 from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.core.errors import ConfigError
 from deeppyro.kernel.config_service import KernelConfig
@@ -45,10 +45,10 @@ class SessionQueryPlugin(Service):
     description = "read-only session log queries"
     Config = SessionQueryConfig
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         sessions = ctx.require(SessionsPlugin)
-        store = getattr(sessions, "store", sessions)
+        store: Any = getattr(sessions, "store", sessions)
         read_window = _resolve_read_window(config, _global_config(ctx))
         self.query = SessionQuery(store, read_window_max=read_window)
 
@@ -85,14 +85,14 @@ class SessionQueryPlugin(Service):
         return self.query.hook_trace(session_id, limit)
 
 
-def _global_config(ctx: Any) -> Any:
+def _global_config(ctx: PluginContext) -> Any:
     try:
         return ctx.require(KernelConfig).value
     except (AttributeError, KeyError):  # pragma: no cover - embedded contexts without config
         return None
 
 
-def _resolve_read_window(config: Any, global_config: Any) -> int:
+def _resolve_read_window(config: PluginConfig, global_config: Any) -> int:
     """Resolve `readWindowMax` from the plugin row and global config section."""
     value: Any = None
     if isinstance(config, Mapping):

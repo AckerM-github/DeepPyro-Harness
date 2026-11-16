@@ -7,9 +7,9 @@ importing the manager directly.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
-from deeppyro.api import Service
+from deeppyro.api import PluginConfig, PluginContext, Service
 from deeppyro.plugins import (
     BundleInfo,
     PluginInfo,
@@ -27,7 +27,7 @@ class PluginManagerPlugin(Service):
     description = "external plugin and user bundle lifecycle manager"
     inject: ClassVar[list[str]] = []
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self.manager = PluginManager()
 

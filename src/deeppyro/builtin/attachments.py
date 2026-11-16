@@ -13,12 +13,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.attachments import AttachmentStore
 from deeppyro.kernel.config_service import KernelConfig
 
 
-def _attachments_config(ctx: Any, row_config: Any) -> dict[str, Any]:
+def _attachments_config(ctx: PluginContext, row_config: PluginConfig) -> dict[str, Any]:
     """Merge the bundle row config under the [attachments] table from the kernel config."""
     merged: dict[str, Any] = {}
     if isinstance(row_config, Mapping):
@@ -48,7 +48,7 @@ class AttachmentsPlugin(Plugin):
     description = "image attachment storage (validation, normalization, references)"
     inject: ClassVar[list[str]] = ["config"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self.store = AttachmentStore(config=_attachments_config(ctx, config))
 

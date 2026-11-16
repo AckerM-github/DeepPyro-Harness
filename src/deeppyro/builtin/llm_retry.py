@@ -41,7 +41,7 @@ from deeppyro.agent.retry import (
     DEFAULT_MAX_DELAY_MS,
     DEFAULT_MAX_RETRIES,
 )
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.core.errors import ConfigError
 from deeppyro.hooks import AGENT_REQUEST_ERROR
 from deeppyro.hooks.service import HookService
@@ -124,7 +124,7 @@ class LlmRetryPlugin(Plugin):
     description = "retry policy service plus agent/request-error retry consumer"
     inject: ClassVar[list[str]] = ["hooks", "config"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         cfg = ctx.require(KernelConfig).value
         self._policy = build_retry_policy(getattr(cfg, "retry", None))

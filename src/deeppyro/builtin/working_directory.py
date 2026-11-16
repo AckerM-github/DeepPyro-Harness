@@ -11,13 +11,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.core.bus import EventBus
 from deeppyro.tools.builtin.working_directory import WorkingDirectoryTool
 from deeppyro.working_directory import WorkingDirectoryService
 
 
-def _service_config(config: Any) -> Any:
+def _service_config(config: PluginConfig) -> Any:
     if isinstance(config, Mapping):
         for key in ("working_directory", "workingDirectory"):
             value = config.get(key)
@@ -40,11 +40,11 @@ class WorkingDirectoryPlugin(Plugin):
     description = "per-session committed working directory and the working_directory tool"
     inject: ClassVar[list[str]] = ["sessions", "tools"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self.service = WorkingDirectoryService(_service_config(config))
 
-    def _bus(self, ctx: Any) -> Any | None:
+    def _bus(self, ctx: PluginContext) -> Any | None:
         try:
             return ctx.get(EventBus)
         except Exception:  # noqa: BLE001 - the plugin still works without a bus

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
-from deeppyro.api import TEAM_PRESET_ID, Plugin
+from deeppyro.api import TEAM_PRESET_ID, Plugin, PluginConfig, PluginContext
 from deeppyro.builtin.agents import AgentsPlugin
 from deeppyro.builtin.sandbox import SandboxPlugin
 from deeppyro.builtin.sessions import SessionsPlugin
@@ -20,7 +20,7 @@ class TeamPlugin(Plugin):
     description = "agent team: child members, messaging and the shared task board"
     inject: ClassVar[list[str]] = ["agents", "sessions", "sandbox", "tools"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self.service: TeamService | None = None
 

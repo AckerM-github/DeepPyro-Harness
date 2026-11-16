@@ -30,6 +30,7 @@ from deeppyro.api import (
     PLUGIN_AUTHORING_TOOL_NAMES,
     TEAM_PRESET_ID,
     Plugin,
+    PluginConfig,
     PluginConfigError,
     PluginContext,
     PluginDependencyError,
@@ -134,7 +135,7 @@ class PresetsPlugin(Service):
     version = "0.2.0"
     description = "agent preset revision registry with per-preset plugin realms"
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         # The loop keeps only a weak reference to a task; hold our own until done.
         self._pending: set[asyncio.Task[Any]] = set()

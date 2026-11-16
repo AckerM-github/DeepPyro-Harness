@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, ClassVar
 
-from deeppyro.api import PluginDependencyError, Service
+from deeppyro.api import PluginConfig, PluginContext, PluginDependencyError, Service
 from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.llm import LlmRegistry, ModelInfo
 
@@ -19,7 +19,7 @@ class LlmPlugin(Service):
     version = "0.1.0"
     description = "LLM provider registry"
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         cfg = ctx.require(KernelConfig).value
         self._registry = LlmRegistry(cfg)

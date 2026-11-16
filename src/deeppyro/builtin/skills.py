@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
+from deeppyro.api import PluginConfig, PluginContext
 from deeppyro.api.plugin import Service
 from deeppyro.core.errors import ConfigError
 from deeppyro.kernel.config_service import KernelConfig
@@ -29,7 +30,7 @@ class SkillsPlugin(Service):
     description = "read-only skill discovery and the skill loading tool"
     inject: ClassVar[list[str]] = ["config", "tools", "prompt", "commands"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         skills_config = _resolve_config(ctx, config)
         self._skills_config = skills_config
@@ -158,7 +159,7 @@ async def _send(host: Any, text: str) -> bool:
     return False
 
 
-def _resolve_config(ctx: Any, config: Any) -> SkillConfig:
+def _resolve_config(ctx: PluginContext, config: PluginConfig) -> SkillConfig:
     """Resolve settings from the bundle row config, else the [skills] table.
 
     The row config wins when non-empty so a bundle can pin skill roots; the

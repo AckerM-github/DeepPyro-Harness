@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, cast
 
-from deeppyro.api import PTC_PRESET_ID, Plugin, PluginConfig
+from deeppyro.api import PTC_PRESET_ID, Plugin, PluginConfig, PluginContext
 from deeppyro.core.protocols import ToolSchema
 from deeppyro.ptc import NESTED_EXCLUDED_TOOLS, RUN_CODE_NAME, PtcConfig, PtcRuntime, RunCodeTool
 from deeppyro.ptc.sdk import render_tools_sdk
@@ -27,7 +27,7 @@ PTC_ONLY_INSTRUCTION = (
 )
 
 
-def _ptc_config(ctx: Any, row_config: Any) -> dict[str, Any]:
+def _ptc_config(ctx: PluginContext, row_config: PluginConfig) -> dict[str, Any]:
     """Merge the bundle row config under the [ptc] table from the kernel config."""
     merged: dict[str, Any] = {}
     if isinstance(row_config, Mapping):
@@ -58,7 +58,7 @@ class PtcPlugin(Plugin):
     description = "Python programmatic tool calling (run_code)"
     inject: ClassVar[list[str]] = ["config", "tools", "prompt"]
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         ptc_config = PtcConfig.from_mapping(_ptc_config(ctx, config))
         # This plugin has always replaced the injected config with its own

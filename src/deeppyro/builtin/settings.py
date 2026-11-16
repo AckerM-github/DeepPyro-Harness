@@ -14,11 +14,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from deeppyro.api import Service
+from deeppyro.api import PluginConfig, PluginContext, Service
 from deeppyro.plugins.settings_store import APPLY_LIVE, APPLY_NEXT_BOOT, SettingsStore
 
 
-def _kernel_service(ctx: Any) -> Any:
+def _kernel_service(ctx: PluginContext) -> Any:
     """Look up the optional kernel service without requiring it to exist."""
     getter = getattr(ctx, "get", None)
     if not callable(getter):
@@ -38,7 +38,7 @@ class SettingsPlugin(Service):
     description = "plugin configuration store with CAS and secret masking"
     inject: ClassVar[list[str]] = []
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         self.store = SettingsStore()
 

@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.api.services import lookup_service
 from deeppyro.core.payload import field_of
 from deeppyro.hooks.service import HookService
@@ -36,7 +36,7 @@ class SandboxPlugin(Plugin):
     version = "0.1.0"
     description = "sandbox policy, execution provider, and approvals"
 
-    def __init__(self, ctx: Any, config: Any) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
         cfg = ctx.require(KernelConfig).value
         sandbox = _table(cfg, "sandbox")
