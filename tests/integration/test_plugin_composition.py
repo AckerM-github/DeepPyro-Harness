@@ -52,3 +52,47 @@ async def test_external_bundle_contributes_every_extension(tmp_path: Path) -> No
         assert app.started["greet"] == "ACTIVE"
     finally:
         await app.stop()
+
+
+V2_PLUGIN_SOURCE = """from deeppyro.api import Plugin
+from deeppyro.builtin.commands import CommandsPlugin
+from deeppyro.core.protocols import ToolResult
+from deeppyro.tools.base import BaseTool, make_parameters
+
+
+class StampTool(BaseTool):
+    name = "stamp"
+    description = "Stamp a value."
+    parameters = make_parameters({"value": {"type": "string"}}, required=["value"])
+
+    async def run(self, args, ctx):
+        return ToolResult(text="stamped " + str(args.get("value", "")))
+
+
+class StampPlugin(Plugin):
+    plugin_id = "stamp"
+    version = "2.0.0"
+    api_version = 2
+    inject = (CommandsPlugin,)
+
+    def setup(self):
+        self.ctx.register_tool(lambda config, workspace: StampTool())
+"""
+V2_BUNDLE_TOML = '[bundle]\nid = "stamp-bundle"\nname = "Stamp bundle"\nversion = "2.0.0"\norder = 51\n\n[[plugins]]\nid = "stamp"\nplugin = "stamp_plugin.py:StampPlugin"\n'
+
+
+async def test_v2_plugin_boots_with_a_single_injection(tmp_path: Path) -> None:
+    """API v2 plugins receive ctx/config once and may declare typed injections."""
+    bundle_dir = tmp_path / "stamp"
+    bundle_dir.mkdir()
+    (bundle_dir / "bundle.toml").write_text(V2_BUNDLE_TOML, encoding="utf-8")
+    (bundle_dir / "stamp_plugin.py").write_text(V2_PLUGIN_SOURCE, encoding="utf-8")
+    app = await boot(_config(), bundle_paths=[str(bundle_dir)])
+    try:
+        tools = app.service("tools").registry_for(tmp_path)
+        assert "stamp" in tools
+        result = await tools.get("stamp").run({"value": "pyro"}, None)
+        assert result.text == "stamped pyro"
+        assert app.started["stamp"] == "ACTIVE"
+    finally:
+        await app.stop()

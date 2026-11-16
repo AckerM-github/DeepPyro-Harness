@@ -67,14 +67,16 @@ class SampleGreetingTool(BaseTool):
 class __CLASS__(Plugin):
     plugin_id = __PLUGIN_ID__
     version = "0.1.0"
+    api_version = 2
     description = __DESCRIPTION__
     Config = SampleConfig
     volatile: ClassVar[tuple[str, ...]] = ("greeting",)
-    inject: ClassVar[list[str]] = ["tools"]
+    inject: ClassVar[tuple[str, ...]] = ("tools",)
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
+        config = self.config
         greeting = config.greeting if config is not None else "hello from the sample plugin"
-        ctx.register_tool(lambda _cfg, _workspace: [SampleGreetingTool(greeting)])
+        self.ctx.register_tool(lambda _cfg, _workspace: [SampleGreetingTool(greeting)])
 '''
 
 _README = """# __NAME__

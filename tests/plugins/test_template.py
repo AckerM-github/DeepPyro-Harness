@@ -80,8 +80,9 @@ def test_create_bundle_plugin_class_imports(tmp_path: Path) -> None:
 
     assert issubclass(plugin_class, Plugin)
     assert plugin_class.plugin_id == "demo-bundle"
+    assert plugin_class.api_version == 2
     assert plugin_class.volatile == ("greeting",)
-    assert plugin_class.inject == ["tools"]
+    assert plugin_class.inject == ("tools",)
     assert "greeting" in plugin_class.Config.model_fields
 
 

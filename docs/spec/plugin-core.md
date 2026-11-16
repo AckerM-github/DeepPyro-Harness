@@ -30,15 +30,25 @@ class MyConfig(BaseModel):
 class MyPlugin(Plugin):
     plugin_id = "my-plugin"
     version = "0.1.0"
-    api_version = 1              # integer, checked against deeppyro.api.API_VERSION
-    inject = ["tools"]           # cordis service dependencies
+    api_version = 2              # integer, checked against deeppyro.api.API_VERSION
+    inject = ("tools",)          # service names, or contract classes such as CommandsPlugin
     Config = MyConfig            # optional pydantic model; row.config is validated into it
 
-    def setup(self, ctx, config: MyConfig) -> None:
-        ctx.register_tool(lambda cfg, workspace: MyTool())
+    def setup(self) -> None:
+        self.ctx.register_tool(lambda cfg, workspace: MyTool())
 ```
 
-- `setup(ctx, config)` runs once when the plugin fiber activates. It may be sync or async.
+- API v2 has one injection point: the adapter constructs the plugin with `(ctx, config)` and
+  then calls `setup()` with no arguments, so a plugin reads `self.ctx` and `self.config`
+  instead of receiving them again. `setup` runs once when the plugin fiber activates and
+  may be sync or async.
+- API v1 plugins declare `def setup(self, ctx, config)`; the adapter still calls them with
+  both arguments (`deeppyro.api.invoke_setup` dispatches on the signature), so existing
+  bundles keep working. A plugin that declares `api_version = 2` in its own body but keeps
+  the legacy signature gets a one-time `DeprecationWarning`.
+- `inject` entries may be cordis names or contract classes; classes resolve to their
+  `provide` name at mount time (`deeppyro.api.inject_names`), and an unbound or non-service
+  class aborts the mount with a `CompositionError` that names the row.
 - Define `async def stop(self)` when you need explicit cleanup; the loader registers it as
   the fiber disposer. Registration helpers additionally dispose themselves via cordis effects,
   so unloading a plugin removes its tools, prompt sections, commands and providers.
@@ -317,11 +327,14 @@ class GreetTool(BaseTool):
 
 class GreetPlugin(Plugin):
     plugin_id = "greet"
-    inject = ["tools", "prompt", "commands"]
+    api_version = 2
+    inject = ("tools", "prompt", "commands")
 
-    def setup(self, ctx, config):
-        ctx.register_tool(lambda cfg, workspace: GreetTool())
-        ctx.register_command("greet", self.run_greet, summary="greet someone", usage="/greet [name]")
+    def setup(self):
+        self.ctx.register_tool(lambda cfg, workspace: GreetTool())
+        self.ctx.register_command(
+            "greet", self.run_greet, summary="greet someone", usage="/greet [name]"
+        )
 ```
 
 ## 8. Tests and files

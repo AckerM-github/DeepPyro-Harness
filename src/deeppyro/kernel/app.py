@@ -37,9 +37,12 @@ from deeppyro.api import (
     Plugin,
     PluginConfigError,
     PluginContext,
+    PluginError,
     PluginStatus,
     ServiceNotFoundError,
     ServiceTypeError,
+    inject_names,
+    invoke_setup,
 )
 from deeppyro.api.services import contract_path, service_name
 from deeppyro.config import Config, load_config
@@ -131,11 +134,9 @@ def _api_adapter(cls: type, row: PluginRow, record: MountRecord | None = None) -
         if record is not None:
             record.instance = instance
             record.config = config_dict(config)
-        setup = getattr(instance, "setup", None)
-        if callable(setup):
-            result = setup(ctx, config)
-            if inspect.isawaitable(result):
-                await result
+        result = invoke_setup(instance, ctx, config)
+        if inspect.isawaitable(result):
+            await result
         teardown = _teardown(instance)
         if teardown is not None:
             return teardown
@@ -167,6 +168,14 @@ def type_name(cls: type) -> str:
     return f"{getattr(cls, '__module__', '?')}:{getattr(cls, '__name__', '?')}"
 
 
+def _inject_names(row: PluginRow, cls: type) -> list[str]:
+    """Resolve typed injections, naming the row when a contract is unusable."""
+    try:
+        return inject_names(cls)
+    except PluginError as exc:
+        raise CompositionError(f"plugin {row.id!r}: {exc}") from exc
+
+
 def _plugin_for(
     row: PluginRow,
     record: MountRecord | None = None,
@@ -185,7 +194,7 @@ def _plugin_for(
         plugin: Any = {
             "name": row.id,
             "apply": _api_adapter(cls, row, record),
-            "inject": list(getattr(cls, "inject", []) or []),
+            "inject": _inject_names(row, cls),
         }
         return plugin, raw_config, cls
     return cls, raw_config, cls

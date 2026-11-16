@@ -8,11 +8,11 @@ registers its own class, so a consumer can ask for the interface it understands
 without spelling a string:
 
     class MyPlugin(api.Plugin):
-        inject = ["hooks"]
+        inject = ("hooks",)
 
-        def setup(self, ctx, config):
-            hooks = ctx.require(HookService)      # raises when missing
-            maybe = ctx.get(AttachmentStore)      # None when absent
+        def setup(self):
+            hooks = self.ctx.require(HookService)      # raises when missing
+            maybe = self.ctx.get(AttachmentStore)      # None when absent
 
 Service-name inventory
 ======================
