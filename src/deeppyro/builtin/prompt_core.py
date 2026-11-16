@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from deeppyro.api import Plugin
 from deeppyro.prompt.prompt import core_sections
@@ -16,6 +16,6 @@ class PromptCorePlugin(Plugin):
     version = "0.1.0"
     description = "core system prompt sections"
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
         for name, order, renderer in core_sections():
-            ctx.register_prompt_section(name, order, renderer)
+            self.ctx.register_prompt_section(name, order, renderer)

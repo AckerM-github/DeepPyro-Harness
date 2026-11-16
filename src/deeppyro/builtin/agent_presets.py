@@ -99,16 +99,16 @@ class AgentPresetsPlugin(Plugin):
     description = "built-in agent presets: PTC, Minimal and Cordis"
     inject: ClassVar[list[str]] = ["presets", "prompt"]
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
         for preset in builtin_presets():
-            ctx.register_preset(preset)
-        ctx.register_prompt_section(
+            self.ctx.register_preset(preset)
+        self.ctx.register_prompt_section(
             MINIMAL_PERSONA_SECTION,
             MINIMAL_PERSONA_ORDER,
             _render_minimal_persona,
             scope=MINIMAL_PRESET_ID,
         )
-        ctx.register_prompt_section(
+        self.ctx.register_prompt_section(
             CORDIS_GUIDE_SECTION,
             CORDIS_GUIDE_ORDER,
             _render_cordis_guide,

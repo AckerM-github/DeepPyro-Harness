@@ -60,7 +60,7 @@ def test_plugin_provides_service_and_registers_tool() -> None:
     ctx = make_context()
     plugin = SubagentPlugin(ctx, None)
 
-    plugin.setup(ctx, None)
+    plugin.setup()
 
     service = ctx.provided["subagent"]
     assert isinstance(service, SubagentService)

@@ -130,14 +130,14 @@ class GoalPlugin(Plugin):
             GoalTool(),
         ]
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        bus = self._bus(ctx)
+    def setup(self) -> None:
+        bus = self._bus(self.ctx)
         self.service.configure(emit=bus.emit if bus is not None else None, load=self._load)
-        ctx.effect(lambda: self.service.configure(load=None), "goal: session loader")
-        ctx.provide("goal", self.service)
-        ctx.register_tool(lambda _cfg, _workspace: self.goal_tools())
-        ctx.register_prompt_section("goal", 35, self._render)
-        ctx.register_prompt_section("tool:goal", 36, self._policy)
+        self.ctx.effect(lambda: self.service.configure(load=None), "goal: session loader")
+        self.ctx.provide("goal", self.service)
+        self.ctx.register_tool(lambda _cfg, _workspace: self.goal_tools())
+        self.ctx.register_prompt_section("goal", 35, self._render)
+        self.ctx.register_prompt_section("tool:goal", 36, self._policy)
 
 
 __all__ = ["GOAL_POLICY", "GoalPlugin"]

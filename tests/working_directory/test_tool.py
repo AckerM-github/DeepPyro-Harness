@@ -192,7 +192,7 @@ def test_plugin_provides_service_and_registers_tool(tmp_path: Path) -> None:
     ctx = FakeCtx()
     plugin = WorkingDirectoryPlugin(ctx, {"defaultDirectory": str(tmp_path)})
     assert plugin.provide == "working_directory"
-    plugin.setup(ctx, plugin.config)
+    plugin.setup()
     assert ctx.provided["working_directory"] is plugin.service
     assert len(ctx.factories) == 1
     tools = ctx.factories[0](None, tmp_path)

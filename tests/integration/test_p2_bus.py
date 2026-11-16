@@ -62,7 +62,7 @@ class FakeCtx:
 def _journal(hooks: HookService) -> tuple[HookJournalPlugin, FakeCtx]:
     ctx = FakeCtx({"hooks": hooks})
     plugin = HookJournalPlugin(ctx, None)
-    plugin.setup(ctx, None)
+    plugin.setup()
     return plugin, ctx
 
 
@@ -112,14 +112,14 @@ class FakeConfigService:
 def _prompt_extension(hooks: HookService, extension: str) -> tuple[Any, FakeCtx]:
     ctx = FakeCtx({"hooks": hooks, "config": FakeConfigService({"prompt": {"extension": extension}})})
     plugin = PromptExtensionPlugin(ctx, None)
-    plugin.setup(ctx, None)
+    plugin.setup()
     return plugin, ctx
 
 
 def _approval_policy(hooks: HookService, **section: Any) -> tuple[Any, FakeCtx]:
     ctx = FakeCtx({"hooks": hooks, "config": FakeConfigService({"approval": section})})
     plugin = ApprovalPolicyPlugin(ctx, None)
-    plugin.setup(ctx, None)
+    plugin.setup()
     return plugin, ctx
 
 

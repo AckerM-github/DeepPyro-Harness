@@ -460,7 +460,7 @@ def test_disabled_driver_registers_no_listeners_and_no_traffic(harness: Harness)
     ctx = StubContext(hooks=harness.hooks, agents=harness.agents, goal=harness.goals)
     plugin = GoalRoundDriverPlugin(ctx, {"driver": False})
 
-    plugin.setup(ctx, {"driver": False})
+    plugin.setup()
 
     assert plugin.enabled is False
     assert plugin.driver is None
@@ -474,7 +474,7 @@ def test_default_driver_is_off(harness: Harness) -> None:
     ctx = StubContext(hooks=harness.hooks, agents=harness.agents, goal=harness.goals)
     plugin = GoalRoundDriverPlugin(ctx, {})
 
-    plugin.setup(ctx, {})
+    plugin.setup()
 
     assert plugin.enabled is False
     assert plugin.driver is None
@@ -489,7 +489,7 @@ def test_enabled_driver_attaches_and_disarms_on_load(harness: Harness) -> None:
     ctx = StubContext(hooks=harness.hooks, agents=harness.agents, goal=harness.goals)
     plugin = GoalRoundDriverPlugin(ctx, {"goal": {"driver": True}})
 
-    plugin.setup(ctx, {"goal": {"driver": True}})
+    plugin.setup()
 
     assert plugin.enabled is True
     assert plugin.driver is not None
@@ -504,7 +504,7 @@ def test_driver_flag_must_be_a_boolean(harness: Harness) -> None:
     plugin = GoalRoundDriverPlugin(ctx, {"driver": "yes"})
 
     try:
-        plugin.setup(ctx, {"driver": "yes"})
+        plugin.setup()
     except TypeError as error:
         assert "driver" in str(error)
     else:  # pragma: no cover - a string flag must never enable the driver

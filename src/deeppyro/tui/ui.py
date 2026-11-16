@@ -108,9 +108,9 @@ class UiService(Plugin):
         self._dropped = 0
         self._errors: list[str] = []
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
         """Provide the service; the TUI binds a backend when it mounts."""
-        ctx.provide("ui", self)
+        self.ctx.provide("ui", self)
 
     # -- backend lifecycle -----------------------------------------------
     def bind(self, backend: UiBackend | None) -> None:

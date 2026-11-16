@@ -434,7 +434,7 @@ def test_plugin_registers_retrieval_tools(tmp_path: pathlib.Path) -> None:
     store = SessionStore(root=tmp_path / "sessions")
     ctx = _FakeCtx({"sessions": _Sessions(store)})
     plugin = CompressPlugin(ctx, CompressConfig())  # type: ignore[arg-type]
-    plugin.setup(ctx, CompressConfig())
+    plugin.setup()
 
     assert len(ctx.factories) == 2
     tools = [tool for factory in ctx.factories for tool in factory(None, None)]  # type: ignore[operator]

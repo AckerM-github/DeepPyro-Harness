@@ -63,26 +63,26 @@ class PtcPlugin(Plugin):
         self.config = PtcConfig.from_mapping(_ptc_config(ctx, config))
         self.service = PtcRuntime(self.config)
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        ctx.provide("ptc", self.service)
+    def setup(self) -> None:
+        self.ctx.provide("ptc", self.service)
         if self.config.mode == "ptc":
             # Global mode: the host selected PTC for every composition.
-            ctx.register_tool(lambda _cfg, _workspace: [RunCodeTool(self.service)])
-            ctx.register_prompt_section(PTC_ONLY_SECTION, PTC_ONLY_ORDER, self._render_ptc_only)
-            ctx.register_prompt_section(PTC_SDK_SECTION, PTC_SDK_ORDER, self._render_sdk)
+            self.ctx.register_tool(lambda _cfg, _workspace: [RunCodeTool(self.service)])
+            self.ctx.register_prompt_section(PTC_ONLY_SECTION, PTC_ONLY_ORDER, self._render_ptc_only)
+            self.ctx.register_prompt_section(PTC_SDK_SECTION, PTC_SDK_ORDER, self._render_sdk)
             return
         # Native mode: the PTC preset opts into run_code and the SDK sections.
-        ctx.register_tool(
+        self.ctx.register_tool(
             lambda _cfg, _workspace: [RunCodeTool(self.service)],
             scope=PTC_PRESET_ID,
         )
-        ctx.register_prompt_section(
+        self.ctx.register_prompt_section(
             PTC_ONLY_SECTION,
             PTC_ONLY_ORDER,
             self._render_ptc_only,
             scope=PTC_PRESET_ID,
         )
-        ctx.register_prompt_section(
+        self.ctx.register_prompt_section(
             PTC_SDK_SECTION,
             PTC_SDK_ORDER,
             self._render_sdk,

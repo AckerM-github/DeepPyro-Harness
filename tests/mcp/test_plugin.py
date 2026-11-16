@@ -80,7 +80,7 @@ async def test_setup_registers_the_bridged_tools_and_exposes_status() -> None:
         return client
 
     plugin.service = McpService([McpServerConfig(name="fake", command="fake-server")], client_factory=factory)
-    await plugin.setup(ctx, None)
+    await plugin.setup()
 
     assert ctx.effects and ctx.effects[0][1] == "mcp: close servers"
     assert len(ctx.registered) == 1
@@ -101,7 +101,7 @@ async def test_setup_registers_the_bridged_tools_and_exposes_status() -> None:
 async def test_setup_with_no_servers_registers_nothing() -> None:
     ctx = StubContext()
     plugin = McpPlugin(ctx, None)
-    await plugin.setup(ctx, None)
+    await plugin.setup()
 
     assert ctx.registered == []
     assert plugin.status() == []
@@ -111,7 +111,7 @@ async def test_reload_replaces_the_adapters() -> None:
     ctx = StubContext()
     plugin = McpPlugin(ctx, None)
     plugin.service = McpService([], client_factory=FakeClient)
-    await plugin.setup(ctx, None)
+    await plugin.setup()
 
     statuses = await plugin.reload([McpServerConfig(name="later", command="fake-server")])
 
@@ -130,7 +130,7 @@ async def test_the_prompt_section_names_the_servers_and_their_instructions() -> 
     plugin.service = McpService(
         [McpServerConfig(name="docs", command="fake")], client_factory=WithInstructions
     )
-    await plugin.setup(ctx, None)
+    await plugin.setup()
 
     assert [name for name, _, _ in ctx.sections] == ["mcp"]
     _name, order, renderer = ctx.sections[0]
@@ -145,6 +145,6 @@ async def test_the_prompt_section_names_the_servers_and_their_instructions() -> 
 async def test_no_servers_means_no_prompt_section() -> None:
     ctx = StubContext()
     plugin = McpPlugin(ctx, None)
-    await plugin.setup(ctx, None)
+    await plugin.setup()
 
     assert ctx.sections == []

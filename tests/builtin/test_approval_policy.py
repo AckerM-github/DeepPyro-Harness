@@ -60,7 +60,7 @@ def make_plugin(
         cfg = make_config(approval)
     ctx = FakeCtx({"hooks": hooks, "config": SimpleNamespace(value=cfg)})
     plugin = ApprovalPolicyPlugin(ctx, None)
-    plugin.setup(ctx, None)
+    plugin.setup()
     return plugin, hooks, ctx
 
 

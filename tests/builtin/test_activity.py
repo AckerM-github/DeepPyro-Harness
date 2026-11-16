@@ -176,7 +176,8 @@ def test_plugin_registers_the_service() -> None:
         def provide(self, name: str, value: Any) -> None:
             provided[name] = value
 
-    plugin = ActivityPlugin(Ctx(), {})
-    plugin.setup(Ctx(), {})
+    ctx = Ctx()
+    plugin = ActivityPlugin(ctx, {})
+    plugin.setup()
     assert plugin.plugin_id == "activity"
     assert isinstance(plugin.service, ActivityService)

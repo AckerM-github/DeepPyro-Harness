@@ -346,7 +346,7 @@ def test_slots_plugin_boots_with_ui_packages(tmp_path: Path, monkeypatch: pytest
 
     ctx = FakeCtx()
     plugin = SlotsPlugin(ctx, {})
-    plugin.setup(ctx, {})
+    plugin.setup()
 
     assert ctx.provided == [("slots", plugin.registry)]
     assert [report.id for report in plugin.ui_packages] == ["bad", "good"]
@@ -365,7 +365,7 @@ def test_slots_plugin_scan_failure_is_not_fatal() -> None:
         raise RuntimeError("scan exploded")
 
     plugin.load_ui_packages = broken_scan  # type: ignore[method-assign]
-    plugin.setup(ctx, {})
+    plugin.setup()
     assert plugin.ui_packages == []
     assert plugin.ui_summary == "no UI packages"
     assert "cannot scan UI packages" in plugin.ui_errors[0]

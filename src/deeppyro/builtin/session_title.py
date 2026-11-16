@@ -86,12 +86,12 @@ class SessionTitlePlugin(Plugin):
         self.options = options_for(ctx)
         self._tasks: set[asyncio.Task[None]] = set()
 
-    async def setup(self, ctx: Any, config: Any = None) -> None:
+    async def setup(self) -> None:
         """Subscribe to the end of a turn; do nothing else at mount time."""
         if not self.options.enabled:
             return
-        hooks = ctx.require(HookService)
-        ctx.effect(
+        hooks = self.ctx.require(HookService)
+        self.ctx.effect(
             lambda: hooks.on(AGENT_TURN_STOPPING, self._on_turn_stopping),
             label="session-title",
         )

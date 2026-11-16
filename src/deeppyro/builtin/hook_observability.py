@@ -103,11 +103,11 @@ class HookObservabilityPlugin(Plugin):
         self._counts: dict[str, int] = {name: 0 for name in OBSERVED_HOOKS}
         self._disposers: list[Callable[[], Any]] = []
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        hooks = ctx.require(HookService)
+    def setup(self) -> None:
+        hooks = self.ctx.require(HookService)
         for name in OBSERVED_HOOKS:
             handler = self._handler(name)
-            disposer = ctx.effect(
+            disposer = self.ctx.effect(
                 lambda h=handler, n=name: hooks.on(n, h),
                 f"observe:{name}",
             )

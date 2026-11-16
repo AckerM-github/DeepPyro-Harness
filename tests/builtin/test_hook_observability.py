@@ -58,7 +58,7 @@ def make_plugin() -> tuple[HookObservabilityPlugin, HookService, FakeCtx]:
     hooks = HookService()
     ctx = FakeCtx({"hooks": hooks})
     plugin = HookObservabilityPlugin(ctx, None)
-    plugin.setup(ctx, None)
+    plugin.setup()
     return plugin, hooks, ctx
 
 
@@ -115,7 +115,7 @@ def test_setup_registers_a_listener_for_every_hook() -> None:
 def test_setup_requires_the_hooks_service() -> None:
     ctx = FakeCtx({})
     with pytest.raises(LookupError):
-        HookObservabilityPlugin(ctx, None).setup(ctx, None)
+        HookObservabilityPlugin(ctx, None).setup()
 
 
 # -- emit hooks ------------------------------------------------------------

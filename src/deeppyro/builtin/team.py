@@ -24,18 +24,18 @@ class TeamPlugin(Plugin):
         super().__init__(ctx, config)
         self.service: TeamService | None = None
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
         service = TeamService(
-            agents=ctx.require(AgentsPlugin),
-            sessions=ctx.require(SessionsPlugin),
-            sandbox=ctx.require(SandboxPlugin),
+            agents=self.ctx.require(AgentsPlugin),
+            sessions=self.ctx.require(SessionsPlugin),
+            sandbox=self.ctx.require(SandboxPlugin),
         )
         self.service = service
-        ctx.provide("team", service)
+        self.ctx.provide("team", service)
         # Team tools are part of the explicit team mode only: scoping the
         # contribution to the team preset keeps them out of a default-mode
         # agent's tool registry (and out of the host-wide tool list).
-        ctx.register_tool(lambda _config, _workspace: team_tools(), scope=TEAM_PRESET_ID)
+        self.ctx.register_tool(lambda _config, _workspace: team_tools(), scope=TEAM_PRESET_ID)
 
 
 __all__ = ["TeamPlugin"]

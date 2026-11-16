@@ -402,8 +402,8 @@ def test_plugin_tools_plugin_registers_factory() -> None:
         def register_tool(self, factory: Any) -> None:
             registered.append(factory)
 
-    plugin = PluginToolsPlugin.__new__(PluginToolsPlugin)
-    plugin.setup(FakeContext(), None)
+    plugin = PluginToolsPlugin(FakeContext(), None)
+    plugin.setup()
 
     assert len(registered) == 1
     tools = registered[0](None, None)

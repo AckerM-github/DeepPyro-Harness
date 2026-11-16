@@ -7,11 +7,11 @@ it may inject the "kernel" service and ask what is mounted:
     from deeppyro.kernel.runtime import KernelRuntime
 
     class MyPlugin(Plugin):
-        inject = ["kernel"]
+        inject = ("kernel",)
 
-        def setup(self, ctx, config):
-            for plugin in ctx.require(KernelRuntime).mounted_plugins():
-                ctx.logger.info(plugin["id"], plugin["state"])
+        def setup(self) -> None:
+            for plugin in self.ctx.require(KernelRuntime).mounted_plugins():
+                self.ctx.logger.info(plugin["id"], plugin["state"])
 
 Two methods form the stable contract with the plugin manager, the settings
 plugin and the TUI inspector:

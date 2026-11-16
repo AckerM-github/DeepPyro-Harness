@@ -58,7 +58,7 @@ def test_plugin_provides_team_service_and_registers_tools() -> None:
     assert plugin.plugin_id == "team"
     assert plugin.inject == ["agents", "sessions", "sandbox", "tools"]
 
-    plugin.setup(ctx, None)
+    plugin.setup()
 
     service = ctx.provided["team"]
     assert isinstance(service, TeamService)

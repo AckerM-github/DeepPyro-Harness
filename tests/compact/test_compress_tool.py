@@ -447,7 +447,7 @@ def test_plugin_registers_tool_with_default_block_root(tmp_path: pathlib.Path) -
     store, root, _blocks, _refs = support.stores(tmp_path)
     ctx = _plugin_ctx(store)
     plugin = CompressPlugin(ctx, CompressConfig())  # type: ignore[arg-type]
-    plugin.setup(ctx, CompressConfig())
+    plugin.setup()
 
     assert plugin.blocks is not None
     assert plugin.blocks.root == root / "blocks"
@@ -464,7 +464,7 @@ def test_plugin_row_config_overrides_blocks_dir(tmp_path: pathlib.Path) -> None:
     custom = tmp_path / "custom-blocks"
     ctx = _plugin_ctx(store)
     plugin = CompressPlugin(ctx, CompressConfig(blocksDir=str(custom)))  # type: ignore[arg-type]
-    plugin.setup(ctx, CompressConfig(blocksDir=str(custom)))
+    plugin.setup()
 
     assert plugin.blocks is not None
     assert plugin.blocks.root == custom
@@ -474,7 +474,7 @@ def test_plugin_global_config_disables_tool(tmp_path: pathlib.Path) -> None:
     store, _root, _blocks, _refs = support.stores(tmp_path)
     ctx = _plugin_ctx(store, {"compact": {"compressEnabled": False}})
     plugin = CompressPlugin(ctx, CompressConfig())  # type: ignore[arg-type]
-    plugin.setup(ctx, CompressConfig())
+    plugin.setup()
 
     assert ctx.factories == []
     assert plugin.blocks is None
@@ -493,7 +493,7 @@ def test_plugin_rejects_invalid_config(tmp_path: pathlib.Path, global_config: ob
     ctx = _plugin_ctx(store, global_config)
     plugin = CompressPlugin(ctx, CompressConfig())  # type: ignore[arg-type]
     with pytest.raises(ConfigError):
-        plugin.setup(ctx, CompressConfig())
+        plugin.setup()
 
 
 def test_compress_config_model_validation() -> None:

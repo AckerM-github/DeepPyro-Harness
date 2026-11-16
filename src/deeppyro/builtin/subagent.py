@@ -24,15 +24,15 @@ class SubagentPlugin(Plugin):
         super().__init__(ctx, config)
         self.service: SubagentService | None = None
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
         service = SubagentService(
-            agents=ctx.require(AgentsPlugin),
-            sessions=ctx.require(SessionsPlugin),
-            sandbox=ctx.require(SandboxPlugin),
+            agents=self.ctx.require(AgentsPlugin),
+            sessions=self.ctx.require(SessionsPlugin),
+            sandbox=self.ctx.require(SandboxPlugin),
         )
         self.service = service
-        ctx.provide("subagent", service)
-        ctx.register_tool(lambda _config, _workspace: subagent_tools())
+        self.ctx.provide("subagent", service)
+        self.ctx.register_tool(lambda _config, _workspace: subagent_tools())
 
 
 __all__ = ["SubagentPlugin"]

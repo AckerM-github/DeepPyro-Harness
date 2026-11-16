@@ -89,7 +89,7 @@ def make_plugin(
     hooks = HookService()
     ctx = FakeCtx({"config": SimpleNamespace(value=make_config(retry)), "hooks": hooks})
     plugin = LlmRetryPlugin(ctx, None)
-    plugin.setup(ctx, None)
+    plugin.setup()
     return plugin, ctx, hooks
 
 

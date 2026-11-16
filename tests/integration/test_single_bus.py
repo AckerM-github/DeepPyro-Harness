@@ -82,8 +82,9 @@ def test_hooks_plugin_provides_one_bus_and_one_facade() -> None:
         def provide(self, name: str, service: object) -> None:
             provided[name] = service
 
-    plugin = HooksPlugin(Ctx(), None)
-    plugin.setup(Ctx(), None)
+    ctx = Ctx()
+    plugin = HooksPlugin(ctx, None)
+    plugin.setup()
 
     assert provided["bus"] is plugin.bus
     assert provided["hooks"] is plugin.service

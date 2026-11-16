@@ -56,7 +56,7 @@ def make_plugin(
         cfg = make_config(table)
     ctx = FakeCtx({"hooks": hooks, "config": SimpleNamespace(value=cfg)})
     plugin = PromptExtensionPlugin(ctx, None)
-    plugin.setup(ctx, None)
+    plugin.setup()
     return plugin, hooks, ctx
 
 

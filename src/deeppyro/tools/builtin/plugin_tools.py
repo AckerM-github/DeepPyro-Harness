@@ -337,8 +337,8 @@ class PluginToolsPlugin(Plugin):
     description = "agent-facing plugin manager, inspect and settings tools"
     inject: ClassVar[list[str]] = ["tools"]
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        ctx.register_tool(lambda _cfg, _workspace: plugin_tools())
+    def setup(self) -> None:
+        self.ctx.register_tool(lambda _cfg, _workspace: plugin_tools())
 
 
 __all__ = [

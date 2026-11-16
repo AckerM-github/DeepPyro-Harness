@@ -135,11 +135,11 @@ class LlmRetryPlugin(Plugin):
         """The value this plugin registers as the retryPolicy service."""
         return self._policy
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        hooks = ctx.require(HookService)
+    def setup(self) -> None:
+        hooks = self.ctx.require(HookService)
         self._hooks = hooks
-        ctx.provide("retryPolicy", self._policy)
-        ctx.effect(
+        self.ctx.provide("retryPolicy", self._policy)
+        self.ctx.effect(
             lambda: hooks.on(AGENT_REQUEST_ERROR, self._on_request_error),
             label="agent-request-error",
         )

@@ -35,10 +35,10 @@ class SkillsPlugin(Service):
         self._skills_config = skills_config
         self._registry = SkillRegistry(skills_config)
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        ctx.register_tool(lambda _config, _workspace: skill_tools(self))
-        ctx.register_prompt_section(SKILLS_PROMPT_SECTION, SKILLS_PROMPT_ORDER, self._render_section)
-        ctx.register_command(
+    def setup(self) -> None:
+        self.ctx.register_tool(lambda _config, _workspace: skill_tools(self))
+        self.ctx.register_prompt_section(SKILLS_PROMPT_SECTION, SKILLS_PROMPT_ORDER, self._render_section)
+        self.ctx.register_command(
             "skill",
             self._command,
             summary="list or load a skill into this conversation",

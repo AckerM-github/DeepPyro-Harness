@@ -340,7 +340,7 @@ def test_slots_plugin_provides_the_ui_service(monkeypatch, tmp_path: Path) -> No
     monkeypatch.setenv("DEEPPYRO_HOME", str(tmp_path))
     ctx = _KernelContext()
     plugin = SlotsPlugin(ctx, {})
-    plugin.setup(ctx, {})
+    plugin.setup()
     provided = dict(ctx.provided)
     assert provided["ui"] is plugin.ui
     assert provided["slots"] is plugin.registry
