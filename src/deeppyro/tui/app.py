@@ -28,7 +28,7 @@ from textual.widgets import Footer, Header
 from deeppyro import __version__
 from deeppyro.goal import GoalError
 from deeppyro.session.metadata import record_archive, record_title
-from deeppyro.tui.app_base import AppBase
+from deeppyro.tui.app_events import EventLayer
 from deeppyro.tui.app_support import _HOOK_INVOKED_RECORD as _HOOK_INVOKED_RECORD
 from deeppyro.tui.app_support import _HOOK_RESULT_RECORD as _HOOK_RESULT_RECORD
 from deeppyro.tui.app_support import CUSTOM_WORKSPACE as CUSTOM_WORKSPACE
@@ -57,14 +57,7 @@ from deeppyro.tui.screens.team import TaskBoardScreen, TeamPanelScreen
 from deeppyro.tui.screens.thinking import ThinkingScreen
 from deeppyro.tui.session_view import GOAL_USAGE, goal_summary_line, listing_lines, matches, picker_items
 from deeppyro.tui.sink import TuiSink
-from deeppyro.tui.slots import (
-    SCREEN,
-    SETTINGS,
-    SlotRegistry,
-    apply_conversation_slots,
-    build_slot_context,
-    resolve_slot_registry,
-)
+from deeppyro.tui.slots import SCREEN, SETTINGS, SlotRegistry, build_slot_context, resolve_slot_registry
 from deeppyro.tui.ui import (
     ADD_ROW,
     NOTIFY,
@@ -84,7 +77,7 @@ from deeppyro.tui.widgets.status_bar import StatusBar
 from deeppyro.user_questions.types import Answer, AskRequest
 
 
-class DeepPyroApp(AppBase):
+class DeepPyroApp(EventLayer):
     """Full-screen terminal client for one DeepPyro session."""
 
     CSS_PATH = "theme.tcss"
@@ -377,44 +370,6 @@ class DeepPyroApp(AppBase):
         if screen is not None:
             screen.action_dismiss_splash()
 
-    # -- agent events ----------------------------------------------------
-    def handle_event(self, event: dict[str, Any]) -> None:
-        """Render one agent event (called by TuiSink on the UI loop)."""
-        kind = str(event.get("type") or "")
-        # rendering must never kill a turn
-        with contextlib.suppress(Exception):
-            conversation = self.conversation
-            if kind == "text":
-                conversation.stream_text(str(event.get("text") or ""))
-            elif kind == "thinking":
-                conversation.stream_thinking(str(event.get("text") or ""))
-            elif kind == "step":
-                conversation.begin_step(int(event.get("turn") or 0), int(event.get("step") or 0))
-            elif kind == "tool_call":
-                conversation.add_tool_call(
-                    str(event.get("callId") or ""),
-                    str(event.get("name") or ""),
-                    str(event.get("arguments") or ""),
-                )
-            elif kind == "tool_result":
-                conversation.add_tool_result(
-                    str(event.get("callId") or ""),
-                    bool(event.get("isError")),
-                    str(event.get("text") or ""),
-                )
-            elif kind == "usage":
-                self._context_used = int(event.get("input") or 0)
-            elif kind == "final":
-                conversation.finish_turn(str(event.get("text") or ""))
-            elif kind == "error":
-                conversation.finish_turn(None)
-                conversation.add_error(str(event.get("message") or "unknown error"))
-            elif kind == "status":
-                self._phase = str(event.get("phase") or "idle")
-            apply_conversation_slots(conversation, event, self._slots, context=build_slot_context(self))
-        self._refresh_activity()
-        self.refresh_status()
-
     # -- input -----------------------------------------------------------
     @on(PromptArea.Submitted)
     def _on_submit(self, event: PromptArea.Submitted) -> None:
@@ -542,82 +497,6 @@ class DeepPyroApp(AppBase):
             self.pop_screen()
         except Exception:  # noqa: BLE001 - a modal already gone must not raise
             return
-
-    # -- status ----------------------------------------------------------
-    def refresh_status(self) -> None:
-        self._refresh_plugin_status()
-        try:
-            status = self.query_one(StatusBar)
-        except Exception:  # noqa: BLE001 - composition not ready yet
-            return
-        runtime = self.runtime
-        if runtime is None:
-            status.show(
-                session_id="-",
-                provider="boot",
-                model="starting",
-                input_tokens=0,
-                output_tokens=0,
-                cached_tokens=0,
-                context_window=0,
-                phase="starting",
-            )
-            return
-        usage = runtime.session_usage()
-        window = int(getattr(runtime, "context_window", 0) or 0)
-        context_reader = getattr(runtime, "context_tokens", None)
-        if callable(context_reader):
-            read: Callable[[], Any] = context_reader
-            context_used = int(read())
-        else:
-            context_used = usage["input"]
-        status.show(
-            session_id=runtime.session_id,
-            provider=runtime.provider_name,
-            model=runtime.model,
-            input_tokens=usage["input"],
-            output_tokens=usage["output"],
-            cached_tokens=usage["cached"],
-            context_window=window,
-            phase=self._phase,
-            preset=self._current_permission(),
-            approval=self._current_approval(),
-            context_tokens=context_used,
-        )
-        suffix = " · team" if self._agent_mode() == "team" else ""
-        self.sub_title = f"{runtime.provider_name}/{runtime.model}{suffix}"
-        # Never steal focus from an overlay (splash, picker, approval modal).
-        if self._prompt is not None and len(self.screen_stack) <= 1:
-            self._prompt.focus()
-
-    def _refresh_plugin_status(self) -> None:
-        """Re-render plugin status items; the line hides itself when empty."""
-        try:
-            bar = self.query_one(PluginStatusBar)
-        except Exception:  # noqa: BLE001 - composition not ready yet
-            return
-        bar.refresh_items(build_slot_context(self))
-
-    # -- activity bar ----------------------------------------------------
-    def _activity_state(self) -> Any:
-        """Refresh and return the current activity projection, if available."""
-        runtime = self.runtime
-        service = getattr(runtime, "activity", None) if runtime is not None else None
-        if service is None:
-            return None
-        try:
-            return service.refresh(getattr(runtime, "session", None))
-        except Exception:  # noqa: BLE001 - the bar is cosmetic chrome
-            return None
-
-    def _refresh_activity(self) -> None:
-        """Render the plan/jobs/agents strip; hidden when every segment is empty."""
-        state = self._activity_state()
-        if state is None:
-            return
-        # composition not ready yet
-        with contextlib.suppress(Exception):
-            self.query_one(ActivityBar).update_state(state)
 
     @on(ActivityBar.SegmentClicked)
     def _on_activity_segment(self, event: ActivityBar.SegmentClicked) -> None:
