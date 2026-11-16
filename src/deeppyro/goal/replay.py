@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from deeppyro.goal.types import (
     DEFAULT_MAX_GOAL_ROUNDS,
@@ -334,8 +334,26 @@ def _legacy_snapshot(
     )
 
 
+class FoldRecord(Protocol):
+    """One durable record as the goal fold reads it.
+
+    The fold accepts the durable LogRecord as well as the lightweight record
+    doubles used by tests: it only reads the record type, its data body and its
+    timestamp, so this is the whole contract.
+    """
+
+    @property
+    def type(self) -> str: ...
+
+    @property
+    def data(self) -> Mapping[str, Any]: ...
+
+    @property
+    def time(self) -> int: ...
+
+
 def fold(
-    records: Iterable[Any],
+    records: Iterable[FoldRecord],
     *,
     default_max_rounds: int = DEFAULT_MAX_GOAL_ROUNDS,
 ) -> GoalState:
@@ -346,11 +364,11 @@ def fold(
     """
     state = GoalState()
     for record in records:
-        record_type = str(getattr(record, "type", "") or "")
-        data = getattr(record, "data", None)
+        record_type = record.type or ""
+        data = record.data
         if not isinstance(data, Mapping):
             continue
-        when = getattr(record, "time", 0) or 0
+        when = record.time or 0
         if record_type == GOAL_EVENT:
             if "kind" not in data:
                 legacy = _legacy_snapshot(

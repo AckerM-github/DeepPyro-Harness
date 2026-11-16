@@ -49,12 +49,12 @@ import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
-from deeppyro.agent.inbox import CLAIMED_EVENT, DISCARDED_EVENT, INSERTED_EVENT
+from deeppyro.agent.inbox import CLAIMED_EVENT, DISCARDED_EVENT, INSERTED_EVENT, Inbox
 from deeppyro.core.payload import field_of
-from deeppyro.core.wire import Message
-from deeppyro.goal.types import GOAL_BUS_EVENT, BlockedReason, GoalRef, GoalSnapshot
+from deeppyro.core.wire import Message, SessionHeader
+from deeppyro.goal.types import GOAL_BUS_EVENT, BlockedReason, GoalRef, GoalSnapshot, GoalState
 from deeppyro.hooks import AGENT_ERROR, AGENT_PRE_STEP, AGENT_STATUS
 
 logger = logging.getLogger(__name__)
@@ -64,8 +64,6 @@ GOAL_SOURCE_KIND = "goal"
 
 NEXT_STEP = "next-step"
 NEXT_TURN = "next-turn"
-NEXT_STEP_ATTR = "next_step"
-NEXT_TURN_ATTR = "next_turn"
 TURN_END = "turn/end"
 USER_MESSAGE = "user/message"
 
@@ -79,6 +77,46 @@ PHASE_CANCELLED = "cancelled"
 ROUND_LIMIT_CODE = "round-limit"
 QUEUE_FAILED_CODE = "queue-failed"
 PROMPT_REJECTED_CODE = "prompt-rejected"
+
+
+class DriverSession(Protocol):
+    """The session surface the driver reads.
+
+    Subscribing is an optional capability (some session doubles only record),
+    so adopt() still probes for a callable subscribe; only the header is a hard
+    requirement here.
+    """
+
+    @property
+    def header(self) -> SessionHeader: ...
+
+
+class DriverAgent(Protocol):
+    """The agent handle the driver adopts and queues goal rounds on.
+
+    This is the static contract behind the shape the driver used to probe at
+    runtime: a top-level AgentSession (or a test double with the same surface)
+    exposes its durable session, its inbox, its busy flag and its preset as
+    plain attributes.
+    """
+
+    @property
+    def session_id(self) -> str: ...
+
+    @property
+    def session(self) -> DriverSession: ...
+
+    @property
+    def busy(self) -> bool: ...
+
+    @property
+    def inbox(self) -> Inbox: ...
+
+    preset: str | None
+
+    def followup(self, text: str, *, source: Mapping[str, Any] | None = None) -> None: ...
+
+    async def interrupt(self, *, clear_inbox: bool = True) -> None: ...
 
 
 def render_goal_round_prompt(goal: GoalSnapshot, round: int) -> str:
@@ -161,26 +199,24 @@ def _same_queued(message: Any, attempt: RoundAttempt) -> bool:
     return _message_text(message) == attempt.content
 
 
-def _is_root_agent(agent: Any) -> bool:
+def _is_root_agent(agent: DriverAgent) -> bool:
     """Whether agent is a top-level agent (the only kind a driver may drive)."""
-    header = getattr(getattr(agent, "session", None), "header", None)
-    origin = getattr(header, "origin", None)
+    origin = agent.session.header.origin
     if origin is not None:
         return origin != "subagent"
-    return not str(getattr(agent, "preset", "")).startswith("subagent")
+    return not str(agent.preset or "").startswith("subagent")
 
 
-def _agent_session_id(agent: Any) -> str:
-    value = getattr(agent, "session_id", None)
-    if isinstance(value, str) and value:
-        return value
-    header = getattr(getattr(agent, "session", None), "header", None)
-    fallback = getattr(header, "id", None)
+def _agent_session_id(agent: DriverAgent) -> str:
+    session_id = agent.session_id
+    if session_id:
+        return session_id
+    fallback = agent.session.header.id
     return fallback if isinstance(fallback, str) else ""
 
 
-def _is_busy(agent: Any) -> bool:
-    return bool(getattr(agent, "busy", False))
+def _is_busy(agent: DriverAgent) -> bool:
+    return bool(agent.busy)
 
 
 def _signal_aborted(payload: Mapping[str, Any]) -> bool:
@@ -224,26 +260,17 @@ def _changed_session(payload: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _pending_messages(inbox: Any) -> list[Any]:
-    messages: list[Any] = []
-    for name in (NEXT_STEP_ATTR, NEXT_TURN_ATTR):
-        messages.extend(getattr(inbox, name, ()) or ())
-    return messages
+def _pending_messages(inbox: Inbox) -> list[Any]:
+    return [*inbox.next_step, *inbox.next_turn]
 
 
-def _pending_ids(agent: Any) -> set[str]:
-    inbox = getattr(agent, "inbox", None)
-    if inbox is None:
-        return set()
-    return {_message_id(message) for message in _pending_messages(inbox)}
+def _pending_ids(agent: DriverAgent) -> set[str]:
+    return {_message_id(message) for message in _pending_messages(agent.inbox)}
 
 
-def _queued_message_id(agent: Any, before: set[str]) -> str:
+def _queued_message_id(agent: DriverAgent, before: set[str]) -> str:
     """The id of the message ``followup`` just queued (it returns no id)."""
-    inbox = getattr(agent, "inbox", None)
-    if inbox is None:
-        return ""
-    for message in reversed(getattr(inbox, NEXT_TURN_ATTR, ()) or ()):
+    for message in reversed(agent.inbox.next_turn):
         identifier = _message_id(message)
         if identifier and identifier not in before:
             return identifier
@@ -268,7 +295,7 @@ class RoundAttempt:
 class DriverState:
     """Everything the driver tracks for one session."""
 
-    agent: Any
+    agent: DriverAgent
     attempt: RoundAttempt | None = None
     competing_queued: bool = False
     needs_checkpoint: bool = False
@@ -277,7 +304,7 @@ class DriverState:
     stopping: bool = False
     phase: str = PHASE_IDLE
     fold_dirty: bool = True
-    goal_state: Any = None
+    goal_state: GoalState | None = None
     disposers: list[Callable[[], None]] = field(default_factory=list)
 
 
@@ -320,7 +347,7 @@ class RoundDriver:
             _safe_dispose(dispose)
         self._disposers.clear()
 
-    def adopt(self, agent: Any) -> DriverState | None:
+    def adopt(self, agent: DriverAgent) -> DriverState | None:
         """Start tracking one agent, unless it is a subagent or already tracked."""
         session_id = _agent_session_id(agent)
         if not session_id or session_id in self._states or not _is_root_agent(agent):
@@ -338,14 +365,14 @@ class RoundDriver:
         )
         for name, listener in listeners:
             state.disposers.append(self._hooks.on(name, listener, scope=scope))
-        subscribe = getattr(getattr(agent, "session", None), "subscribe", None)
+        subscribe = getattr(agent.session, "subscribe", None)
         if callable(subscribe):
             state.disposers.append(subscribe(lambda *args: self._on_record(state, *args)))
         self._disarm(state)
         self.request_drive(state)
         return state
 
-    def state_for(self, agent: Any) -> DriverState | None:
+    def state_for(self, agent: DriverAgent) -> DriverState | None:
         return self._states.get(_agent_session_id(agent))
 
     def states(self) -> tuple[DriverState, ...]:
@@ -481,7 +508,7 @@ class RoundDriver:
                     "round": round_number,
                 },
             )
-        # boundary: state.agent.followup() is a duck-typed agent handle that writes to its session and sinks
+        # boundary: followup() writes through the agent's session and sinks
         except Exception as exc:  # queueing must not kill the loop
             logger.exception("goal round driver: could not queue a round")
             state.attempt = None
@@ -610,14 +637,12 @@ class RoundDriver:
 
     def restore_other_claimed(
         self,
-        agent: Any,
+        agent: DriverAgent,
         messages: Any,
         message_id: str,
     ) -> list[str]:
         """Put the other claimed input back at the front of next-step."""
-        inbox = getattr(agent, "inbox", None)
-        if inbox is None:
-            return []
+        inbox = agent.inbox
         pending = {_message_id(message) for message in _pending_messages(inbox)}
         retained = [
             message
@@ -631,7 +656,7 @@ class RoundDriver:
                 continue
             try:
                 inbox.prepend(NEXT_STEP, message)
-            # boundary: inbox.prepend() is a duck-typed agent inbox (session append + sink notification)
+            # boundary: prepend() records through the session and sinks
             except Exception:  # restoring must never break the step
                 logger.exception("goal round driver: could not restore claimed input")
                 continue
@@ -675,8 +700,7 @@ class RoundDriver:
         attempt = state.attempt
         if attempt is not None and _same_queued(message, attempt):
             return
-        inbox = getattr(state.agent, "inbox", None)
-        pending = {_message_id(item) for item in getattr(inbox, NEXT_TURN_ATTR, ()) or ()}
+        pending = {_message_id(item) for item in state.agent.inbox.next_turn}
         identifier = _message_id(message)
         if not identifier or identifier not in pending:
             return
@@ -775,12 +799,13 @@ class RoundDriver:
         except Exception:  # an unreadable goal is no goal
             logger.exception("goal round driver: could not read the goal state")
             return None, "disarmed"
-        goal = getattr(state.goal_state, "goal", None)
+        goal = state.goal_state.goal if state.goal_state is not None else None
         return goal, activation
 
     def rounds_started(self, state: DriverState) -> int:
-        value = getattr(state.goal_state, "rounds_started", 0)
-        return value if isinstance(value, int) else 0
+        if state.goal_state is None:
+            return 0
+        return state.goal_state.rounds_started
 
     # -- mutations ---------------------------------------------------------
     async def block(self, state: DriverState, ref: GoalRef, reason: BlockedReason) -> None:
@@ -830,7 +855,7 @@ class RoundDriver:
         async def cancel() -> None:
             try:
                 await agent.interrupt(clear_inbox=clear_inbox)
-            # boundary: agent.interrupt() pumps the duck-typed agent's driver, sink and log
+            # boundary: interrupt() pumps the agent driver, sink and log
             except Exception:  # cancelling is best effort
                 logger.exception("goal round driver: could not interrupt the agent")
 
@@ -862,13 +887,9 @@ class RoundDriver:
     def _drop_pending(self, state: DriverState, attempt: RoundAttempt) -> None:
         if not attempt.message_id:
             return
-        inbox = getattr(state.agent, "inbox", None)
-        remove = getattr(inbox, "remove", None)
-        if not callable(remove):
-            return
         try:
-            remove(attempt.message_id)
-        # boundary: inbox.remove() is a duck-typed agent inbox
+            state.agent.inbox.remove(attempt.message_id)
+        # boundary: remove() records through the session and sinks
         except Exception:  # a failed removal must not break the settle
             logger.exception("goal round driver: could not drop a queued round")
 
