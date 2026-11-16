@@ -17,6 +17,7 @@ import logging
 from typing import Any, ClassVar
 
 from deeppyro.api import Plugin
+from deeppyro.core.payloads import HookInvokedRecord, HookResultRecord
 from deeppyro.hooks.records import (
     INVOKED_RECORD_TYPE,
     RESULT_RECORD_TYPE,
@@ -53,6 +54,8 @@ class HookJournalPlugin(Plugin):
         agent = agent_from_payload(observation.payload)
         if agent is None:
             return
+        record_type: str
+        record: HookInvokedRecord | HookResultRecord
         if observation.kind == "invoked":
             record_type = INVOKED_RECORD_TYPE
             record = invoked_record(observation)

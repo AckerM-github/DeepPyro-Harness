@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel
 
@@ -26,6 +26,7 @@ from deeppyro.api import Plugin
 from deeppyro.api.services import require_service
 from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.core.ids import new_message_id
+from deeppyro.core.payloads import SessionTitleLlmRequestData
 from deeppyro.core.protocols import LlmRequest, TextDelta
 from deeppyro.core.wire import Message, TextPart
 from deeppyro.hooks import AGENT_TURN_STOPPING
@@ -150,9 +151,10 @@ class SessionTitlePlugin(Plugin):
             else:
                 logger.warning("session title request failed: %s: %s", name, exc)
 
-    def _request(self, prompt: str, provider_name: str, model: str, seq: int) -> dict[str, Any]:
+    def _request(self, prompt: str, provider_name: str, model: str, seq: int) -> SessionTitleLlmRequestData:
         return {
-            "titleProvider": TITLE_PROVIDER_FIRST_PROMPT,
+            # The shared constant is a plain str; the record always names this provider.
+            "titleProvider": cast(Literal["session-title-first-prompt-llm"], TITLE_PROVIDER_FIRST_PROMPT),
             "messageSeqs": [seq],
             "route": {"provider": provider_name, "model": model},
             "system": SYSTEM_PROMPT,

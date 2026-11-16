@@ -14,11 +14,12 @@ import os
 import pathlib
 import uuid
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal, cast
 
 import zstandard
 
 from deeppyro.core.errors import SessionError
+from deeppyro.core.payloads import SessionEventLine, SessionReplaceSurface
 from deeppyro.core.wire import LogRecord, ReplaceOp, SessionHeader
 from deeppyro.session.events import encode_source_event_seqs, header_line_dict
 
@@ -37,9 +38,9 @@ def encode_header_line(header: SessionHeader | Mapping[str, Any]) -> bytes:
     return _dumps(header_line_dict(raw)) + b"\n"
 
 
-def event_to_dict(record: LogRecord) -> dict[str, Any]:
+def event_to_dict(record: LogRecord) -> SessionEventLine:
     """Convert a LogRecord back to its canonical persisted envelope dict."""
-    event: dict[str, Any] = {
+    event: SessionEventLine = {
         "type": record.type,
         "seq": record.seq,
         "time": record.time,
@@ -47,10 +48,11 @@ def event_to_dict(record: LogRecord) -> dict[str, Any]:
     }
     surface_op = record.surfaceOp
     if surface_op is not None:
-        event["surfaceOp"] = (
+        event["surfaceOp"] = cast(
+            Literal["append"] | SessionReplaceSurface,
             {"op": "replace", "startSeq": surface_op.startSeq, "endSeq": surface_op.endSeq}
             if isinstance(surface_op, ReplaceOp)
-            else surface_op
+            else surface_op,
         )
     if record.sourceEventSeqs is not None:
         event["sourceEventSeqs"] = encode_source_event_seqs(record.sourceEventSeqs)

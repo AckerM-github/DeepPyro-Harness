@@ -2,8 +2,9 @@
 
 The session journal stores two record types, hook/invoked and hook/result. The
 shapes are deeppyro-specific: they align with the DSH vocabulary names but do
-not promise byte-level compatibility. Both functions return plain dicts with a
-fixed key order so golden tests and log readers stay stable.
+not promise byte-level compatibility. Both functions return plain dicts (typed
+as HookInvokedRecord and HookResultRecord for consumers) with a fixed key order
+so golden tests and log readers stay stable.
 
 Only primitive payload values are copied: mappings, lists, and custom objects
 stay out of the record. The full frozen payload remains available to observers.
@@ -13,7 +14,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+from deeppyro.core.payloads import HookInvokedRecord, HookResultRecord
 
 from .types import AGENT_ASSISTANT_STREAM, LLM_STREAM
 
@@ -36,7 +39,7 @@ _PRIMITIVES = (str, int, bool)
 _MISSING = object()
 
 
-def invoked_record(observation: HookObservation) -> dict[str, Any]:
+def invoked_record(observation: HookObservation) -> HookInvokedRecord:
     """Build the hook/invoked record for one observation.
 
     Keys are ordered hook, mode, then the optional scope and the primitive
@@ -47,10 +50,10 @@ def invoked_record(observation: HookObservation) -> dict[str, Any]:
     if scope:
         record["scope"] = scope
     _append_fields(record, observation.payload)
-    return record
+    return cast(HookInvokedRecord, record)
 
 
-def result_record(observation: HookObservation) -> dict[str, Any]:
+def result_record(observation: HookObservation) -> HookResultRecord:
     """Build the hook/result record for one resolved observation.
 
     outcome is "error" when the observation carries an error, "none" when the
@@ -80,7 +83,7 @@ def result_record(observation: HookObservation) -> dict[str, Any]:
     if error is not None:
         record["error"] = {"name": type(error).__name__, "message": str(error)}
     _append_fields(record, observation.payload)
-    return record
+    return cast(HookResultRecord, record)
 
 
 def agent_from_payload(payload: Mapping[str, Any]) -> Any | None:

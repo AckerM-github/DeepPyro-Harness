@@ -18,11 +18,12 @@ downstream result.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from deeppyro.api import Plugin
 from deeppyro.core.errors import ConfigError
 from deeppyro.core.payload import field_of
+from deeppyro.core.payloads import ApprovalRequestHookPayload
 from deeppyro.hooks import APPROVAL_REQUEST
 from deeppyro.hooks.service import HookService
 from deeppyro.hooks.types import HookNext, HookPayload
@@ -68,11 +69,13 @@ class ApprovalPolicyPlugin(Plugin):
         """Answer when configured, otherwise continue the waterfall unchanged."""
         if self._mode in ("off", "ask"):
             return await next_step()
-        if not self._matches(payload.get("request")):
+        # The payload is generic on the bus; ApprovalService builds this shape.
+        request_payload = cast(ApprovalRequestHookPayload, payload)
+        if not self._matches(request_payload.get("request")):
             return await next_step()
         return self._mode
 
-    def _matches(self, request: Any) -> bool:
+    def _matches(self, request: object) -> bool:
         if not self._tools:
             return True
         tool = getattr(request, "tool", None)

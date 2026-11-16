@@ -108,6 +108,7 @@ from deeppyro.working_directory import WorkingDirectoryService
 
 if TYPE_CHECKING:
     from deeppyro.api import PluginContext
+    from deeppyro.core.payloads import ToolCallPayload
 
 logger = logging.getLogger(__name__)
 
@@ -1155,7 +1156,7 @@ class AgentSession:
     def _tool_log(self, record_type: str, data: dict[str, Any]) -> int:
         return self._append(record_type, data)
 
-    def _tool_call_log(self, turn: int | None, step: int | None, payload: dict[str, Any]) -> int:
+    def _tool_call_log(self, turn: int | None, step: int | None, payload: ToolCallPayload) -> int:
         """Append one tool/call record (called by the tools pipeline) and emit its event."""
         data = {
             "turn": turn,
