@@ -13,7 +13,7 @@ from __future__ import annotations
 from .context import PluginContext
 from .errors import PluginConfigError, PluginDependencyError, PluginError
 from .kernel_types import FiberState
-from .plugin import Plugin, Service
+from .plugin import Plugin, Service, inject_names, invoke_setup
 from .services import (
     ServiceBag,
     ServiceNotFoundError,
@@ -47,7 +47,7 @@ from .types import (
     ToolContribution,
 )
 
-API_VERSION = 1
+API_VERSION = 2
 
 __all__ = [
     "AGENT_MODE_DEFAULT",
@@ -84,6 +84,8 @@ __all__ = [
     "ServiceTypeError",
     "ToolContribution",
     "bind_service_type",
+    "inject_names",
+    "invoke_setup",
     "lookup_service",
     "require_service",
 ]
