@@ -1,25 +1,26 @@
 """Install, remove and update plugin packages with a staged uv backend.
 
-The command surface lives in :mod:`deeppyro.plugins.cli`; this module is the
+The command surface lives in deeppyro.plugins.cli; this module is the
 argument-free core so the same operations are usable from the TUI, tests and
 future automation.
 
 Every mutating operation is staged:
 
-1. **preflight** parses the package metadata, checks compatibility, ids,
-   versions, the target directory, declared dependencies and cross-package
-   vendor conflicts. A failing preflight raises :class:`PreflightFailure` and
-   leaves the plugin directory and the user manifest untouched.
-2. **install** builds the package (and its ``_vendor`` tree) in a temporary
-   directory inside the plugin root, then swaps it into place with a single
-   :func:`os.replace`.
-3. **record** writes the id into the user manifest through
-   :class:`~deeppyro.plugins.manager.PluginManager`; any failure rolls the
-   directory swap back.
+1. preflight parses the package metadata, checks compatibility, ids, versions,
+   the target directory, declared dependencies and cross-package vendor
+   conflicts. A failing preflight raises PreflightFailure and leaves the plugin
+   directory and the user manifest untouched.
+2. install builds the package (and its _vendor tree) in a temporary directory
+   inside the plugin root, then swaps it into place with a single os.replace.
+3. record writes the id into the user manifest through the plugin manager; any
+   failure rolls the directory swap back.
+
+The implementation is split across the private install_* modules in this
+package; the names exported below keep their original import paths.
 
 uv is never imported: it runs as an external process behind an injectable
-``runner`` callable, so the test suite works without network access or a uv
-binary. ``DPYRO_UV`` overrides the executable path.
+runner callable, so the test suite works without network access or a uv binary.
+DPYRO_UV overrides the executable path.
 """
 
 from __future__ import annotations
@@ -36,23 +37,42 @@ import tarfile
 import tempfile
 import tomllib
 import zipfile
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from deeppyro import paths
-from deeppyro.kernel.composition import (
-    CompositionError,
-    core_bundle_path,
-    default_composition,
-    load_bundle,
-)
+from deeppyro.kernel.composition import CompositionError, core_bundle_path, default_composition, load_bundle
 from deeppyro.plugins.bootstrap import PluginPackage, scan_plugin_packages
+from deeppyro.plugins.install_errors import InstallerError, InstallFailure, PreflightFailure, UnknownPlugin
+from deeppyro.plugins.install_requirements import (
+    SourcePlan,
+    normalise_name,
+    parse_requirement,
+    plan_source,
+    validate_plugin_id,
+    validate_version,
+)
+from deeppyro.plugins.install_uv import (
+    REQUIREMENTS_FILE,
+    STDERR_TAIL_CHARS,
+    STDERR_TAIL_LINES,
+    STDOUT_TAIL_CHARS,
+    STDOUT_TAIL_LINES,
+    UV_ENV,
+    UV_TIMEOUT,
+    Runner,
+    UvCommand,
+    UvResult,
+    _execute,
+    _install_requirements,
+    _uv_preflight_problem,
+)
+from deeppyro.plugins.install_vendor import requirement_errors, vendor_conflict_map, vendor_versions
 from deeppyro.plugins.metadata import (
     FAILURE_DEP_CONFLICT,
-    FAILURE_DEP_MISSING,
     FAILURE_IMPORT,
     FAILURE_METADATA,
     REMEDIATION,
@@ -63,88 +83,67 @@ from deeppyro.plugins.metadata import (
     load_metadata,
     parse_toml,
     python_tag,
-    satisfies,
 )
 
-#: Environment variable that overrides the uv executable.
-UV_ENV = "DPYRO_UV"
-#: Upper bound for one uv invocation, in seconds.
-UV_TIMEOUT = 600.0
-#: Only the tail of a failing uv process is kept (avoids unbounded logs).
-STDERR_TAIL_LINES = 200
-STDERR_TAIL_CHARS = 20_000
-STDOUT_TAIL_LINES = 400
-STDOUT_TAIL_CHARS = 40_000
+__all__ = [
+    "CUSTOMIZED_CORE",
+    "FAILURE_MANIFEST_DANGLING",
+    "MANIFEST_REMEDIATION",
+    "REQUIREMENTS_FILE",
+    "STDERR_TAIL_CHARS",
+    "STDERR_TAIL_LINES",
+    "STDOUT_TAIL_CHARS",
+    "STDOUT_TAIL_LINES",
+    "UV_ENV",
+    "UV_TIMEOUT",
+    "AllowVersionReport",
+    "InstallFailure",
+    "InstallReport",
+    "InstallerError",
+    "MetadataError",
+    "PreflightFailure",
+    "RemoveReport",
+    "Runner",
+    "SourcePlan",
+    "StateReport",
+    "UnknownPlugin",
+    "UpdateReport",
+    "UvCommand",
+    "UvResult",
+    "VendorChange",
+    "add",
+    "allow_version",
+    "bundle_row_ids",
+    "core_row_ids",
+    "customized_core",
+    "dependents_of",
+    "manifest_issues",
+    "normalise_name",
+    "parse_requirement",
+    "plan_source",
+    "remove",
+    "requirement_errors",
+    "run_uv",
+    "set_enabled",
+    "target_errors",
+    "update",
+    "uv_available",
+    "uv_executable",
+    "validate_plugin_id",
+    "validate_version",
+    "vendor_conflict_map",
+    "vendor_diff",
+    "vendor_versions",
+    "with_exempt_version",
+]
 
-#: Explicit requirement list written for ``uv pip install -r``.
-REQUIREMENTS_FILE = "requirements.txt"
-
-#: Advisory finding (not a failure kind): a package bundle overrides core rows.
 CUSTOMIZED_CORE = "customized-core"
 
-#: A user-manifest row whose package directory is missing or cannot be imported.
 FAILURE_MANIFEST_DANGLING = "manifest-dangling"
 
 MANIFEST_REMEDIATION = (
     "remove the row from the user manifest or reinstall the package with 'dpyro plugin add <id>'"
 )
-
-#: A uv runner is injected in tests; ``None`` means the real subprocess runner.
-Runner = Callable[["UvCommand"], "UvResult"]
-
-
-class InstallerError(Exception):
-    """Base class for installer failures."""
-
-
-class PreflightFailure(InstallerError):
-    """Preflight rejected the change; nothing outside staging was touched."""
-
-    def __init__(self, problems: Iterable[str]) -> None:
-        self.problems = tuple(dict.fromkeys(str(problem) for problem in problems))
-        super().__init__("; ".join(self.problems) or "preflight failed")
-
-
-class InstallFailure(InstallerError):
-    """The install phase failed; ``rolled_back`` says whether the tree is clean."""
-
-    def __init__(self, message: str, *, rolled_back: bool = True, stderr_tail: str = "") -> None:
-        self.rolled_back = rolled_back
-        self.stderr_tail = stderr_tail
-        super().__init__(message)
-
-
-class UnknownPlugin(InstallerError):
-    """The requested plugin id is not an installed package directory."""
-
-
-# -- uv process runner ----------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class UvCommand:
-    """One uv invocation, without the executable (``DPYRO_UV`` supplies it)."""
-
-    args: tuple[str, ...]
-    cwd: Path | None = None
-
-    def display(self) -> str:
-        prefix = f"cd {self.cwd} && " if self.cwd is not None else ""
-        return prefix + "uv " + " ".join(self.args)
-
-
-@dataclass(frozen=True, slots=True)
-class UvResult:
-    """Captured outcome of one uv invocation."""
-
-    returncode: int
-    stdout: str = ""
-    stderr: str = ""
-    timed_out: bool = False
-
-    @property
-    def ok(self) -> bool:
-        return self.returncode == 0 and not self.timed_out
 
 
 def _tail(text: str | bytes | None, *, lines: int, chars: int) -> str:
@@ -217,311 +216,6 @@ def run_uv(
         _tail(completed.stderr, lines=STDERR_TAIL_LINES, chars=STDERR_TAIL_CHARS),
         False,
     )
-
-
-def _execute(runner: Runner | None, command: UvCommand, timeout: float | None) -> UvResult:
-    if runner is not None:
-        return runner(command)
-    return run_uv(command, timeout=timeout)
-
-
-def _uv_preflight_problem(runner: Runner | None) -> str | None:
-    """Preflight: registry/git and dependency installs need a uv executable."""
-    if runner is not None:
-        return None
-    try:
-        uv_executable()
-    except InstallerError as exc:
-        return str(exc)
-    return None
-
-
-# -- requirement helpers --------------------------------------------------
-
-
-def normalise_name(name: str) -> str:
-    """PEP 503-ish normalisation used for vendor package comparisons."""
-    return name.strip().lower().replace("-", "_").replace(".", "_")
-
-
-_REQUIREMENT_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(.*)$", re.DOTALL)
-_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z.!+_-]*$")
-
-
-def parse_requirement(requirement: str) -> tuple[str, str]:
-    """Split ``"websockets>=15"`` into ``("websockets", ">=15")``.
-
-    Extras and environment markers are tolerated; ``~=`` and other specs the
-    metadata helper cannot evaluate raise :class:`ValueError`.
-    """
-    text = requirement.strip()
-    if not text:
-        raise ValueError("empty requirement")
-    match = _REQUIREMENT_RE.fullmatch(text)
-    if match is None:
-        raise ValueError(f"invalid requirement {requirement!r}")
-    name, rest = match.group(1), match.group(2).strip()
-    if rest.startswith("["):
-        end = rest.find("]")
-        if end < 0:
-            raise ValueError(f"invalid extras in {requirement!r}")
-        rest = rest[end + 1 :].strip()
-    if ";" in rest:
-        rest = rest.split(";", 1)[0].strip()
-    if rest.startswith(("@", "(")):
-        # Direct URL references carry no evaluable version spec.
-        return name, ""
-    if rest:
-        satisfies("0.0.0", rest)  # raises ValueError for unsupported specs
-    return name, rest
-
-
-def validate_plugin_id(plugin_id: str) -> str | None:
-    """Return a problem message, or ``None`` when the id is a safe dir name."""
-    if not plugin_id:
-        return "plugin id must not be empty"
-    if plugin_id in (".", ".."):
-        return f"plugin id {plugin_id!r} is not a usable directory name"
-    if not _ID_RE.fullmatch(plugin_id):
-        return f"plugin id {plugin_id!r} must match [A-Za-z0-9][A-Za-z0-9._-]*"
-    return None
-
-
-def validate_version(version: str) -> str | None:
-    """Return a problem message, or ``None`` for a plausible version string."""
-    if not version:
-        return "package version is empty"
-    if not _VERSION_RE.fullmatch(version):
-        return f"package version {version!r} is not a valid version"
-    return None
-
-
-# -- source planning ------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class SourcePlan:
-    """How a ``add`` source is materialised."""
-
-    kind: str
-    source: str
-    path: Path | None = None
-    spec: str = ""
-    expected_id: str | None = None
-
-
-def _looks_like_url(text: str) -> bool:
-    lowered = text.lower()
-    return lowered.startswith(("git+", "http://", "https://", "ssh://", "git://", "file://", "git@"))
-
-
-def _looks_like_path(text: str) -> bool:
-    if text.startswith((".", "~", "/", "\\")):
-        return True
-    if "/" in text or "\\" in text:
-        return True
-    if len(text) > 1 and text[1] == ":":
-        return True
-    return text.lower().endswith((".whl", ".zip", ".tar.gz", ".tgz", ".tar"))
-
-
-def _archive_id(path: Path) -> str:
-    name = path.name
-    for suffix in (".tar.gz", ".tgz", ".whl", ".zip", ".tar"):
-        if name.lower().endswith(suffix):
-            name = name[: -len(suffix)]
-            break
-    head = re.split(r"[-_](?=\d)", name)[0]
-    return head.strip("._-") or path.stem
-
-
-def _url_id(text: str) -> str:
-    cleaned = text.strip().rstrip("/")
-    cleaned = cleaned.removesuffix(".git")
-    tail = cleaned.replace("\\", "/").rsplit("/", 1)[-1]
-    tail = tail.rsplit(":", 1)[-1] if "://" not in cleaned else tail
-    return re.sub(r"[^A-Za-z0-9._-]+", "-", tail).strip(".-") or "plugin"
-
-
-def plan_source(source: str | Path) -> SourcePlan:
-    """Classify ``add`` input and validate the cheap, static constraints."""
-    text = str(source).strip()
-    if not text:
-        raise PreflightFailure(("source must not be empty",))
-    candidate = Path(os.path.expanduser(text))
-    if candidate.exists():
-        if candidate.is_dir():
-            if not (candidate / "plugin.toml").is_file():
-                raise PreflightFailure((f"metadata-invalid: {candidate} does not contain a plugin.toml",))
-            problem = validate_plugin_id(candidate.name)
-            if problem is not None:
-                raise PreflightFailure((f"metadata-invalid: {problem}",))
-            return SourcePlan("directory", text, path=candidate.resolve(), expected_id=candidate.name)
-        if candidate.is_file():
-            if not _looks_like_path(candidate.name):
-                raise PreflightFailure((f"unsupported package archive {candidate}",))
-            return SourcePlan("archive", text, path=candidate.resolve(), expected_id=_archive_id(candidate))
-        raise PreflightFailure((f"unsupported package source {candidate}",))
-    if _looks_like_url(text):
-        return SourcePlan("git", text, spec=text, expected_id=_url_id(text))
-    if _looks_like_path(text):
-        raise PreflightFailure((f"{text!r} does not exist",))
-    try:
-        name, _ = parse_requirement(text)
-    except ValueError as exc:
-        raise PreflightFailure((f"invalid requirement {text!r}: {exc}",)) from exc
-    return SourcePlan("registry", text, spec=text, expected_id=name)
-
-
-# -- vendor snapshots -----------------------------------------------------
-
-
-def _dist_headers(path: Path) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return headers
-    for line in text.splitlines():
-        if not line.strip():
-            break
-        key, separator, value = line.partition(":")
-        if not separator:
-            continue
-        lowered = key.strip().lower()
-        if lowered in ("name", "version") and lowered not in headers:
-            headers[lowered] = value.strip()
-    return headers
-
-
-def vendor_versions(directory: Path | None) -> dict[str, str]:
-    """``{"websockets": "15.0"}`` for every dist/egg-info in a vendor dir."""
-    if directory is None or not directory.is_dir():
-        return {}
-    found: dict[str, str] = {}
-    for child in sorted(directory.iterdir(), key=lambda item: item.name.lower()):
-        if not child.is_dir():
-            continue
-        if child.name.endswith(".dist-info"):
-            stem = child.name[: -len(".dist-info")]
-        elif child.name.endswith(".egg-info"):
-            stem = child.name[: -len(".egg-info")]
-        else:
-            continue
-        headers = _dist_headers(child / "METADATA")
-        name = headers.get("name", "")
-        version = headers.get("version", "")
-        if not name:
-            name, _, fallback = stem.rpartition("-")
-            if not name:
-                name = stem
-            else:
-                version = version or fallback
-        if name:
-            found[normalise_name(name)] = version
-    return dict(sorted(found.items()))
-
-
-def _vendor_contents(directory: Path | None) -> set[str]:
-    """Importable top-level names in a vendor dir (mirrors ``cli.vendor_contents``)."""
-    if directory is None or not directory.is_dir():
-        return set()
-    names: set[str] = set()
-    for child in directory.iterdir():
-        name = child.name
-        if name.endswith((".dist-info", ".egg-info")):
-            names.add(normalise_name(name.split("-")[0]))
-        elif child.is_dir() and not name.startswith("__pycache__"):
-            names.add(normalise_name(name))
-        elif child.suffix in (".pyd", ".so"):
-            names.add(normalise_name(child.stem.split(".")[0]))
-    return names
-
-
-def _available_packages(directory: Path | None) -> dict[str, str]:
-    available = vendor_versions(directory)
-    for name in _vendor_contents(directory):
-        available.setdefault(normalise_name(name), "")
-    return available
-
-
-def requirement_errors(
-    plugin_id: str,
-    requires: Iterable[str],
-    vendor: Path | None,
-) -> list[MetadataError]:
-    """Declared requirements that the vendor tree cannot satisfy."""
-    available = _available_packages(vendor)
-    errors: list[MetadataError] = []
-    for requirement in requires:
-        try:
-            name, spec = parse_requirement(requirement)
-        except ValueError as exc:
-            errors.append(
-                MetadataError(
-                    FAILURE_METADATA,
-                    f"[deps].requires entry {requirement!r}: {exc}",
-                    plugin_id=plugin_id,
-                )
-            )
-            continue
-        key = normalise_name(name)
-        if key not in available:
-            errors.append(
-                MetadataError(
-                    FAILURE_DEP_MISSING,
-                    f"requires {requirement!r} but the vendor directory does not provide it",
-                    plugin_id=plugin_id,
-                )
-            )
-            continue
-        version = available[key]
-        if spec and version:
-            try:
-                if not satisfies(version, spec):
-                    errors.append(
-                        MetadataError(
-                            FAILURE_DEP_MISSING,
-                            f"requires {requirement!r} but vendored version is {version}",
-                            plugin_id=plugin_id,
-                        )
-                    )
-            except ValueError as exc:
-                errors.append(
-                    MetadataError(
-                        FAILURE_METADATA,
-                        f"[deps].requires entry {requirement!r}: {exc}",
-                        plugin_id=plugin_id,
-                    )
-                )
-    return errors
-
-
-def vendor_conflict_map(
-    packages: Iterable[PluginPackage],
-) -> dict[str, tuple[MetadataError, ...]]:
-    """Cross-package ``dep-conflict`` errors, keyed by plugin id."""
-    package_list = list(packages)
-    versions = {package.id: vendor_versions(package.vendor) for package in package_list}
-    names: set[str] = set()
-    for snapshot in versions.values():
-        names.update(snapshot)
-    conflicts: dict[str, list[MetadataError]] = {}
-    for name in sorted(names):
-        entries = [(pid, snapshot[name]) for pid, snapshot in versions.items() if name in snapshot]
-        if len(entries) < 2:
-            continue
-        if len({version for _, version in entries}) < 2:
-            continue
-        detail = ", ".join(f"{pid} {version or '?'}" for pid, version in entries)
-        message = f"{name} is vendored at different versions: {detail}"
-        for pid, _ in entries:
-            conflicts.setdefault(pid, []).append(MetadataError(FAILURE_DEP_CONFLICT, message, plugin_id=pid))
-    return {pid: tuple(errors) for pid, errors in conflicts.items()}
-
-
-# -- preflight ------------------------------------------------------------
 
 
 @lru_cache(maxsize=1)
@@ -601,9 +295,6 @@ def _preflight_problems(
     for conflict in _installed_conflicts(metadata.id, vendor, root):
         problems.append(f"{conflict.kind}: {conflict.message}")
     return problems
-
-
-# -- archives and materialisation -----------------------------------------
 
 
 def _safe_extract_zip(archive: Path, destination: Path) -> None:
@@ -743,9 +434,6 @@ def _load_payload_metadata(payload: Path, plan: SourcePlan) -> PluginMetadata:
         raise PreflightFailure((f"{exc.kind}: {exc.message}",)) from exc
 
 
-# -- target import validation ---------------------------------------------
-
-
 def _purge_modules(module_name: str) -> None:
     """Forget a module and its submodules so validation imports from disk again."""
     prefix = f"{module_name}."
@@ -847,9 +535,6 @@ def target_errors(
         _purge_modules(module_name)
 
 
-# -- manifest diagnostics --------------------------------------------------
-
-
 def _manifest_error(plugin_id: str, message: str) -> MetadataError:
     return MetadataError(
         FAILURE_MANIFEST_DANGLING,
@@ -924,46 +609,6 @@ def manifest_issues(root: Path | None = None) -> tuple[MetadataError, ...]:
                 with contextlib.suppress(ValueError):
                     sys.path.remove(text)
     return tuple(issues[key] for key in sorted(issues))
-
-
-# -- requirements install -------------------------------------------------
-
-
-def _install_requirements(
-    requires: Iterable[str],
-    vendor_root: Path,
-    *,
-    runner: Runner | None,
-    offline: bool,
-    timeout: float | None,
-) -> dict[str, str]:
-    vendor_root.mkdir(parents=True, exist_ok=True)
-    requirement_file = vendor_root / REQUIREMENTS_FILE
-    requirement_file.write_text("\n".join(requires) + "\n", encoding="utf-8")
-    command = UvCommand(
-        (
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            "--target",
-            str(vendor_root),
-            "-r",
-            str(requirement_file),
-        )
-        + (("--offline",) if offline else ())
-    )
-    result = _execute(runner, command, timeout)
-    if not result.ok:
-        detail = result.stderr.strip()
-        message = f"uv pip install failed (exit {result.returncode})"
-        if detail:
-            message = f"{message}: {detail}"
-        raise InstallFailure(message, stderr_tail=result.stderr)
-    return vendor_versions(vendor_root)
-
-
-# -- commit and record ----------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -1147,9 +792,6 @@ def add(
         shutil.rmtree(staging, ignore_errors=True)
 
 
-# -- diagnostics ----------------------------------------------------------
-
-
 def bundle_row_ids(package: PluginPackage) -> frozenset[str]:
     """Row ids declared by a package's optional bundle.toml."""
     path = package.directory / "bundle.toml"
@@ -1186,9 +828,6 @@ def customized_core(packages: Iterable[PluginPackage]) -> tuple[str, ...]:
         if rows and _overrides_core(rows):
             flagged.append(package.id)
     return tuple(sorted(set(flagged)))
-
-
-# -- removal --------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -1303,9 +942,6 @@ def remove(
     _purge_caches(plugin_root)
     after = _manifest_bytes(Path(managed.manifest_path))
     return RemoveReport(plugin_id, dependents, before != after)
-
-
-# -- update ---------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -1487,9 +1123,6 @@ def update(
         shutil.rmtree(staging, ignore_errors=True)
 
 
-# -- enable / disable -----------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class StateReport:
     plugin_id: str
@@ -1523,9 +1156,6 @@ def set_enabled(
     return StateReport(plugin_id, enabled, before != after)
 
 
-# -- exact-version exemption ----------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class AllowVersionReport:
     plugin_id: str
@@ -1534,6 +1164,7 @@ class AllowVersionReport:
 
 
 _EXEMPT_KEYS = ("dpyro_exempt_versions", "exempt_versions")
+
 _KEY_RE = re.compile(r"^(\s*)([A-Za-z0-9_.-]+)\s*=\s*(.*)$")
 
 
