@@ -35,10 +35,13 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deeppyro.api.kernel_types import FiberState
 from deeppyro.kernel.container import Disposer
+
+if TYPE_CHECKING:
+    from deeppyro.kernel.context import RuntimeContext
 
 log = logging.getLogger("deeppyro.kernel")
 
@@ -70,14 +73,14 @@ class Fiber:
         self,
         *,
         name: str = "",
-        parent_ctx: Any = None,
+        parent_ctx: RuntimeContext | None = None,
         parent: Fiber | None = None,
-        config: Any = None,
+        config: dict[str, Any] | None = None,
         inject: Iterable[str] = (),
         runner: PluginRunner | None = None,
     ) -> None:
         self._name = str(name or "")
-        self._config = {} if config is None else config
+        self._config: dict[str, Any] = {} if config is None else config
         self._inject = tuple(inject)
         self._runner = runner
         self._parent = parent

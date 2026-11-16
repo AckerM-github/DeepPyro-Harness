@@ -39,7 +39,7 @@ import inspect
 import logging
 from typing import Any, ClassVar
 
-from deeppyro.api import Service
+from deeppyro.api import PluginConfig, PluginContext, Service
 from deeppyro.kernel.config_values import config_dict
 
 log = logging.getLogger("deeppyro.kernel")
@@ -65,7 +65,7 @@ class KernelRuntime(Service):
     description: ClassVar[str] = "Kernel runtime: mounted plugin registry and live config"
     inject: ClassVar[list[str]] = ["config"]
 
-    def __init__(self, ctx: Any, config: Any = None) -> None:
+    def __init__(self, ctx: PluginContext, config: PluginConfig = None) -> None:
         super().__init__(ctx, config)
         self._app: Any = None
 
