@@ -212,7 +212,7 @@ InspectPlugin（provide = inspect，plugin_id = inspect，version = 0.1.0，inje
 
 安全提示：plugin_manager 的描述明确写出 install 会把第三方 bundle 复制到用户目录并在下一次 boot 执行其代码，因此该调用需要人工批准；工具不提供任何签名校验或沙箱。
 
-PluginToolsPlugin：普通 Plugin（不是 Service），plugin_id = plugin-tools，version = 0.1.0，inject = [tools]；setup 调用 ctx.register_tool(lambda _cfg, _workspace: plugin_tools()) 注册五个工具。它不修改 builtin_tools()，是否暴露给会话由 bundle 行与 runtime 接线决定。
+PluginToolsPlugin：普通 Plugin（不是 Service），plugin_id = plugin-tools，version = 0.1.0，inject = [tools]；setup 调用 self.ctx.register_tool(lambda _cfg, _workspace: plugin_tools()) 注册五个工具。它不修改 builtin_tools()，是否暴露给会话由 bundle 行与 runtime 接线决定。
 
 ## 9. 内置 bundle 行与集成点
 

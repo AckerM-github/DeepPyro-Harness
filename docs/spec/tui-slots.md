@@ -163,18 +163,18 @@ registry as the cordis service `slots`:
 class SlotsPlugin(Plugin):
     plugin_id = "slots"
     version = "0.1.0"
-    inject = []
+    inject = ()
 
     def __init__(self, ctx, config):
         super().__init__(ctx, config)
         self.registry = SlotRegistry(plugin_id=self.plugin_id)
 
-    def setup(self, ctx, config):
-        ctx.provide("slots", self.registry)
+    def setup(self) -> None:
+        self.ctx.provide("slots", self.registry)
         self.load_ui_packages()   # scans <home>/bundles/*/ui.toml, errors recorded
 ```
 
-`ctx.provide` goes through the vendored cordis `Context.provide`, so the
+`self.ctx.provide` goes through the vendored cordis `Context.provide`, so the
 service is registered immediately and unregistered with the plugin fiber. A
 real-kernel probe (external bundle row below) returned a `SlotRegistry` with
 `app.started["slots"] == "ACTIVE"`.
@@ -201,10 +201,10 @@ from deeppyro.api import Plugin
 class ClockPlugin(Plugin):
     plugin_id = "clock"
     version = "0.1.0"
-    inject = ["slots"]
+    inject = ("slots",)
 
-    def setup(self, ctx, config):
-        slots = ctx.service("slots")
+    def setup(self) -> None:
+        slots = self.ctx.service("slots")
         dispose = slots.add_status_item(
             lambda context: f"clock: {context['model']}",
             id=f"{self.plugin_id}.status",
@@ -212,7 +212,7 @@ class ClockPlugin(Plugin):
         )
         # Tie the contribution to the plugin fiber; unloading the plugin
         # removes the item even though the registry is a plain object.
-        ctx.effect(dispose, label="clock-status")
+        self.ctx.effect(dispose, label="clock-status")
 ```
 
 ## 4. Host context

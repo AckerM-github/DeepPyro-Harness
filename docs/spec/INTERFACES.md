@@ -408,7 +408,7 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 `@docs/spec/events.md`；`hooks/service.py` 只是保留名字策略的薄门面。
 
 
-- `Plugin`：`plugin_id`/`version`/`api_version`/`inject`/`Config`(pydantic)/`setup(ctx, config)`；
+- `Plugin`：`plugin_id`/`version`/`api_version`/`inject`/`Config`(pydantic)/`setup()`（v2：通过 `self.ctx` 与 `self.config` 访问）；
   可选 `async stop()` 清理，可选 `volatile: ClassVar[tuple[str, ...]]` 声明可 live apply 的字段。
 - `on_config(config)`：配置热更新回调（仅 volatile 字段变更且经 `kernel.apply_plugin_config` 时同步调用）。
 - `Service(Plugin, cordis Service)`：类属性 `provide`，构造即注册服务。
