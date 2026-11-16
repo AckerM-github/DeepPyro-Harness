@@ -20,15 +20,15 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from textual import on
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.notifications import SeverityLevel
 from textual.widgets import Footer, Header
 
 from deeppyro import __version__
-from deeppyro.api import DEFAULT_PRESET_ID
 from deeppyro.goal import GoalError
 from deeppyro.session.metadata import record_archive, record_title
+from deeppyro.tui.app_base import AppBase
 from deeppyro.tui.app_support import _HOOK_INVOKED_RECORD as _HOOK_INVOKED_RECORD
 from deeppyro.tui.app_support import _HOOK_RESULT_RECORD as _HOOK_RESULT_RECORD
 from deeppyro.tui.app_support import CUSTOM_WORKSPACE as CUSTOM_WORKSPACE
@@ -48,7 +48,6 @@ from deeppyro.tui.screens.hook_trace import EMPTY_TEXT as HOOK_TRACE_EMPTY_TEXT
 from deeppyro.tui.screens.hook_trace import HookTraceScreen, hook_trace_line
 from deeppyro.tui.screens.jobs import JobsPanelScreen
 from deeppyro.tui.screens.path_prompt import PathPromptScreen
-from deeppyro.tui.screens.picker import PickerScreen
 from deeppyro.tui.screens.plan import PlanScreen, plan_summary
 from deeppyro.tui.screens.plugin_panel import open_plugin_panel
 from deeppyro.tui.screens.question import QuestionScreen
@@ -85,7 +84,7 @@ from deeppyro.tui.widgets.status_bar import StatusBar
 from deeppyro.user_questions.types import Answer, AskRequest
 
 
-class DeepPyroApp(App[None]):
+class DeepPyroApp(AppBase):
     """Full-screen terminal client for one DeepPyro session."""
 
     CSS_PATH = "theme.tcss"
@@ -378,19 +377,6 @@ class DeepPyroApp(App[None]):
         if screen is not None:
             screen.action_dismiss_splash()
 
-    # -- public accessors ------------------------------------------------
-    @property
-    def sink(self) -> TuiSink:
-        return self._sink
-
-    @property
-    def conversation(self) -> ConversationView:
-        return self.query_one(ConversationView)
-
-    @property
-    def busy(self) -> bool:
-        return self._working
-
     # -- agent events ----------------------------------------------------
     def handle_event(self, event: dict[str, Any]) -> None:
         """Render one agent event (called by TuiSink on the UI loop)."""
@@ -647,52 +633,6 @@ class DeepPyroApp(App[None]):
         """Open the full-screen viewer when a collapsed step line is clicked."""
         self.push_screen(ThinkingScreen([event.reasoning]))
 
-    # -- policy / approval / workspace commands --------------------------
-    def _agent_preset(self) -> str:
-        return str(getattr(self.runtime, "agent_preset", DEFAULT_PRESET_ID) or DEFAULT_PRESET_ID)
-
-    def _agent_presentation(self) -> str:
-        """Tool presentation of the active agent preset (native or ptc)."""
-        value = getattr(self.runtime, "agent_presentation", "")
-        if callable(value):
-            try:
-                value = value()
-            except Exception:  # noqa: BLE001 - status display must never fail
-                value = ""
-        return str(value or "native")
-
-    def _agent_preset_display(self) -> str:
-        """Display name of the active agent preset, falling back to its id."""
-        value = getattr(self.runtime, "agent_preset_display", "")
-        if callable(value):
-            try:
-                value = value()
-            except Exception:  # noqa: BLE001 - status display must never fail
-                value = ""
-        return str(value or "") or self._agent_preset()
-
-    def _agent_mode(self) -> str:
-        reader = getattr(self.runtime, "agent_mode", "default")
-        try:
-            return str(reader or "default")
-        except Exception:  # noqa: BLE001 - status display must never fail
-            return "default"
-
-    def _current_permission(self) -> str:
-        runtime = self.runtime
-        reader = getattr(runtime, "permission_preset", None)
-        if callable(reader):
-            try:
-                return str(reader())
-            except Exception:
-                self.log.debug("permission preset unavailable", exc_info=True)
-        permission = getattr(runtime, "permission", None)
-        return str(getattr(permission, "preset", "workspace-write"))
-
-    def _current_approval(self) -> str:
-        permission = getattr(self.runtime, "permission", None)
-        return str(getattr(permission, "approval", "ask"))
-
     async def permission_command(self, argument: str) -> None:
         """Show or switch the permission preset (/permission)."""
         names_reader = getattr(self.runtime, "permission_names", None)
@@ -864,15 +804,6 @@ class DeepPyroApp(App[None]):
         self._context_used = 0
         self._render_welcome()
         self.refresh_status()
-
-    async def _pick(self, title: str, items: list[tuple[str, str, str]]) -> str | None:
-        """Show a modal picker inside a worker; None outside a worker or on cancel."""
-        if not items:
-            return None
-        try:
-            return await self.push_screen_wait(PickerScreen(title, items))
-        except Exception:  # noqa: BLE001 - push_screen_wait needs a worker
-            return None
 
     def _session_items(self, sessions: list[Any]) -> list[tuple[str, str, str]]:
         return picker_items(sessions)
