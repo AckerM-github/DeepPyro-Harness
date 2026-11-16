@@ -133,7 +133,7 @@ def bundle_template(
     bundle_id: str = "demo-bundle",
     name: str = "",
     *,
-    api_version: int = 1,
+    api_version: int = 2,
 ) -> dict[str, str]:
     """Return the scaffolded files keyed by relative path, without writing."""
     valid_id = validate_bundle_id(bundle_id)
@@ -157,7 +157,7 @@ def create_bundle(
     bundle_id: str,
     name: str = "",
     *,
-    api_version: int = 1,
+    api_version: int = 2,
 ) -> Path:
     """Validate and write a new bundle scaffold at dest; return the directory."""
     target = Path(dest).expanduser()

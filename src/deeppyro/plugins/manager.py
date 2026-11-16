@@ -203,7 +203,7 @@ class PluginManager:
         bundle_id: str = "demo-bundle",
         name: str = "",
         *,
-        api_version: int = 1,
+        api_version: int = 2,
     ) -> dict[str, str]:
         """Scaffolded bundle files keyed by relative path (no writes)."""
         return build_bundle_template(bundle_id, name, api_version=api_version)
@@ -214,7 +214,7 @@ class PluginManager:
         bundle_id: str,
         name: str = "",
         *,
-        api_version: int = 1,
+        api_version: int = 2,
     ) -> Path:
         """Write and validate a new bundle scaffold at dest."""
         return create_bundle_scaffold(dest, bundle_id, name, api_version=api_version)

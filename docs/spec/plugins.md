@@ -144,7 +144,7 @@ disable(id)：bundle 保护与已禁用幂等同上；读取清单后把 disable
 
 remove(id)：bundle 保护。entry point 来源抛 PluginRemovalError（提示用 pip uninstall，本工具不做 pip 操作）。目录来源先确认待删目录 resolve 后严格位于 plugins_dir 之内（root 本身与外部路径拒绝），先删除清单条目再 shutil.rmtree；删除失败抛 PluginRemovalError。manifest 来源删除清单条目（必须存在，否则 PluginRemovalError）。最后 refresh。
 
-bundle 生命周期门面：list_bundles()、install_bundle(source, *, force=False)、remove_bundle(bundle_id)、set_bundle(bundle_id, enabled) 委托 BundleStore；create_bundle(dest, bundle_id, name="", *, api_version=1) 与 bundle_template(bundle_id="demo-bundle", name="", *, api_version=1) 委托 @template.py（前者生成脚手架目录并返回 Path，后者只返回文本 dict，不落盘）。
+bundle 生命周期门面：list_bundles()、install_bundle(source, *, force=False)、remove_bundle(bundle_id)、set_bundle(bundle_id, enabled) 委托 BundleStore；create_bundle(dest, bundle_id, name="", *, api_version=2) 与 bundle_template(bundle_id="demo-bundle", name="", *, api_version=2) 委托 @template.py（前者生成脚手架目录并返回 Path，后者只返回文本 dict，不落盘）。
 
 脚手架：bundle id 使用与 BundleStore 相同的规则（公有 validate_bundle_id 可复用：strip 后非空，不能是 . 或 ..，不能含 /、反斜杠、冒号或 NUL）。生成 bundle.toml（version=0.1.0、order=500、critical=false，单行插件 id=bundle_id、plugin="plugin.py:<Pascal>Plugin"）、plugin.py（示例 Config、volatile 字段、inject 与 register_tool 示例工具 sample_greeting）与 README.md。create_bundle 在临时目录写完三个文件后先用 kernel.composition.load_bundle 校验，再复制到目标；目标必须不存在或为空目录，api_version 非法时校验失败且不留下目标。
 

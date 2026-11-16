@@ -132,7 +132,7 @@ _GUIDE = "\n".join(
         '    id = "my-bundle"',
         '    name = "My Bundle"',
         '    version = "0.1.0"',
-        "    api_version = 1",
+        "    api_version = 2",
         "    order = 500",
         "    critical = false",
         "",

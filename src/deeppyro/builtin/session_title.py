@@ -74,11 +74,10 @@ class TitleOptions(BaseModel):
 class SessionTitlePlugin(Plugin):
     """Upgrade the derived title of a session with one LLM gist."""
 
-    api_version = 1
     plugin_id = "session-title"
     version = "0.1.0"
     description = "name a session from its first exchange (one small request)"
-    inject: ClassVar[list[str]] = ["hooks", "llm", "config"]
+    inject: ClassVar[tuple[str, ...]] = ("hooks", "llm", "config")
 
     def __init__(self, ctx: Any, config: Any = None) -> None:
         super().__init__(ctx, config)
