@@ -16,7 +16,8 @@ domain event, how it dispatches, and who produces it. The transport is
 | `_RESERVED` in `core/events.py` | 21 names deeppyro declares without a DSH counterpart | `reserved` |
 
 The table has 115 entries: 15 implemented and 100 reserved. A name outside the
-table is not a bus event, so `PluginContext.on()` routes it to cordis instead.
+table is not a bus event, so `PluginContext.on()` routes it to the runtime context's local
+dispatcher instead (nothing in the kernel uses that path).
 
 ## 2. Generated, never hand-edited
 
@@ -65,11 +66,11 @@ producer means moving the name into `_PRODUCERS` and giving it a mode in
 
 ## 5. What is deliberately absent
 
-`internal/*` events of cordis (`internal/dispatch`, `internal/plugin`, …) are
-kernel plumbing, not domain events: they stay inside the vendored cordis port and
-are not part of this table. Session records (`turn/end`, `tool/call`, …) are also
-absent: they are durable log entries, and `session/archived`-style additions must
-be written with `ignorable=True` rather than registered here.
+`internal/*` plumbing events from the former framework port are gone: the native runtime
+raises no events of its own, so names such as `internal/dispatch` do not exist here.
+Session records (`turn/end`, `tool/call`, …) are also absent: they are durable log
+entries, and `session/archived`-style additions must be written with `ignorable=True`
+rather than registered here.
 
 ## 6. Real consumers
 
@@ -113,28 +114,16 @@ pins that: a subscription through either door is dispatched through the other.
 
 ## 8. internal/* plumbing
 
-cordis raises ten plumbing events while it starts fibers, resolves services, and
-applies configuration. The vendored port already raises all ten (`fiber.py`,
-`reflect.py`, `events.py`), and `core/events.py` catalogues them in
-`INTERNAL_SPECS` with the declared signature as evidence:
+The native runtime (`kernel/container.py`, `kernel/fiber.py`) raises **no** plumbing
+events: service registration, fiber state changes and configuration updates are plain
+method calls. The former catalogue of ten upstream `internal/*` events was deleted with
+the vendored port, so the names are not in `EVENT_SPECS` at all.
 
-| name | mode | raised by |
-| --- | --- | --- |
-| `internal/listener` | bail | `cordis.events` |
-| `internal/dispatch` | emit | `cordis.events` |
-| `internal/config` | waterfall | `cordis.events` |
-| `internal/update` | waterfall | `cordis.events` |
-| `internal/get` | waterfall | `cordis.reflect` |
-| `internal/set` | waterfall | `cordis.reflect` |
-| `internal/service` | emit | `cordis.reflect` |
-| `internal/plugin` | emit | `cordis.fiber` |
-| `internal/status` | emit | `cordis.fiber` |
-| `internal/commit` | emit | `cordis.fiber` |
-
-They are deliberately **not** bus events: their payloads are cordis objects
-(`Fiber`, `Context`), they fire inside the port's own hook table, and binding a
-domain handler to them would leak the framework into plugin code. `is_bus_event("internal/…")`
-stays False, so `ctx.on()` routes them to cordis where they belong.
+`is_bus_event("internal/…")` is False simply because no such name is registered; binding
+a handler to one would be a dead subscription, which the "declared but unproduced"
+reservation rule in §4 is designed to prevent. `scripts/extract_dsh_events.mjs` may still
+list upstream `internal/*` names as reference for DSH parity — they are not part of this
+contract.
 
 ## 9. Milestone status
 
@@ -145,7 +134,7 @@ stays False, so `ctx.on()` routes them to cordis where they belong.
 | M1b transport/catalogue split | done | `EventBus` raises anything, `HookService` keeps the name policy |
 | M2 catalogue + payload contract | done | `core/event_catalog.py` (94 names), `EVENT_SPECS` = 115 entries |
 | M3 mode evidence + semantics | done | `extract_dsh_events.mjs` reads dispatch modes, `test_bus_modes.py` |
-| M3b internal/* plumbing | done | `INTERNAL_SPECS`, ten names, all raised by the vendored port |
+| M3b internal/* plumbing | done | catalogue dropped with the vendored port; the native runtime raises no plumbing events |
 | M4 consumers | done | six in-tree subscribers listed in §6, `test_bus_consumers.py` |
 | M5 documentation freeze | done | this document plus `hooks.md` §9 |
 

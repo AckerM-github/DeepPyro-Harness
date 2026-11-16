@@ -1,7 +1,7 @@
 """The kernel-owned `config` service.
 
 Every plugin may inject `config` to read the validated deeppyro configuration
-(providers, models, agent defaults). Keeping it a cordis service means plugins
+(providers, models, agent defaults). Keeping it a kernel service means plugins
 never import the global config loader directly, so tests can substitute config.
 """
 

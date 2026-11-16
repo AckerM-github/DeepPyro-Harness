@@ -393,31 +393,34 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 
 ## 11. 内核 kernel 与插件核心（Lead；详见 docs/spec/plugin-core.md）
 
-### 11.1 vendor 与分层
+### 11.1 原生运行时与分层
 
-- 内核用 PyPI `cordis-port 0.1.8` 的 Python 移植，**已 vendor** 到
-  `src/deeppyro/_vendor/cordis_port/`（MIT，纯标准库，9 个 .py + LICENSE）。
-- 不可插件化的核心：`core/wire.py`、`core/protocols.py`、`session/**`、`kernel/**`、`api/**`、
-  vendor 的 cordis。其余全部是插件：`builtin/**` 是默认插件集，TUI/headless 是宿主。
-- 领域模块禁止 import cordis；`kernel/**` 是唯一装配层；前端只通过 `App.service(name)` 取服务。
+- 内核自带 Python 原生插件运行时：`kernel/container.py`（服务容器）、`kernel/context.py`
+  （分层 RuntimeContext）、`kernel/fiber.py`（插件生命周期与 effects）、`kernel/host.py`
+  （mount 适配）。没有 vendored 框架、没有反射层、没有 prototype 链。
+- 不可插件化的核心：`core/wire.py`、`core/protocols.py`、`session/**`、`kernel/**`、`api/**`。
+  其余全部是插件：`builtin/**` 是默认插件集，TUI/headless 是宿主。
+- 领域模块禁止 import 运行时内部；`kernel/**` 是唯一装配层；前端只通过 `App.service(name)` 取服务。
+- 生命周期：inject 服务缺失时 fiber 保持 `PENDING`，服务提供后自动加载；effects 逆序、幂等、
+  async teardown 会被 await；运行时不发任何 plumbing 事件，事件只有 `core.bus.EventBus`。
 
 ### 11.2 插件契约（`deeppyro.api`）
 
 事件总线在 `core/bus.py`（传输，任意名字）+ `core/events.py`（目录、模式、生产者）。
-`ctx.on()` 先查目录：命中走总线，否则回落 cordis。目录与冻结状态见
-`@docs/spec/events.md`；`hooks/service.py` 只是保留名字策略的薄门面。
+`ctx.on()` 先查目录：命中走总线；非目录名字交给运行时 context 的本地事件表（内核自身不用）。
+目录与冻结状态见 `@docs/spec/events.md`；`hooks/service.py` 只是保留名字策略的薄门面。
 
 
 - `Plugin`：`plugin_id`/`version`/`api_version`/`inject`/`Config`(pydantic)/`setup()`（v2：通过 `self.ctx` 与 `self.config` 访问）；
   可选 `async stop()` 清理，可选 `volatile: ClassVar[tuple[str, ...]]` 声明可 live apply 的字段。
 - `on_config(config)`：配置热更新回调（仅 volatile 字段变更且经 `kernel.apply_plugin_config` 时同步调用）。
-- `Service(Plugin, cordis Service)`：类属性 `provide`，构造即注册服务。
+- `Service(Plugin)`：类属性 `provide`，构造即注册服务，卸载时注销。
 - `PluginContext`：`service/get/has`、`tools/prompt/commands/llm` 快捷属性、
   `effect/on/once/emit/plugin/inject/isolate/intercept`，以及
   `register_tool/register_prompt_section/register_command/register_provider/register_preset`
   （注册随 fiber 自动注销；preset realm 内的贡献自动带上 `(preset_id, revision)` scope）。
 - 插件类型判定：`issubclass(cls, deeppyro.api.Plugin)` 走新适配器（pydantic Config 校验 +
-  PluginContext + setup + stop disposer）；旧式 cordis 类直接 `ctx.plugin(cls, config)` 兼容。
+  PluginContext + setup + stop disposer）；旧式宿主类直接 `ctx.plugin(cls, config)` 兼容。
 
 ### 11.3 组合：bundle + row + patch
 
@@ -428,7 +431,7 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 - bundle 元数据可声明 `[bundle].requires`（表或 `"id>=0.1"` 字符串），按点分数字版本约束做依赖优先拓扑排序。
 - 合并语义：同 id → `config` **整体替换**（绝不深合并）、`disabled/critical` 覆盖、`isolate/intercept` 合并、
   插件类不可更换；新 id → 按 `before/after` 插入否则追加；被 patch 覆盖的行标记 `overridden`。
-- group 行不挂插件，只给子行建独立 cordis context（isolate/intercept 链继承）；group 子行不能单独被 patch。
+- group 行不挂插件，只给子行建独立运行时 context（isolate/intercept 链继承）；group 子行不能单独被 patch。
 - 层顺序：core bundle → `~/.dpro/bundles/*/bundle.toml`（按 order,id）→ 显式 bundle 路径 → 用户 manifest
   （`~/.dpro/plugins.toml`）。
 - core 行 `critical=true`：失败抛 `KernelBootError` 并 dispose 已启动 fiber；外部行默认非 critical：

@@ -285,8 +285,9 @@ class _FakeTools:
 def _plugin(app: Any, ptc: Any) -> AgentsPlugin:
     """Build the agents service over a booted app with a chosen ptc service.
 
-    The cordis Service base registers itself on ctx.reflect, so the real plugin
-    is created by the kernel; this helper binds the same collaborators on a bare
+    The native Service base registers itself on the runtime container, so the
+    real plugin is created by the kernel; this helper binds the same collaborators
+    on a bare
     instance to exercise the surface decision with a controlled ptc service.
     """
     plugin = object.__new__(AgentsPlugin)

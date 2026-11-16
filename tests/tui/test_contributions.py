@@ -25,7 +25,7 @@ from tests.tui.test_app import FakeRuntime, _runtime_with_slots
 
 
 class _Reflect:
-    """Minimal cordis reflection stub exposing named services."""
+    """Minimal reflection stub exposing named services through get(name)."""
 
     def __init__(self, services: dict[str, Any]) -> None:
         self.services = services

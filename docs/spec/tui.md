@@ -46,8 +46,8 @@
 | screens/splash.py | 启动 splash：逐行揭示、运行时信息回填、任意键关闭 | Lead |
 | theme.tcss | 深色主题与布局样式 | ui-dev |
 
-领域模块（session/llm/tools/agent/compact）与内核（kernel/、_vendor/cordis_port）不允许 import textual；
-渲染层也不允许 import cordis——唯一装配点是 kernel.bundle.boot 与 TuiRuntime。
+领域模块（session/llm/tools/agent/compact）与内核（kernel/）不允许 import textual；
+渲染层也不允许 import 运行时内部——唯一装配点是 kernel.bundle.boot 与 TuiRuntime。
 
 ## 3. 启动流程
 

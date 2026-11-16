@@ -1,6 +1,6 @@
 """Runtime assembly for the terminal UI.
 
-The TUI boots the cordis kernel (the same bundle the one-shot headless path
+The TUI boots the native kernel (the same bundle the one-shot headless path
 uses) and resolves the services; everything workspace-scoped is built here once
 and then reused for the whole UI session:
 

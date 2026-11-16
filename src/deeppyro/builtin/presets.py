@@ -87,7 +87,7 @@ def _validate_config(plugin_cls: type, raw: Any, row_id: str) -> Any:
 
 
 def _api_adapter(preset: PresetSpec, plugin_cls: type) -> Any:
-    """Build the cordis apply callback for one api.Plugin realm row.
+    """Build the host apply callback for one api.Plugin realm row.
 
     Mirrors the kernel adapter, except the PluginContext carries the preset
     scope/revision defaults so contributions are pinned to this revision.
@@ -450,7 +450,7 @@ class PresetsPlugin(Service):
         state.ready = True
 
     def _row_plugin(self, spec: PresetSpec, row: PresetPluginRow) -> tuple[Any, Any]:
-        """Resolve one row into (cordis plugin, config), like the kernel does."""
+        """Resolve one row into (host plugin, config), like the kernel does."""
         from deeppyro.kernel.composition import PluginRow, resolve_row
 
         plugin_row = PluginRow(

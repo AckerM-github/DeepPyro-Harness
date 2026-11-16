@@ -1,6 +1,6 @@
-"""Typed service lookup over the cordis service container (roadmap step 3).
+"""Typed service lookup over the kernel service container (roadmap step 3).
 
-DeepPyro keeps cordis as the runtime service container: providers still call
+DeepPyro keeps one runtime service container: providers still call
 ctx.provide(name, value) and consumers may still call ctx.get(name) or
 ctx.service(name), so external plugins keep working. On top of that container
 this module adds a type key for the same services: every provider value
@@ -58,10 +58,8 @@ tends to miss; they are ordinary services like the others:
     user_questions      UserQuestionsService    builtin/user_questions.py
     working_directory   WorkingDirectoryService builtin/working_directory.py
 
-The vendored cordis context additionally mounts events (EventsService), logger
-(LoggerService), reflect (ReflectService) and registry (RegistryService); those
-stay outside the typed inventory because their contract types live in the
-immutable vendor tree.
+The native runtime mounts no implicit services: everything in this inventory is
+provided by a plugin, including the kernel's own `config` and `kernel` services.
 
 Name resolution
 ===============
@@ -96,12 +94,13 @@ Failure semantics
 Typed lookups from inside a service
 ===================================
 
-Cordis hands a service instance a shadow context while one of its methods runs:
-self.ctx is the caller's raw cordis Context, not a PluginContext, and it only
-accepts strings. Service methods therefore resolve typed services through
+A service instance built by the kernel adapter holds a PluginContext in
+self.ctx; adapter-driven mounts (presets, test doubles) may hold a raw
+RuntimeContext instead. Both accept strings through ctx.get(name). Service
+methods therefore resolve typed services through
 require_service(self.ctx, Contract) / lookup_service(self.ctx, Contract); the
 helpers normalise the contract to its name first and then use ctx.get(name), so
-caller isolation semantics stay identical to the string path.
+isolate semantics stay identical to the string path.
 """
 
 from __future__ import annotations
@@ -225,13 +224,11 @@ def _name_or_none(service: str | type[Any]) -> str | None:
 
 
 def lookup_service(ctx: Any, service: str | type[Any]) -> Any | None:
-    """Resolve one service through any cordis-flavoured context.
+    """Resolve one service through any runtime context or context facade.
 
-    PluginContext accepts contracts directly, but a service instance method sees
-    a cordis shadow context: inside it self.ctx is the caller's raw Context,
-    which only understands strings. Resolving the contract to its canonical
-    name first lets the same code work in both places (and in test doubles that
-    only implement get(name)).
+    PluginContext accepts contracts directly, but a raw RuntimeContext (and a
+    test double) only understands strings. Resolving the contract to its
+    canonical name first lets the same code work in both places.
     """
     name = _name_or_none(service)
     if name is None:

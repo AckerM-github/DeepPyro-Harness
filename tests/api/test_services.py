@@ -2,9 +2,8 @@
 
 The cases below pin the promises of the typed shell: a Service subclass binds
 its own contract to its provide name, typed and string lookups reach the same
-service, the lookup helpers also work on the shadow cordis context handed to
-service methods, and two containers never leak a same-named service into each
-other.
+service, the lookup helpers also work on a raw runtime context, and two
+containers never leak a same-named service into each other.
 """
 
 from __future__ import annotations
@@ -219,10 +218,10 @@ async def test_plugin_context_aliases_and_failures() -> None:
         await app.stop()
 
 
-# -- helpers on a raw shadow context ------------------------------------
+# -- helpers on a raw runtime context -----------------------------------
 
 
-async def test_lookup_helpers_accept_a_raw_cordis_context() -> None:
+async def test_lookup_helpers_accept_a_raw_runtime_context() -> None:
     app = await _boot(_spec("widget", "WidgetPlugin"))
     try:
         assert lookup_service(app.ctx, WidgetPlugin).label == "widget"

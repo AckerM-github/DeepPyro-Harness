@@ -66,12 +66,12 @@ _NOOP_UI = _NoopUi()
 
 
 def _bus_options(options: Any) -> dict[str, Any]:
-    """Translate cordis listener options into kernel-bus keyword arguments."""
+    """Translate legacy listener options into kernel-bus keyword arguments."""
     if options is None:
         return {}
     if isinstance(options, Mapping):
         data = dict(options)
-    else:  # pragma: no cover - cordis passes mappings, this keeps objects usable
+    else:  # pragma: no cover - callers pass mappings, this keeps objects usable
         data = {key: getattr(options, key) for key in ("prepend", "once", "scope") if hasattr(options, key)}
     mapped: dict[str, Any] = {}
     if data.get("prepend"):
@@ -286,7 +286,8 @@ class PluginContext:
         ``ctx.on("tools/pre-execute", ...)`` and observe the real dispatch. The
         handler signature follows the event mode: ``handler(payload)`` for emit
         events, ``handler(payload, next_step)`` for waterfall events. Any other
-        name keeps the cordis behaviour the kernel itself uses.
+        name goes to the runtime context's local dispatcher; the kernel itself
+        only uses catalogued bus names.
         """
         bus = self._bus()
         if bus is not None and isinstance(event, str) and is_bus_event(event):

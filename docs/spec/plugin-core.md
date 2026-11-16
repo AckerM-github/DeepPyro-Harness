@@ -9,11 +9,19 @@ runtime service applies volatile config changes without a restart (sections 3 an
 
 Unpluggable core (never replaced by a plugin):
 
-- `src/deeppyro/_vendor/cordis_port/` - vendored plugin runtime (fibers, services, effects).
+- `src/deeppyro/kernel/` - the native plugin runtime (`container.py`, `context.py`,
+  `fiber.py`, `host.py`) plus the loader/composition/boot layer.
 - `src/deeppyro/core/wire.py` and `src/deeppyro/core/protocols.py` - frozen wire and LLM/tool contracts.
 - `src/deeppyro/session/` - append-only session facts, surface fold and derive rules.
-- `src/deeppyro/kernel/` - loader, composition, lifecycle, failure isolation.
 - `src/deeppyro/api/` - the plugin-facing contract.
+
+The runtime is plain Python: services live in a dict-like container keyed by name (plus an
+optional isolate scope), a plugin gets a `RuntimeContext` with an explicit parent pointer,
+and each mounted plugin is a `Fiber` with a small lifecycle enum (`PENDING`, `LOADING`,
+`ACTIVE`, `FAILED`, `DISPOSED`). Effects run in reverse registration order, are
+idempotent, and async teardowns are awaited; there is no reflection layer, no prototype
+chain and no framework event plumbing. `inject` names are dependency hints: a fiber whose
+services are missing stays `PENDING` and starts as soon as they are provided.
 
 Everything else is plugin-provided: the llm/sessions/sandbox/tools/prompt/commands/agents
 services are ordinary api plugins in `src/deeppyro/builtin/` and the TUI is a host on top.
@@ -46,11 +54,11 @@ class MyPlugin(Plugin):
   both arguments (`deeppyro.api.invoke_setup` dispatches on the signature), so existing
   bundles keep working. A plugin that declares `api_version = 2` in its own body but keeps
   the legacy signature gets a one-time `DeprecationWarning`.
-- `inject` entries may be cordis names or contract classes; classes resolve to their
+- `inject` entries may be service names or contract classes; classes resolve to their
   `provide` name at mount time (`deeppyro.api.inject_names`), and an unbound or non-service
   class aborts the mount with a `CompositionError` that names the row.
 - Define `async def stop(self)` when you need explicit cleanup; the loader registers it as
-  the fiber disposer. Registration helpers additionally dispose themselves via cordis effects,
+  the fiber disposer. Registration helpers additionally register effects,
   so unloading a plugin removes its tools, prompt sections, commands and providers.
 - `volatile` names the config fields a plugin accepts live:
   `volatile: ClassVar[tuple[str, ...]] = ()`. When a row's config is changed at runtime
@@ -58,7 +66,7 @@ class MyPlugin(Plugin):
   config and calls the optional `on_config(config)` hook. A change to any other field
   returns False and marks the row `restart-required` instead. `on_config` must be
   synchronous.
-- A `Service` subclass both is a plugin and provides a cordis service:
+- A `Service` subclass both is a plugin and provides a service:
 
 ```python
 from deeppyro.api import Service
@@ -72,8 +80,9 @@ class MyService(Service):
 
 `ctx.service(name)` / `ctx.get(name)` / `ctx.has(name)` resolve dependencies;
 `ctx.tools`, `ctx.prompt`, `ctx.commands`, `ctx.llm` (and later `ctx.presets`) are typed shortcuts.
-`PluginContext` proxies every other attribute to the raw cordis context, so `ctx.on`, `ctx.emit`,
-`ctx.effect`, `ctx.isolate` and `ctx.intercept` stay available.
+`PluginContext` proxies every other attribute to the runtime context, so `ctx.on`, `ctx.emit`,
+`ctx.effect`, `ctx.isolate` and `ctx.intercept` stay available. Bus event names always go
+through `core.bus.EventBus`; the runtime raises no plumbing events of its own.
 
 ## 3. Composition: bundles, rows, patches
 
@@ -129,7 +138,7 @@ id = "child-b"
 plugin = "my_plugin.py:ChildB"
 ```
 
-The group creates one child cordis context (applying its `isolate` and `intercept` layers),
+The group creates one child runtime context (applying its `isolate` and `intercept` layers),
 mounts its children in listed order there, and is exposed as a single `App.rows` entry. A
 group has no fiber of its own: its state aggregates its children (active only when every child
 is active, failed if any child failed; see 6.2), and the children are reported individually with
@@ -252,7 +261,7 @@ did not set one, and builds the system prompt with that scope. Unknown ids raise
 ### 6.1 Boot status
 
 `App.failures` lists `PluginStatus` entries for non-critical rows that failed to load;
-`App.started` maps every loaded top-level row id to its cordis fiber state (`ACTIVE`,
+`App.started` maps every loaded top-level row id to its runtime fiber state (`ACTIVE`,
 `PENDING`, ...). Disabled rows are absent from `App.started`; `App.row_states()` reports
 them instead. Boot failure paths are covered by `tests/kernel/test_app.py` and
 `tests/kernel/test_bundle.py`.
@@ -363,9 +372,9 @@ class GreetPlugin(Plugin):
 - Live config updates are volatile-only and never restart a fiber; every other field needs a full
   restart (the row is reported `restart-required` meanwhile). `apply_plugin_config` does
   not persist anything: writing user manifests stays the settings store's job.
-- Plain cordis plugin classes (services and lifecycles, not `deeppyro.api.Plugin`) have no
-  `volatile`/`on_config` contract, so the kernel runtime cannot reconfigure them live;
-  their row config only applies at boot.
+- Plain host-style plugin classes (constructed and disposed by the runtime, not
+  `deeppyro.api.Plugin`) have no `volatile`/`on_config` contract, so the kernel runtime
+  cannot reconfigure them live; their row config only applies at boot.
 - Bundles are TOML only: unlike the reference DSH implementation there is no YAML and no
   `!!js`/expression evaluation in row config. Include files are TOML or JSON only.
 - Include-only rows are load-time macros: after splicing they no longer exist, so a patch layer

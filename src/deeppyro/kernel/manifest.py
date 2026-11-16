@@ -3,7 +3,7 @@
 DSH ships a bundle plugin list and applies `cordis.patch.yml` on top: entries
 are selected by `id`, may override `config`, may disable a plugin, or insert
 new ones. This module reproduces that model with TOML (stdlib `tomllib`,
-so the kernel keeps cordis-free dependencies):
+so the kernel needs no extra dependency to read manifests):
 
 .. code-block:: toml
 

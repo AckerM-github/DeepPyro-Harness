@@ -84,7 +84,7 @@ class Plugin:
 
 
 def inject_names(cls: type[Any]) -> list[str]:
-    """Resolve a plugin's declared injections to plain cordis service names."""
+    """Resolve a plugin's declared injections to plain service names."""
     names: list[str] = []
     for item in getattr(cls, "inject", ()) or ():
         if isinstance(item, str):

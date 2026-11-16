@@ -19,9 +19,9 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
   danger-full-access，把沙箱模式与审批策略打包；`/policy`、`/approval` 已删除）、
   `/cwd` 切工作目录，切换立即作用于当前会话（并写入 `permission/preset`、
   `sandbox/mode`、`approval/policy`、`working-directory/change` 记录）。
-- 内核直接 vendor 了 [cordis](https://github.com/cordiverse/cordis) 的 Python 移植
-  （`src/deeppyro/_vendor/cordis_port`，MIT）：服务、依赖注入、事件总线、fiber 生命周期
-  都与 DSH 同构；领域模块不 import cordis，只有 `kernel/` 负责装配。
+- 内核自带 Python 原生运行时（`src/deeppyro/kernel/{container,context,fiber,host}.py`）：
+  服务容器、分层 context、依赖等待、事件与插件生命周期都是普通 Python 实现；领域模块
+  不 import 运行时内部，只有 `kernel/` 负责装配，插件只看到 `deeppyro.api`。
 - **一切皆插件**：DSH 式组合内核——bundle 用 `bundle.toml` 声明插件行，多层 patch 支持
   按 id 覆盖 config（整体替换）、`before/after` 插入、`disabled/critical/isolate/intercept`；
   还支持 group 行（`group = true` + 子行）、`include` 外部行文件、`[bundle].requires`
@@ -81,8 +81,8 @@ Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
 ## 布局
 
     src/deeppyro/
-      _vendor/cordis_port/  vendored cordis Python 内核（MIT，不改动）
-      kernel/   cordis 服务图、composition/bundle/patch、boot（唯一装配层）
+      kernel/   原生插件运行时（container/context/fiber/host）、composition/bundle/patch、boot
+               （唯一装配层）
       api/      插件契约（Plugin/Service/PluginContext/注册表/preset spec）
       builtin/  core 插件行（llm/sessions/session_query/sandbox/tools/prompt/commands/agents/
                 activity/jobs/subagent/team/presets/plugin_manager/settings/inspect，以及
@@ -188,7 +188,7 @@ TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /pres
   带 revision 与 per-preset realm 子插件）、TUI 状态栏项 / 对话行 / 面板（`/panel`）/ 设置页；
   UI 也可以在 `ui.toml` 里用 `module:function` 声明式注册（`~/.dpro/bundles/<id>/ui.toml`，
   支持 theme token 与 locale）。
-- 组合语义：group 行给子行建独立 cordis context；`include` 支持 JSON/TOML；bundle 依赖用
+- 组合语义：group 行给子行建独立运行时 context；`include` 支持 JSON/TOML；bundle 依赖用
   `requires` 拓扑排序；`App.row_states()` 暴露 active/failed/disabled/overridden/
   restart-required 状态；patch 层把被覆盖的行标为 overridden。
 - 配置：`settings` 服务 + `/plugins` 与 `settings_*` 工具；写入带 revision CAS 与 secret

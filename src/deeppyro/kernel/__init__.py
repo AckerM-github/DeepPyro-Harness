@@ -28,7 +28,7 @@ Kernel responsibilities only - no domain logic:
 - deeppyro.kernel.KernelConfig - the config service (validated deeppyro
   config) that every other plugin may inject.
 
-Domain code stays cordis-free; plugins wrap it.
+Domain code stays free of the runtime; plugins wrap it.
 """
 
 from deeppyro.kernel.app import App, KernelBootError, MountRecord, create_app

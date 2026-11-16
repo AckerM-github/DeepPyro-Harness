@@ -186,8 +186,8 @@ class ServiceContainer:
     # A plugin whose 'inject' services are not mounted yet stays PENDING
     # instead of failing: it registers as a waiter, and every provide (or
     # provider activation) wakes the waiters to retry their load.  That keeps
-    # the observable cordis behaviour where a disabled provider leaves its
-    # consumers listed as PENDING instead of aborting boot.
+    # the observable behaviour where a disabled provider leaves its consumers
+    # listed as PENDING instead of aborting boot.
 
     def add_waiter(self, waiter: Any) -> None:
         """Register a pending fiber that retries loading after a provide."""

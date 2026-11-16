@@ -276,7 +276,7 @@ class RuntimeContext:
         return mount(self, plugin, config)
 
     def inject(self, inject: Iterable[str], callback: Callable[..., Any]) -> Fiber:
-        """Mount a callback that receives the context (legacy cordis helper)."""
+        """Mount a callback that receives the context (legacy mount helper)."""
         name = getattr(callback, "__name__", "") or "inject"
         return self.plugin({"name": name, "apply": callback, "inject": list(inject)}, None)
 

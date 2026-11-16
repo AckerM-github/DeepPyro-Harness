@@ -3,8 +3,7 @@
     "src"
   ],
   "exclude": [
-    "**/__pycache__",
-    "src/deeppyro/_vendor"
+    "**/__pycache__"
   ],
   "venvPath": ".",
   "venv": ".venv",
