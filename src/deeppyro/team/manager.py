@@ -311,6 +311,7 @@ class TeamService:
         if member.agent is None:
             try:
                 self._load_agent(member)
+            # boundary: agents are built by the duck-typed agents plugin; a failed member is recorded, not raised
             except Exception as exc:
                 member.error = f"{type(exc).__name__}: {exc}"
                 member.phase = PHASE_FAILED
@@ -422,6 +423,7 @@ class TeamService:
         )
         try:
             member.restored_session = self._open_member_session(member)
+        # boundary: the session store is the plugin sessions backend; one lost member must not break restore
         except Exception as exc:  # noqa: BLE001 - one lost session must not break restore
             member.error = f"cannot restore team member session: {exc}"
             member.phase = PHASE_FAILED
@@ -435,6 +437,7 @@ class TeamService:
         try:
             self._load_agent(member)
             member.task = asyncio.create_task(self._run(member, text, initial=False))
+        # boundary: _load_agent and task creation touch the plugin agents service; resume is best effort
         except Exception as exc:  # noqa: BLE001 - resume is best effort
             member.queue.insert(0, text)
             member.error = f"{type(exc).__name__}: {exc}"
@@ -470,7 +473,7 @@ class TeamService:
         records = getattr(session, "records", None) or []
         try:
             closers = open_turn_closers(records, {"kind": "interrupted"})
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError):
             logger.warning("failed to build team member turn closers", exc_info=True)
             return
         for closer in closers:
@@ -483,6 +486,7 @@ class TeamService:
                 if closer.get("time") is not None:
                     envelope["time"] = closer["time"]
                 session.append(closer["type"], closer["data"], **envelope)
+            # boundary: sessions come from the plugin store backend; append failures are best effort
             except Exception:
                 logger.warning("failed to close team member open turn", exc_info=True)
                 return
@@ -534,6 +538,7 @@ class TeamService:
         if callable(factory):
             try:
                 return factory(provider)
+            # boundary: the llm service's provider() factory is plugin code
             except Exception as exc:
                 raise TeamError(f"unknown llm provider {provider!r}: {exc}") from exc
         raise TeamError(f"unknown llm provider {provider!r}")
@@ -593,6 +598,7 @@ class TeamService:
         resolved = self._resolve_provider(provider)
         try:
             options = self._agents.options(model=model, context_window=self._context_window)
+        # boundary: the agents service is a duck-typed plugin that builds the member's options
         except Exception as exc:
             raise TeamError(f"cannot build member agent options: {exc}") from exc
         try:
@@ -608,6 +614,7 @@ class TeamService:
                 preset=preset,
                 preset_revision=preset_revision,
             )
+        # boundary: the agents plugin creates the member's agent and session
         except Exception as exc:
             raise TeamError(f"cannot create member agent: {exc}") from exc
 
@@ -637,6 +644,7 @@ class TeamService:
                 member.phase = PHASE_CANCELLED
                 self._record_member(member)
             raise
+        # boundary: member.agent.send() runs a full agent turn with LLM, tools and hooks
         except Exception as exc:  # noqa: BLE001 - one failed member must not break the team
             member.error = f"{type(exc).__name__}: {exc}"
             self._set_phase(member, PHASE_FAILED)

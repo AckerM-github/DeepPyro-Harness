@@ -416,6 +416,7 @@ class AgentSession:
         if clear_inbox:
             try:
                 self._inbox.clear()
+            # boundary: inbox.clear() appends to the durable session log and notifies the event sink; interrupt must never raise
             except Exception:
                 logger.warning("failed to clear the agent inbox on interrupt", exc_info=True)
         current = asyncio.current_task()
@@ -488,6 +489,7 @@ class AgentSession:
             await self._drive()
         except asyncio.CancelledError:
             raise
+        # boundary: the agent loop runs plugin hooks, tools and LLM calls
         except Exception:
             logger.exception("agent driver failed")
 
@@ -508,6 +510,7 @@ class AgentSession:
             self._idle.set()
             try:
                 await self._set_phase("idle")
+            # boundary: _set_phase emits through plugin hook listeners
             except Exception:
                 logger.warning("failed to publish the idle phase", exc_info=True)
         return last_text
@@ -573,6 +576,7 @@ class AgentSession:
             if self._turn_open:
                 await self._abort_turn("disposed")
             raise
+        # boundary: turn bodies run plugin tools/hooks; bookkeeping must see every error before re-raising
         except Exception as exc:
             if self._turn_open:
                 await self._failure_turn(exc, phase=self._failure_phase)
@@ -1107,6 +1111,7 @@ class AgentSession:
         if callable(getter):
             try:
                 current = getter(self._session)
+            # boundary: the working-directory service is injected by plugins
             except Exception:
                 logger.warning("failed to read the working directory service", exc_info=True)
             else:
@@ -1174,7 +1179,7 @@ class AgentSession:
     async def _execute_batch(self, requests: list[Any], turn: int, step: int) -> list[Any]:
         try:
             from deeppyro.tools.pipeline import run_tool_batch
-        except Exception:  # noqa: BLE001 - tools workstream may be missing in isolation
+        except ImportError:  # tools workstream may be missing in isolation
             return await self._execute_batch_fallback(requests, turn, step)
 
         def factory(request: Any) -> ToolContext:
@@ -1243,6 +1248,7 @@ class AgentSession:
                     result = await tool.run(args, ctx)
             except asyncio.CancelledError:
                 raise
+            # boundary: tool.run executes plugin tool code
             except Exception as exc:  # noqa: BLE001 - same contract as the tools pipeline
                 return _BatchOutcome(
                     request.call_id, ToolResult(text=f"Error: {exc}", is_error=True), call_seq
@@ -1486,7 +1492,7 @@ class AgentSession:
             return ""
         try:
             return sandbox_policy_text(policy)
-        except Exception:  # pragma: no cover - defensive for custom gates
+        except (AttributeError, TypeError, ValueError):  # pragma: no cover - defensive for custom gates
             logger.warning("could not render the sandbox policy text", exc_info=True)
             return ""
 
@@ -1788,6 +1794,7 @@ class AgentSession:
             await self.compactor.compact(self._session, messages)
         except asyncio.CancelledError:
             raise
+        # boundary: compaction calls the LLM provider; auto-compaction never fails the turn
         except Exception as exc:  # noqa: BLE001 - auto compaction never fails the turn
             self.last_compaction_error = exc
             logger.warning("step compaction failed: %s; continuing the turn", exc)
@@ -1800,6 +1807,7 @@ def _tool_names(registry: Any) -> tuple[str, ...] | None:
         return None
     try:
         return tuple(sorted(str(name) for name in names()))
+    # boundary: the surface registry may be a caller-supplied (custom) registry
     except Exception:  # hook metadata must never break a tool call
         logger.warning("failed to list tool names for the tool hook payload", exc_info=True)
         return None

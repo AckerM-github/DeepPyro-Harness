@@ -121,7 +121,7 @@ def expand_image_attachments(messages: Sequence[Message], attachments: Any) -> l
             if key not in cache:
                 try:
                     cache[key] = image_part_url(part, attachments=resolver)
-                except Exception:  # noqa: BLE001 - an unresolvable ref stays a ref
+                except (AttributeError, KeyError, TypeError, ValueError):  # an unresolvable ref stays a ref
                     cache[key] = None
             url = cache[key]
             if url is None:
@@ -313,6 +313,7 @@ def _wrap_ref_callable(attachments: Any, target: Any) -> Any:
     def call(ref: Any) -> Any:
         try:
             return target(ref)
+        # boundary: plugin attachment readers may raise anything; resolving again is the only fallback
         except Exception:
             resolved = _typed_reference(attachments, ref)
             if resolved is None:
@@ -331,6 +332,7 @@ def _typed_reference(attachments: Any, ref: Any) -> Any | None:
         return None
     try:
         resolved = lookup(attachment_id)
+    # boundary: the attachment lookup is plugin-provided, so failures are unenumerable
     except Exception:  # noqa: BLE001 - a failed lookup leaves the ref unresolved
         return None
     return resolved if resolved is not None and resolved is not ref else None

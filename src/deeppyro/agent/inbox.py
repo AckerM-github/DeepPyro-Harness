@@ -167,7 +167,7 @@ class Inbox:
             data = _record_field(record, "data")
             try:
                 inbox._apply_splice(data)
-            except Exception as exc:
+            except (TypeError, ValueError, SessionError) as exc:
                 raise SessionError(f"invalid persisted inbox splice at session seq {seq}") from exc
         return inbox
 

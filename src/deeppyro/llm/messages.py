@@ -137,6 +137,7 @@ def _lookup_attachment(attachments: Any, attachment_id: str) -> Any | None:
         return None
     try:
         return lookup(attachment_id)
+    # boundary: the attachment lookup is a plugin-provided resolver
     except Exception:  # noqa: BLE001 - an unresolvable attachment is simply skipped
         return None
 
@@ -145,6 +146,7 @@ def _resolved_data_url(attachments: Any, ref: Any) -> str | None:
     """Read one resolved reference as bytes and encode it as an inline data URL."""
     try:
         raw = _read_attachment_bytes(attachments, ref)
+    # boundary: reading attachment bytes calls the plugin attachment service and the filesystem
     except Exception:  # noqa: BLE001 - provider conversion must never fail on a bad ref
         return None
     if not raw:
