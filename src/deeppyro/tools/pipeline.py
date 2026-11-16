@@ -35,11 +35,23 @@ import inspect
 import json
 import time
 import traceback
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from deeppyro.core.errors import AbortedError, PermissionDenied, ToolError
+from deeppyro.core.payloads import (
+    AnyToolHookPayload,
+    ExecuteDecision,
+    ExecuteHookPayload,
+    HookScope,
+    PostExecuteDecision,
+    PostExecuteHookPayload,
+    PreExecuteDecision,
+    PreExecuteHookPayload,
+    ToolCallPayload,
+    ToolHookContext,
+)
 from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.hooks import TOOLS_EXECUTE, TOOLS_POST_EXECUTE, TOOLS_PRE_EXECUTE
 from deeppyro.tools.registry import ToolRegistry
@@ -115,24 +127,24 @@ def _retain_output(result: ToolResult, ctx: ToolContext, tool_name: str) -> Tool
     )
 
 
-def _call_payload(request: ToolCallRequest) -> dict[str, Any]:
+def _call_payload(request: ToolCallRequest) -> ToolCallPayload:
     """The wire-shaped tool call shared by every hook payload."""
     return {"callId": request.call_id, "name": request.name, "arguments": request.arguments}
 
 
-def _hook_fields(agent: Any | None, tool_set: Sequence[str] | None) -> dict[str, Any]:
+def _hook_fields(agent: Any | None, tool_set: Sequence[str] | None) -> ToolHookContext:
     """Context fields added to every tool hook payload.
 
     agent is always present (None when the caller has no agent object); toolSet
     appears only when the caller supplies the direct tool name snapshot.
     """
-    fields: dict[str, Any] = {"agent": agent}
+    fields: ToolHookContext = {"agent": agent}
     if tool_set is not None:
         fields["toolSet"] = list(tool_set)
     return fields
 
 
-def _hook_scope(agent: Any | None) -> dict[str, Any] | None:
+def _hook_scope(agent: Any | None) -> HookScope | None:
     """Derive the hook dispatch scope from the agent that owns the call.
 
     Sessions expose their durable id; preset is attached by the agents service
@@ -143,7 +155,7 @@ def _hook_scope(agent: Any | None) -> dict[str, Any] | None:
     session_id = getattr(agent, "session_id", None)
     if not isinstance(session_id, str) or not session_id:
         return None
-    scope: dict[str, Any] = {"session": session_id}
+    scope: HookScope = {"session": session_id}
     preset = getattr(agent, "preset", None)
     if isinstance(preset, str) and preset:
         scope["preset"] = preset
@@ -154,7 +166,7 @@ def _scoped(
     dispatch: Callable[..., Any],
     name: str,
     *args: Any,
-    scope: dict[str, Any] | None,
+    scope: Mapping[str, Any] | None,
 ) -> Any:
     """Call a hook dispatcher with a dispatch scope when it supports one."""
     if scope is None:
@@ -166,7 +178,7 @@ def _scoped(
         return dispatch(name, *args)
 
 
-def _decision_reason(decision: dict[str, Any], default: str) -> str:
+def _decision_reason(decision: PreExecuteDecision, default: str) -> str:
     reason = decision.get("reason")
     if reason is None:
         return default
@@ -174,7 +186,7 @@ def _decision_reason(decision: dict[str, Any], default: str) -> str:
     return text or default
 
 
-def _content_to_text(content: Any) -> str:
+def _content_to_text(content: object) -> str:
     """Flatten hook content blocks into the single text channel of ToolResult."""
     if content is None:
         return ""
@@ -205,10 +217,10 @@ def _content_to_text(content: Any) -> str:
 async def _waterfall(
     hooks: Any,
     name: str,
-    payload: dict[str, Any],
+    payload: AnyToolHookPayload,
     fallback: Fallback,
     *,
-    scope: dict[str, Any] | None = None,
+    scope: HookScope | None = None,
 ) -> Any:
     """Invoke a duck-typed async waterfall, tolerating a sync return value."""
     waterfall = getattr(hooks, "waterfall", None) if hooks is not None else None
@@ -224,7 +236,7 @@ async def _waterfall(
 async def _pre_execute(
     hooks: Any,
     request: ToolCallRequest,
-    call: dict[str, Any],
+    call: ToolCallPayload,
     turn: int | None,
     step: int | None,
     *,
@@ -232,7 +244,7 @@ async def _pre_execute(
     tool_set: Sequence[str] | None = None,
 ) -> ToolResult | None:
     """Run tools/pre-execute; return a denial result, or None to continue."""
-    payload = {
+    payload: PreExecuteHookPayload = {
         "call": call,
         "tool": request.name,
         "turn": turn,
@@ -246,19 +258,20 @@ async def _pre_execute(
     decision = await _waterfall(hooks, TOOLS_PRE_EXECUTE, payload, fallback, scope=_hook_scope(agent))
     if not isinstance(decision, dict):
         raise ToolError(f"tools/pre-execute must return a decision object, not {type(decision).__name__}")
-    kind = decision.get("kind")
+    typed = cast(PreExecuteDecision, decision)
+    kind = typed.get("kind")
     if kind == "allow":
         return None
     if kind == "deny":
-        return _error_result(_decision_reason(decision, "tool execution denied"))
+        return _error_result(_decision_reason(typed, "tool execution denied"))
     if kind == "ask":
-        reason = _decision_reason(decision, "")
+        reason = _decision_reason(typed, "")
         message = f"tool {request.name!r} requires approval, but no approval mechanism is available"
         if reason:
             message = f"{message}: {reason}"
         return _error_result(message)
     if kind == "cancel":
-        reason = _decision_reason(decision, "")
+        reason = _decision_reason(typed, "")
         message = "tool execution was cancelled"
         if reason:
             message = f"{message}: {reason}"
@@ -272,7 +285,7 @@ async def _execute(
     args: dict[str, Any],
     ctx: ToolContext,
     request: ToolCallRequest,
-    call: dict[str, Any],
+    call: ToolCallPayload,
     turn: int | None,
     step: int | None,
     dispatch: Callable[..., Any] | None,
@@ -281,7 +294,7 @@ async def _execute(
     tool_set: Sequence[str] | None = None,
 ) -> Any:
     """Run tools/execute, falling back to the real tool (or a test dispatch)."""
-    payload = {
+    payload: ExecuteHookPayload = {
         "call": call,
         "tool": request.name,
         "turn": turn,
@@ -302,16 +315,17 @@ async def _execute(
     if isinstance(decision, ToolResult):
         return decision
     if isinstance(decision, dict):
-        if decision.get("kind") == "result" or "result" in decision:
-            return decision.get("result")
-        raise ToolError(f"invalid tools/execute decision kind: {decision.get('kind')!r}")
+        typed = cast(ExecuteDecision, decision)
+        if typed.get("kind") == "result" or "result" in typed:
+            return typed.get("result")
+        raise ToolError(f"invalid tools/execute decision kind: {typed.get('kind')!r}")
     return decision
 
 
 async def _post_execute(
     hooks: Any,
     request: ToolCallRequest,
-    call: dict[str, Any],
+    call: ToolCallPayload,
     turn: int | None,
     step: int | None,
     result: ToolResult,
@@ -320,7 +334,7 @@ async def _post_execute(
     tool_set: Sequence[str] | None = None,
 ) -> ToolResult:
     """Run tools/post-execute and apply its accept/block decision."""
-    payload = {
+    payload: PostExecuteHookPayload = {
         "call": call,
         "tool": request.name,
         "turn": turn,
@@ -335,9 +349,10 @@ async def _post_execute(
     decision = await _waterfall(hooks, TOOLS_POST_EXECUTE, payload, fallback, scope=_hook_scope(agent))
     if not isinstance(decision, dict):
         raise ToolError(f"tools/post-execute must return a decision object, not {type(decision).__name__}")
-    kind = decision.get("kind")
+    typed = cast(PostExecuteDecision, decision)
+    kind = typed.get("kind")
     if kind == "block":
-        feedback = decision.get("feedback")
+        feedback = typed.get("feedback")
         text = _content_to_text(feedback)
         return ToolResult(
             text=text or "tool result blocked by post-execute policy",
@@ -347,15 +362,15 @@ async def _post_execute(
     if kind != "accept":
         raise ToolError(f"invalid tools/post-execute decision kind: {kind!r}")
 
-    has_content = "content" in decision
-    has_value = "value" in decision
+    has_content = "content" in typed
+    has_value = "value" in typed
     if has_content and has_value:
         raise ValueError("tools/post-execute accept decision cannot replace both value and content")
     if has_value:
         if result.is_error:
             raise ValueError("tools/post-execute cannot replace the value of a failed result")
         meta: dict[str, Any] = dict(result.meta or {})
-        meta["value"] = decision["value"]
+        meta["value"] = typed.get("value")
         return ToolResult(
             text=result.text,
             is_error=False,
@@ -365,7 +380,7 @@ async def _post_execute(
         )
     if has_content:
         return ToolResult(
-            text=_content_to_text(decision["content"]),
+            text=_content_to_text(typed.get("content")),
             is_error=result.is_error,
             meta=result.meta,
             parts=list(result.parts or []),
@@ -380,7 +395,7 @@ async def _run_hooked(
     args: dict[str, Any],
     ctx: ToolContext,
     request: ToolCallRequest,
-    call: dict[str, Any],
+    call: ToolCallPayload,
     turn: int | None,
     step: int | None,
     dispatch: Callable[..., Any] | None,
@@ -417,7 +432,7 @@ async def _run_hooked(
 def _collect_call_seqs(
     requests: list[ToolCallRequest],
     *,
-    log: Callable[..., int] | None,
+    log: Callable[[int | None, int | None, ToolCallPayload], int] | None,
     turn: int | None,
     step: int | None,
 ) -> tuple[list[int | None], dict[int, ToolResult]]:
@@ -522,7 +537,7 @@ async def run_tool_batch(
     hooks: Any | None = None,
     turn: int | None = None,
     step: int | None = None,
-    log: Callable[..., int] | None = None,
+    log: Callable[[int | None, int | None, ToolCallPayload], int] | None = None,
     dispatch: Callable[..., Any] | None = None,
     agent: Any | None = None,
     tool_set: Sequence[str] | None = None,
