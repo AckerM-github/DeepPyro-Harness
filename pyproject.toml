@@ -1,7 +1,7 @@
 [project]
 name = "deeppyro-harness"
 version = "0.2.0"
-description = "DeepPyro Harness — terminal-first Python port of DeepSeek Harness (DSH)"
+description = "DeepPyro Harness — terminal-first pure Python agent harness"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

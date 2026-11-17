@@ -1,27 +1,29 @@
 # DeepPyro Harness (deeppyro)
 
-Terminal-first **pure Python** agent harness。0.2.0 起，DeepPyro 不再是任何外部 harness 的 wire 兼容移植：
-它只使用自己定义的 native 会话/事件/追踪模型，并把“插件化、Python 化、AI 原生”作为三条主线。
+Terminal-first **pure Python** agent harness。0.2.0 引入 DeepPyro 自己定义的 native 会话/事件/追踪模型，
+并把“插件化、Python 化、AI 原生”作为三条主线；旧 v4 路径仍暂时保留，切换状态见下方说明与“已知限制”。
 
-> **0.2.0 状态**：M1（native 契约 + 观测骨架）已完成；M2（native loop）、M3（插件 API v3）、
-> M4（eval/memory/multi-agent）仍在合流。本 README 描述 0.2.0 的目标状态；凡标注“合流中”的项，
-> 以仓库实际代码和 `docs/spec/README.md` 的状态表为准。
+> **0.2.0 状态**：M1（native 契约 + 观测骨架）、M2（native loop/checkpoint）、
+> M3（插件 API v3 + typed services）、M4（eval/memory/multi-agent）已完成并合流，M5 完成发布文档与 0.2.0 版本号。
+> native loop 目前是 headless 的显式开关（`DEEPPYRO_NATIVE_LOOP=1` / `--native-loop`），TUI 与默认 headless
+> 仍走 v4；0.2.0 是 release candidate，不是“native-only”最终切换。状态以 `docs/spec/README.md` 为准。
 
 ## 0.2.0 的三条主线
 
-| 线 | 目标 | 落地位置（计划） |
+| 线 | 目标 | 落地位置 |
 | --- | --- | --- |
 | **Python 化（Y）** | 一种会话格式、一个消息模型、一套事件类型；用 dataclass/Protocol/StrEnum/TaskGroup 表达，不再复刻 TypeScript 形状 | `src/deeppyro/core/messages.py`、`session/schema.py`、`session/fold.py`、`agent/loop.py` |
 | **插件化（P）** | 一切能力经插件贡献；一种 mount 形状（`setup(self)`）、typed `inject`/`ctx.get`、声明的 bundle、能力清单 | `src/deeppyro/api/`、`kernel/`、`plugins/`、`bundles/` |
-| **AI 原生（A）** | 会话日志只记录事实，token/时延/重试进本地 trace；可回放、可断点续跑、可评测 | `src/deeppyro/observability/trace.py`、`context/`、`eval/`、`memory/`（M2–M4） |
+| **AI 原生（A）** | 会话日志只记录事实，token/时延/重试进本地 trace；可回放、可断点续跑、可评测 | `src/deeppyro/observability/trace.py`、`context/`、`eval/`、`memory/`（M2–M4 已交付） |
 
 ## 与外部 harness 的关系：零 wire 兼容
 
-- **不兼容 v4 会话格式。** 产品只读写 native schema 1（详见 `docs/native/schema.md`）。读到旧的
-  `session.v4.jsonl`（含 `.zstd`）会显式失败（`SessionV4Error`），不会降级读取，也不提供 `dpyro migrate` 命令；
-  旧数据如需保留，请使用仓库之外的一次性导出脚本（不进产品、不进 CI）。
-- **不接受 camelCase 的旧配置语义。** 0.2.0 目标为 snake_case 配置（M3 合流）；当前基线代码仍是 camelCase，
-  迁移表与破坏性说明见 `docs/release/0.2.0.md`。
+- **native schema 1 是 native loop 的唯一契约。** 该路径只读写 `~/.dpro/sessions/<session-id>.jsonl`（详见
+  `docs/native/schema.md`）。旧的 `session.v4.jsonl`（含 `.zstd`）不会被 native reader 接受（`SessionV4Error`），
+  不降级、不 dual-write，也不提供 `dpyro migrate` 命令。默认 v4 运行时仍暂时保留，见“已知限制”。
+- **配置以 snake_case 为准。** 模型属性、dump 与文档使用 `base_url`、`api_key_env`、`context_window`、
+  `max_tokens`、`session_dir` 等名字；0.2.0 为兼容旧文件仍接受 camelCase 别名的**读取**，写入与新增配置
+  一律 snake_case，0.3 再移除别名。
 - **旧 DSH 规格归档。** `docs/spec/INTERFACES.md`、`docs/spec/session.md`、DSH 事件目录等已冻结/标记待删除；
   状态见 `docs/spec/README.md`。
 - **保留的是设计资产，不是协议。** 一切皆插件、声明式 bundle、Service 生命周期、durable-log-first、
@@ -29,10 +31,10 @@ Terminal-first **pure Python** agent harness。0.2.0 起，DeepPyro 不再是任
 
 ## native session 与 trace
 
-0.2.0 的会话事实只有一个来源：`~/.dpro/sessions/<session-id>.jsonl`（可用 `DEEPPYRO_SESSIONS_DIR` 覆盖）。
+走 native loop 时，会话事实只有一个来源：`~/.dpro/sessions/<session-id>.jsonl`（可用 `DEEPPYRO_SESSIONS_DIR` 覆盖）。
 
 - **schema 1**：文件首行是封闭 header（`type`、`schema=1`、`id`、`created_at`、`cwd`、`preset`…），之后每行是
-  `EventKind` 事件。当前核心事件 24 个，使用 dotted 小写命名（如 `turn.started`、`tool.call`、`compaction.done`）；
+  `EventKind` 事件。当前核心事件 27 个，使用 dotted 小写命名（如 `turn.started`、`tool.call`、`compaction.done`）；
   插件事件使用 `plugin.<id>.<event>` 命名空间。
 - **只追加、逐条 fsync**：`seq` 严格单调递增；header 原子写；损坏显式拒绝，不做“尽力而为”的修复；
   单写者用 `O_EXCL` 锁。消息以稳定 `message.id` 定位，没有 `surfaceOp`/`sourceEventSeqs`/`ignorable`。
@@ -41,8 +43,9 @@ Terminal-first **pure Python** agent harness。0.2.0 起，DeepPyro 不再是任
 - **trace 与 session 物理分离**：trace store 默认写 `~/.dpro/traces/<run_id>.jsonl`（`DEEPPYRO_TRACES_DIR` 可覆盖），
   只记录 `run`/`model_call`/`tool_call` 的 hash、token 计数、大小、时延与 id，**不存 prompt 正文、消息正文、工具输出正文**；
   两者通过 `run_id`/`trace_id` 关联（`docs/native/schema.md` §8）。
-- **M1 已交付**：native message/session/fold/trace 模块与 10 例真实录制 fixtures 已入库并通过门禁；
-  但 agent/CLI/TUI 尚未接到 native loop（M2 工作），当前运行时的产品路径仍是旧实现。
+- **M1/M2 已交付**：native message/session/fold/trace 模块、10 例真实录制 fixtures、native `AgentLoop`
+  （ContextPlan、budget/cancel、checkpoint/resume、typed trace）已入库并通过门禁。headless 可用
+  `--native-loop` 显式切换；TUI 与未加开关的 headless 仍走 v4，完整切换留给后续版本。
 
 ## 快速开始
 
@@ -62,7 +65,7 @@ uv run dpyro --headless --json "列出三个可改进点" | ConvertFrom-Json
 Get-Content README.md | uv run dpyro --headless "提炼三条要点"
 ```
 
-配置默认写在 `~/.dpro/config.toml`。最小 provider 配置（**当前基线仍是 camelCase；M3 合流后改为 snake_case**）：
+配置默认写在 `~/.dpro/config.toml`。最小 provider 配置（snake_case；旧 camelCase 键在 0.2.0 仍可读取）：
 
 ```toml
 [agent]
@@ -70,8 +73,8 @@ provider = "deepseek"
 model = "deepseek-chat"
 
 [providers.deepseek]
-baseURL = "https://api.deepseek.com/v1"   # 目标名 base_url
-apiKeyEnv = "DEEPSEEK_API_KEY"            # 目标名 api_key_env
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
 ```
 
 默认配置指向本地 OpenAI 兼容端点（`http://127.0.0.1:8000/v1`）。没有本地模型时，请按上面的示例改
@@ -91,6 +94,7 @@ apiKeyEnv = "DEEPSEEK_API_KEY"            # 目标名 api_key_env
 | `--approval-policy` | `ask`、`never` |
 | `--cwd` | 指定工作目录 |
 | `--max-steps` | 单次请求的 step 上限 |
+| `--native-loop` | headless 使用 native `AgentLoop`（等价于 `DEEPPYRO_NATIVE_LOOP=1`；默认仍为 v4） |
 | `--version` | 打印 `deeppyro-harness <版本>` |
 
 退出码：`0` 成功、`1` 运行时错误、`2` 参数/配置错误、`130` 中断。
@@ -115,7 +119,7 @@ uv run dpyro plugin allow-version <plugin-id> <version>
 | 路径（`~/.dpro/` 下） | 说明 |
 | --- | --- |
 | `config.toml` | 用户配置；首次启动生成 |
-| `sessions/` | 会话日志。0.2.0 目标为 schema 1 的 `<session-id>.jsonl`；基线代码在 M2 前仍写 `session.v4.jsonl` |
+| `sessions/` | 会话日志。`--native-loop` 路径写 schema 1 的 `<session-id>.jsonl`；默认 v4 路径仍写 `session.v4.jsonl`，两者不混用 |
 | `traces/` | 本地 trace store（hash/计数/时延，不含正文） |
 | `schedules.json` | 定时任务 |
 | `memory/` | runtime memory（`memories.json`、`USER.md`、`MEMORY.md`） |
@@ -152,26 +156,25 @@ uv run --no-sync pytest tests/core/test_messages.py tests/session tests/observab
 CI（`.github/workflows/ci.yml`）在 Windows + Python 3.12/3.13 上跑同样四道门禁，**不安装 Node**。
 pyright 基线在 `pyright-baseline.json`，`scripts/typecheck.py --write` 只在清理基线时使用。
 
-> 在干净 worktree 上，门禁 1–3 全绿；门禁 4（全量 pytest）会因旧 `fixtures/` 未入库而在收集期失败，
-> 属基线既有问题（`tests/session/test_reader.py` 在模块级读取 `fixtures/manifest.json`）。
-> 这是 M5 待办项，不改变门禁定义：发布前要么清理旧 fixture 依赖，要么在本地生成 `fixtures/`。
-> native/插件无关子集（`tests/core/test_messages.py`、`tests/session` 中的 native 用例、`tests/observability`、
-> `tests/integration/test_plugin_composition.py`、`tests/kernel`）通过；细节见 `docs/release/0.2.0.md` §5。
+> 带本机旧 `fixtures/` 时全量 pytest 为 **3690 passed / 0 failed / 0 skipped**（2026-11-17 集成门禁）。
+> 干净 checkout 中 `tests/session/test_reader.py` 会在 `fixtures/native/manifest.json` 缺失时优雅 skip，
+> 不再在收集期失败；若要跑满旧 fixture 用例，仍需从本机 DSH 数据生成未入库的 `fixtures/`。
 
 ### 测试 fixtures
 
 - native 契约的基线 fixtures 已入库：`fixtures/native/`（10 例真实录制，17 次请求、7 次工具调用）与
   `tests/fixtures/native/golden-session.jsonl`（decode→fold→encode 逐字节一致）。
 - `tools/gen_fixtures.mjs` 是迁移期保留的旧 DSH 录制生成器（读 `%USERPROFILE%\.dsh/sessions`）。CI 不运行 Node；
-  该脚本及其产出随 v4 线格式移除一并退役。旧 `fixtures/manifest.json` 故意不入库：在干净 worktree 上
-  相关测试会 fail/skip（`tests/session/test_reader.py` 在导入期即报 `FileNotFoundError`，属基线既有问题）；
-  M5 门禁要求最终清理为 0 skip，并改用已入库的 `fixtures/native/`。
+  该脚本及其产出随 v4 线格式移除一并退役。旧 `fixtures/manifest.json` 故意不入库：干净 checkout 中
+  `tests/session/test_reader.py` 用 `manifest.json` 存在性守卫跳过读旧 fixture 的用例，不再在导入期失败。
+- native 的正式基线是已入库的 `fixtures/native/` 与 `tests/fixtures/native/golden-session.jsonl`；
+  离线 replay/eval 在 `.github/workflows/native.yml` 非阻塞运行。
 
 ## 插件与组合
 
 - 一切能力都是插件行。core bundle（`src/deeppyro/bundles/core/bundle.toml`）当前 42 行，
   `critical=true`；外部行失败进入 `app.failures`，不中断 boot。
-- 一个最小插件（当前 API v2；v3 目标见 `docs/plugins/README.md`）：
+- 一个最小插件（当前 API v3；完整指南见 `docs/plugins/README.md`）：
 
 ```python
 from pydantic import BaseModel
@@ -186,7 +189,7 @@ class GreetConfig(BaseModel):
 class GreetPlugin(Plugin):
     plugin_id = "greet"
     version = "0.1.0"
-    api_version = 2
+    api_version = 3
     inject = ("commands",)
     Config = GreetConfig
 
@@ -207,24 +210,29 @@ class GreetPlugin(Plugin):
 
 ## 已知限制（0.2.0）
 
-- **三条线仍在合流**：M2（native loop/checkpoint）、M3（API v3/能力治理）、M4（eval/memory/multi-agent）尚未合入
-  本基线；因此当前运行时的会话仍走旧 v4 形状，插件 API 仍是 v2。本文与 `docs/release/0.2.0.md` 描述目标状态。
-- **插件 API v3 未落地**：`api_version=2` 是当前唯一实现；v3 的 one mount、typed inject、能力清单（`CapabilityManifest`）
-  与 entry points 见迁移文档中的 `TODO(api-v3)` 标记。
-- **配置名迁移中**：基线代码仍读 camelCase；snake_case 配置随 M3 合流，迁移表见 release note。
-- **旧数据不可读**：v4 会话、旧 camelCase 配置、旧 DSH 事件目录不会兼容；迁移为一次性外部导出。
+- **native loop 仍是 opt-in**：只有 headless 的 `--native-loop` / `DEEPPYRO_NATIVE_LOOP=1` 走 native schema 1
+  与 `AgentLoop`；TUI 和默认 headless 仍走 v4，v4 provider/`core.wire` 尚未删除。这是 0.2.0 最重要的
+  发布限制，完整切换排在后续版本。
+- **两种会话并存**：native 路径写 `<session-id>.jsonl`，v4 路径仍写 `session.v4.jsonl`；两者不 dual-write、
+  不互相读取。备份与迁移时必须区分。
+- **插件 API v3 是硬切**：v1/v2 插件、带位置参数的 `setup`、显式 `api_version < 3` 的 bundle 会在加载期
+  被拒绝；host 级 `App.service(name)` 等字符串 helper 仅作为弃用的 embedder/test 接口保留。
+- **配置兼容窗口**：模型属性/文档已 snake_case，但旧 camelCase TOML 键在 0.2.0 仍可读取（别名）；
+  移除别名是 0.3 的 breaking change。
 - **无遥测**：0.2.0 不实现任何遥测/上报；本地 trace 是唯一观测数据。约定见 `docs/ops/telemetry.md`。
 - **trace 只有 hash 与计数**，不含正文；不实现 OTLP 导出。
+- **memory/eval 未闭环**：SQLite FTS long-term memory 未暴露为工具、也未自动写入；eval 只有 fixture/scripted
+  runner，没有接 native `AgentSession` 的 live runner；supervisor 未接真实 subagent 生命周期。
 - **Windows 沙箱**：`enforcement=partial`（受限 token/ACL），不是完整 OS 级隔离。
-- **native 覆盖缺口**：M1 基线未覆盖 image/approval/compaction/MCP/PTC/subagents/multi-agent handoff，
-  这些随 M2–M4 合流补测。
+- **native 覆盖缺口**：image/approval/compaction/MCP/PTC/subagents/multi-agent handoff 仍未进入 native 差分基线。
+- **去品牌未清零**：`src` 仍有约 379 行 `dsh` 命中（大小写不敏感），清理建议见 `docs/release/dsh-audit.md`。
 
 ## 文档导航
 
 | 文档 | 内容 |
 | --- | --- |
 | `docs/native/schema.md` | **当前会话契约**：schema 1 的 header/envelope/EventKind/Message/fold/trace/fork |
-| `docs/native/README.md` | M1 交付与状态账本 |
+| `docs/native/README.md` | native M1–M2 交付与状态账本 |
 | `docs/spec/README.md` | 全部规格的状态索引（当前契约 vs legacy DSH v4 vs 待删除） |
 | `docs/plugins/README.md` | 插件作者指南（模板、setup、typed inject、bundle、扩展点） |
 | `docs/plugins/migration-v2-v3.md` | 插件 API v2→v3 迁移与 0.2.0 破坏性变更 |

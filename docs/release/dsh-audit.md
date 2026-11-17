@@ -1,18 +1,18 @@
 # DSH 去品牌审计（0.2.0）
 
 > 目标：为 0.2.0 的去品牌门禁（ADR D5 M5：`rg -i dsh src` 接近 0）提供可复核的现状盘点与清理建议。
-> 范围：本审计只统计与建议，**不改 `src` 代码**（本 M5 仅改版本号），实际清理留给 M2/M4/M5 集成 owner。
-> 基线 commit：`35b433f`。
+> 范围：本审计只统计与建议，**不改 `src` 代码**，实际清理留给后续版本。
+> 基线 commit：`35b433f`；集成复核：`integration/m2-m5`（M2–M5 合流后）。
 
 ## 1. 结论摘要
 
 - `src` 中的 dsh 引用**集中在旧会话/事件协议层**：生成的事件目录 `core/event_catalog.py` 一个文件就占 90 个字符串；
   其余多为注释对照、协议字段名与少数标识符。
-- 因此大部分命中会随 **M2（v4 会话/事件移除）** 自然消失；剩下的是**注释、docstring、错误文案、skill rank 常量**，
-  适合在 M5 收尾时批量改写。
-- 0.2.0 目标状态：`src` 零业务含义的 dsh 引用；允许保留的只有**历史 provenance 说明**（且不进入产品路径），
-  是否保留由集成 owner 决定。
-- 当前未达标：`src` 大小写不敏感命中 **379 行 / 96 个文件**。
+- 原计划大部分命中随 **M2（v4 会话/事件移除）** 消失；但 M2 的范围只到 native loop，**v4 退出被显式推迟到 0.3**，
+  因此 `core/event_catalog.py`、`core/wire.py`、`core/events.py`、`session/events.py` 仍然存在。
+- 0.2.0 目标状态：`src` 零业务含义的 dsh 引用；允许保留的只有**历史 provenance 说明**（且不进入产品路径）。
+- **当前未达标**：`src` 大小写不敏感命中 **379 行 / 91 个文件**（集成线实测，排除 `__pycache__`）。
+  0.2.0 按 release candidate 发布，本项作为 0.3 的清理目标。
 
 ## 2. 审计方法（可复现）
 
@@ -22,7 +22,7 @@
 # 大小写不敏感（ADR 门禁口径）
 Get-ChildItem -Recurse src -File | Select-String -Pattern 'dsh' -CaseSensitive:$false |
   Measure-Object -Line
-# 379 行，96 个文件
+# 379 行，91 个文件（排除 __pycache__）
 
 # 大小写敏感拆分（用于解释口径差异）
 Get-ChildItem -Recurse src -File | Select-String -Pattern 'dsh' -CaseSensitive | Measure-Object -Line   # 133
@@ -62,10 +62,10 @@ Get-ChildItem -Recurse src -File | Select-String -Pattern 'DSH' -CaseSensitive |
 
 | 位置 | 命中 | 内容 | 建议 |
 | --- | --- | --- | --- |
-| `src/deeppyro/core/event_catalog.py` | 93 行 / 90 字符串 | 从 DSH asar 抽取的事件目录，producer 路径 | **M2 删除**（v4 事件目录退役；同时处理生成脚本 `scripts/extract_dsh_events.mjs` 与相关 docs） |
-| `src/deeppyro/core/wire.py` | 5 行 | v4 wire 词表、`KNOWN_SESSION_EVENT_TYPES`（57 类型） | **M2 删除**（`core.wire` 已冻结，M1 后禁止新增 import） |
-| `src/deeppyro/core/events.py` | 24 行 / 8 字符串 | 94 名 bus 目录、DSH 事件名映射、`dsh_ref`/`dsh_modes` | **M2 重写**：dotted 事件模型（native EventKind）；标识符改名 |
-| `src/deeppyro/session/events.py` | 62 记录类型 | v4 记录词表（斜杠事件名） | **M2 删除** |
+| `src/deeppyro/core/event_catalog.py` | 93 行 / 90 字符串 | 从 DSH asar 抽取的事件目录，producer 路径 | **0.3 删除**（v4 事件目录退役；同时处理生成脚本 `scripts/extract_dsh_events.mjs` 与相关 docs） |
+| `src/deeppyro/core/wire.py` | 5 行 | v4 wire 词表、`KNOWN_SESSION_EVENT_TYPES`（57 类型） | **0.3 删除**（`core.wire` 已冻结，M1 后禁止新增 import） |
+| `src/deeppyro/core/events.py` | 24 行 / 8 字符串 | 94 名 bus 目录、DSH 事件名映射、`dsh_ref`/`dsh_modes` | **0.3 重写**：dotted 事件模型（native EventKind）；标识符改名 |
+| `src/deeppyro/session/events.py` | 62 记录类型 | v4 记录词表（斜杠事件名） | **0.3 删除** |
 
 ### B. 注释引用（保留信息，改写措辞）
 
@@ -121,7 +121,7 @@ Get-ChildItem -Recurse src -File | Select-String -Pattern 'DSH' -CaseSensitive |
 
 | 类别 | 0.2.0 保留？ | 处置 | 责任线 |
 | --- | --- | --- | --- |
-| A 生成产物/协议数据 | 否 | 随 M2 删除 v4 时移除 | Y（M2） |
+| A 生成产物/协议数据 | 否 | 随 0.3 删除 v4 时移除；0.2.0 暂留 | Y（0.3） |
 | B 注释引用 | 否（迁移说明除外） | 改写为中性表述或删除 | 各 lane 随代码重写 |
 | C 标识符 | 否 | 改名 + 同步测试 | Y（M2）/ M4（skills） |
 | D 普通字符串 | 否 | 逐文件改写文案 | 各 lane |
@@ -132,7 +132,7 @@ Get-ChildItem -Recurse src -File | Select-String -Pattern 'DSH' -CaseSensitive |
 
 ## 5. 落地清单（交给集成 owner）
 
-1. M2 合流后重跑第 2 节命令，确认 `core/{wire,events,event_catalog}.py`、`session/events.py` 已删除/重写。
+1. 0.3 删除 v4 后重跑第 2 节命令，确认 `core/{wire,events,event_catalog}.py`、`session/events.py` 已删除/重写。
 2. 批量改写剩余注释/docstring（约 54 注释 + 170 非生成字符串），每批跑四道门禁。
 3. 重命名 skills rank 常量并同步 `tests/skills/*`。
 4. 删除 `tools/gen_fixtures.mjs` 与旧 fixtures；确认 `pytest` 0 skip。
@@ -142,7 +142,7 @@ Get-ChildItem -Recurse src -File | Select-String -Pattern 'DSH' -CaseSensitive |
 ## 6. 不做的事（明确边界）
 
 - 本 M5 不改 `src` 代码（只改 `pyproject.toml` 与 `src/deeppyro/__init__.py` 的版本号）。
-- 不删除 `core/event_catalog.py`、不改 `core/wire.py`：这些属于 M2（v4 移除）的写入范围，M5 越界改动会与合流冲突。
+- 0.2.0 不删除 `core/event_catalog.py`、不改 `core/wire.py`：v4 退出已推迟到 0.3，提前删除会破坏默认 TUI/headless 路径。
 - 不批量改测试与 fixtures：等 M2 的会话/事件替换落地后再改，避免重复返工。
 - `docs/` 中的历史引用不要求清零；由 `docs/spec/README.md` 标注状态即可。
 

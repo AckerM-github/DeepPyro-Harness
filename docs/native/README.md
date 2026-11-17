@@ -1,19 +1,21 @@
-# Native schema 1 — M1 implementation and M0 baseline
+# Native schema 1 — M1/M2 implementation and M0 baseline
 
-Status: **M1 complete (2026-11-17)**. The native message, session, fold and trace modules exist and pass their gates, but the v4 runtime is still the product path; wiring the native loop and removing v4 is M2 work. The M0 recorded baseline and provenance remain below unchanged.
+Status: **M1 and M2 complete (2026-11-17)**. The native message, session, fold, trace and `AgentLoop` modules exist and pass their gates. The loop is wired into headless behind `--native-loop` / `DEEPPYRO_NATIVE_LOOP=1`; TUI and default headless still use v4, and removing v4 remains future work. The M0 recorded baseline and provenance remain below unchanged.
 
 ## Deliverables
 
 | Path | What it is |
 | --- | --- |
-| [schema.md](schema.md) | Native session schema 1: header, envelope, 24 core `EventKind`s, Message model, fold, trace, errors, fork/resume/checkpoint, 15 recorded refinements (D-1..D-15). 449 lines. |
+| [schema.md](schema.md) | Native session schema 1: header, envelope, 27 core `EventKind`s, Message model, fold, trace, errors, fork/resume/checkpoint, 15 recorded refinements (D-1..D-15). 449 lines. |
 | [../adr/0001-three-track-native-agent.md](../adr/0001-three-track-native-agent.md) | ADR: three-track break, zero compatibility, retained DSH design assets, milestones and hard gates, locked M0 decisions. |
 | [../../fixtures/native/](../../fixtures/native/) | 10 real provider recordings, manifest with checksums, validation report, and the two small files used by the sequential-tool case. |
 | [README.md](README.md) | This implementation, provenance, layout, validation and replay note. |
 | [../../src/deeppyro/core/messages.py](../../src/deeppyro/core/messages.py) | Frozen native `Message`, four content parts and eight sources; strict role/part matrix and JSON round-trip. |
-| [../../src/deeppyro/session/schema.py](../../src/deeppyro/session/schema.py) | Schema 1 header/envelope, 24 core `EventKind`s, `NativeCodec` reader/writer, writer lock and atomic append. |
+| [../../src/deeppyro/session/schema.py](../../src/deeppyro/session/schema.py) | Schema 1 header/envelope, 27 core `EventKind`s, `NativeCodec` reader/writer, writer lock and atomic append. |
 | [../../src/deeppyro/session/fold.py](../../src/deeppyro/session/fold.py) | Pure fold to `SessionView`: replacement, compaction, state, approvals, tool pairing and missing-result repair. |
 | [../../src/deeppyro/observability/trace.py](../../src/deeppyro/observability/trace.py) | Trace records, canonical hashing, strict reader and `join_trace` against session events. |
+| [../../src/deeppyro/agent/loop.py](../../src/deeppyro/agent/loop.py) | Native `AgentLoop`: fold → `ContextPlan` → provider stream → assistant message, tools, budget/cancel, `run.*` events and trace. |
+| [../../src/deeppyro/agent/context_plan.py](../../src/deeppyro/agent/context_plan.py) / [run_state.py](../../src/deeppyro/agent/run_state.py) / [checkpoint.py](../../src/deeppyro/agent/checkpoint.py) | Frozen request plan, run state and atomic checkpoint sidecar for kill/resume. |
 | [../../tests/fixtures/native/golden-session.jsonl](../../tests/fixtures/native/golden-session.jsonl) | One complete tool turn used for byte-exact decode → fold → encode checks. |
 
 The old contracts are retained only as migration references: [../spec/INTERFACES.md](../spec/INTERFACES.md) and [../spec/session.md](../spec/session.md) now carry frozen/superseded banners.
@@ -80,16 +82,16 @@ UTF-8 JSONL, one object per line. A case starts with `case`, then interleaves `l
 - required: exactly 10 files, filename/case boundaries, JSON parse, request lifecycle, request bodies, non-empty messages, SSE payloads (689 lines), tool cases 06–10, case 09 order, cases 08/10 error results, no secrets, manifest checksums, case-end counts, all statuses `ok`, finish reasons present;
 - optional but observed: case 07 two parallel calls, case 05 `finish_reason=length`, streaming usage present.
 
-To re-check a checkout without the recorder, compare each `manifest.json` sha256 with the corresponding file and parse every JSONL line. M1 differential replay should assert:
+To re-check a checkout without the recorder, compare each `manifest.json` sha256 with the corresponding file and parse every JSONL line. The M2 differential replay asserts (all 10 cases match at fixture level):
 
-1. every recorded `llm.request` can be replayed against a fake provider that emits the recorded `llm.sse` chunks;
+1. every recorded `llm.request` is replayed against a fake provider that emits the recorded `llm.sse` chunks;
 2. the native loop produces the same assistant content, tool calls, finish reason and usage;
 3. the native session log round-trips and folds back to the same visible messages;
 4. no session log contains provider token/cost/latency snapshots (schema §8.5); those belong in the trace store.
 
-## M1 native implementation
+## Native implementation (M1 + M2)
 
-M1 adds the native contract as a parallel surface; it does not edit `core/wire.py`, `session/events.py`, the agent loop, providers, TUI or CLI. The modules are importable and covered by dedicated tests:
+M1 added the native contract as a parallel surface; M2 added `agent/loop.py` and wired it into headless without making it the default. The modules are importable and covered by dedicated tests:
 
 | Module | Contract | Tests |
 | --- | --- | --- |
@@ -98,11 +100,13 @@ M1 adds the native contract as a parallel surface; it does not edit `core/wire.p
 | `session/fold.py` | [schema §7](schema.md); single-pass, deterministic, no clock or I/O | `tests/session/test_fold.py` |
 | `observability/trace.py` | [schema §8](schema.md); hashes only, no prompt/tool payloads | `tests/observability/test_trace.py` |
 | golden fixture | decode → fold → encode is byte-identical | `tests/session/test_golden.py` |
+| `agent/loop.py` | [schema §5.5](schema.md); `ContextPlan`, budget/cancel, native tool results, `run.started`/`run.finished` | `tests/native/` |
+| `agent/checkpoint.py` | resumable run sidecar; repairs dangling steps/turns on resume | `tests/native/test_checkpoint.py` |
 
-Run the M1 surface only:
+Run the native surface only:
 
 ```powershell
-uv run --no-sync pytest tests/core/test_messages.py tests/session tests/observability -q
+uv run --no-sync pytest tests/core/test_messages.py tests/session tests/observability tests/native -q
 ```
 
 Behavioral notes:
@@ -111,7 +115,7 @@ Behavioral notes:
 - **Append is all-or-nothing.** The writer validates the event and its seq/turn/step order before writing; a failed write truncates back to the previous offset. A second writer fails on the `<id>.jsonl.lock` file.
 - **The trace store is separate.** Default location is `~/.dpro/traces/<run_id>.jsonl`, overridable with `DEEPPYRO_TRACES_DIR`; records carry hashes, sizes, latency and IDs, never message text or tool arguments.
 - **Trace smoke is real-session based.** `test_trace_join_smoke_with_native_session` writes a native turn with one tool call, writes one model-call and one tool-call trace record, then joins both by `run_id`/step/call ID.
-- **The loop is not wired yet.** No provider, agent step, TUI or `run_code` path emits native events or trace records in M1. That is the M2 gate; until then, the existing v4 path remains authoritative (the full suite is 3465 tests after M1).
+- **The loop is opt-in.** `AgentLoop` is selected by headless `--native-loop` / `DEEPPYRO_NATIVE_LOOP=1`; TUI, `run_code` and default headless still emit v4 events. Native trace is emitted by the native loop, not by the v4 path. Full suite after M2: 3542 tests (3690 after M3/M4 integration).
 ## Known anomalies and limits
 
 - Case 05 `finish_reason=length` is intentional (tiny `max_tokens`) and is the truncation baseline, not a failure.

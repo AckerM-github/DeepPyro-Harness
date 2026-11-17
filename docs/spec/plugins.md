@@ -176,7 +176,7 @@ effective_config(plugin_id)：返回未掩码的完整生效配置，仅供进�
 
 掩码规则：字段名（大小写不敏感）包含 key、token、secret、password 中任意一个子串即视为 secret，递归处理嵌套 dict/list，非 None 值替换为 ***。注意这是启发式：maxTokens 因包含 token 会被掩码（展示为 ***，写回时保持原值），而叫 credential 的字段不会被掩码。
 
-SettingsPlugin：provide = settings，plugin_id = settings，version = 0.1.0，inject = []。构造时创建 SettingsStore()；属性 revision；方法 describe/read/write 委托 store。write 额外做 volatile live apply：若 changed 含插件类声明的 volatile 字段，取 ctx.get("kernel")（kernel 服务，KernelRuntime）的 apply_plugin_config(plugin_id, effective_config(plugin_id))；成功且没有非 volatile 变更时返回 applied_live=True、restart_required=False、apply="live"；存在非 volatile 变更、kernel 服务缺失、返回 False 或抛异常时回退 applied_live=False、restart_required=True、apply=next-boot，配置仍已落盘且异常不外抛。
+SettingsPlugin：provide = settings，plugin_id = settings，version = 0.1.0，inject = []。构造时创建 SettingsStore()；属性 revision；方法 describe/read/write 委托 store。write 额外做 volatile live apply：若 changed 含插件类声明的 volatile 字段，取 ctx.require(KernelRuntime)（kernel 服务）的 apply_plugin_config(plugin_id, effective_config(plugin_id))；成功且没有非 volatile 变更时返回 applied_live=True、restart_required=False、apply="live"；存在非 volatile 变更、kernel 服务缺失、返回 False 或抛异常时回退 applied_live=False、restart_required=True、apply=next-boot，配置仍已落盘且异常不外抛。
 
 ## 7. 检视服务：InspectPlugin
 

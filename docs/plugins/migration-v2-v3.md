@@ -1,123 +1,149 @@
 # 插件 API v2 → v3 迁移（0.2.0）
 
-> **状态**：0.2.0 计划把插件 API 硬切到 **v3**（ADR `docs/adr/0001-three-track-native-agent.md` D2/D5/D7）。
-> 仓库当前实现仍是 **v2**（`deeppyro.api.API_VERSION == 2`），M3 合流后才提供 v3。
-> 本文逐项标出：现在就能改的（v2 兼容）、0.2.0 配置迁移、以及只有决策、细节未定稿的 `TODO(api-v3)`。
-> 不要按 TODO 项写代码；以 `src/deeppyro/api/` 为准。
+> **状态**：v3 已落地（M3，`deeppyro.api.API_VERSION == 3`），按 ADR
+> `docs/adr/0001-three-track-native-agent.md` D2/D5/D7 **硬切，无兼容 shim**。
+> v1/v2 插件在挂载时直接 `PluginError`；本文是逐项迁移对照。
+> 事实来源：`src/deeppyro/api/`、`src/deeppyro/kernel/`。与文档冲突时以代码为准。
 
 ## 1. 0.2.0 破坏性变更（版本级）
 
 | # | 变更 | 影响面 | 状态 |
 | --- | --- | --- | --- |
-| 1 | 会话格式只认 native schema 1，`session.v4.jsonl`（含 `.zstd`）不再读写 | 会话数据、任何读会话的插件 | M1 已实现（v4 显式拒绝） |
-| 2 | 插件 API v1/v2 硬切 v3，无兼容 shim | 所有外部插件 | M3 实现中 |
-| 3 | 配置键 camelCase → snake_case；旧 camelCase 配置不再读取 | `config.toml`、插件 row `config` | M3 实现中 |
-| 4 | 旧 DSH 规格与事件目录归档/待删；无 v4 reader、无 `dpyro migrate`、无 dual-write | 迁移工具、事件订阅方 | M2/M5 收尾 |
-| 5 | 去品牌门禁：`rg -i dsh src` 接近 0 | `src/`、测试 fixtures、事件目录 | M5 目标（当前未清理） |
-| 6 | Node/TypeScript fixtures 退役，CI 不安装 Node | 测试、fixtures | M5 目标 |
+| 1 | 插件 API v1/v2 硬切 v3，无兼容 shim | 所有外部插件 | ✅ M3 已实现 |
+| 2 | 唯一挂载入口 `RuntimeContext.mount(plugin, config)`，唯一钩子 `setup(self)` | 插件启动代码 | ✅ M3 已实现 |
+| 3 | `ctx.get/require/has` 只接受契约类，字符串抛 `TypeError`；`ctx.service(str)` 删除 | 运行期取服务的插件 | ✅ M3 已实现 |
+| 4 | `PluginContext` 封闭，不再把未知属性代理到 runtime context | 依赖 `ctx.on/emit/effect` 的插件 | ✅ M3 已实现 |
+| 5 | `CapabilityManifest` 成为插件契约的一部分 | 能力治理、审计、成本 | ✅ M3 已实现 |
+| 6 | `bundle.api_version` 必须为 3 | 所有 bundle | ✅ M3 已实现 |
+| 7 | 配置 canonical 键改 snake_case | `config.toml`、插件 `Config` | ⚠️ 0.2.0 仍读取 camelCase alias，0.3 移除 |
+| 8 | 会话日志新增 native schema 1；v4 仍为默认 | 读会话的插件 | ⚠️ 0.2.0 两种格式并存，v4 预计 0.3 移除 |
+| 9 | 去品牌门禁（`rg -i dsh src` 接近 0） | `src/`、测试 fixtures | ⚠️ 未达标：379 行 / 91 文件 |
+| 10 | Node/TypeScript fixtures 退役，CI 不安装 Node | 测试、fixtures | ⚠️ 部分完成：native fixtures 已入库，旧资产仍在 |
 
-范围澄清：**session schema 不属于插件 API**。v3 只覆盖插件契约（mount/inject/service typing/CapabilityManifest）；
-会话模型由 native schema 1 单独拥有（ADR D4）。
+范围澄清：**session schema 不属于插件 API**。v3 只覆盖插件契约
+（mount/inject/service typing/CapabilityManifest）；会话模型由 native schema 1 单独拥有（ADR D4）。
 
-## 2. 现在就能做的兼容改写（v2 即可运行）
+## 2. 逐项对照表
 
-这些改动不依赖 M3 落地，先做可以减少 0.2.0 升级时的改动量：
+| 场景 | v1/v2 写法 | v3 写法 |
+| --- | --- | --- |
+| 插件基类 | `class P(Plugin)` | 不变 |
+| 版本声明 | `api_version = 2` | `api_version = 3`（默认值即 3） |
+| 挂载入口 | `setup(self)` 或 v1 `setup(self, ctx, config)` | 仅 `setup(self)`；位置参数形式被拒绝 |
+| 依赖声明 | `inject = ("tools", ContractClass)` | 契约类优先；字符串项仍允许但不再推荐 |
+| 取依赖（必选） | `ctx.service("tools")` / `ctx.require(ToolsPlugin)` | `ctx.require(ToolsPlugin)` |
+| 取依赖（可选） | `ctx.get("tools")` / `ctx.get(ToolsPlugin)` | `ctx.get(ToolsPlugin)` |
+| 判断依赖 | `ctx.has("tools")` | `ctx.has(ToolsPlugin)` |
+| 提供服务 | `ctx.provide("notes", value)` 或 `class Notes(Service)` | `Service` 子类 + `provide` |
+| 配置热更新 | `volatile` + `on_config(config)` | 不变 |
+| 清理 | `async def stop(self)` | 不变 |
+| 插件配置字段 | camelCase 或任意 pydantic 字段名 | snake_case（0.2.0 读 alias） |
+| 能力声明 | 无 | `capability_manifest()` / 类属性 |
+| bundle 版本 | `api_version = 2` | `api_version = 3`（省略时默认 3） |
+| 安装方式 | `plugin.toml` 包 / `plugins.toml` / bundle 路径 | 三者保留；新增 entry points 发现 |
 
-1. **`setup` 改为无参**：`def setup(self) -> None`，从 `self.ctx` / `self.config` 读上下文。
-   v1 的 `def setup(self, ctx, config)` 目前仍被 `deeppyro.api.invoke_setup` 按签名分派，但若类里声明了
-   `api_version = 2` 会收到一次性 `DeprecationWarning`；v3 删除该兼容。
-2. **`inject` 尽量用契约类**：`inject = (ToolsPlugin, "prompt")` 已可用；契约类在挂载时解析为服务名
-   （`inject_names` / `service_name`），未绑定的类会 `CompositionError` 并点名 row。
-3. **运行期查找改用契约类**：`ctx.service("tools")` → `ctx.require(ToolsPlugin)`（必选依赖）；
-   `ctx.get("tools")` → `ctx.get(ToolsPlugin)`（可选依赖）；`ctx.has("tools")` 目前只接受字符串，保持。
-4. **新服务用 `Service` 子类而不要 `ctx.provide` 字符串**：
+## 3. 最小迁移步骤
 
-   ```python
-   from deeppyro.api import Service
-   
-   class NotesService(Service):
-       provide = "notes"
+1. **盘点入口**：列出 `setup` 签名、`inject`、`ctx.service/get/has` 调用、`ctx.provide` 调用、`Config` 字段名。
+2. **改挂载入口**：`def setup(self)`（可 async），从 `self.ctx` / `self.config` 读上下文。
+3. **改依赖**：`inject` 尽量用契约类；`ctx.require(Contract)` / `ctx.get(Contract)` / `ctx.has(Contract)`。
+   找不到契约类的第三方服务仍可保留字符串 `inject`，但运行期查找只能走 `ctx.raw`。
+4. **改服务提供**：字符串 `ctx.provide` → `Service` 子类（`ctx.provide` 仍可作为历史注册方式）。
+5. **补能力清单**：声明 `risk` / `idempotent` / `permissions` / `sandbox` / `token_cost` / `context_window`，
+   或覆写 `capability_manifest()` 列出工具与 hook。
+6. **改配置**：`Config` 字段与 row `config` 键改 snake_case；同步配置文件与文档。
+7. **改 bundle**：`bundle.api_version = 3`。
+8. **去掉 v4 假设**：若读会话日志，改 `deeppyro.session.schema` + `deeppyro.session.fold`；
+   不得依赖 `surfaceOp`、`sourceEventSeqs`、`ignorable`、62 种 v4 记录类型等机制。
+9. **回归**：用 `boot(cfg, bundle_paths=[...])` 起临时应用，跑插件自己的集成测试，再跑 `dpyro plugin doctor`。
 
-       def __init__(self, ctx, config):
-           super().__init__(ctx, config)
-           self.items = []
-   ```
+## 4. 代码对照
 
-   构造即注册、卸载即注销，并自动把 `NotesService` 绑定为该名字的契约类。
-5. **配置字段先改 snake_case**（插件自己的 `Config` 模型与 row `config` 一起改），见 §3 第 6 项。
-6. **不要把 `deeppyro.core.wire` / `session.v4` 模型当稳定 API**：M1 之后不再新增 `core.wire` import，
-   会话相关一律用 `deeppyro.core.messages` 与 `deeppyro.session.schema`。
-
-## 3. 逐项对照表
-
-| 场景 | v1/v2 写法（当前可用） | v3 目标 | 现在可改？ |
-| --- | --- | --- | --- |
-| 插件基类 | `class P(Plugin)` | 不变 | ✅ |
-| 版本声明 | `api_version = 2` | `api_version = 3`（M3 落地后） | ⏳ TODO(api-v3) |
-| 挂载入口 | `def setup(self)` 或 v1 `setup(self, ctx, config)` | 仅 `setup(self)` | ✅ 现在改 |
-| 依赖声明 | `inject = ("tools", ContractClass)` | `inject` 使用契约类；字符串项去留未定 | ⚠️ 尽量契约类 |
-| 取依赖（必选） | `ctx.service("tools")` / `ctx.require(ToolsPlugin)` | `ctx.require(ToolsPlugin)`；字符串查找移除 | ✅ 现在改 |
-| 取依赖（可选） | `ctx.get("tools")` / `ctx.get(ToolsPlugin)` | `ctx.get(ToolsPlugin)` | ✅ 现在改 |
-| 提供服务 | `ctx.provide("notes", value)` 或 `class Notes(Service)` | `Service` 子类 + `provide` | ✅ 推荐 Service |
-| 配置热更新 | `volatile` + `on_config(config)` | 不变（ADR 未要求改） | ✅ 保持 |
-| 清理 | `async def stop(self)` | 不变 | ✅ 保持 |
-| 插件配置字段 | camelCase 或任意 pydantic 字段名 | snake_case | ✅ 现在改字段名 |
-| 能力声明 | 无（只有 row/inject/row_states） | `CapabilityManifest` | ❌ TODO(api-v3) |
-| 安装方式 | `plugin.toml` 包 / `plugins.toml` / bundle 路径 | entry points（ADR 提及，格式未定） | ❌ TODO(api-v3) |
-| bundle 版本 | `api_version = 2`（默认取 API_VERSION） | `api_version = 3` | ❌ TODO(api-v3) |
-
-关于 bundle：`bundle.api_version` 当前默认取 `API_VERSION`，且大于 `API_VERSION` 直接 `CompositionError`。
-因此 v3 落地时，**所有显式写了 `api_version = 2` 的 bundle 必须同步改 3**；M3 是否提供自动重写/是否给弃用期
-尚未定稿 → `TODO(api-v3)`。
-
-## 4. 迁移步骤（外部插件作者）
-
-1. **盘点入口**：列出 `setup` 签名、`inject`、`ctx.service/get` 调用、`ctx.provide` 调用、`Config` 字段名。
-2. **改挂载入口**：`setup(self)`；需要异步初始化就写 `async def setup(self)`（v2 起支持）。
-3. **改依赖**：能换成契约类的全部换；找不到契约类的服务名，先记录在插件 README，等 M3 的 service typing 方案。
-4. **改服务提供**：字符串 `ctx.provide` → `Service` 子类（保留 `name` 兼容期）。
-5. **改配置**：`Config` 字段与 row `config` 键改 snake_case；同步配置文件与文档。
-6. **去掉 v4 假设**：插件若读会话日志，改为 native schema 1 的 `session/schema.py` + `session/fold.py`；
-   不得依赖 `surfaceOp`、`sourceEventSeqs`、`ignorable`、62 种 v4 记录类型等已删除机制。
-7. **等 M3 落地后**补 `api_version = 3`、`CapabilityManifest`、entry point 安装声明（见 §6 TODO 清单）。
-8. **回归**：用 `boot(cfg, bundle_paths=[...])` 起临时应用，跑插件自己的集成测试；再跑 `dpyro plugin doctor`。
-
-## 5. 验证与排错
+### 4.1 插件类
 
 ```python
-from deeppyro.kernel import boot
+from deeppyro.api import Plugin, RiskLevel
+from deeppyro.builtin.tools import ToolsPlugin
+from deeppyro.builtin.prompt_service import PromptPlugin
 
-app = await boot(config, bundle_paths=["/path/to/your-bundle"])
-states = app.row_states()        # state/error/overridden/disabled/critical ...
-await app.dispose()
+
+class GreetPlugin(Plugin):
+    plugin_id = "greet"
+    version = "0.2.0"
+    api_version = 3
+    inject = (ToolsPlugin, PromptPlugin)
+    risk = RiskLevel.LOW
+    permissions = ("tools:write",)
+
+    def setup(self) -> None:
+        self.ctx.register_tool(lambda config, workspace: GreetTool())
 ```
 
-- 插件挂载失败但 boot 还在：该 row 非 critical，查 `app.failures` 与 `row_states()` 的 `error`。
-- 依赖缺失：`ctx.require(Contract)` 抛 `ServiceNotFoundError`；契约类未绑定抛 `ServiceTypeError`。
-- 插件 API 版本不匹配：声明高于 `deeppyro.api.API_VERSION` 会被拒绝（当前即 2）；错误文案以代码为准。
-- bundle 解析失败：`CompositionError` 会带 `bundle:<path>` 前缀，检查未知键、`api_version`、`requires` 与 include。
+### 4.2 提供服务
 
-## 6. TODO(api-v3) 汇总（M3 定稿前不得实现/文档化）
+```python
+from deeppyro.api import Service
 
-- `api_version = 3` 的声明方式与拒绝文案；v1 兼容移除的确切版本。
-- `inject` 是否保留字符串项；`ctx.service(str)` / `ctx.get(str)` 是否移除、是否有弃用期。
-- `CapabilityManifest`：字段集合、是否必填、与 `inject`/bundle row/`row_states` 的关系、校验失败语义。
-- entry points 的组名、发现规则、与现有 `plugin.toml` 安装单元的并存/替换关系。
-- `bundle.api_version` 升级策略（硬切？自动改写？弃用期？）。
-- service typing：是否要求所有服务都是 `Service` 子类、是否移除 `ctx.provide(str)`。
-- 与 M4（eval/memory/multi-agent）的能力对接方式（`risk`/`cost` 元数据消费）。
 
-## 7. 时间线与兼容承诺
+class NotesService(Service):
+    provide = "notes"
 
-- ADR 已锁定：**0.2.0 硬切 v3，不为 v2 提供 shim**；迁移说明就是本文。0.x 版本允许破坏性变更。
+    def __init__(self, ctx, config):
+        super().__init__(ctx, config)
+        self.items = []
+```
+
+构造即注册、卸载即注销；`__init_subclass__` 把 `NotesService` 绑定为该名字的契约类，
+其他插件可写 `ctx.require(NotesService)`。`inject` 解析与运行期查找统一经
+`deeppyro.api.services.service_name()`。
+
+### 4.3 能力清单
+
+```python
+from dataclasses import replace
+
+from deeppyro.api import CapabilityManifest, Plugin, RiskLevel, TokenCost, ToolCapability
+
+
+class GreetPlugin(Plugin):
+    ...
+    risk = RiskLevel.MEDIUM
+    idempotent = True
+    sandbox = "workspace-write"
+    token_cost = TokenCost(input_per_mtok=0.1, output_per_mtok=0.4)
+
+    def capability_manifest(self) -> CapabilityManifest:
+        manifest = super().capability_manifest()
+        return replace(manifest, hooks=("hook/step",), tools=(ToolCapability(name="greet"),))
+```
+
+字段全集见 `docs/plugins/README.md` §4。治理字段不进入 model-facing tool schema。
+
+## 5. 错误与排错
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `PluginError ... setup with positional parameters` | 仍是 v1/v2 签名 | 改成 `setup(self)`，从 `self.ctx`/`self.config` 读 |
+| `PluginError ... targets api_version N` | `api_version != 3` | 声明 3 |
+| `TypeError: PluginContext.get() is typed ...` | 传了字符串 | 传契约类 |
+| `AttributeError: PluginContext has no attribute 'on'` | 依赖隐式转发 | 用 `ctx.raw` 或显式服务 |
+| `ServiceTypeError` | 契约类未绑定服务名 | 让提供方用 `Service` 子类或 `bind_service_type` |
+| `ServiceNotFoundError` | 服务未注册/插件未加载 | 检查 `inject` 与 `app.row_states()` |
+| `CompositionError: ... api_version` | bundle 版本不是 3 | 改 `bundle.toml` |
+| 插件挂载失败但 boot 继续 | row 非 critical | 查 `app.failures`、`row_states()` 的 `error` |
+
+## 6. 兼容承诺
+
+- 0.2.0 硬切 v3，不为 v2 提供 shim；0.x 版本允许破坏性变更。
 - 不希望迁移的插件可以继续锁定 `deeppyro-harness` 0.1.x；0.2.0 不保证 0.1.x 插件可加载。
-- 若 M3 未能按计划合流，0.2.0 不应发布（release note 中列为发布阻塞项）；届时以实际 `API_VERSION` 为准，
-  本文相应条目顺延。
+- 0.2.0 仍读取 camelCase 配置 alias，并在 native loop 之外保留 v4 会话；这两项计划在 0.3 移除。
+- `UsageService` 仍为记账骨架，未挂入 core bundle；能力清单已可供 inspect/工具读取。
 
-## 8. 参考
+## 7. 参考
 
 - `docs/adr/0001-three-track-native-agent.md`：D2（零 wire 兼容、v1/v2 硬切 v3）、D4（契约归属）、D5（M3 门禁）。
-- `src/deeppyro/api/plugin.py` / `context.py` / `services.py` / `types.py`：v2 事实来源。
-- `docs/spec/plugin-core.md`：v2 契约与组合语义规格。
+- `src/deeppyro/api/{plugin,context,services,capabilities,version}.py`：v3 事实来源。
+- `src/deeppyro/kernel/{runtime,composition,bundle_schema}.py`：mount 与 bundle 校验。
+- `docs/spec/plugin-core.md`：v3 契约与组合语义规格。
 - `docs/plugins/README.md`：插件作者指南（模板、扩展点、bundle 示例）。
 - `docs/release/0.2.0.md`：版本级 release note（破坏性变更、门禁、已知限制）。
