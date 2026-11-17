@@ -25,8 +25,8 @@ this branch): which features DeepPyro actually used, and what replaced them.
 * ``ctx.on/once/emit`` — the bus (core.bus.EventBus) carries every domain event;
   no source subscribes to a cordis event name outside api/context.py, so the
   native context keeps only a tiny local emitter for non-bus names.
-* ``ctx.plugin`` / ``ctx.inject`` — the kernel, presets and plugin mounting use
-  ``ctx.plugin(plugin_dict, config)``; ``ctx.inject`` had zero call sites.
+* ``ctx.mount`` / ``ctx.inject`` — the kernel, presets and plugin mounting use
+  ``ctx.mount(plugin_dict, config)``; ``ctx.inject`` had zero call sites.
 * ``ctx.fiber`` / fiber state — ``builtin/inspect`` compares ``fiber.state`` to
   ``FiberState.ACTIVE``; ``App.row_states`` renders ``fiber.get_state()``; ``App.stop``
   disposes fibers in reverse order (sync call, awaitable result).  The native

@@ -1,9 +1,12 @@
 # Plugin core: contract, composition, extension points
 
-Status: layers A (composition kernel) and B (capability registries) are implemented.
-Everything below is the contract external plugins and bundles may rely on. The loader also
-supports group rows, include files, bundle dependencies and live plugin states; the `kernel`
-runtime service applies volatile config changes without a restart (sections 3 and 6).
+Status: plugin API v3 is the current contract (0.2.0); layers A (composition kernel) and B
+(capability registries) are implemented. Everything below is the contract external plugins and
+bundles may rely on. v3 is a hard cut: there is no v1/v2 compatibility shim (ADR 0001 section 7),
+so a plugin or bundle declaring another `api_version` is rejected at load time with a migration
+note. The loader also supports group rows, include files, bundle dependencies and live plugin
+states; the `kernel` runtime service applies volatile config changes without a restart
+(sections 3 and 6).
 
 ## 1. Layering
 
@@ -38,7 +41,7 @@ class MyConfig(BaseModel):
 class MyPlugin(Plugin):
     plugin_id = "my-plugin"
     version = "0.1.0"
-    api_version = 2              # integer, checked against deeppyro.api.API_VERSION
+    api_version = 3              # must equal deeppyro.api.API_VERSION (3) or the mount is rejected
     inject = ("tools",)          # service names, or contract classes such as CommandsPlugin
     Config = MyConfig            # optional pydantic model; row.config is validated into it
 
@@ -46,17 +49,19 @@ class MyPlugin(Plugin):
         self.ctx.register_tool(lambda cfg, workspace: MyTool())
 ```
 
-- API v2 has one injection point: the adapter constructs the plugin with `(ctx, config)` and
-  then calls `setup()` with no arguments, so a plugin reads `self.ctx` and `self.config`
-  instead of receiving them again. `setup` runs once when the plugin fiber activates and
-  may be sync or async.
-- API v1 plugins declare `def setup(self, ctx, config)`; the adapter still calls them with
-  both arguments (`deeppyro.api.invoke_setup` dispatches on the signature), so existing
-  bundles keep working. A plugin that declares `api_version = 2` in its own body but keeps
-  the legacy signature gets a one-time `DeprecationWarning`.
-- `inject` entries may be service names or contract classes; classes resolve to their
-  `provide` name at mount time (`deeppyro.api.inject_names`), and an unbound or non-service
-  class aborts the mount with a `CompositionError` that names the row.
+- API v3 has exactly one mount shape: the adapter constructs the plugin with `(ctx, config)`
+  and then calls `setup(self)`, so a plugin reads `self.ctx` and `self.config`. `setup`
+  runs once when the plugin fiber activates and may be sync or async. `setup` must take no
+  arguments: a method with positional parameters, or a class declaring another
+  `api_version`, raises `PluginError` with a migration note (there is no v1/v2 fallback).
+- `inject` entries may be service names or contract classes, and typed entries are the
+  preferred form (`inject = (KernelConfig, ToolsPlugin)`). Classes resolve to their
+  `provide` name at mount time (`deeppyro.api.inject_names`), the fiber then waits on the
+  resolved names, and an unbound or non-service class aborts the mount with a
+  `CompositionError` that names the row.
+- Mounting another plugin has exactly one entry point: `self.ctx.mount(plugin, config)`
+  (`deeppyro.kernel.context.RuntimeContext.mount`). The v2 `ctx.plugin` name was removed;
+  the kernel adapter and the preset realms both go through `mount`.
 - Define `async def stop(self)` when you need explicit cleanup; the loader registers it as
   the fiber disposer. Registration helpers additionally register effects,
   so unloading a plugin removes its tools, prompt sections, commands and providers.
@@ -78,11 +83,18 @@ class MyService(Service):
         self.items = []
 ```
 
-`ctx.service(name)` / `ctx.get(name)` / `ctx.has(name)` resolve dependencies;
-`ctx.tools`, `ctx.prompt`, `ctx.commands`, `ctx.llm` (and later `ctx.presets`) are typed shortcuts.
-`PluginContext` proxies every other attribute to the runtime context, so `ctx.on`, `ctx.emit`,
-`ctx.effect`, `ctx.isolate` and `ctx.intercept` stay available. Bus event names always go
-through `core.bus.EventBus`; the runtime raises no plumbing events of its own.
+Dependencies are typed only: `ctx.get(Contract)` returns the service or `None`,
+`ctx.require(Contract)` raises `ServiceNotFoundError`, and `ctx.has(Contract)` returns a
+bool. Strings are rejected (`TypeError`): a plugin asks for a contract class, not a service
+name. `ctx.tools`, `ctx.prompt`, `ctx.commands`, `ctx.llm` and `ctx.presets` are typed
+shortcuts over the same lookup. `PluginContext` no longer proxies unknown attributes
+(accessing `ctx.some_service` raises `AttributeError`); the explicitly supported surface is
+`ctx.get/require/has`, `ctx.provide`, `ctx.mount`, `ctx.effect`, `ctx.on`/`ctx.once`/
+`ctx.emit`, `ctx.isolate`/`ctx.intercept`, the registration helpers and `ctx.raw`.
+Bus event names always go through `core.bus.EventBus`; the runtime raises no plumbing events
+of its own. Capability metadata (`risk`, `idempotent`, `permissions`, `sandbox`,
+`token_cost`, `context_window`) lives on the plugin class and is folded into a
+`CapabilityManifest` by `self.capability_manifest()` / `deeppyro.api.build_manifest`.
 
 ## 3. Composition: bundles, rows, patches
 
@@ -93,6 +105,7 @@ A bundle is a directory with `bundle.toml`:
 id = "my-bundle"
 name = "My bundle"
 version = "0.1.0"
+api_version = 3     # must equal deeppyro.api.API_VERSION; omitted means 3
 order = 50          # applied after lower order bundles
 critical = false    # default for external bundles
 
@@ -103,8 +116,11 @@ config = { greeting = "hi" }
 ```
 
 Row keys: `id`, `plugin`, `config`, `disabled`, `before`, `after`, `critical`, `name`,
-`isolate`, `intercept`, `group`, `rows`, `include`. Unknown keys are rejected. `rows` and
-`include` are composition-time fields (sections 3.1 and 3.2).
+`isolate`, `intercept`, `group`, `rows`, `include`. The loader validates every bundle
+file, include file and nested group row against the pydantic models in
+`deeppyro.kernel.bundle_schema` (known keys only, scalar types, recursive row validation), so
+unknown keys are rejected with the offending key named. `rows` and `include` are
+composition-time fields (sections 3.1 and 3.2).
 
 Patch semantics (deliberately different from a deep merge):
 
@@ -232,7 +248,10 @@ every already-mounted fiber. External rows default to non-critical: a failure is
   `callable(host, argument)` where host is the TUI app (or headless host object).
 - providers: `ctx.register_provider(name, factory, description=...)`; factory is
   `callable(llm_service) -> LlmProvider` and wins over a config provider with the same name.
-- services: a `Service` subclass exposes an entirely new service name.
+- services: a `Service` subclass exposes an entirely new service name; other plugins inject it
+  either as a name or as the contract class.
+- mounting: `ctx.mount(plugin, config)` mounts a child plugin/fiber under the current context.
+  There is no second mount entry point (sections 1 and 2).
 - runtime self-extension: the `plugin_manager`, `settings` and `inspect` services (rows
   `plugin-manager`, `settings`, `inspect`) let an agent install/list/enable/remove external
   bundles and plugins, read and write plugin config, and inspect the live composition. The same
@@ -293,8 +312,8 @@ layer, not that anything failed.
 ### 6.3 Kernel runtime service
 
 The first core row (`id = "kernel"`, `deeppyro.kernel.runtime:KernelRuntime`) provides the
-`kernel` service. It is a normal `Service` plugin with `inject = ["config"]` that the
-loader attaches to the booted `App`:
+`kernel` service. It is a normal `Service` plugin with typed
+`inject = (KernelConfig,)` that the loader attaches to the booted `App`:
 
 - `mounted_plugins() -> list[dict]` - every composition row as reported by
   `App.row_states()` (including disabled and failed rows); returns `[]` before the runtime
@@ -336,7 +355,7 @@ class GreetTool(BaseTool):
 
 class GreetPlugin(Plugin):
     plugin_id = "greet"
-    api_version = 2
+    api_version = 3
     inject = ("tools", "prompt", "commands")
 
     def setup(self):
@@ -350,7 +369,7 @@ class GreetPlugin(Plugin):
 
 | area | files |
 |---|---|
-| contract | `src/deeppyro/api/{__init__,errors,types,context,plugin}.py` |
+| contract | `src/deeppyro/api/{__init__,errors,types,context,plugin,services,capabilities,version}.py` |
 | composition | `src/deeppyro/kernel/{app,composition,bundle,manifest,runtime}.py` |
 | core plugins | `src/deeppyro/builtin/*.py`, `src/deeppyro/bundles/core/bundle.toml` |
 | tests | `tests/kernel/` (incl. `test_composition_groups.py`, `test_composition_requires.py`, `test_runtime.py`), `tests/integration/test_plugin_composition.py`, `tests/integration/test_agent_presets.py`, `tests/integration/test_plugin_services.py`, `tests/tui/test_commands.py`, `tests/tui/test_slots.py` |
@@ -368,7 +387,8 @@ class GreetPlugin(Plugin):
   `agentPreset` keeps the value the session was created with; only new sessions record the new id.
 - Preset `model` overrides skip config validation; an unknown model id fails on the next request.
 - Plugins run in-process and are trusted once loaded; there is no OS-level isolation.
-- `api_version` is a single integer gate, not a negotiation protocol.
+- `Plugin.api_version` and `bundle.api_version` must equal the host `API_VERSION` (3); there
+  is no negotiation protocol and no v1/v2 compatibility shim (ADR 0001 section 7).
 - Live config updates are volatile-only and never restart a fiber; every other field needs a full
   restart (the row is reported `restart-required` meanwhile). `apply_plugin_config` does
   not persist anything: writing user manifests stays the settings store's job.

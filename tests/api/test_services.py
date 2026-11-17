@@ -1,9 +1,11 @@
 """Typed service resolution at the api and kernel boundary.
 
 The cases below pin the promises of the typed shell: a Service subclass binds
-its own contract to its provide name, typed and string lookups reach the same
-service, the lookup helpers also work on a raw runtime context, and two
-containers never leak a same-named service into each other.
+its own contract to its provide name, typed lookups reach it both through the
+App and through PluginContext, the lookup helpers also work on a raw runtime
+context, and two containers never leak a same-named service into each other.
+Plugin-facing string lookup is gone in API v3; only the host-level App.service
+compatibility helper is still pinned below.
 """
 
 from __future__ import annotations
@@ -15,7 +17,6 @@ import pytest
 
 from deeppyro.api import (
     Plugin,
-    PluginDependencyError,
     Service,
     ServiceBag,
     ServiceNotFoundError,
@@ -74,13 +75,11 @@ class ProbePlugin(Service):
         self.context: Any = None
         self.typed: Any = None
         self.alias: Any = None
-        self.string: Any = None
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        self.context = ctx
-        self.typed = ctx.require(WidgetPlugin)
-        self.alias = ctx.get(WidgetPlugin)
-        self.string = ctx.get("widget")
+    def setup(self) -> None:
+        self.context = self.ctx
+        self.typed = self.ctx.require(WidgetPlugin)
+        self.alias = self.ctx.get(WidgetPlugin)
 
 
 class LegacyStringPlugin(Plugin):
@@ -91,8 +90,8 @@ class LegacyStringPlugin(Plugin):
     def __init__(self, ctx: Any, config: Any = None) -> None:
         super().__init__(ctx, config)
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        ctx.provide("legacy-service", "legacy-value")
+    def setup(self) -> None:
+        self.ctx.provide("legacy-service", "legacy-value")
 
 
 class LegacyContract:
@@ -203,7 +202,6 @@ async def test_plugin_context_aliases_and_failures() -> None:
         context = probe.context
         assert probe.typed.label == "widget"
         assert probe.alias.label == "widget"
-        assert probe.string.label == "widget"
         assert context.get(HookService) is None
         assert context.get(UnboundContract) is None
         with pytest.raises(ServiceNotFoundError) as caught:
@@ -212,8 +210,10 @@ async def test_plugin_context_aliases_and_failures() -> None:
         assert "probe" in str(caught.value)
         with pytest.raises(ServiceTypeError):
             context.require(UnboundContract)
-        with pytest.raises(PluginDependencyError, match="requires service 'hooks'"):
-            context.service("hooks")
+        with pytest.raises(TypeError, match="typed in API v3"):
+            context.get("hooks")
+        with pytest.raises(AttributeError, match="implicit attribute forwarding"):
+            _ = context.service
     finally:
         await app.stop()
 

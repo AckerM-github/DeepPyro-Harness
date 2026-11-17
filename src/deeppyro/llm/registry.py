@@ -66,13 +66,13 @@ def create_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) 
     if api in _OPENAI_COMPAT_APIS:
         return OpenAICompatProvider(
             name,
-            pc.baseURL,
+            pc.base_url,
             pc.resolve_api_key(),
             model_ctx=_context_window(pc),
             timeout_s=timeout_s,
         )
     if api in _ANTHROPIC_APIS:
-        if "baseURL" not in pc.model_fields_set or not pc.baseURL.strip():
+        if "base_url" not in pc.model_fields_set or not pc.base_url.strip():
             raise ConfigError(
                 f"provider {name!r} uses api {pc.api!r} but does not set baseURL; "
                 "Anthropic providers require an explicit endpoint "
@@ -80,7 +80,7 @@ def create_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) 
             )
         return AnthropicProvider(
             name,
-            pc.baseURL,
+            pc.base_url,
             pc.resolve_api_key(),
             model_ctx=_context_window(pc),
             model_max_tokens=_max_tokens(pc),
@@ -92,7 +92,7 @@ def create_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) 
 
 
 def _context_window(pc: ProviderConfig) -> int | None:
-    windows = [m.contextWindow for m in pc.models if m.contextWindow is not None]
+    windows = [m.context_window for m in pc.models if m.context_window is not None]
     return max(windows) if windows else None
 
 

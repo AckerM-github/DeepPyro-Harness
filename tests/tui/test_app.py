@@ -15,6 +15,7 @@ from deeppyro.tui.widgets.conversation import ConversationView
 from deeppyro.tui.widgets.plugin_slots import PluginStatusBar
 from deeppyro.tui.widgets.prompt_area import PromptArea
 from deeppyro.tui.widgets.status_bar import StatusBar
+from tests.service_doubles import service_lookup, service_require
 
 
 class FakeSession:
@@ -307,6 +308,12 @@ class _FakeKernel:
         if name == "slots":
             return self.registry
         raise LookupError(name)
+
+    def get(self, service: type[Any]) -> Any | None:
+        return service_lookup({"slots": self.registry}, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require({"slots": self.registry}, service)
 
 
 def _runtime_with_slots(registry: SlotRegistry):

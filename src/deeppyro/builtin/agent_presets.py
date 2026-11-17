@@ -37,7 +37,7 @@ CORDIS_GUIDE = """## Extending DeepPyro with Cordis plugins
 - Rows load in composition order: the core bundle first, then bundles under ~/.dpro/bundles sorted by order and id, then explicit bundle paths, then user manifest patches from ~/.dpro/plugins.toml.
 - Rows with the same id are patched: config is replaced as a whole, disabled and critical are overridden, isolate and intercept merge, and the plugin class cannot change.
 - A new row is inserted before or after its anchor id, otherwise appended at the end.
-- A plugin subclasses deeppyro.api.Plugin or deeppyro.api.Service, sets plugin_id, declares inject names, and implements setup(ctx, config). A Service subclass declares provide and is reachable with ctx.service(name).
+- A plugin subclasses deeppyro.api.Plugin or deeppyro.api.Service, sets plugin_id, declares inject dependencies (service contracts or names), and implements setup(self) reading self.ctx/self.config. A Service subclass declares provide and is reachable with ctx.require(ServiceContract).
 - Register contributions with ctx.register_tool, ctx.register_prompt_section, ctx.register_command, ctx.register_provider and ctx.register_preset. Their disposers are scoped to the plugin fiber, so cleanup is automatic.
 - Prefer editing or adding bundle rows over hand wiring: the loader validates rows and reports load state per row id.
 - Self-extension tools: plugin_inspect reports services, plugins, tools, prompts, commands and providers; plugin_manager lists, installs, sets and removes bundles; plugin_create scaffolds a new bundle; settings_read and settings_write inspect and patch plugin config with a revision check.

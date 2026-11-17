@@ -1,21 +1,21 @@
-"""Base classes for DeepPyro plugins and services.
+"""Base classes for DeepPyro plugins and services (API v3).
 
-API v2 (the current version) has a single injection point: the adapter
-constructs the plugin with ``(ctx, config)`` and then calls ``setup()`` with no
-arguments::
+API v3 has one mount shape and one initialisation hook: the kernel constructs
+the plugin with the context and validated config, then calls `setup(self)` with
+no arguments::
 
     class HelloPlugin(api.Plugin):
         plugin_id = "hello"
-        inject = (ToolsService, "prompt")  # contracts or plain service names
+        inject = (ToolsPlugin,)          # typed contracts (plain names still allowed)
 
         def setup(self):
             self.ctx.logger.info("hello, %s", self.config.name)
 
-Plugins written against API v1 declare ``setup(self, ctx, config)``; the adapter
-still calls them with both arguments, so existing bundles keep working. A plugin
-that wants the strict v2 contract declares ``api_version = 2`` in its own body.
+Children are mounted through the same path:
 
-Services are plugins that additionally register a named service:
+    self.ctx.mount(ChildPlugin, {"option": 1})
+
+Services are plugins that additionally register a named service::
 
     class NotesService(api.Service):
         provide = "notes"
@@ -26,30 +26,56 @@ Services are plugins that additionally register a named service:
 
 The kernel validates the pydantic Config class before construction, so config
 here is already a model instance (or a plain dict when Config is None).
+
+API v3 is a hard cut: `api_version` must be 3 (the default) and `setup` takes
+only `self`.  Plugins written against the v1/v2 signature
+`setup(self, ctx, config)` are rejected at mount time with a
+:class:`~deeppyro.api.errors.PluginError` that points at the v3 shape, per ADR
+0001 section 7 ("no compatibility shim").  Migration is mechanical: the
+constructor already receives the context and config, so move the body of the
+old hook into `setup(self)` and read `self.ctx` / `self.config`.
 """
 
 from __future__ import annotations
 
 import inspect
-import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel
 
+from .capabilities import CapabilityManifest, RiskLevel, TokenCost, build_manifest
 from .context import PluginContext
 from .errors import PluginError
 from .services import ServiceTypeError, bind_service_type, note_service_value, service_name
 from .types import PluginConfig
+from .version import API_VERSION
 
-#: Classes already told about the v1 setup signature (one warning per class).
-_WARNED_LEGACY_SETUP: set[type[Any]] = set()
+
+def _positional_arity(method: Any) -> int:
+    """Number of positional parameters a bound method declares (0 for setup(self))."""
+    try:
+        signature = inspect.signature(method)
+    except (TypeError, ValueError):  # pragma: no cover - builtins and C functions
+        return 2
+    return sum(
+        1
+        for parameter in signature.parameters.values()
+        if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+    )
+
+
+def _describe(cls: type[Any]) -> str:
+    """Human readable plugin identity used in errors."""
+    plugin_id = str(getattr(cls, "plugin_id", "") or "")
+    location = f"{cls.__module__}:{cls.__qualname__}"
+    return f"plugin {plugin_id!r} ({location})" if plugin_id else f"plugin ({location})"
 
 
 class Plugin:
-    """Base class for a host plugin."""
+    """Base class for a host plugin (API v3)."""
 
-    api_version: ClassVar[int] = 2
+    api_version: ClassVar[int] = API_VERSION
     plugin_id: ClassVar[str] = ""
     version: ClassVar[str] = "0.0.0"
     description: ClassVar[str] = ""
@@ -61,6 +87,20 @@ class Plugin:
     #: Services this plugin depends on, as contract classes or plain service
     #: names. Contract classes are resolved to their provide name at mount time.
     inject: ClassVar[Sequence[str | type[Any]]] = ()
+
+    # -- capability governance (read by api.capabilities) ------------------
+    #: Coarse blast radius of the plugin.
+    risk: ClassVar[RiskLevel] = RiskLevel.LOW
+    #: Whether mounting/setup can be replayed safely.
+    idempotent: ClassVar[bool] = True
+    #: Host permissions the plugin needs (for example `tools:write`).
+    permissions: ClassVar[tuple[str, ...]] = ()
+    #: Sandbox mode the plugin needs, or None when it needs none.
+    sandbox: ClassVar[str | None] = None
+    #: Optional token/cost metadata for the accounting service.
+    token_cost: ClassVar[TokenCost | None] = None
+    #: Optional context window assumption, when relevant to the plugin.
+    context_window: ClassVar[int | None] = None
 
     #: Set by the adapter before setup runs.
     ctx: PluginContext
@@ -76,19 +116,28 @@ class Plugin:
         May be synchronous or asynchronous; the kernel awaits the result when
         needed. Registrations made through ctx are undone automatically when
         the plugin fiber unloads.
-
-        Plugins written for API v1 may still declare ``setup(self, ctx,
-        config)``; invoke_setup() calls those with both arguments.
         """
+
+    def capability_manifest(self) -> CapabilityManifest:
+        """Return this plugin's declarative capability manifest.
+
+        Subclasses may override to refine the derived defaults (for example to
+        list contributed tools, hooks or token/cost metadata).
+        """
+        return build_manifest(self)
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__} id={self.plugin_id!r}>"
 
 
-def inject_names(cls: type[Any]) -> list[str]:
-    """Resolve a plugin's declared injections to plain service names."""
+def resolve_injections(entries: Iterable[str | type[Any]], *, owner: str = "plugin") -> list[str]:
+    """Resolve an inject list to plain service names.
+
+    Typed contracts are resolved through :func:`service_name`; plain strings are
+    kept for host-defined services and for incremental migration.
+    """
     names: list[str] = []
-    for item in getattr(cls, "inject", ()) or ():
+    for item in entries or ():
         if isinstance(item, str):
             if item:
                 names.append(item)
@@ -97,66 +146,42 @@ def inject_names(cls: type[Any]) -> list[str]:
             try:
                 names.append(service_name(item))
             except ServiceTypeError as exc:
-                raise PluginError(f"{_describe(cls)}: inject entry {item!r}: {exc}") from exc
+                raise PluginError(f"{owner}: inject entry {item!r}: {exc}") from exc
             continue
-        raise PluginError(
-            f"{_describe(cls)}: inject entries must be service names or contract classes, got {item!r}"
-        )
+        raise PluginError(f"{owner}: inject entries must be service names or contract classes, got {item!r}")
     return names
 
 
-def invoke_setup(instance: Any, ctx: PluginContext, config: PluginConfig) -> Any:
-    """Call a plugin's setup hook with the right argument list.
+def inject_names(cls: type[Any]) -> list[str]:
+    """Resolve a plugin's declared injections to plain service names."""
+    return resolve_injections(getattr(cls, "inject", ()) or (), owner=_describe(cls))
 
-    API v2 plugins implement ``setup(self)`` and read ctx/config from the
-    attributes the constructor stored. Legacy plugins keep receiving the two
-    positional arguments they expect, so both styles coexist in one process.
+
+def invoke_setup(instance: Any, ctx: PluginContext, config: PluginConfig) -> Any:
+    """Call a plugin's setup hook under the single API v3 contract.
+
+    Only `setup(self)` is accepted.  API v1/v2 plugins receive an explicit
+    error with a migration hint instead of a silent fallback or an implicit
+    compatibility branch (ADR 0001 section 7).
     """
     setup = getattr(instance, "setup", None)
     if not callable(setup):
         return None
-    arity = _positional_arity(setup)
-    if arity >= 2:
-        _warn_legacy_setup(instance)
-        return setup(ctx, config)
-    if arity == 1:
-        return setup(ctx)
-    return setup()
-
-
-def _describe(cls: type[Any]) -> str:
-    plugin_id = getattr(cls, "plugin_id", "") or ""
-    suffix = f" {plugin_id!r}" if plugin_id else ""
-    return f"plugin{suffix} ({cls.__module__}:{cls.__qualname__})"
-
-
-def _positional_arity(method: Callable[..., Any]) -> int:
-    """Count positional parameters a bound setup method expects."""
-    try:
-        signature = inspect.signature(method)
-    except (TypeError, ValueError):  # pragma: no cover - builtins only
-        return 2
-    arity = 0
-    for parameter in signature.parameters.values():
-        if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD):
-            arity += 1
-    return arity
-
-
-def _warn_legacy_setup(instance: Any) -> None:
-    """Warn when a class that opted into v2 still uses the v1 signature."""
-    cls = type(instance)
-    declared = cls.__dict__.get("api_version")
-    if not isinstance(declared, int) or declared < 2:
-        return
-    if cls in _WARNED_LEGACY_SETUP:
-        return
-    _WARNED_LEGACY_SETUP.add(cls)
-    warnings.warn(
-        f"{_describe(cls)} declares api_version {declared} but implements the legacy "
-        "setup(ctx, config) signature; implement setup(self) and read self.ctx/self.config",
-        DeprecationWarning,
-        stacklevel=3,
+    declared = int(getattr(type(instance), "api_version", API_VERSION) or API_VERSION)
+    if declared != API_VERSION:
+        raise PluginError(
+            f"{_describe(type(instance))} targets api_version {declared}, but this host only "
+            f"speaks API v{API_VERSION}; the v1/v2 plugin API was removed with no compatibility "
+            "shim (ADR 0001 section 7) -- declare api_version = "
+            f"{API_VERSION} and implement setup(self)"
+        )
+    if _positional_arity(setup) == 0:
+        return setup()
+    raise PluginError(
+        f"{_describe(type(instance))} implements setup with positional parameters, "
+        f"but API v{API_VERSION} has a single mount shape: setup(self). "
+        "Read self.ctx and self.config inside setup instead; the v2 setup(ctx, config) "
+        "signature was removed with no compatibility shim (ADR 0001 section 7)."
     )
 
 
@@ -167,8 +192,7 @@ class Service(Plugin):
     itself in the typed service table at definition time, so callers can write
     ctx.require(ThatService) without any extra wiring. Constructing the service
     registers the instance itself with the host, and unmounting the plugin
-    removes it again. The historical string name (and ctx.get("name")) keeps
-    working unchanged.
+    removes it again. Dependent plugins receive it through typed inject.
     """
 
     provide: ClassVar[str] = ""
@@ -195,7 +219,7 @@ class Service(Plugin):
         resolver = getattr(raw, "resolve_intercept", None)
         intercept_config: dict[str, Any] = {}
         if callable(resolver):
-            resolved = cast(Callable[[str], Any], resolver)(self.provide)
+            resolved = resolver(self.provide)
             if resolved:
                 intercept_config = dict(cast("dict[str, Any]", resolved))
         self.intercept_config = intercept_config
@@ -206,4 +230,4 @@ class Service(Plugin):
             note_service_value(self, self.provide)
 
 
-__all__ = ["Plugin", "Service", "inject_names", "invoke_setup"]
+__all__ = ["Plugin", "Service", "inject_names", "invoke_setup", "resolve_injections"]

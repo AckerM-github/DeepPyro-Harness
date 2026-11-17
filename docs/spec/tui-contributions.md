@@ -27,7 +27,7 @@
 ### 2.1 注册
 
 ```python
-registry = ctx.service("slots")
+registry = self.ctx.require(SlotRegistry)
 dispose = registry.add_screen(
     "indexer",                      # 稳定 id，用于 /panel indexer 与 ui.open_screen("indexer")
     title="索引器",

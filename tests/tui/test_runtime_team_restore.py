@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from deeppyro.tui.runtime import TuiRuntime
+from tests.service_doubles import service_lookup, service_require
 
 
 class FakeSession:
@@ -87,6 +88,12 @@ class FakeKernelApp:
             return self._services[name]
         except KeyError:
             raise LookupError(name) from None
+
+    def get(self, service: type[Any]) -> Any | None:
+        return service_lookup(self._services, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self._services, service)
 
 
 def make_runtime(team: FakeTeam, session: FakeSession) -> TuiRuntime:

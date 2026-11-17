@@ -7,8 +7,8 @@ it may inject the "kernel" service and ask what is mounted:
     from deeppyro.kernel.runtime import KernelRuntime
 
     class MyPlugin(Plugin):
-        api_version = 2
-        inject = ("kernel",)
+        api_version = 3
+        inject = (KernelRuntime,)
 
         def setup(self) -> None:
             for plugin in self.ctx.require(KernelRuntime).mounted_plugins():
@@ -40,6 +40,7 @@ import logging
 from typing import Any, ClassVar
 
 from deeppyro.api import PluginConfig, PluginContext, Service
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.kernel.config_values import config_dict
 
 log = logging.getLogger("deeppyro.kernel")
@@ -63,7 +64,7 @@ class KernelRuntime(Service):
     plugin_id: ClassVar[str] = "kernel"
     version: ClassVar[str] = "0.1.0"
     description: ClassVar[str] = "Kernel runtime: mounted plugin registry and live config"
-    inject: ClassVar[list[str]] = ["config"]
+    inject: ClassVar[tuple[type[Any], ...]] = (KernelConfig,)
 
     def __init__(self, ctx: PluginContext, config: PluginConfig = None) -> None:
         super().__init__(ctx, config)

@@ -23,7 +23,7 @@ async def test_mount_loads_plugin_and_becomes_active() -> None:
     async def apply(child_ctx: object, config: object) -> None:
         seen.append((child_ctx, config))
 
-    fiber = ctx.plugin({"name": "demo", "apply": apply}, {"value": 3})
+    fiber = ctx.mount({"name": "demo", "apply": apply}, {"value": 3})
     assert fiber.state is FiberState.PENDING
     assert fiber.get_state() is FiberState.PENDING
 
@@ -40,7 +40,7 @@ async def test_failed_load_stores_error_and_raises_at_await() -> None:
     def apply(_child_ctx: object, _config: object) -> None:
         raise RuntimeError("boom")
 
-    fiber = ctx.plugin({"name": "broken", "apply": apply}, {})
+    fiber = ctx.mount({"name": "broken", "apply": apply}, {})
     with pytest.raises(RuntimeError, match="boom"):
         await fiber
 
@@ -58,7 +58,7 @@ async def test_effects_are_disposed_in_reverse_order() -> None:
         child_ctx.effect(lambda: calls.append("inner-first"), label="inner-first")  # type: ignore[attr-defined]
         child_ctx.effect(lambda: calls.append("inner-second"), label="inner-second")  # type: ignore[attr-defined]
 
-    fiber = ctx.plugin({"name": "effects", "apply": apply}, {})
+    fiber = ctx.mount({"name": "effects", "apply": apply}, {})
     await fiber
     assert fiber.dispose() is None
     assert calls == ["inner-second", "inner-first"]
@@ -75,7 +75,7 @@ async def test_dispose_returns_awaitable_for_async_teardowns() -> None:
 
         child_ctx.effect(teardown, label="async")  # type: ignore[attr-defined]
 
-    fiber = ctx.plugin({"name": "async", "apply": apply}, {})
+    fiber = ctx.mount({"name": "async", "apply": apply}, {})
     await fiber
     result = fiber.dispose()
     assert inspect.isawaitable(result)
@@ -93,7 +93,7 @@ def test_dispose_without_running_loop_drains_async_teardowns() -> None:
 
         child_ctx.effect(teardown, label="async")  # type: ignore[attr-defined]
 
-    fiber = ctx.plugin({"name": "sync-drain", "apply": apply}, {})
+    fiber = ctx.mount({"name": "sync-drain", "apply": apply}, {})
     asyncio.run(fiber.wait())
     assert fiber.dispose() is None
     assert calls == ["drained"]
@@ -107,10 +107,10 @@ async def test_dispose_cascades_children_before_parent_effects() -> None:
         child_ctx.effect(lambda: order.append("inner"), label="inner")  # type: ignore[attr-defined]
 
     def outer_apply(child_ctx: object, _config: object) -> None:
-        child_ctx.plugin({"name": "inner", "apply": inner_apply}, {})  # type: ignore[attr-defined]
+        child_ctx.mount({"name": "inner", "apply": inner_apply}, {})  # type: ignore[attr-defined]
         child_ctx.effect(lambda: order.append("outer"), label="outer")  # type: ignore[attr-defined]
 
-    fiber = ctx.plugin({"name": "outer", "apply": outer_apply}, {})
+    fiber = ctx.mount({"name": "outer", "apply": outer_apply}, {})
     await fiber
     assert len(fiber.children) == 1
     child = fiber.children[0]
@@ -125,7 +125,7 @@ async def test_dispose_cascades_children_before_parent_effects() -> None:
 
 async def test_disposed_fiber_rejects_new_effects() -> None:
     ctx = _context()
-    fiber = ctx.plugin({"name": "noop", "apply": lambda _ctx, _config: None}, {})
+    fiber = ctx.mount({"name": "noop", "apply": lambda _ctx, _config: None}, {})
     await fiber
     fiber.dispose()
     with pytest.raises(RuntimeError, match="disposed fiber"):
@@ -144,7 +144,7 @@ def test_root_fiber_is_active() -> None:
 
 async def test_inject_dependencies_keep_a_fiber_pending_until_provided() -> None:
     ctx = _context()
-    fiber = ctx.plugin(
+    fiber = ctx.mount(
         {"name": "with-inject", "apply": lambda _ctx, _config: None, "inject": ["tools", "prompt"]}, {}
     )
     assert fiber.inject == ("tools", "prompt")
@@ -166,9 +166,9 @@ async def test_load_failure_logs_and_subsequent_children_do_not_block() -> None:
     def broken(_child_ctx: object, _config: object) -> None:
         raise ValueError("nope")
 
-    failed = ctx.plugin({"name": "failed", "apply": broken}, {})
+    failed = ctx.mount({"name": "failed", "apply": broken}, {})
     with pytest.raises(ValueError):
         await failed
-    healthy = ctx.plugin({"name": "healthy", "apply": lambda _ctx, _config: None}, {})
+    healthy = ctx.mount({"name": "healthy", "apply": lambda _ctx, _config: None}, {})
     await healthy
     assert healthy.state is FiberState.ACTIVE

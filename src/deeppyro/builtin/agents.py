@@ -59,8 +59,8 @@ class AgentsPlugin(Service):
 
     def options(self, **overrides: Any) -> AgentOptions:
         values: dict[str, Any] = {
-            "max_steps": self._agent_config.maxSteps,
-            "max_tokens": self._agent_config.maxTokens,
+            "max_steps": self._agent_config.max_steps,
+            "max_tokens": self._agent_config.max_tokens,
             "temperature": self._agent_config.temperature,
         }
         values.update(overrides)

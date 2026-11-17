@@ -116,7 +116,7 @@ async def test_nested_plugins_mount_under_parent_fiber() -> None:
         return None
 
     async def parent_apply(child_ctx: object, _config: object) -> None:
-        child_ctx.plugin({"name": "child", "apply": child_apply}, {})  # type: ignore[attr-defined]
+        child_ctx.mount({"name": "child", "apply": child_apply}, {})  # type: ignore[attr-defined]
 
     parent = mount(ctx, {"name": "parent", "apply": parent_apply}, {})
     await parent

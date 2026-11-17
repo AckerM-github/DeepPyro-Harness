@@ -27,7 +27,7 @@ version = "1.2.3"
 description = "a fixture"
 module = "dpyro_demo"
 class = "DemoPlugin"
-api_version = 1
+api_version = 3
 provides = ["demo_service"]
 
 [compat]
@@ -89,7 +89,7 @@ def test_module_colon_form_and_legacy_flat_keys(tmp_path: Path) -> None:
         "version": "0.0.1",
         "description": "flat",
         "module": "legacy_plugin:LegacyPlugin",
-        "api_version": 1,
+        "api_version": 3,
         "provides": ["legacy_service"],
     }
     metadata = parse_metadata(document, plugin_id="legacy", directory=tmp_path)
@@ -146,6 +146,16 @@ def test_check_compat_reports_python_and_host_ranges(tmp_path: Path) -> None:
     assert [error.kind for error in mismatched] == [FAILURE_INCOMPAT]
     hosted = check_compat(metadata, python_version=(3, 13, 0), host_version="2.0.0")
     assert [error.kind for error in hosted] == [FAILURE_INCOMPAT]
+
+
+def test_check_compat_rejects_older_api_versions_with_a_migration_hint(tmp_path: Path) -> None:
+    directory = make_package(tmp_path, "demo", V2.replace("api_version = 3", "api_version = 2"))
+    metadata = load_metadata(directory)
+
+    errors = check_compat(metadata, python_version=(3, 13, 0), host_version="0.1.0")
+
+    assert [error.kind for error in errors] == [FAILURE_INCOMPAT]
+    assert "no compatibility shim" in errors[0].message
 
 
 # -- bootstrap -------------------------------------------------------------
@@ -264,7 +274,7 @@ def test_plugin_bundle_layer_is_applied_after_core(tmp_path: Path, monkeypatch) 
 [bundle]
 id = "demo"
 version = "1.2.3"
-api_version = 1
+api_version = 3
 
 [[plugins]]
 id = "demo-service"
@@ -291,7 +301,7 @@ def test_plugin_bundle_may_override_core_config(tmp_path: Path, monkeypatch) -> 
 [bundle]
 id = "demo"
 version = "1.2.3"
-api_version = 1
+api_version = 3
 
 [[plugins]]
 id = "kernel"

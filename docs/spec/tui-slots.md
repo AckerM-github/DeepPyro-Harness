@@ -204,7 +204,7 @@ class ClockPlugin(Plugin):
     inject = ("slots",)
 
     def setup(self) -> None:
-        slots = self.ctx.service("slots")
+        slots = self.ctx.require(SlotRegistry)
         dispose = slots.add_status_item(
             lambda context: f"clock: {context['model']}",
             id=f"{self.plugin_id}.status",
@@ -747,7 +747,7 @@ want localized text. `"!key"` interpolation is intentionally not implemented
 id = "acme"
 name = "Acme UI"
 version = "0.1.0"
-api_version = 2
+api_version = 3
 ```
 
 `ui.toml`:

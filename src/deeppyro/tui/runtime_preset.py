@@ -11,6 +11,7 @@ from deeppyro.api import (
     DEFAULT_PRESET_ID,
     TEAM_PRESET_ID,
 )
+from deeppyro.builtin.presets import PresetsPlugin
 from deeppyro.core.errors import DeeppyroError
 from deeppyro.hooks import SESSION_DISPOSED
 from deeppyro.tui.runtime_model import ModelLayer
@@ -60,7 +61,7 @@ class PresetLayer(ModelLayer):
         entered with /team on, so /preset team is rejected with a hint instead
         of silently switching.
         """
-        service = self._service("presets")
+        service = self._service(PresetsPlugin)
         if service is None:
             raise DeeppyroError("agent presets are not available in this bundle")
         wanted = self._canonical_preset(preset)
@@ -87,7 +88,7 @@ class PresetLayer(ModelLayer):
 
     async def _switch_preset(self, preset_id: str, revision: int | None) -> None:
         """Switch preset/agent atomically; restore the old pair on failure."""
-        service = self._service("presets")
+        service = self._service(PresetsPlugin)
         if service is None:
             raise DeeppyroError("agent presets are not available in this bundle")
         spec = self._resolve_preset(service, preset_id)

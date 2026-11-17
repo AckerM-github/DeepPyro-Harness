@@ -6,6 +6,7 @@ import contextlib
 from typing import Any
 
 from deeppyro.api import DEFAULT_PRESET_ID, TEAM_PRESET_ID, PluginDependencyError
+from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.core.errors import ConfigError, DeeppyroError
 from deeppyro.tui.runtime_session import SessionLayer
 from deeppyro.tui.runtime_support import _context_window_for, _recorded_model_selection, _recorded_preset
@@ -79,10 +80,9 @@ class ModelLayer(SessionLayer):
         app = self.kernel_app
         if app is None:
             raise DeeppyroError("cannot switch provider after the kernel has stopped")
-        try:
-            service = app.service("llm")
-        except LookupError as exc:
-            raise DeeppyroError("llm service is not available") from exc
+        service = app.get(LlmPlugin)
+        if service is None:
+            raise DeeppyroError("llm service is not available")
         try:
             return service.provider(provider_name)
         except KeyError as exc:

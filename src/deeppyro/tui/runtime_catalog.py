@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from deeppyro.builtin.commands import CommandsPlugin
+from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.core.errors import ConfigError
 from deeppyro.tui.runtime_preset import PresetLayer
 from deeppyro.tui.runtime_support import await_maybe
@@ -18,10 +20,7 @@ class CatalogLayer(PresetLayer):
         app = self.kernel_app
         if app is None:
             return None
-        try:
-            return app.service("commands")
-        except LookupError:
-            return None
+        return app.get(CommandsPlugin)
 
     def models(self, provider: str | None = None) -> list[str]:
         """Model ids configured for one provider (the active one by default)."""
@@ -56,7 +55,7 @@ class CatalogLayer(PresetLayer):
         if app is None:
             return None
         try:
-            return app.service("llm")
+            return app.get(LlmPlugin)
         except (AttributeError, LookupError):
             return None
 

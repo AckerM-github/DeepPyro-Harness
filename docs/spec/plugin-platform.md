@@ -23,7 +23,7 @@
 
 ## 2. `plugin.toml`
 
-### 2.1 v2（分节，推荐）
+### 2.1 分节格式（推荐；API v3）
 
     [package]
     id = "dpyro-im"                 # 必须等于目录名
@@ -32,7 +32,7 @@
     description = "QQ/Discord bridge"
     module = "dpyro_im"             # 也可以是 "dpyro_im.plugin:ImPlugin"
     class = "ImPlugin"
-    api_version = 2                 # 必填，整数，不得大于宿主 API_VERSION
+    api_version = 3                 # 必填，整数，必须等于宿主 API_VERSION（v3 硬切，无 v1/v2 兼容层）
     provides = ["im"]               # 可选，仅用于展示
 
     [compat]
@@ -55,7 +55,7 @@
 | --- | --- | --- |
 | `[package]` | `id` | 必须是目录名；缺省时取目录名 |
 | | `module` / `class` | 目标类；`module` 支持 `pkg.mod:Class` 简写 |
-| | `api_version` | 宿主契约版本，超界即 `version-incompat` |
+| | `api_version` | 宿主契约版本；必须等于 `API_VERSION`（其它值即 `version-incompat`，含旧的 v1/v2） |
 | | `provides` | 展示用服务名列表 |
 | `[compat]` | `dpyro` / `python` | 分别与宿主版本、解释器版本比对 |
 | `[deps]` | `vendor` / `requires` | 依赖目录名、声明的依赖 |
@@ -73,7 +73,7 @@
     class = "DemoPlugin"
     provides = ["demo"]
 
-扁平格式没有 `[package]` 节时 `api_version` 缺省为宿主 `API_VERSION`，因此升级后已有的插件目录照常加载；一旦使用分节格式，`api_version` 必须显式声明。
+扁平格式没有 `[package]` 节时 `api_version` 缺省为宿主 `API_VERSION`（3），因此升级后已有的插件目录照常加载，但插件类本身仍须声明 v3（@Plugin.setup(self)@）；一旦使用分节格式，`api_version` 必须显式声明且等于宿主版本。
 
 ## 3. 启动期激活
 
@@ -129,7 +129,7 @@
 | `dep-missing` | `[deps].requires` 在 vendor 目录里找不到或版本不满足 | `dpyro plugin update <id>` 重建 `_vendor`，或 `dpyro plugin add <id>` 重装 |
 | `dep-conflict` | 两个包 vendor 了同名不同版本 | 卸载其一 |
 | `abi-mismatch` | vendor 里的二进制扩展不是当前解释器 tag | 按当前 Python 重建 `_vendor` |
-| `version-incompat` | `[compat].dpyro` / `[compat].python` / `api_version` 不接受当前宿主 | 升级插件或宿主，或用 `dpyro plugin allow-version <id> <version>` 豁免 |
+| `version-incompat` | `[compat].dpyro` / `[compat].python` / `api_version` 不接受当前宿主 | 升级插件或宿主；`api_version` 不能豁免，必须改成 3 并迁移到 @Plugin.setup(self)@ |
 | `manifest-dangling` | 用户清单里的行指向不存在的包目录，或其中的 `module:Class` 无法 import | 从清单删掉该行，或重新 `dpyro plugin add <id>` |
 
 ## 7. `dpyro plugin`

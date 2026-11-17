@@ -37,6 +37,8 @@ from deeppyro.api import (
     PresetPluginRow,
     PresetSpec,
     Service,
+    inject_names,
+    invoke_setup,
 )
 
 logger = logging.getLogger("deeppyro.presets")
@@ -104,11 +106,9 @@ def _api_adapter(preset: PresetSpec, plugin_cls: type) -> Any:
             default_revision=preset.revision,
         )
         instance = plugin_cls(ctx, config)
-        setup = getattr(instance, "setup", None)
-        if callable(setup):
-            result = setup(ctx, config)
-            if inspect.isawaitable(result):
-                await result
+        result = invoke_setup(instance, ctx, config)
+        if inspect.isawaitable(result):
+            await result
         stop = getattr(instance, "stop", None)
         if callable(stop):
 
@@ -420,7 +420,7 @@ class PresetsPlugin(Service):
                 mount_ctx = base_ctx
                 for name in row.isolate:
                     mount_ctx = mount_ctx.isolate(name)
-                fiber = mount_ctx.plugin(plugin, config)
+                fiber = mount_ctx.mount(plugin, config)
                 await fiber
             except asyncio.CancelledError:
                 if fiber is not None:
@@ -466,14 +466,15 @@ class PresetsPlugin(Service):
         if not isinstance(plugin_cls, type) or not issubclass(plugin_cls, Plugin):
             return plugin_cls, raw_config
         api_version = int(getattr(plugin_cls, "api_version", API_VERSION) or API_VERSION)
-        if api_version > API_VERSION:
+        if api_version != API_VERSION:
             raise PluginConfigError(
-                f"plugin {row.id!r} requires api version {api_version} (host supports {API_VERSION})"
+                f"plugin {row.id!r} targets api_version {api_version}, but this host only speaks "
+                f"API v{API_VERSION}; the v1/v2 plugin API was removed (ADR 0001 section 7)"
             )
         plugin = {
             "name": row.id,
             "apply": _api_adapter(spec, plugin_cls),
-            "inject": list(getattr(plugin_cls, "inject", []) or []),
+            "inject": inject_names(plugin_cls),
         }
         return plugin, raw_config
 

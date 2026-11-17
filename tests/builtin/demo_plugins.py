@@ -38,7 +38,7 @@ class DemoPlugin(Plugin):
         super().__init__(ctx, config)
         self.started = False
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
         self.started = True
 
 
@@ -53,7 +53,7 @@ class ExplodingPlugin(Plugin):
     version = "0.1.0"
     description = "plugin that always fails during setup"
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
         raise RuntimeError("exploding plugin failed on purpose")
 
 

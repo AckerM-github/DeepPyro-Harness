@@ -360,7 +360,10 @@ def servers_from_config(ctx: Any, config: Any) -> Any:
     if isinstance(config, Mapping) and config:
         return config
     try:
-        service = ctx.service("config")
+        from deeppyro.api.services import lookup_service
+        from deeppyro.kernel.config_service import KernelConfig
+
+        service = lookup_service(ctx, KernelConfig)
     except Exception:  # noqa: BLE001 - the plugin still loads without a config service
         return None
     value = getattr(service, "value", None)

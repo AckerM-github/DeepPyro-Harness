@@ -8,41 +8,79 @@ import re
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from deeppyro import paths
 from deeppyro.core.errors import ConfigError
 
+if TYPE_CHECKING:
+    from deeppyro.api.capabilities import TokenCost
+
+
+class ModelCapabilities(BaseModel):
+    """Capability flags advertised by one model."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    tools: bool = True
+    vision: bool = False
+    reasoning: bool = False
+    input_modalities: tuple[str, ...] = ()
+    max_output_tokens: int | None = None
+
+
+class ModelCost(BaseModel):
+    """Price list for one model, in USD per million tokens."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    input_per_mtok: float = 0.0
+    output_per_mtok: float = 0.0
+    cached_input_per_mtok: float | None = None
+    currency: str = "USD"
+
 
 class ModelConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    """One model declared inside a provider table.
+
+    Canonical spelling is snake_case.  camelCase keys written by config files
+    from before 0.2 are still accepted as validation aliases, so an existing
+    ~/.dpro/config.toml keeps loading unchanged.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     id: str
     name: str | None = None
-    contextWindow: int | None = None
+    context_window: int | None = Field(default=None, alias="contextWindow")
+    capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
+    cost: ModelCost = Field(default_factory=ModelCost)
 
 
 class ProviderConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    """One OpenAI-compatible (or Anthropic) provider endpoint."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     api: str = "openai-completions"
-    baseURL: str = "https://api.deepseek.com/v1"
-    apiKeyEnv: str | None = None
-    apiKey: str | None = None
+    base_url: str = Field(default="https://api.deepseek.com/v1", alias="baseURL")
+    api_key_env: str | None = Field(default=None, alias="apiKeyEnv")
+    api_key: str | None = Field(default=None, alias="apiKey")
     models: list[ModelConfig] = Field(default_factory=list)
 
     def resolve_api_key(self) -> str | None:
-        if self.apiKey:
-            return self.apiKey
-        if self.apiKeyEnv:
-            return os.environ.get(self.apiKeyEnv) or None
+        """Resolve the API key from the inline value or its environment variable."""
+        if self.api_key:
+            return self.api_key
+        if self.api_key_env:
+            return os.environ.get(self.api_key_env) or None
         return None
 
 
 class AgentConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     provider: str = "local"
     model: str = ""
@@ -51,17 +89,17 @@ class AgentConfig(BaseModel):
     # truncates answers that think first (the dshinfer default is just 512).
     # Tool-heavy steps can emit several long tool calls in one assistant message;
     # 8192 leaves room for that on DeepSeek's 8k-output models.
-    maxTokens: int | None = 8192
-    # Unbounded like DSH; set [agent].maxSteps to cap a runaway loop.
-    maxSteps: int | None = None
+    max_tokens: int | None = Field(default=8192, alias="maxTokens")
+    # Unbounded like DSH; set [agent].max_steps to cap a runaway loop.
+    max_steps: int | None = Field(default=None, alias="maxSteps")
 
 
 class Config(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     agent: AgentConfig = Field(default_factory=AgentConfig)
-    sessionDir: Path | None = None
+    session_dir: Path | None = Field(default=None, alias="sessionDir")
 
     def resolve(self) -> tuple[ProviderConfig, str]:
         provider = self.providers.get(self.agent.provider)
@@ -73,6 +111,56 @@ class Config(BaseModel):
         return provider, model
 
 
+class ModelProfile(BaseModel):
+    """Capability, context and cost profile of one configured model.
+
+    Profiles are the snake_case projection of a ModelConfig that governance and
+    accounting consume.  The token/cost accounting service
+    (deeppyro.builtin.usage) prices records through token_cost().
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: str
+    provider: str = ""
+    name: str | None = None
+    context_window: int | None = Field(default=None, alias="contextWindow")
+    capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
+    cost: ModelCost = Field(default_factory=ModelCost)
+
+    @classmethod
+    def from_model_config(cls, model: ModelConfig, *, provider: str = "") -> ModelProfile:
+        """Build a profile from one provider's model entry."""
+        return cls(
+            id=model.id,
+            provider=provider,
+            name=model.name,
+            contextWindow=model.context_window,  # pydantic alias; populate_by_name also accepts context_window
+            capabilities=model.capabilities,
+            cost=model.cost,
+        )
+
+    def token_cost(self) -> TokenCost:
+        """Return this profile's price list as an api.capabilities TokenCost."""
+        from deeppyro.api.capabilities import TokenCost
+
+        return TokenCost(
+            input_per_mtok=self.cost.input_per_mtok,
+            output_per_mtok=self.cost.output_per_mtok,
+            cached_input_per_mtok=self.cost.cached_input_per_mtok,
+        )
+
+    def estimate_cost(
+        self, *, input_tokens: int = 0, output_tokens: int = 0, cached_tokens: int = 0
+    ) -> float:
+        """Price one response with this model's cost metadata."""
+        return self.token_cost().estimate(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+        )
+
+
 # User-scoped locations live under one home directory (DSH-style, ~/.dpro).
 # DEEPPYRO_HOME overrides the root; DEEPPYRO_CONFIG and DEEPPYRO_SESSION_DIR
 # override individual paths at call time.
@@ -81,10 +169,12 @@ DEFAULT_SESSION_DIR = paths.default_sessions_dir()
 
 DEFAULT_TOML = """
 # deeppyro configuration
+# Canonical keys are snake_case; camelCase spellings from older config files
+# (baseURL, maxTokens, contextWindow, ...) are still accepted when reading.
 [agent]
 provider = "local"
 model = "deepseek-v4-pro-qwen3.5-9b"
-maxTokens = 8192
+max_tokens = 8192
 
 # Standing sandbox policy. The mode is one of read-only, workspace-write and
 # danger-full-access. See docs/spec/sandbox.md.
@@ -94,15 +184,15 @@ additionalWritableRoots = []
 
 [providers.local]
 api = "openai-completions"
-baseURL = "http://127.0.0.1:8000/v1"
-apiKeyEnv = "DEEPPYRO_LOCAL_API_KEY"
-models = [{ id = "deepseek-v4-pro-qwen3.5-9b", contextWindow = 32768 }]
+base_url = "http://127.0.0.1:8000/v1"
+api_key_env = "DEEPPYRO_LOCAL_API_KEY"
+models = [{ id = "deepseek-v4-pro-qwen3.5-9b", context_window = 32768 }]
 
 [providers.deepseek]
 api = "openai-completions"
-baseURL = "https://api.deepseek.com/v1"
-apiKeyEnv = "DEEPSEEK_API_KEY"
-models = [{ id = "deepseek-chat", contextWindow = 65536 }]
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+models = [{ id = "deepseek-chat", context_window = 65536 }]
 
 # Programmatic tool calling. "native" exposes every tool directly; "ptc" exposes
 # only run_code plus a generated Python SDK, and programs call the other tools
@@ -176,8 +266,8 @@ def config_path() -> Path:
 
 
 def session_dir(cfg: Config | None = None) -> Path:
-    if cfg is not None and cfg.sessionDir is not None:
-        return Path(cfg.sessionDir)
+    if cfg is not None and cfg.session_dir is not None:
+        return Path(cfg.session_dir)
     return paths.sessions_dir()
 
 
@@ -307,7 +397,10 @@ __all__ = [
     "DEFAULT_TOML",
     "AgentConfig",
     "Config",
+    "ModelCapabilities",
     "ModelConfig",
+    "ModelCost",
+    "ModelProfile",
     "ProviderConfig",
     "config_path",
     "load_config",

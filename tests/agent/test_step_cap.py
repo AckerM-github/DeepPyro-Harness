@@ -17,7 +17,7 @@ def test_the_agent_options_default_to_no_cap() -> None:
 
 
 def test_the_agent_config_defaults_to_no_cap() -> None:
-    assert Config().agent.maxSteps is None
+    assert Config().agent.max_steps is None
 
 
 def test_a_configured_cap_survives() -> None:

@@ -1,17 +1,16 @@
-"""The context object handed to every plugin."""
+"""The context object handed to every plugin (API v3)."""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar
 
 from deeppyro.core.bus import EventBus
 from deeppyro.core.events import is_bus_event
 from deeppyro.hooks.service import HookService
 
-from .errors import PluginDependencyError
 from .services import ServiceNotFoundError, ServiceTypeError, contract_path, note_service_value, service_name
 from .types import PluginConfig
 
@@ -22,7 +21,7 @@ class _NoopUi:
     """Stand-in returned by :attr:`PluginContext.ui` when no ui service exists.
 
     Headless sessions and tests should not have to special-case the service:
-    every producer method returns ``False`` and the counters stay at zero.
+    every producer method returns `False` and the counters stay at zero.
     """
 
     available = False
@@ -90,10 +89,18 @@ def _bus_options(options: Any) -> dict[str, Any]:
 class PluginContext:
     """A thin, plugin-friendly facade over the kernel context.
 
-    Attributes not defined here are looked up on the raw RuntimeContext, so
-    plugin authors can still use events, fibers and the runtime directly. The
-    registration helpers add one important behaviour: whatever they register
-    is torn down when the plugin fiber unloads.
+    API v3 surface: typed service access (`get`/`require`/`has` take contract
+    classes), lifecycle helpers (`on`/`once`/`emit`/`effect`), the single mount
+    entry point `mount(plugin, config)`, and the registration helpers that pin
+    contributions to this plugin and tear them down when its fiber unloads.
+
+    There is no implicit attribute forwarding: code written for API v2 that
+    addressed a service by attribute name or by a string lookup must ask for the
+    contract class instead.
+
+    Attributes not defined here are available through :attr:`raw` (the kernel
+    runtime context) for host-level integrations; external plugins should not
+    need it.
     """
 
     #: Config validated by the kernel adapter for the owning plugin.
@@ -125,14 +132,18 @@ class PluginContext:
         object.__setattr__(self, "_logger", None)
 
     def __getattr__(self, name: str) -> Any:
-        try:
-            raw = object.__getattribute__(self, "_raw")
-        except AttributeError:  # pragma: no cover - defensive
-            raise AttributeError(name) from None
-        return getattr(raw, name)
+        """Sealed in API v3: no implicit runtime/service attribute forwarding."""
+        if name.startswith("_"):
+            raise AttributeError(name)
+        raise AttributeError(
+            f"PluginContext has no attribute {name!r}; API v3 removed implicit attribute "
+            "forwarding. Use ctx.require(ServiceContract) / ctx.get(ServiceContract) for "
+            "services, or ctx.raw for the kernel runtime context."
+        )
 
     @property
     def raw(self) -> Any:
+        """The underlying kernel runtime context (host integrations only)."""
         return self._raw
 
     @property
@@ -146,11 +157,11 @@ class PluginContext:
 
     # -- service access ---------------------------------------------------
     def _lookup(self, name: str) -> Any | None:
-        """Return the active service registered under this name, if any.
+        """Return the active service registered under this canonical name.
 
-        The native kernel context exposes ``get``; raw contexts built by tests
-        and third-party hosts may only expose the pre-native ``reflect.get``
-        lookup, so that remains as a fallback.
+        The native kernel context exposes `get`; raw contexts built by tests
+        and third-party hosts may only expose the pre-native `reflect.get`
+        lookup, so that remains as a fallback for host-level doubles.
         """
         raw = self._raw
         lookup = getattr(raw, "get", None)
@@ -168,29 +179,27 @@ class PluginContext:
                 return getter(name)
         return None
 
-    @overload
-    def get(self, service: str) -> Any | None: ...
-
-    @overload
-    def get(self, service: type[T]) -> T | None: ...
-
-    def get(self, service: str | type[Any]) -> Any | None:
-        """Return a service by legacy name or by contract class.
+    def get(self, service: type[T]) -> T | None:
+        """Return the service for a contract class, or None when absent.
 
         The typed form resolves the class to its canonical service name and
         returns None both when the service is absent and when the class is not
         a known contract, so optional lookups never raise.
         """
-        if isinstance(service, str):
-            return self._lookup(service)
+        if not isinstance(service, type):
+            raise TypeError(
+                "PluginContext.get() is typed in API v3; pass a service contract class "
+                f"(for example ctx.get(SomeService)), got {service!r}"
+            )
         try:
             name = service_name(service)
         except ServiceTypeError:
             return None
         return self._lookup(name)
 
-    def has(self, name: str) -> bool:
-        return self._lookup(name) is not None
+    def has(self, service: type[Any]) -> bool:
+        """Whether an active service exists for a contract class."""
+        return self.get(service) is not None
 
     def require(self, service: type[T]) -> T:
         """Return the service for a contract class, raising when it is absent.
@@ -211,15 +220,6 @@ class PluginContext:
             )
         return value
 
-    def service(self, name: str) -> Any:
-        """Return a service by legacy name, raising when it is not available."""
-        value = self._lookup(name)
-        if value is None:
-            raise PluginDependencyError(
-                f"plugin {self.plugin_id!r} requires service {name!r}, which is not available"
-            )
-        return value
-
     def provide(self, name: str, value: Any = None, check: Any = None) -> Any:
         """Register a service and remember the value type for typed lookups.
 
@@ -235,9 +235,9 @@ class PluginContext:
     def plugin_dir(self) -> Path | None:
         """Directory of this plugin's package, when it was installed as one.
 
-        Plugin packages live at ``<plugins_dir>/<id>/`` and carry a
-        ``plugin.toml``. Returning ``None`` for in-tree plugins keeps callers
-        free to treat the value as purely optional.
+        Plugin packages live at `<plugins_dir>/<id>/` and carry a
+        `plugin.toml`. Returning `None` for in-tree plugins keeps callers free
+        to treat the value as purely optional.
         """
         if not self.plugin_id:
             return None
@@ -248,34 +248,49 @@ class PluginContext:
             return candidate
         return None
 
+    # -- typed service shortcuts -----------------------------------------
     @property
     def tools(self) -> Any:
-        return self.service("tools")
+        from deeppyro.builtin.tools import ToolsPlugin
+
+        return self.require(ToolsPlugin)
 
     @property
     def prompt(self) -> Any:
-        return self.service("prompt")
+        from deeppyro.builtin.prompt_service import PromptPlugin
+
+        return self.require(PromptPlugin)
 
     @property
     def commands(self) -> Any:
-        return self.service("commands")
+        from deeppyro.builtin.commands import CommandsPlugin
+
+        return self.require(CommandsPlugin)
 
     @property
     def llm(self) -> Any:
-        return self.service("llm")
+        from deeppyro.builtin.llm import LlmPlugin
+
+        return self.require(LlmPlugin)
 
     @property
     def presets(self) -> Any:
-        return self.service("presets")
+        from deeppyro.builtin.presets import PresetsPlugin
+
+        return self.require(PresetsPlugin)
 
     @property
     def ui(self) -> Any:
         """Thread-safe UI action channel, or a no-op stand-in in headless runs.
 
         Plugins may call this from any thread; actions are drained by the TUI
-        on its own thread. Without a TUI every method simply returns ``False``.
+        on its own thread. Without a TUI every method simply returns `False`.
         """
-        service = self.get("ui")
+        try:
+            from deeppyro.tui.ui import UiService
+        except ImportError:  # pragma: no cover - the TUI package is optional at runtime
+            return _NOOP_UI
+        service = self.get(UiService)
         return service if service is not None else _NOOP_UI
 
     # -- lifecycle helpers ------------------------------------------------
@@ -285,11 +300,11 @@ class PluginContext:
     def on(self, event: Any, handler: Any, options: Any = None) -> Any:
         """Subscribe to an event and return an idempotent disposer.
 
-        Domain events (anything in ``deeppyro.core.events.EVENT_SPECS``) live on
+        Domain events (anything in `deeppyro.core.events.EVENT_SPECS`) live on
         the kernel bus, exactly like DSH, so a plugin may subscribe with
-        ``ctx.on("tools/pre-execute", ...)`` and observe the real dispatch. The
-        handler signature follows the event mode: ``handler(payload)`` for emit
-        events, ``handler(payload, next_step)`` for waterfall events. Any other
+        `ctx.on("tools/pre-execute", ...)` and observe the real dispatch. The
+        handler signature follows the event mode: `handler(payload)` for emit
+        events, `handler(payload, next_step)` for waterfall events. Any other
         name goes to the runtime context's local dispatcher; the kernel itself
         only uses catalogued bus names.
         """
@@ -318,10 +333,16 @@ class PluginContext:
     def emit(self, *args: Any) -> Any:
         return self._raw.emit(*args)
 
-    def plugin(self, plugin: Any, config: dict[str, Any] | None = None) -> Any:
-        return self._raw.plugin(plugin, config)
+    def mount(self, plugin: Any, config: dict[str, Any] | None = None) -> Any:
+        """Mount a child plugin (class, callable or host plugin dict).
+
+        This is the single API v3 mount path; it returns the child fiber, which
+        can be awaited to surface load failures at the mount point.
+        """
+        return self._raw.mount(plugin, config)
 
     def inject(self, inject: Any, callback: Any) -> Any:
+        """Mount a callback after its injection list resolves (host helper)."""
         return self._raw.inject(inject, callback)
 
     def isolate(self, name: str, label: Any = None) -> PluginContext:

@@ -136,12 +136,14 @@ class PanelLayer(GoalLayer):
         query = getattr(runtime, "session_query", None)
         if query is not None:
             return query
+        from deeppyro.builtin.session_query import SessionQueryPlugin
+
         kernel_app = getattr(runtime, "kernel_app", None)
-        service = getattr(kernel_app, "service", None)
-        if not callable(service):
+        getter = getattr(kernel_app, "get", None)
+        if not callable(getter):
             return None
         try:
-            return service("session_query")
+            return getter(SessionQueryPlugin)
         except Exception:  # noqa: BLE001 - the service is optional
             return None
 
@@ -258,12 +260,14 @@ class PanelLayer(GoalLayer):
         """Open the external plugin manager, or list kernel plugins as fallback."""
         # outside a worker or manager failure
         with contextlib.suppress(Exception):
+            from deeppyro.builtin.plugin_manager import PluginManagerPlugin
             from deeppyro.tui.screens.plugins import PluginScreen
 
             manager = None
-            service = getattr(self.runtime, "_service", None)
-            if callable(service):
-                plugin_manager = service("plugin_manager")
+            kernel_app = getattr(self.runtime, "kernel_app", None)
+            getter = getattr(kernel_app, "get", None)
+            if callable(getter):
+                plugin_manager = getter(PluginManagerPlugin)
                 manager = getattr(plugin_manager, "manager", None)
             health = None
             if manager is not None:

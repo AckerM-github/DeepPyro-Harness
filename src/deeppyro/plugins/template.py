@@ -19,6 +19,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from deeppyro.api import API_VERSION
 from deeppyro.kernel.composition import CompositionError, load_bundle
 
 from .bundles import validate_bundle_id
@@ -67,7 +68,7 @@ class SampleGreetingTool(BaseTool):
 class __CLASS__(Plugin):
     plugin_id = __PLUGIN_ID__
     version = "0.1.0"
-    api_version = 2
+    api_version = __API_VERSION__
     description = __DESCRIPTION__
     Config = SampleConfig
     volatile: ClassVar[tuple[str, ...]] = ("greeting",)
@@ -133,7 +134,7 @@ def bundle_template(
     bundle_id: str = "demo-bundle",
     name: str = "",
     *,
-    api_version: int = 2,
+    api_version: int = API_VERSION,
 ) -> dict[str, str]:
     """Return the scaffolded files keyed by relative path, without writing."""
     valid_id = validate_bundle_id(bundle_id)
@@ -143,6 +144,7 @@ def bundle_template(
         _PLUGIN_SOURCE.replace("__CLASS__", plugin_class)
         .replace("__PLUGIN_ID__", json.dumps(valid_id, ensure_ascii=False))
         .replace("__DESCRIPTION__", json.dumps(display_name + " plugin", ensure_ascii=False))
+        .replace("__API_VERSION__", str(API_VERSION))
     )
     readme = _README.replace("__NAME__", display_name).replace("__BUNDLE_ID__", valid_id)
     return {
@@ -157,7 +159,7 @@ def create_bundle(
     bundle_id: str,
     name: str = "",
     *,
-    api_version: int = 2,
+    api_version: int = API_VERSION,
 ) -> Path:
     """Validate and write a new bundle scaffold at dest; return the directory."""
     target = Path(dest).expanduser()

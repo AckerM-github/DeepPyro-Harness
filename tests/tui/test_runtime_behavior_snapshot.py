@@ -37,6 +37,7 @@ from deeppyro.schedule import (
 )
 from deeppyro.tui import runtime as runtime_module
 from deeppyro.tui.runtime import TuiRuntime
+from tests.service_doubles import service_lookup, service_require
 
 # -- fakes -------------------------------------------------------------
 
@@ -191,6 +192,12 @@ class FakeKernelApp:
             return self._services[name]
         except KeyError:
             raise LookupError(name) from None
+
+    def get(self, service: type[Any]) -> Any | None:
+        return service_lookup(self._services, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self._services, service)
 
     async def stop(self) -> None:
         self.stopped += 1

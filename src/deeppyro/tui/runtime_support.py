@@ -29,10 +29,10 @@ def _context_window(provider_cfg: Any, model_id: str) -> int:
     """Pick the model context window, falling back to the provider default."""
     models = list(getattr(provider_cfg, "models", []) or [])
     for entry in models:
-        if getattr(entry, "id", None) == model_id and getattr(entry, "contextWindow", 0):
-            return int(entry.contextWindow)
-    if models and getattr(models[0], "contextWindow", 0):
-        return int(models[0].contextWindow)
+        if getattr(entry, "id", None) == model_id and getattr(entry, "context_window", 0):
+            return int(entry.context_window)
+    if models and getattr(models[0], "context_window", 0):
+        return int(models[0].context_window)
     return DEFAULT_CONTEXT_WINDOW
 
 

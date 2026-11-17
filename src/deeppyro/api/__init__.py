@@ -1,4 +1,4 @@
-"""Public plugin API for DeepPyro.
+"""Public plugin API for DeepPyro (API v3).
 
 An external plugin imports only this package and the protocol types it needs:
 
@@ -10,10 +10,19 @@ deeppyro modules.
 
 from __future__ import annotations
 
+from .capabilities import (
+    SANDBOX_MODES,
+    CapabilityManifest,
+    RiskLevel,
+    TokenCost,
+    ToolCapability,
+    build_manifest,
+    tool_capability,
+)
 from .context import PluginContext
 from .errors import PluginConfigError, PluginDependencyError, PluginError
 from .kernel_types import FiberState
-from .plugin import Plugin, Service, inject_names, invoke_setup
+from .plugin import Plugin, Service, inject_names, invoke_setup, resolve_injections
 from .services import (
     ServiceBag,
     ServiceNotFoundError,
@@ -47,8 +56,7 @@ from .types import (
     ProviderContribution,
     ToolContribution,
 )
-
-API_VERSION = 2
+from .version import API_VERSION
 
 __all__ = [
     "AGENT_MODE_DEFAULT",
@@ -63,10 +71,12 @@ __all__ = [
     "MINIMAL_PRESET_ID",
     "PLUGIN_AUTHORING_TOOL_NAMES",
     "PTC_PRESET_ID",
+    "SANDBOX_MODES",
     "SUBAGENT_TOOL_NAMES",
     "TEAM_MODE_DISABLED_TOOLS",
     "TEAM_PRESET_ID",
     "TEAM_TOOL_NAMES",
+    "CapabilityManifest",
     "CommandSpec",
     "FiberState",
     "Plugin",
@@ -80,14 +90,20 @@ __all__ = [
     "PresetSpec",
     "PromptSection",
     "ProviderContribution",
+    "RiskLevel",
     "Service",
     "ServiceBag",
     "ServiceNotFoundError",
     "ServiceTypeError",
+    "TokenCost",
+    "ToolCapability",
     "ToolContribution",
     "bind_service_type",
+    "build_manifest",
     "inject_names",
     "invoke_setup",
     "lookup_service",
     "require_service",
+    "resolve_injections",
+    "tool_capability",
 ]

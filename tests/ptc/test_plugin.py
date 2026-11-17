@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from deeppyro.api import PTC_PRESET_ID
+from deeppyro.api import PTC_PRESET_ID, inject_names
 from deeppyro.builtin.ptc import (
     PTC_ONLY_INSTRUCTION,
     PTC_ONLY_ORDER,
@@ -21,6 +21,7 @@ from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.core.errors import ConfigError
 from deeppyro.core.protocols import ToolSchema
 from deeppyro.kernel import boot
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.ptc import PtcConfig, PtcRuntime, RunCodeTool
 
 
@@ -34,8 +35,8 @@ class FakeCtx:
         self.section_scopes: list[str | None] = []
         self.logger = SimpleNamespace(warning=lambda message: None)
 
-    def get(self, name: str) -> Any:
-        if name == "config" and self.value is not None:
+    def get(self, service: type[Any]) -> Any:
+        if service is KernelConfig and self.value is not None:
             return SimpleNamespace(value=self.value)
         return None
 
@@ -87,7 +88,7 @@ def _ptc_config(tmp_path: Path) -> Config:
 def test_plugin_identity() -> None:
     assert PtcPlugin.provide == "ptc"
     assert PtcPlugin.plugin_id == "ptc"
-    assert list(PtcPlugin.inject) == ["config", "tools", "prompt"]
+    assert inject_names(PtcPlugin) == ["config", "tools", "prompt"]
 
 
 def test_native_mode_registers_ptc_preset_scope() -> None:

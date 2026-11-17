@@ -413,16 +413,20 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
 目录与冻结状态见 `@docs/spec/events.md`；`hooks/service.py` 只是保留名字策略的薄门面。
 
 
-- `Plugin`：`plugin_id`/`version`/`api_version`/`inject`/`Config`(pydantic)/`setup()`（v2：通过 `self.ctx` 与 `self.config` 访问）；
-  可选 `async stop()` 清理，可选 `volatile: ClassVar[tuple[str, ...]]` 声明可 live apply 的字段。
+- `Plugin`：`plugin_id`/`version`/`api_version`/`inject`/`Config`(pydantic)/`setup(self)`（API v3 唯一形态：通过 `self.ctx` 与 `self.config` 访问；带位置参数的 setup 或其它 api_version 一律拒绝，无兼容层）；
+  可选 `async stop()` 清理，可选 `volatile: ClassVar[tuple[str, ...]]` 声明可 live apply 的字段，
+  以及 `risk`/`idempotent`/`permissions`/`sandbox`/`token_cost`/`context_window` 能力元数据。
 - `on_config(config)`：配置热更新回调（仅 volatile 字段变更且经 `kernel.apply_plugin_config` 时同步调用）。
 - `Service(Plugin)`：类属性 `provide`，构造即注册服务，卸载时注销。
-- `PluginContext`：`service/get/has`、`tools/prompt/commands/llm` 快捷属性、
-  `effect/on/once/emit/plugin/inject/isolate/intercept`，以及
+- `PluginContext`：只接受类型化契约 —— `get(Contract)/require(Contract)/has(Contract)`（字符串一律 TypeError）、
+  `tools/prompt/commands/llm/presets` 快捷属性、`mount(plugin, config)`（唯一装载入口）、
+  `effect/on/once/emit/inject/isolate/intercept`，以及
   `register_tool/register_prompt_section/register_command/register_provider/register_preset`
   （注册随 fiber 自动注销；preset realm 内的贡献自动带上 `(preset_id, revision)` scope）。
-- 插件类型判定：`issubclass(cls, deeppyro.api.Plugin)` 走新适配器（pydantic Config 校验 +
-  PluginContext + setup + stop disposer）；旧式宿主类直接 `ctx.plugin(cls, config)` 兼容。
+  未知属性不再代理（API v2 的 `ctx.<service>` 与字符串查找已删除）。
+- 插件类型判定：`issubclass(cls, deeppyro.api.Plugin)` 走 v3 适配器（api_version 必须为 3、pydantic Config 校验 +
+  PluginContext + setup(self) + stop disposer）；旧式宿主类仍可作为非 API 插件直接经由 kernel 的
+  `ctx.mount(plugin, config)` 装载（不走 PluginContext 契约）。
 
 ### 11.3 组合：bundle + row + patch
 
@@ -492,7 +496,8 @@ from deeppyro.kernel import boot, create_app, default_composition
 app = await boot(cfg)                       # core + ~/.dpro/bundles + ~/.dpro/plugins.toml
 app = await boot(cfg, bundle_paths=[...])   # 额外 bundle
 app = await create_app(cfg, extra_plugins=[PluginSpec(...)])  # 测试/嵌入
-app.service("tools")                       # 不存在/未激活 -> LookupError
+app.require(ToolsPlugin)                    # 类型化契约；不存在/未激活 -> ServiceNotFoundError
+app.get(ToolsPlugin)                        # 同上，缺失返回 None
 app.started                                # {row_id: fiber state name}
 app.failures                               # 非 critical 行的失败状态
 app.row_states()                           # {row_id: active/failed/disabled/overridden/restart-required/pending}

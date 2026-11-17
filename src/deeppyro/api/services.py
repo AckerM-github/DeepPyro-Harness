@@ -1,18 +1,22 @@
-"""Typed service lookup over the kernel service container (roadmap step 3).
+"""Typed service lookup over the kernel service container (API v3).
 
-DeepPyro keeps one runtime service container: providers still call
-ctx.provide(name, value) and consumers may still call ctx.get(name) or
-ctx.service(name), so external plugins keep working. On top of that container
-this module adds a type key for the same services: every provider value
-registers its own class, so a consumer can ask for the interface it understands
-without spelling a string:
+DeepPyro keeps one runtime service container keyed by name: providers register
+through ``ctx.provide(name, value)`` and the kernel resolves dependencies by
+name. API v3 puts a contract class in front of that container: every service
+class that declares ``provide`` is bound to its name automatically, so plugins
+ask for the interface they understand without spelling a string:
 
     class MyPlugin(api.Plugin):
-        inject = ("hooks",)
+        inject = (HookService,)
 
         def setup(self):
             hooks = self.ctx.require(HookService)      # raises when missing
             maybe = self.ctx.get(AttachmentStore)      # None when absent
+
+Plugin-facing lookups are typed only: ``PluginContext`` no longer accepts
+service-name strings. The name-keyed primitives in this module
+(:func:`lookup_service`, :func:`require_service`) stay for internal host code
+and adapter-driven mounts that hold a raw kernel context.
 
 Service-name inventory
 ======================
@@ -87,20 +91,20 @@ Failure semantics
   PluginDependencyError, therefore a LookupError) when the name is known but no
   active instance exists, and ServiceTypeError when the class cannot be
   resolved at all.
-* string lookups keep their historical behaviour: ctx.get("hooks") returns None
-  or the value, ctx.service("hooks") raises PluginDependencyError, and
-  App.service("hooks") raises LookupError.
+* service-name strings are not part of the plugin API: PluginContext
+  get/require/has take contract classes only (API v3 hard cut). App has a
+  host-level service lookup by name (and a string form of App.get) for embedders
+  and tests that address services by name; neither is available to plugins.
 
 Typed lookups from inside a service
 ===================================
 
 A service instance built by the kernel adapter holds a PluginContext in
 self.ctx; adapter-driven mounts (presets, test doubles) may hold a raw
-RuntimeContext instead. Both accept strings through ctx.get(name). Service
-methods therefore resolve typed services through
-require_service(self.ctx, Contract) / lookup_service(self.ctx, Contract); the
-helpers normalise the contract to its name first and then use ctx.get(name), so
-isolate semantics stay identical to the string path.
+RuntimeContext instead. Service methods therefore resolve typed services
+through require_service(self.ctx, Contract) / lookup_service(self.ctx,
+Contract); the helpers normalise the contract to its name first and then read
+the container, so isolate semantics stay identical for both context shapes.
 """
 
 from __future__ import annotations
@@ -237,23 +241,25 @@ def _name_or_none(service: str | type[Any]) -> str | None:
         return None
 
 
-def lookup_service(ctx: SupportsServiceLookup, service: str | type[Any]) -> Any | None:
-    """Resolve one service through any runtime context or context facade.
+def lookup_service(ctx: object, service: str | type[Any]) -> Any | None:
+    """Resolve one service through a raw runtime context or a PluginContext.
 
-    PluginContext accepts contracts directly, but a raw RuntimeContext (and a
-    test double) only understands strings. Resolving the contract to its
-    canonical name first lets the same code work in both places.
+    The canonical name is resolved first; a raw RuntimeContext looks it up as
+    the named primitive it is, while a PluginContext (typed-only in API v3) is
+    unwrapped to its raw runtime context so the same code works in both places.
     """
     name = _name_or_none(service)
     if name is None:
         return None
-    getter = getattr(ctx, "get", None)
+    raw = getattr(ctx, "raw", None)
+    target = raw if raw is not None else ctx
+    getter = getattr(target, "get", None)
     if not callable(getter):
         return None
-    return getter(name)
+    return cast("Any | None", getter(name))
 
 
-def require_service(ctx: SupportsServiceLookup, service: str | type[Any], *, owner: str = "plugin") -> Any:
+def require_service(ctx: object, service: str | type[Any], *, owner: str = "plugin") -> Any:
     """Like lookup_service, but raise when the service is not available.
 
     String arguments keep the historical PluginDependencyError wording; class

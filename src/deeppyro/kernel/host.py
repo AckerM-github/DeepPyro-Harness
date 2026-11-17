@@ -4,12 +4,17 @@ The host accepts the three plugin shapes DeepPyro actually mounts:
 
 * a host plugin dict ``{"name", "apply", "inject"}`` — what
   ``kernel.app._plugin_for`` and ``builtin.presets._row_plugin`` build for
-  API-v2 :class:`deeppyro.api.Plugin` classes.  ``apply(context, config)`` may be
+  API-v3 :class:`deeppyro.api.Plugin` classes.  ``apply(context, config)`` may be
   a coroutine function and returns a teardown callable (or None);
-* a legacy plugin class — instantiated as ``cls(context, config)``, ``init()``
-  called when present, ``stop()`` used as the teardown;
+* a non-API plugin class (legacy host shape) — instantiated as
+  ``cls(context, config)``, ``init()`` called when present, ``stop()`` used as
+  the teardown;
 * a plain callable / callable object with ``apply`` — called with
   ``(context, config)``.
+
+Injection entries are resolved through :func:`deeppyro.api.plugin.resolve_injections`,
+so typed service contracts (``inject = (ToolsPlugin,)``) and plain names both end
+up as the string names the fiber waiter needs.
 
 Mounting creates the fiber, attaches it to the parent fiber's child list and
 returns it; the plugin body runs when the fiber is awaited.  Unmounting is
@@ -56,12 +61,12 @@ def _normalize(plugin: Any) -> tuple[str, Callable[[Any, Any], Any], tuple[str, 
         apply = plugin.get("apply")
         if not callable(apply):
             raise TypeError(f"host plugin {name or '<unnamed>'!r} has no callable apply")
-        inject = tuple(str(item) for item in (plugin.get("inject") or ()))
+        inject = _resolve_injections(plugin.get("inject") or (), owner=name or "<unnamed>")
         return name or getattr(apply, "__name__", "plugin"), _dict_runner(apply), inject
 
     if inspect.isclass(plugin):
         name = str(getattr(plugin, "plugin_id", "") or plugin.__name__)
-        inject = _inject_names(plugin)
+        inject = _resolve_injections(getattr(plugin, "inject", ()) or (), owner=name)
         return name, _class_runner(plugin), inject
 
     apply = getattr(plugin, "apply", None)
@@ -76,13 +81,11 @@ def _normalize(plugin: Any) -> tuple[str, Callable[[Any, Any], Any], tuple[str, 
     raise TypeError(f"unsupported plugin object: {plugin!r}")
 
 
-def _inject_names(plugin: Any) -> tuple[str, ...]:
-    raw = getattr(plugin, "inject", ()) or ()
-    names: list[str] = []
-    for item in raw:
-        if isinstance(item, str):
-            names.append(item)
-    return tuple(names)
+def _resolve_injections(raw: Any, *, owner: str) -> tuple[str, ...]:
+    """Resolve typed/plain inject entries to service names for the fiber waiter."""
+    from deeppyro.api.plugin import resolve_injections
+
+    return tuple(resolve_injections(raw or (), owner=owner))
 
 
 def _dict_runner(apply: Callable[[Any, Any], Any]) -> Callable[[Any, Any], Any]:

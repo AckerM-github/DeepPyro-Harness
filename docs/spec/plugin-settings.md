@@ -32,7 +32,7 @@ manifest_path 缺省为 deeppyro.paths.plugins_manifest_path()（~/.dpro/plugins
 | write(plugin_id, patch, expected_revision) | dict | 校验 + CAS + 原子写入；冲突抛 SettingsConflict，校验失败抛 PluginConfigError；返回字段含 volatile_fields/volatile_changed |
 | effective_config(plugin_id) | dict | 未掩码的完整生效配置，仅供进程内 live apply 等内部调用，不得进入 agent 工具输出 |
 
-SettingsPlugin（@src/deeppyro/builtin/settings.py）是 Service，provide = settings，plugin_id = settings，version = 0.1.0，构造时创建 SettingsStore()；属性 revision 与方法 describe/read/write 委托 store。它不注入其它服务，方法调用时按需读取磁盘与 composition；write 在 volatile 变更时通过 ctx.get("kernel") 调用 kernel 服务的 apply_plugin_config（见第 10 节）。
+SettingsPlugin（@src/deeppyro/builtin/settings.py）是 Service，provide = settings，plugin_id = settings，version = 0.1.0，构造时创建 SettingsStore()；属性 revision 与方法 describe/read/write 委托 store。它不注入其它服务，方法调用时按需读取磁盘与 composition；write 在 volatile 变更时通过 ctx.get(KernelRuntime) 调用 kernel 服务的 apply_plugin_config（见第 10 节）。
 
 ## 3. revision 与 CAS
 
@@ -127,7 +127,7 @@ SettingsStore 只负责磁盘上的配置 patch。SettingsPlugin 把结果暴露
 插件类可以声明可热更新字段：@src/deeppyro/api/plugin.py 的 Plugin 有 ClassVar volatile: tuple[str, ...]（默认空）。describe/read 的 volatile_fields 就是这个声明（排序、去重），不是「生效配置的顶层键」。SettingsPlugin.write 的流程：
 
 1. 委托 SettingsStore.write 完成 CAS、深合并、pydantic 校验与原子写盘；store 的 restart_required 仍为 True、apply 仍为 next-boot。
-2. 若本次 changed 里有插件类声明的 volatile 字段，用 SettingsStore.effective_config(plugin_id) 取未掩码的完整配置，再通过 ctx.get("kernel") 取 kernel 服务（KernelRuntime，boot 时默认加载），调用 apply_plugin_config(plugin_id, config) -> bool。
+2. 若本次 changed 里有插件类声明的 volatile 字段，用 SettingsStore.effective_config(plugin_id) 取未掩码的完整配置，再通过 ctx.get(KernelRuntime) 取 kernel 服务（KernelRuntime，boot 时默认加载），调用 apply_plugin_config(plugin_id, config) -> bool。
 3. kernel 侧只应用 volatile 字段：合并、pydantic 校验、更新插件实例的 config 与 ctx.config，可选调用插件的 on_config 回调；非 volatile 字段变化、未知或未挂载插件、校验失败都返回 False 并标记 restart-required。
 4. apply 返回 True 时 applied_live=True；若 changed 全部是 volatile，则 restart_required=False、apply=live；若仍有非 volatile 变更，则 restart_required=True、apply=next-boot。kernel 服务缺失、返回 False 或抛异常时回退 applied_live=False、restart_required=True，配置已经落盘且异常不外抛。
 
