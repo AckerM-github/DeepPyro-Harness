@@ -1,229 +1,245 @@
 # DeepPyro Harness (deeppyro)
 
-Terminal-first **pure Python** port of DeepSeek Harness (DSH) core.
+Terminal-first **pure Python** agent harness。0.2.0 起，DeepPyro 不再是任何外部 harness 的 wire 兼容移植：
+它只使用自己定义的 native 会话/事件/追踪模型，并把“插件化、Python 化、AI 原生”作为三条主线。
 
-- 纯 Python，运行时不依赖 Node/Electron。
-- 会话日志**逐字段兼容** DSH `session.v4.jsonl`（读取 / 追加 / 派生 / fork）。
-- 内置工具对齐 DSH 语义：read/write/edit/glob/grep/pwsh/bash/web_search/web_fetch/todo_write/present，
-  以及 P1 的 working_directory/skill/schedule/mnemon_runtime_memory/ask_user_question、
-  compress/search_context/decompress 和 subagent/team_*/job_* 工具。
-- 产品形态：**只有一套终端前端** —— Textual 全屏 TUI（`dpyro`，唯一交互形态）+
-  headless 一次性模式（`dpyro --headless "prompt"`，支持 `--json` NDJSON，供脚本/CI）。
-  不做 Web UI。
-- 启动页是 FIGlet `ansi_shadow` 像素字标（火色 / 冰蓝渐变、逐行揭示）；每个用户 turn 的**思考与
-  工具调用融合成一个 agent 过程**：运行中对话里只保留一条滚动 header（当前一句，或正在执行的工具），
-  step/tool 明细默认收起；turn 结束 header 变为一行摘要。点击 header 展开/收起明细，点击 step 行或
-  `/thinking` 打开全屏按 step 查看完整 reasoning，点击工具行展开完整参数与结果（reasoning 来自已落盘的
-  assistant/message，不另存格式）。
-- 会话设置全部走 slash 命令：`/permission` 切命名权限预设（read-only / workspace-write /
-  danger-full-access，把沙箱模式与审批策略打包；`/policy`、`/approval` 已删除）、
-  `/cwd` 切工作目录，切换立即作用于当前会话（并写入 `permission/preset`、
-  `sandbox/mode`、`approval/policy`、`working-directory/change` 记录）。
-- 内核自带 Python 原生运行时（`src/deeppyro/kernel/{container,context,fiber,host}.py`）：
-  服务容器、分层 context、依赖等待、事件与插件生命周期都是普通 Python 实现；领域模块
-  不 import 运行时内部，只有 `kernel/` 负责装配，插件只看到 `deeppyro.api`。
-- **一切皆插件**：DSH 式组合内核——bundle 用 `bundle.toml` 声明插件行，多层 patch 支持
-  按 id 覆盖 config（整体替换）、`before/after` 插入、`disabled/critical/isolate/intercept`；
-  还支持 group 行（`group = true` + 子行）、`include` 外部行文件、`[bundle].requires`
-  依赖拓扑排序，以及 active/failed/disabled/overridden/restart-required 活状态。
-  core bundle 只有 39 行（kernel 运行时 + LLM、会话、沙箱、工具、提示词、命令、agent、
-  activity 活动栏、jobs 后台任务、subagent 委派、team 团队、插件管理、设置、inspect、TUI 槽位，
-  以及 P1 的 session-query、compress、schedule、working-directory、user-questions、attachments、
-  memory、skills、projections，P2 的 hooks/journal/桥接与 prompt-extension/approval-policy，
-  还有 agent-presets），其余能力都由插件贡献。插件可注册工具、提示词段、
-  slash 命令、LLM provider、agent preset（内置 standard/ptc/minimal/cordis 四个，`/preset`
-  会话内切换，带 revision 与 per-preset realm 子插件），以及 TUI 状态栏项 / 对话行 / 面板 / 设置页。
-- **DSH 同款权限边界**：`/permission` 在 read-only / workspace-write / danger-full-access 三个
-  命名预设间切换（同时打包 `sandbox/mode` 与 `approval/policy`，只写变化的旋钮）；审批只有
-  `ask` / `never` 两值，`never` 在 hook 之前直接拒绝；文件写入按会话 writable roots 判定并给出
-  DSH 原文 denial / escalation 提示；shell 命令在 Windows 上经 restricted-token ACL runner
-  真实受限执行（enforcement=partial），无法提供约束时 fail closed 而不是静默放行。详见
-  [docs/spec/sandbox.md](docs/spec/sandbox.md)。
-- **活动栏与多任务**：对话区上方一行活动栏（plan / jobs / agents，空段隐藏）；待办计划来自
-  `todo_write`（`/plan` 查看）；后台任务由 jobs 服务托管，shell `run_in_background` 立即返回
-  job id，`/jobs` 或 `job_output` / `job_kill` / `job_list` 管理，headless 退出时自动取消；
-  team 服务支持最多 8 个成员、共享任务板、成员消息与独立子会话（`/team on` 进入 Team 模式、
-  `/team off` 退出，`/team` 打开面板、`/team board` 打开任务板；agent 侧有 `team_*` 工具），
-  记录按 DSH 的 `team/*`、`subagent/*` 形状落盘；成员 id 就是其子会话 id，TUI `/resume` 打开
-  team 模式会话时会从 Lead 日志冷恢复成员、任务板与 queued inbox，并自动续跑第一条待办消息。
-- **默认 subagent，Team 是显式模式**：默认单 Agent 直接持有 `subagent`（阻塞运行）与
-  `subagent_fork`（后台、复制父会话最后一个 `turn/end` 前缀作为种子、结果走 settlement notice）
-  两个工具，把独立子任务委派给一次性子会话（结果回传，不进入 Team 协作层）；`/team on` 在当前会话
-  进入内置 team preset 后，Lead 获得 `team_*` 工具（spawn / 任务板 / 消息）并收起 subagent 工具，
-  Team 成员子会话两者都没有，避免嵌套。`/team off` 回到进入前的 preset（仍有 live 成员时拒绝），
-  两种模式的子会话都按 DSH 形状写 `subagent/*`、`team/*` 记录。
-- **P1 运行时能力**：会话查询（`session_query` 服务：摘要/事件窗口/trace）、模型自压缩
-  （`compress` / `search_context` / `decompress`，block 侧车文件按 session 寻址）、定时任务
-  （`schedule` 工具 + TUI timer + `~/.dpro/schedules.json`）、只读 skills 目录（`skill` 工具 +
-  提示词目录段）、runtime memory（`mnemon_runtime_memory` 工具，USER.md/MEMORY.md 投影，
-  容量硬上限）、图片附件（Pillow 校验/归一化 + inline 预算 + `image/offload` 投影）、
-  per-session 投影注册表与 checkpoint sidecar、Anthropic Messages provider 与模型目录发现
-  （`/model` 候选合并配置模型与远端目录，contextWindow 自动回退）、PTC 呈现模式
-  （默认 native；`/preset ptc` 或用 `[ptc].mode = "ptc"` 启用后，模型只直接看到保留工具
-  `run_code`，提示词自动生成 Python SDK，程序内 `await tools.<name>(args)` 走完整工具管线，
-  内层调用只写 `tool/ptc-dispatch*` 日志、不进模型可见 surface；额度/并发见
-  `docs/spec/ptc.md`）。
-- **运行时自扩展**：`/plugins` 界面与 `plugin_manager` / `plugin_inspect` /
-  `settings_read` / `settings_write` / `plugin_create` 五个工具让 agent 自己安装/脚手架
-  外部 bundle、启停插件、读改插件配置、查看 live 组合（安装/脚手架会执行或生成第三方代码，
-  需人工批准；声明为 volatile 的字段可经 kernel 服务即时生效，其余 next-boot 生效）。
+> **0.2.0 状态**：M1（native 契约 + 观测骨架）已完成；M2（native loop）、M3（插件 API v3）、
+> M4（eval/memory/multi-agent）仍在合流。本 README 描述 0.2.0 的目标状态；凡标注“合流中”的项，
+> 以仓库实际代码和 `docs/spec/README.md` 的状态表为准。
 
-## 命名
+## 0.2.0 的三条主线
 
-| 用途 | 值 |
-|---|---|
-| 仓库目录 | `D:\code\deeppyro` |
-| 发行名 (PyPI) | `deeppyro-harness` |
-| import 名 | `deeppyro` |
-| CLI 命令 | `dpyro` / `deeppyro`（同一个 TUI 入口） |
-| 配置目录 | `~/.dpro`（Windows: `C:\Users\<user>\.dpro`，单目录存放全部用户级状态） |
+| 线 | 目标 | 落地位置（计划） |
+| --- | --- | --- |
+| **Python 化（Y）** | 一种会话格式、一个消息模型、一套事件类型；用 dataclass/Protocol/StrEnum/TaskGroup 表达，不再复刻 TypeScript 形状 | `src/deeppyro/core/messages.py`、`session/schema.py`、`session/fold.py`、`agent/loop.py` |
+| **插件化（P）** | 一切能力经插件贡献；一种 mount 形状（`setup(self)`）、typed `inject`/`ctx.get`、声明的 bundle、能力清单 | `src/deeppyro/api/`、`kernel/`、`plugins/`、`bundles/` |
+| **AI 原生（A）** | 会话日志只记录事实，token/时延/重试进本地 trace；可回放、可断点续跑、可评测 | `src/deeppyro/observability/trace.py`、`context/`、`eval/`、`memory/`（M2–M4） |
 
-## 布局
+## 与外部 harness 的关系：零 wire 兼容
 
-    src/deeppyro/
-      kernel/   原生插件运行时（container/context/fiber/host）、composition/bundle/patch、boot
-               （唯一装配层）
-      api/      插件契约（Plugin/Service/PluginContext/注册表/preset spec）
-      builtin/  core 插件行（llm/sessions/session_query/sandbox/tools/prompt/commands/agents/
-                activity/jobs/subagent/team/presets/plugin_manager/settings/inspect，以及
-                compress/schedule/working_directory/user_questions/attachments/memory/skills/projections）
-      bundles/core/bundle.toml  core bundle 的 39 个插件行（首行 kernel 运行时）
-      jobs/     后台任务服务（JobHandle/JobResult、job/registered|settled）
-      subagent/ 一次性子智能体委派（默认模式的 subagent 工具、子会话、subagent/* 记录）
-      team/     子智能体团队与共享任务板（成员、消息、子会话、team/* 记录）
-      attachments/  图片附件校验/归一化/限额与 manifest
-      memory/   运行时记忆存储与 USER.md/MEMORY.md 投影
-      projection/ per-session 投影注册表与 checkpoint sidecar
-      schedule/ 定时任务存储、rrule/cron 解析与 timer manager
-      session_query/ 只读会话摘要/事件窗口/trace
-      skills/   skills 目录发现、frontmatter 与目录渲染
-      user_questions/ ask_user_question 服务与 handler 串行化
-      working_directory/ 会话级工作目录服务与 working_directory 工具
-      core/     冻结的 wire 模型 + 运行时协议（共享契约）
-      session/  session.v4 日志：模型、append 校验、derive、fork、store
-      llm/      provider 适配层（OpenAI-compatible SSE、Anthropic Messages）、模型目录、图片预算、重试
-      tools/    工具注册表、执行流水线、内置工具
-      ptc/      Python PTC 呈现模式（run_code 保留工具、自动 Python SDK、worker 协议、
-                内层 dispatch 并发/额度、runtime seam；默认 native，ptc preset 启用）
-      sandbox/  DSH 四层权限：策略（sandbox/mode）、审批（ask/never）、命名预设（/permission）、
-                执行器（Windows ACL restricted-token runner，fail closed）
-      prompt/   系统提示词与运行时上下文装配
-      agent/    turn/step 循环、inbox、事件流
-      compact/  上下文压缩、compress block/ref sidecar 与检索工具
-      tui/      Textual 全屏 TUI（唯一前端：app/widgets/screens/slots/commands/sink/runtime）
-      plugins/  外部插件发现与管理（entry point / 插件目录 / 用户清单 / bundle 安装与设置）
-      headless.py  一次性 headless（run_once / NDJSON+rich sink，自包含）
-      paths.py  用户目录解析（~/.dpro、DEEPPYRO_HOME）与旧数据迁移
-    docs/spec/  契约与逆向出的 DSH 语义（INTERFACES / tui / headless / session / llm / tools / loop /
-                plugins / agent-presets / subagent / activity / hooks / skills / schedule / memory /
-                session-query / compact-blocks / attachments / image-budget / image-offload /
-                image-request / projection / ptc）
-    tests/      单测 + 黄金对照测试
-    tools/      fixture 生成器（Node，只读 ~/.dsh）
+- **不兼容 v4 会话格式。** 产品只读写 native schema 1（详见 `docs/native/schema.md`）。读到旧的
+  `session.v4.jsonl`（含 `.zstd`）会显式失败（`SessionV4Error`），不会降级读取，也不提供 `dpyro migrate` 命令；
+  旧数据如需保留，请使用仓库之外的一次性导出脚本（不进产品、不进 CI）。
+- **不接受 camelCase 的旧配置语义。** 0.2.0 目标为 snake_case 配置（M3 合流）；当前基线代码仍是 camelCase，
+  迁移表与破坏性说明见 `docs/release/0.2.0.md`。
+- **旧 DSH 规格归档。** `docs/spec/INTERFACES.md`、`docs/spec/session.md`、DSH 事件目录等已冻结/标记待删除；
+  状态见 `docs/spec/README.md`。
+- **保留的是设计资产，不是协议。** 一切皆插件、声明式 bundle、Service 生命周期、durable-log-first、
+  能力贡献、最小权限与可回放这些设计继续保留（ADR D3）。
+
+## native session 与 trace
+
+0.2.0 的会话事实只有一个来源：`~/.dpro/sessions/<session-id>.jsonl`（可用 `DEEPPYRO_SESSIONS_DIR` 覆盖）。
+
+- **schema 1**：文件首行是封闭 header（`type`、`schema=1`、`id`、`created_at`、`cwd`、`preset`…），之后每行是
+  `EventKind` 事件。当前核心事件 24 个，使用 dotted 小写命名（如 `turn.started`、`tool.call`、`compaction.done`）；
+  插件事件使用 `plugin.<id>.<event>` 命名空间。
+- **只追加、逐条 fsync**：`seq` 严格单调递增；header 原子写；损坏显式拒绝，不做“尽力而为”的修复；
+  单写者用 `O_EXCL` 锁。消息以稳定 `message.id` 定位，没有 `surfaceOp`/`sourceEventSeqs`/`ignorable`。
+- **fold 派生**：请求消息由纯函数 fold 得到（`session/fold.py`），相同 header+events 必然得到相同视图；
+  fork 复制固定事件子集并重排 `seq`，保留 `ts` 与 `message.created_at`。
+- **trace 与 session 物理分离**：trace store 默认写 `~/.dpro/traces/<run_id>.jsonl`（`DEEPPYRO_TRACES_DIR` 可覆盖），
+  只记录 `run`/`model_call`/`tool_call` 的 hash、token 计数、大小、时延与 id，**不存 prompt 正文、消息正文、工具输出正文**；
+  两者通过 `run_id`/`trace_id` 关联（`docs/native/schema.md` §8）。
+- **M1 已交付**：native message/session/fold/trace 模块与 10 例真实录制 fixtures 已入库并通过门禁；
+  但 agent/CLI/TUI 尚未接到 native loop（M2 工作），当前运行时的产品路径仍是旧实现。
+
+## 快速开始
+
+要求：Python 3.12+、[uv](https://docs.astral.sh/uv/)、Windows/macOS/Linux。
+
+```powershell
+uv sync
+
+# 初始化配置（首次运行会生成 ~/.dpro/config.toml）
+uv run dpyro
+
+# headless：一次性执行，适合脚本/CI
+uv run dpyro --headless "总结这个仓库的目录结构"
+uv run dpyro --headless --json "列出三个可改进点" | ConvertFrom-Json
+
+# 管道输入
+Get-Content README.md | uv run dpyro --headless "提炼三条要点"
+```
+
+配置默认写在 `~/.dpro/config.toml`。最小 provider 配置（**当前基线仍是 camelCase；M3 合流后改为 snake_case**）：
+
+```toml
+[agent]
+provider = "deepseek"
+model = "deepseek-chat"
+
+[providers.deepseek]
+baseURL = "https://api.deepseek.com/v1"   # 目标名 base_url
+apiKeyEnv = "DEEPSEEK_API_KEY"            # 目标名 api_key_env
+```
+
+默认配置指向本地 OpenAI 兼容端点（`http://127.0.0.1:8000/v1`）。没有本地模型时，请按上面的示例改
+`~/.dpro/config.toml`，并设置 `DEEPSEEK_API_KEY`（或以 `DEEPPYRO_CONFIG` 指向另一份配置）。
+
+### CLI 参考
+
+`dpyro [prompt ...]`：无参数进入 Textual 全屏 TUI；带 prompt 或 `--headless` 时一次性执行。
+
+| 参数 | 说明 |
+| --- | --- |
+| `--headless` | 无 UI 执行；prompt 从位置参数或 stdin 读取 |
+| `--json` | 输出 NDJSON 事件流（`session`/`step`/`status`/`text`/`tool_call`/`tool_result`/`usage`/`final`/`error` 等） |
+| `--provider` / `--model` | 覆盖配置文件中的 provider/model |
+| `--preset` | agent preset（内置 `standard`、`ptc`、`minimal`、`cordis`） |
+| `--permission-mode` | `read-only`、`workspace-write`、`danger-full-access` |
+| `--approval-policy` | `ask`、`never` |
+| `--cwd` | 指定工作目录 |
+| `--max-steps` | 单次请求的 step 上限 |
+| `--version` | 打印 `deeppyro-harness <版本>` |
+
+退出码：`0` 成功、`1` 运行时错误、`2` 参数/配置错误、`130` 中断。
+
+插件包管理（在 boot 之前分派）：
+
+```powershell
+uv run dpyro plugin list
+uv run dpyro plugin info <plugin-id>
+uv run dpyro plugin doctor [plugin-id]
+uv run dpyro plugin add <目录|wheel|registry spec|git URL> [--force] [--no-deps] [--offline]
+uv run dpyro plugin remove <plugin-id> [--force]
+uv run dpyro plugin update <plugin-id> [--offline]
+uv run dpyro plugin enable|disable <plugin-id>
+uv run dpyro plugin allow-version <plugin-id> <version>
+```
+
+产品形态只有终端：Textual TUI + headless，不做 Web UI。
+
+## 配置与数据目录
+
+| 路径（`~/.dpro/` 下） | 说明 |
+| --- | --- |
+| `config.toml` | 用户配置；首次启动生成 |
+| `sessions/` | 会话日志。0.2.0 目标为 schema 1 的 `<session-id>.jsonl`；基线代码在 M2 前仍写 `session.v4.jsonl` |
+| `traces/` | 本地 trace store（hash/计数/时延，不含正文） |
+| `schedules.json` | 定时任务 |
+| `memory/` | runtime memory（`memories.json`、`USER.md`、`MEMORY.md`） |
+| `attachments/` | 附件存储（PNG + manifest） |
+| `plugins.toml`、`plugins/` | 插件 manifest 与包目录 |
+| `history.jsonl` | TUI 输入历史 |
+
+环境变量覆盖：`DEEPPYRO_HOME`、`DEEPPYRO_CONFIG`、`DEEPPYRO_SESSIONS_DIR`、`DEEPPYRO_TRACES_DIR`、
+`DEEPPYRO_HISTORY`、`DEEPPYRO_PLUGINS_MANIFEST`、`DEEPPYRO_PLUGINS_DIR`。
 
 ## 开发
 
-    uv sync
-    uv run pytest
+```powershell
+uv sync
+uv run pytest                                   # 全量测试
+uv run dpyro                                    # 本地跑 TUI
+uv run dpyro --headless --provider local "hi"   # 本地端点冒烟
 
-    # 首次运行会在 ~/.dpro 生成 config.toml（默认 provider: local）
-    uv run dpyro                                  # 打开 TUI（唯一交互形态）
-    uv run dpyro --headless "列出 pyproject.toml 里的依赖"
-    uv run dpyro --headless --json "1+1=?"        # NDJSON 事件流
-    echo "1+1=?" | uv run dpyro --headless --json # stdin 管道
-
-提交前跑三个门禁（与 CI 相同）：
-
-    uv run ruff check src tests
-    uv run ruff format --check src tests
-    uv run python scripts/typecheck.py   # pyright 与 pyright-baseline.json 比对
-
-`ruff` 的规则集在 `pyproject.toml` 的 `[tool.ruff.lint]`，配置里写了每条规则阻挡的失败模式；
-`pyright` 以 `basic` 模式检查 `src/`，历史错误登记在 `pyright-baseline.json`，只允许减少、不允许增加
-——消掉错误后用 `python scripts/typecheck.py --write` 收紧基线（diff 必须只删行）。
-
-TUI 里输入 `/help` 查看 slash 命令（`/new /resume /provider /model /preset /permission /cwd
-/status /plan /jobs /team /thinking /hooks /compact /clear /plugins /panel /exit`）；`/provider`、`/model`、
-`/preset`、`/permission`、`/cwd`、`/team` 等无参时打开选择器或面板，带参数的切换立即生效
-（turn 运行中拒绝）。`/preset` 列出四个内置 agent preset：`standard`（默认）、`ptc`、`minimal`、
-`cordis`，空闲时可实时切换（不重启、历史连续；旧 id `default` 归一为 `standard`）。`/team on` 在当前
-会话进入 Team 模式、`/team off` 回到进入前的 preset，Team 模式只给 Lead 开放 `team_*` 工具并隐藏 `subagent`；
-`Ctrl+C` 在 turn 中取消当前 turn，空闲时清空输入，再按退出；`Ctrl+D` 退出。
-
-### 配置与数据目录
-
-所有用户级状态集中在一个目录：默认 `~/.dpro`（Windows 为 `C:\Users\<user>\.dpro`），
-结构对齐 DSH 的 `~/.dsh`：
-
-| 路径 | 内容 |
-|---|---|
-| `config.toml` | provider / model / agent 配置（首次运行自动生成） |
-| `sessions/` | `session.v4.jsonl` 会话日志；`sessions/blocks/` 为 compress block/ref 侧车文件 |
-| `schedules.json` | 定时任务（version 1 原子写；timer 只在 TUI 进程运行） |
-| `memory/` | runtime memory 的 `memories.json` 与 `USER.md`/`MEMORY.md` 投影 |
-| `attachments/` | 图片附件 PNG 与 `manifest.jsonl` |
-| `plugins.toml` | 用户插件清单 |
-| `plugins/` | 外部插件目录 |
-| `history.jsonl` | TUI 输入历史 |
-
-- `DEEPPYRO_HOME` 覆盖整个目录；`DEEPPYRO_CONFIG` / `DEEPPYRO_SESSION_DIR` / `DEEPPYRO_HISTORY` /
-  `DEEPPYRO_PLUGINS_MANIFEST` / `DEEPPYRO_PLUGINS_DIR` 覆盖单项路径。
-- 旧版本散落在 `%APPDATA%\deeppyro` / `%LOCALAPPDATA%\deeppyro` 的数据，首次运行会自动复制到
-  `~/.dpro`（只补缺失文件、不覆盖已有文件、不删除旧目录）。
-- 在 TUI 里用 `/provider` 和 `/model` 切换 provider 与模型，选择会写回 config.toml 的 `[agent]`
-  段（保留其余内容与注释）；`/resume` 会按日志里的 `model/selection` 记录恢复 provider/model。
-- API key 两种写法：`apiKey = "sk-..."` 直接写在 provider 段；或 `apiKeyEnv = "DEEPSEEK_API_KEY"`
-  写环境变量名（注意 `apiKeyEnv` 的值是变量名，不是 key 本身）。缺失 key 时 `/provider` 选择器会标注
-  missing API key。
-
-### 插件与组合
-
-- core bundle：`src/deeppyro/bundles/core/bundle.toml`（39 行，首行 `kernel` 运行时服务，`critical = true`）。
-- 外部 bundle：`~/.dpro/bundles/<id>/bundle.toml` + Python 文件；`/plugins` 或
-  `plugin_manager` 工具可安装/启停/卸载（安装只做结构校验，下次 boot 执行第三方代码）。
-- 其他插件来源：entry point 组 `deeppyro.plugins`、`~/.dpro/plugins/<id>/plugin.toml`、
-  用户清单 `~/.dpro/plugins.toml` 的 `[[plugins]]` 行。
-- 插件可贡献：工具、提示词段（带 preset scope + revision）、slash 命令、LLM provider、
-  agent preset（`/preset` 切换内置 standard/ptc/minimal/cordis，也可注册自定义 preset；
-  带 revision 与 per-preset realm 子插件）、TUI 状态栏项 / 对话行 / 面板（`/panel`）/ 设置页；
-  UI 也可以在 `ui.toml` 里用 `module:function` 声明式注册（`~/.dpro/bundles/<id>/ui.toml`，
-  支持 theme token 与 locale）。
-- 组合语义：group 行给子行建独立运行时 context；`include` 支持 JSON/TOML；bundle 依赖用
-  `requires` 拓扑排序；`App.row_states()` 暴露 active/failed/disabled/overridden/
-  restart-required 状态；patch 层把被覆盖的行标为 overridden。
-- 配置：`settings` 服务 + `/plugins` 与 `settings_*` 工具；写入带 revision CAS 与 secret
-  掩码；插件类声明 `volatile` 的字段由 `kernel` 服务 live apply（其余 next-boot 生效）。
-- 已知边界：插件进程内运行、加载即信任（无 OS 隔离）；目录来源插件需在 `sys.path` 中或先加载
-  plugin-manager 行；外部行失败只降级记录，不中断 boot。
-
-### 测试 fixtures 含个人会话，故意不入库
-
-真实 DSH 会话日志属于个人数据，仓库里不含 `fixtures/`（已 gitignore）。需要跑黄金对照 /
-记录类型回归测试时，在本机生成：
-
-    node tools/gen_fixtures.mjs    # 读 %USERPROFILE%\.dsh\sessions，写 ../fixtures/
-    # 可用 DSH_SESSIONS / DEEPPYRO_FIXTURES 覆盖输入、输出目录
-
-缺少 fixtures 时，相关测试会自动 skip，其余测试照常运行。
-
-### Goals and automatic rounds (opt-in)
-
-A session can carry a goal: `create_goal`, `update_goal` and `get_goal` are the
-model-facing tools, and `/goal` in the TUI is the human surface (`/goal <text>`,
-`/goal edit <text>`, `/goal pause`, `/goal resume`, `/goal complete`,
-`/goal clear`).
-
-Automatic rounds are off by default. To let an active goal drive itself turn
-after turn, opt in:
-
-```toml
-[goal]
-driver = true               # load the round driver plugin
-maxGoalRounds = 256         # hard ceiling per goal
-blockedAfterConsecutiveRounds = 3
+# 只跑 M1 native 契约相关测试
+uv run --no-sync pytest tests/core/test_messages.py tests/session tests/observability -q
 ```
 
-Every round is a full turn, so a 20-round goal is 20 model requests plus their
-tool traffic. `pause` interrupts the running round and keeps the inbox, `resume`
-re-arms the same goal, and closing the process leaves goals disarmed: a fresh
-process never resumes a goal on its own.
+### 四道门禁（与 CI 相同）
+
+提交前必须全绿：
+
+| # | 命令 | 说明 |
+| --- | --- | --- |
+| 1 | `uv run ruff check src tests` | lint |
+| 2 | `uv run ruff format --check src tests` | 格式检查 |
+| 3 | `uv run python scripts/typecheck.py` | pyright 棘轮：只允许缩基线，不得新增错误 |
+| 4 | `uv run pytest` | 全量测试 |
+
+CI（`.github/workflows/ci.yml`）在 Windows + Python 3.12/3.13 上跑同样四道门禁，**不安装 Node**。
+pyright 基线在 `pyright-baseline.json`，`scripts/typecheck.py --write` 只在清理基线时使用。
+
+> 在干净 worktree 上，门禁 1–3 全绿；门禁 4（全量 pytest）会因旧 `fixtures/` 未入库而在收集期失败，
+> 属基线既有问题（`tests/session/test_reader.py` 在模块级读取 `fixtures/manifest.json`）。
+> 这是 M5 待办项，不改变门禁定义：发布前要么清理旧 fixture 依赖，要么在本地生成 `fixtures/`。
+> native/插件无关子集（`tests/core/test_messages.py`、`tests/session` 中的 native 用例、`tests/observability`、
+> `tests/integration/test_plugin_composition.py`、`tests/kernel`）通过；细节见 `docs/release/0.2.0.md` §5。
+
+### 测试 fixtures
+
+- native 契约的基线 fixtures 已入库：`fixtures/native/`（10 例真实录制，17 次请求、7 次工具调用）与
+  `tests/fixtures/native/golden-session.jsonl`（decode→fold→encode 逐字节一致）。
+- `tools/gen_fixtures.mjs` 是迁移期保留的旧 DSH 录制生成器（读 `%USERPROFILE%\.dsh/sessions`）。CI 不运行 Node；
+  该脚本及其产出随 v4 线格式移除一并退役。旧 `fixtures/manifest.json` 故意不入库：在干净 worktree 上
+  相关测试会 fail/skip（`tests/session/test_reader.py` 在导入期即报 `FileNotFoundError`，属基线既有问题）；
+  M5 门禁要求最终清理为 0 skip，并改用已入库的 `fixtures/native/`。
+
+## 插件与组合
+
+- 一切能力都是插件行。core bundle（`src/deeppyro/bundles/core/bundle.toml`）当前 42 行，
+  `critical=true`；外部行失败进入 `app.failures`，不中断 boot。
+- 一个最小插件（当前 API v2；v3 目标见 `docs/plugins/README.md`）：
+
+```python
+from pydantic import BaseModel
+
+from deeppyro.api import Plugin
+
+
+class GreetConfig(BaseModel):
+    greeting: str = "hello"
+
+
+class GreetPlugin(Plugin):
+    plugin_id = "greet"
+    version = "0.1.0"
+    api_version = 2
+    inject = ("commands",)
+    Config = GreetConfig
+
+    def setup(self) -> None:
+        self.ctx.register_command("greet", self.run_greet, summary="say hi")
+
+    def run_greet(self, host, argument: str) -> None:
+        ...  # handler(host, argument)：host 由命令宿主提供，具体 API 见命令层
+```
+
+- 插件可以用 `inject` 声明依赖（服务名字符串或契约类，如 `CommandsPlugin`），用
+  `self.ctx.require(SomeService)` / `self.ctx.get(SomeService)` 取 typed service；
+  `Service` 子类通过 `provide` 注册新服务。
+- bundle 声明（`<bundle>/bundle.toml`）：`[bundle]` 元数据 + `[[plugins]]` 行（`id`、`plugin`、`config`、
+  `before/after`、`critical`、`group`、`requires` 等）；层序为 core bundle → 用户 bundles → 显式 bundle →
+  `plugins.toml`，同 `id` 的 patch 语义见 `docs/spec/plugin-core.md` §3。
+- 插件作者完整指南：`docs/plugins/README.md`；v2→v3 迁移：`docs/plugins/migration-v2-v3.md`。
+
+## 已知限制（0.2.0）
+
+- **三条线仍在合流**：M2（native loop/checkpoint）、M3（API v3/能力治理）、M4（eval/memory/multi-agent）尚未合入
+  本基线；因此当前运行时的会话仍走旧 v4 形状，插件 API 仍是 v2。本文与 `docs/release/0.2.0.md` 描述目标状态。
+- **插件 API v3 未落地**：`api_version=2` 是当前唯一实现；v3 的 one mount、typed inject、能力清单（`CapabilityManifest`）
+  与 entry points 见迁移文档中的 `TODO(api-v3)` 标记。
+- **配置名迁移中**：基线代码仍读 camelCase；snake_case 配置随 M3 合流，迁移表见 release note。
+- **旧数据不可读**：v4 会话、旧 camelCase 配置、旧 DSH 事件目录不会兼容；迁移为一次性外部导出。
+- **无遥测**：0.2.0 不实现任何遥测/上报；本地 trace 是唯一观测数据。约定见 `docs/ops/telemetry.md`。
+- **trace 只有 hash 与计数**，不含正文；不实现 OTLP 导出。
+- **Windows 沙箱**：`enforcement=partial`（受限 token/ACL），不是完整 OS 级隔离。
+- **native 覆盖缺口**：M1 基线未覆盖 image/approval/compaction/MCP/PTC/subagents/multi-agent handoff，
+  这些随 M2–M4 合流补测。
+
+## 文档导航
+
+| 文档 | 内容 |
+| --- | --- |
+| `docs/native/schema.md` | **当前会话契约**：schema 1 的 header/envelope/EventKind/Message/fold/trace/fork |
+| `docs/native/README.md` | M1 交付与状态账本 |
+| `docs/spec/README.md` | 全部规格的状态索引（当前契约 vs legacy DSH v4 vs 待删除） |
+| `docs/plugins/README.md` | 插件作者指南（模板、setup、typed inject、bundle、扩展点） |
+| `docs/plugins/migration-v2-v3.md` | 插件 API v2→v3 迁移与 0.2.0 破坏性变更 |
+| `docs/release/0.2.0.md` | 0.2.0 release note：breaking changes、迁移步骤、门禁、已知限制 |
+| `docs/release/dsh-audit.md` | DSH 去品牌审计：`src` 中 dsh 引用的分类与清理建议 |
+| `docs/ops/telemetry.md` | 遥测边界：默认无上报、opt-in 约定 |
+| `docs/adr/0001-three-track-native-agent.md` | 三线决策记录（权威） |
+
+## 命名
+
+| 项目 | 值 |
+| --- | --- |
+| PyPI 包 | `deeppyro-harness` |
+| Python 包/import | `deeppyro` |
+| CLI | `dpyro`、`deeppyro` |
+| 用户配置目录 | `~/.dpro` |
+| 源码布局 | `src/deeppyro/` |
+
