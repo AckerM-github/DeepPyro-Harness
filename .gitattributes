@@ -1,0 +1,2 @@
+# M0 native fixtures are hash-pinned: never apply EOL conversion.
+fixtures/native/** -text

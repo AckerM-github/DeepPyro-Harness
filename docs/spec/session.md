@@ -1,5 +1,7 @@
 # Session log (session.v4): storage, derivation, fork
 
+> **Frozen (M0, 2026-11-17).** This document describes the current session.v4 implementation and is kept for migration/reference only. It is superseded for new work by `docs/native/schema.md` (native schema 1, zero-compat) and `docs/adr/0001-three-track-native-agent.md`. Do not add new features to the v4 contract; M1 replaces this file's storage/derive/fork rules.
+
 Status: implemented by session-dev (task-1). Owns src/deeppyro/session/**, tests/session/**, this document. Contract source: docs/spec/INTERFACES.md §4; behavioural source: the real DSH session implementation shipped in D:\deepseekharness\resources\app.asar\dsh\node_modules\@deepseek-ai\dsh-session\lib\index.js (plus dsh-session-persistence-jsonl), reverse-engineered together with the 30 real logs in fixtures/sessions/.
 
 ## 1. Public API

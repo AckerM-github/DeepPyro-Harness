@@ -24,4 +24,8 @@ uv.lock.bak
 full_run.txt
 
 # real DSH session logs (personal data) - generated locally by tools/gen_fixtures.mjs
-fixtures/
+fixtures/*
+
+# native M0 baseline recordings are synthetic, reviewed, and checked in
+!fixtures/native/
+!fixtures/native/**

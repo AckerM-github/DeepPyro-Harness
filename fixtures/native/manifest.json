@@ -1,0 +1,314 @@
+{
+  "harness_version": "m0-1",
+  "generated_at": 1794924005633,
+  "generated_at_iso": "2026-11-17T22:00:05+08:00",
+  "provider": "deepseek",
+  "base_url": "https://api.deepseek.com/v1",
+  "config_path": "%USERPROFILE%/.dpro/config.toml",
+  "requested_model": "deepseek-flash",
+  "thinking_mode": "disabled",
+  "temperature": 0,
+  "timeout_seconds": 120,
+  "stream_options_supported": true,
+  "case_count": 10,
+  "total_requests": 17,
+  "total_tool_calls": 7,
+  "total_bytes": 298506,
+  "cases": [
+    {
+      "case_id": "01_text_short",
+      "file": "recordings/01_text_short.jsonl",
+      "purpose": "single user turn needing an exact short reply, max_tokens 16",
+      "requests": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "sha256": "1055f40ecb3059febe8a8ec6b3515c032661ecf15774284d7868f6ee592bb52c",
+      "bytes": 3041,
+      "started_at": 1794923993227,
+      "ended_at": 1794923993753,
+      "status": "ok",
+      "error": null,
+      "finish_reasons": [
+        "stop"
+      ],
+      "response_models": [
+        "deepseek-flash"
+      ],
+      "tool_names": [],
+      "error_tool_results": 0,
+      "max_attempts": 1,
+      "notes": [
+        "case started",
+        "assistant final text: 'OK'"
+      ]
+    },
+    {
+      "case_id": "02_text_bullets",
+      "file": "recordings/02_text_bullets.jsonl",
+      "purpose": "single user turn, three-bullet explanation of Python dataclass, max_tokens 256",
+      "requests": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "sha256": "d22cb5deb9be386ec72e7e94ecd5d7e5cd8707694c604f37a0006e47cbd3702e",
+      "bytes": 66534,
+      "started_at": 1794923993754,
+      "ended_at": 1794923995058,
+      "status": "ok",
+      "error": null,
+      "finish_reasons": [
+        "stop"
+      ],
+      "response_models": [
+        "deepseek-flash"
+      ],
+      "tool_names": [],
+      "error_tool_results": 0,
+      "max_attempts": 1,
+      "notes": [
+        "case started",
+        "assistant text length: 682"
+      ]
+    },
+    {
+      "case_id": "03_text_json",
+      "file": "recordings/03_text_json.jsonl",
+      "purpose": "single user turn, strict JSON-object output with no prose, max_tokens 128",
+      "requests": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "sha256": "30753c5607d73c7a992568f7a73b45fe5520316a089380bacacd112b39fdda9c",
+      "bytes": 8511,
+      "started_at": 1794923995059,
+      "ended_at": 1794923995507,
+      "status": "ok",
+      "error": null,
+      "finish_reasons": [
+        "stop"
+      ],
+      "response_models": [
+        "deepseek-flash"
+      ],
+      "tool_names": [],
+      "error_tool_results": 0,
+      "max_attempts": 1,
+      "notes": [
+        "case started",
+        "assistant final text: '{\"language\":\"Python\",\"version\":\"3.13\",\"stable\":true}'"
+      ]
+    },
+    {
+      "case_id": "04_text_multiturn",
+      "file": "recordings/04_text_multiturn.jsonl",
+      "purpose": "two sequential requests; the second replays the first assistant reply verbatim, max_tokens 96 each",
+      "requests": 2,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "sha256": "9c0f8b0438cdb573d62db33530796768be89fdb1890dfd08c3850a50d4fea463",
+      "bytes": 29510,
+      "started_at": 1794923995507,
+      "ended_at": 1794923996895,
+      "status": "ok",
+      "error": null,
+      "finish_reasons": [
+        "stop"
+      ],
+      "response_models": [
+        "deepseek-flash"
+      ],
+      "tool_names": [],
+      "error_tool_results": 0,
+      "max_attempts": 1,
+      "notes": [
+        "case started",
+        "first assistant reply replayed as context: \"A Python virtual environment is an isolated directory that contains its own Python interpreter and installed packages, keeping a project's dependencies separate from other projects and the system Python.\"",
+        "second assistant reply: 'You create one by running `python -m venv <directory_name>` (e.g., `python -m venv venv`) in your terminal.'"
+      ]
+    },
+    {
+      "case_id": "05_text_truncated",
+      "file": "recordings/05_text_truncated.jsonl",
+      "purpose": "single user turn with a deliberately tiny max_tokens 8 to capture finish_reason length",
+      "requests": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "sha256": "fbe0bba230cfe7f83a54aa5ba900da73d33f46d04d7ef2ee964ea44864094f56",
+      "bytes": 5841,
+      "started_at": 1794923996895,
+      "ended_at": 1794923997546,
+      "status": "ok",
+      "error": null,
+      "finish_reasons": [
+        "length"
+      ],
+      "response_models": [
+        "deepseek-flash"
+      ],
+      "tool_names": [],
+      "error_tool_results": 0,
+      "max_attempts": 1,
+      "notes": [
+        "case started",
+        "finish_reason observed: 'length' (length is expected here)"
+      ]
+    },
+    {
+      "case_id": "06_tool_single",
+      "file": "recordings/06_tool_single.jsonl",
+      "purpose": "forced add(17,25) tool call, local execution, tool-result round trip, final answer",
+      "requests": 2,
+      "tool_calls": 1,
+      "tool_results": 1,
+      "sha256": "7eb3a21bd1f082854ca9b534d477c5d3eb8c14932851bbad84077e85eac937e6",
+      "bytes": 14222,
+      "started_at": 1794923997546,
+      "ended_at": 1794923998688,
+      "status": "ok",
+      "error": null,
+      "finish_reasons": [
+        "tool_calls",
+        "stop"
+      ],
+      "response_models": [
+        "deepseek-flash"
+      ],
+      "tool_names": [
+        "add"
+      ],
+      "error_tool_results": 0,
+      "max_attempts": 1,
+      "notes": [
+        "case started",
+        "executed tools: add({\"a\": 17, \"b\": 25}) -> '42' [ok]",
+        "assistant final text: '17 + 25 = **42**'"
+      ]
+    },
+    {
+      "case_id": "07_tool_parallel",
+      "file": "recordings/07_tool_parallel.jsonl",
+      "purpose": "parallel add(12,30) and multiply(6,7) in one assistant response; both executed, final answer",
+      "requests": 2,
+      "tool_calls": 2,
+      "tool_results": 2,
+      "sha256": "af341b656b04ffa1c354d00ece22c151bb06f6d50a71942237176f2b17705f6f",
+      "bytes": 32900,
+      "started_at": 1794923998688,
+      "ended_at": 1794924000293,
+      "status": "ok",
+      "error": null,
+      "finish_reasons": [
+        "tool_calls",
+        "stop"
+      ],
+      "response_models": [
+        "deepseek-flash"
+      ],
+      "tool_names": [
+        "add",
+        "multiply"
+      ],
+      "error_tool_results": 0,
+      "max_attempts": 1,
+      "notes": [
+        "case started",
+        "attempt 1: 2 tool call(s), finish_reason='tool_calls'",
+        "executed tools: add({\"a\": 12, \"b\": 30}) -> '42' [ok]; multiply({\"a\": 6, \"b\": 7}) -> '42' [ok]",
+        "assistant final text: 'Both tool calls are done:\\n\\n- **add(12, 30) = 42**\\n- **multiply(6, 7) = 42**\\n\\nInterestingly, both results are 42.'"
+      ]
+    },
+    {
+      "case_id": "08_tool_error",
+      "file": "recordings/08_tool_error.jsonl",
+      "purpose": "read_file on a deliberately missing path; error tool result round trip, final answer",
+      "requests": 2,
+      "tool_calls": 1,
+      "tool_results": 1,
+      "sha256": "3ac0f6ca8988961b15a10d7fcd9add6192d954ee5c3e51282bc6c4af0605f91c",
+      "bytes": 62164,
+      "started_at": 1794924000294,
+      "ended_at": 1794924001801,
+      "status": "ok",
+      "error": null,
+      "finish_reasons": [
+        "tool_calls",
+        "stop"
+      ],
+      "response_models": [
+        "deepseek-flash"
+      ],
+      "tool_names": [
+        "read_file"
+      ],
+      "error_tool_results": 1,
+      "max_attempts": 1,
+      "notes": [
+        "case started",
+        "executed tools: read_file({\"path\": \"D:/dshworkspace/m0/missing_file.txt\"}) -> 'Error: file not found: D:/dshworkspace/m0/missing_file.txt' [error]",
+        "assistant final text: \"The read failed — the file doesn't exist at that path. The tool returned:\\n\\n```\\nError: file not found: D:/dshworkspace/m0/missing_file.txt\\n```\\n\\nSo I can't tell you what it contains. A few possibilities:\\n\\n- The path has a typo (e.g., a different directory, filename, or extension).\\n- The file was moved, renamed, or deleted.\\n- It's on a different drive or a network location that isn't mounted.\\n\\nIf you can confirm the correct path or share the directory listing, I'll try again.\""
+      ]
+    },
+    {
+      "case_id": "09_tool_sequential",
+      "file": "recordings/09_tool_sequential.jsonl",
+      "purpose": "sequential list_dir then read_file (two separate assistant tool-call steps), final answer",
+      "requests": 3,
+      "tool_calls": 2,
+      "tool_results": 2,
+      "sha256": "bb0b3a886bab8b4636e661d01cd29cb23a986ca9d6479e0148979172261a03d7",
+      "bytes": 46553,
+      "started_at": 1794924001802,
+      "ended_at": 1794924004033,
+      "status": "ok",
+      "error": null,
+      "finish_reasons": [
+        "tool_calls",
+        "stop"
+      ],
+      "response_models": [
+        "deepseek-flash"
+      ],
+      "tool_names": [
+        "list_dir",
+        "read_file"
+      ],
+      "error_tool_results": 0,
+      "max_attempts": 1,
+      "notes": [
+        "case started",
+        "step 1 tool calls: list_dir({\"path\": \"D:/dshworkspace/m0/data\"}) -> 'hello.txt\\nnotes.txt' [ok]",
+        "step 2 attempt 1 tool calls: read_file",
+        "assistant final text: 'The directory `D:/dshworkspace/m0/data` contains two files: `hello.txt` and `notes.txt`.\\n\\nContents of `hello.txt`:\\n\\n```\\nHello from the M0 recording harness.\\nThis small file exists so case 09 can read it.\\n```'"
+      ]
+    },
+    {
+      "case_id": "10_tool_denied",
+      "file": "recordings/10_tool_denied.jsonl",
+      "purpose": "shell tool call denied by the harness policy (never executed), error tool result, final answer",
+      "requests": 2,
+      "tool_calls": 1,
+      "tool_results": 1,
+      "sha256": "e8dcf2d036961cd9919cb65a2a387cbe6f1ce4a0055f3626ef4ff3041729e0bf",
+      "bytes": 29230,
+      "started_at": 1794924004033,
+      "ended_at": 1794924005632,
+      "status": "ok",
+      "error": null,
+      "finish_reasons": [
+        "tool_calls",
+        "stop"
+      ],
+      "response_models": [
+        "deepseek-flash"
+      ],
+      "tool_names": [
+        "shell"
+      ],
+      "error_tool_results": 1,
+      "max_attempts": 1,
+      "notes": [
+        "case started",
+        "executed tools (simulated denial, command never run): shell({\"command\": \"python --version\"}) -> 'Error: tool call denied by policy: shell(command=\"python --version\") was NOT executed; shell execution is disabled in this recording environment.' [error]",
+        "assistant final text: 'I tried to run:\\n\\n```\\npython --version\\n```\\n\\nHowever, the shell tool denied the call by policy — it reported that shell execution is disabled in this recording environment, so the command was **not** executed and no version output was produced.'"
+      ]
+    }
+  ]
+}

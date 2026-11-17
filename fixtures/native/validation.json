@@ -1,0 +1,166 @@
+{
+  "harness_version": "m0-1",
+  "generated_at": 1794924051878,
+  "generated_at_iso": "2026-11-17T22:00:51+08:00",
+  "base_url": "https://api.deepseek.com/v1",
+  "requested_model": "deepseek-flash",
+  "passed": true,
+  "summary": {
+    "total_checks": 21,
+    "required_checks": 18,
+    "required_passed": 18,
+    "failed_required": 0,
+    "optional_failed": 0,
+    "recording_files": 10,
+    "sse_lines": 689
+  },
+  "checks": [
+    {
+      "id": "recordings_exactly_10",
+      "description": "recordings/ contains exactly 10 JSONL files",
+      "required": true,
+      "passed": true,
+      "detail": "found 10: 01_text_short.jsonl, 02_text_bullets.jsonl, 03_text_json.jsonl, 04_text_multiturn.jsonl, 05_text_truncated.jsonl, 06_tool_single.jsonl, 07_tool_parallel.jsonl, 08_tool_error.jsonl, 09_tool_sequential.jsonl, 10_tool_denied.jsonl"
+    },
+    {
+      "id": "filenames_match_expected",
+      "description": "recording filenames equal the 01..10 case names",
+      "required": true,
+      "passed": true,
+      "detail": "actual=['01_text_short.jsonl', '02_text_bullets.jsonl', '03_text_json.jsonl', '04_text_multiturn.jsonl', '05_text_truncated.jsonl', '06_tool_single.jsonl', '07_tool_parallel.jsonl', '08_tool_error.jsonl', '09_tool_sequential.jsonl', '10_tool_denied.jsonl'] expected=['01_text_short.jsonl', '02_text_bullets.jsonl', '03_text_json.jsonl', '04_text_multiturn.jsonl', '05_text_truncated.jsonl', '06_tool_single.jsonl', '07_tool_parallel.jsonl', '08_tool_error.jsonl', '09_tool_sequential.jsonl', '10_tool_denied.jsonl']"
+    },
+    {
+      "id": "jsonl_parses",
+      "description": "every recording line is valid JSON (no blank lines)",
+      "required": true,
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "id": "case_boundaries",
+      "description": "each file starts with a case header and ends with case.end",
+      "required": true,
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "id": "case_header_fields",
+      "description": "case headers carry provider/base_url/model/purpose/harness_version and timestamps",
+      "required": true,
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "id": "request_lifecycle",
+      "description": "every llm.request has one response.start and one response.end",
+      "required": true,
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "id": "request_bodies",
+      "description": "recorded request bodies use stream=true, temperature=0, max_tokens<=384, model set, no auth data",
+      "required": true,
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "id": "request_messages",
+      "description": "recorded request bodies carry a non-empty messages array",
+      "required": true,
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "id": "sse_data_json",
+      "description": "every recorded llm.sse data payload parses as JSON (except [DONE])",
+      "required": true,
+      "passed": true,
+      "detail": "689 SSE lines scanned; none"
+    },
+    {
+      "id": "tool_cases_have_calls",
+      "description": "cases 06-10 each contain >=1 tool.call and >=1 matching tool.result",
+      "required": true,
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "id": "case07_parallel_two_calls",
+      "description": "case 07 recorded two tool calls in one assistant response (records the actual result)",
+      "required": false,
+      "passed": true,
+      "detail": "tool_calls=2"
+    },
+    {
+      "id": "case09_two_tool_steps",
+      "description": "case 09 has two assistant tool-call steps: list_dir then read_file",
+      "required": true,
+      "passed": true,
+      "detail": "calls=['list_dir', 'read_file'] request_ids=['09-r01', '09-r02']"
+    },
+    {
+      "id": "case08_error_result",
+      "description": "case 08 records an is_error read_file tool result",
+      "required": true,
+      "passed": true,
+      "detail": "is_error read_file result present"
+    },
+    {
+      "id": "case10_denied_result",
+      "description": "case 10 records an is_error shell tool result (simulated policy denial)",
+      "required": true,
+      "passed": true,
+      "detail": "is_error shell result present"
+    },
+    {
+      "id": "no_secrets_in_recordings",
+      "description": "no recording line contains the api key, the sk- prefix, or Authorization",
+      "required": true,
+      "passed": true,
+      "detail": "10 files / 774 lines scanned; none"
+    },
+    {
+      "id": "manifest_integrity",
+      "description": "manifest has 10 entries whose sha256/bytes match the recording files",
+      "required": true,
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "id": "case_end_counts",
+      "description": "case.end request/tool counts match the recorded lines",
+      "required": true,
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "id": "all_cases_status_ok",
+      "description": "every case finished with status ok",
+      "required": true,
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "id": "finish_reasons_present",
+      "description": "every successful response end carries a non-null finish_reason",
+      "required": true,
+      "passed": true,
+      "detail": "none"
+    },
+    {
+      "id": "usage_recorded",
+      "description": "streaming usage is present in at least one response end",
+      "required": false,
+      "passed": true,
+      "detail": "usage present"
+    },
+    {
+      "id": "case05_length_observed",
+      "description": "case 05 captured finish_reason length (records the actual result)",
+      "required": false,
+      "passed": true,
+      "detail": "finish_reasons=['length']"
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+Hello from the M0 recording harness.
+This small file exists so case 09 can read it.
