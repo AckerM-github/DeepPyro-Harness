@@ -1,5 +1,8 @@
 # Session projections and checkpoints (`deeppyro.projection`)
 
+> **状态**：现行（过渡：v4 待移除） · **层级**：v4 projection 规格 · **最后核对**：2026-11-18
+> native 路径不共享本投影，使用 `session/fold.py` 的纯 fold；0.3 切换后重写或移植。
+
 Status: implemented (P1 B1/B2, owner: loop-dev). Consumes only the public session
 surface (`deeppyro.session.Session` header/records/path/last_seq) and `core.wire` record
 types; it never writes the session log. The advance signal is explicit: callers invoke
@@ -15,7 +18,7 @@ Modules:
 | `tests/projection/` | registry, checkpoint, activity-parity and fork-cut tests |
 
 Related docs: `docs/spec/activity.md` (ActivityService, the comparison oracle),
-`docs/spec/session.md` (log/surface/trimmed semantics), `docs/plan/p1-context.md` section 3
+`docs/spec/session.md` (log/surface/trimmed semantics), `docs/archive/research/p1-context.md` section 3
 (design source; this document records the implemented contract).
 
 ## 1. Public API

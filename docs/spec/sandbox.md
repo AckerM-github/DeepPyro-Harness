@@ -1,6 +1,8 @@
 # DeepPyro 沙箱与权限规格（对齐 DSH 四层）
 
-状态：已实现（无 OS 沙箱的 fail-closed、Windows ACL restricted-token runner、策略/审批/命名预设服务、工具消费、TUI/headless 接线），全量测试与真实冒烟见 §11。
+> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+>
+> 已实现范围：无 OS 沙箱的 fail-closed、Windows ACL restricted-token runner、策略/审批/命名预设服务、工具消费、TUI/headless 接线；全量测试与真实冒烟见 §11。
 
 ## 1. 形态与范围
 

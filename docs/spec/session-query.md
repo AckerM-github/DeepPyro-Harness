@@ -1,8 +1,11 @@
 # Session query: read-only summaries, surfaces, events, traces
 
+> **状态**：现行（过渡：v4 待移除） · **层级**：v4 会话查询规格 · **最后核对**：2026-11-18
+> native session 尚未提供等价 query 层；0.3 随 v4 重写或移植。
+
 Status: implemented by session-dev (task-38, P1 C1/C2). Owns `src/deeppyro/session_query/**`,
 `src/deeppyro/builtin/session_query.py`, `tests/session_query/**` and this document.
-Contract source: `docs/plan/p1-context.md` §4; behavioural source: the real DSH session
+Contract source: [docs/archive/research/p1-context.md](../archive/research/p1-context.md) §4 (历史研究); behavioural source: the real DSH session
 reader plus the 30 real logs in `fixtures/sessions/`.
 
 The service never appends to a session and never mutates a persisted record. It answers the

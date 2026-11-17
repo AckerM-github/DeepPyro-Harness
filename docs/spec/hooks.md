@@ -1,6 +1,9 @@
 # Runtime hooks
 
-Status: implemented and aligned with the cordis event-bus semantics (P1 bus).
+> **状态**：现行（过渡：v4 待移除） · **层级**：v4 hook 契约 · **最后核对**：2026-11-18
+> 本文的 cordis 兼容语义仅适用于默认 v4 路径；native loop 使用 typed `AgentHooks`。0.3 统一。
+
+Status: implemented for the default v4 path; the cordis-compatible event-bus semantics are historical.
 This document is the contract for the runtime hook service, the builtin hooks
 plugin row, the nineteen well-known hook names, and the payload/decision
 conventions call sites use. The implementation lives in src/deeppyro/hooks

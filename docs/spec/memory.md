@@ -1,5 +1,8 @@
 # Runtime memory 规格
 
+> **状态**：现行（M4 已扩展） · **层级**：功能规格 · **最后核对**：2026-11-18
+> 0.2.0 边界：热 memory 已接入；SQLite FTS5 long-term memory 未暴露为工具、未自动写入。
+
 本文件记录 DeepPyro P1 的 runtime memory（运行时记忆）：以 deeppyro_home()/memory/memories.json 为唯一真源，原子重建 USER.md 与 MEMORY.md 两个可读投影，向模型暴露一个写工具 mnemon_runtime_memory，并在系统提示词 order=12 处注入记忆快照。范围刻意限制在 DSH 宿主第三方插件 dsh-mnemon 的 runtime 部分；Documents、Memory Spaces、Recall/Related/View 等全部不在 P1 内。实现只读写 deeppyro_home() 下的文件，绝不访问 ~/.mnemon。
 
 ## 1. 文件布局

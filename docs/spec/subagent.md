@@ -1,5 +1,8 @@
 # Default subagent layer (spawn and fork child agents)
 
+> **状态**：现行（M4 已扩展） · **层级**：功能规格 · **最后核对**：2026-11-18
+> 0.2.0 边界：supervisor + 2 workers 已落地；未接真实 subagent 生命周期（无 token/step usage）。
+
 Status: implemented. This document is the contract for the default subagent
 service, its two agent-facing tools and the kernel plugin row. The team layer
 remains the multi-agent supervisor; this layer is the small, always-on

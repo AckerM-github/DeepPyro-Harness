@@ -1,5 +1,8 @@
 # DSH event catalog: unresolved evidence and deeppyro mapping
 
+> **状态**：历史证据（0.2.0 保留，0.3 删除） · **层级**：生成/逆向材料 · **最后核对**：2026-11-18
+> 非运行期契约；来自 DSH asar 的未解析证据。总入口：[docs/README.md](../README.md)。
+
 Generated from `scripts/extract_dsh_events.mjs --dump` over the shipped asar (14654 files). Static totals: bus=94, internal=19, record=61, noise=2328.
 
 ## 1. Subscribe-only names (evidence gap)

@@ -1,5 +1,8 @@
 # Schedule 规格
 
+> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+> 契约入口：[native/schema.md](../native/schema.md)；总入口：[docs/README.md](../README.md)。
+
 本文记录 DeepPyro P1 的 schedule 能力：七种 timing 的建模、单文件持久化、单 asyncio timer 的到期投递、`schedule` 工具（四动作）与 `schedule` 服务插件。实现参考 DSH 的 `packages/schedule/**`（schedule / tool-schedule / util-time），但按 DeepPyro 的单进程 TUI/headless 形态做了裁剪；与参考实现的差异集中在第 11 节，接线需求集中在第 12 节。
 
 ## 1. 范围

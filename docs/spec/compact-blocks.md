@@ -1,5 +1,7 @@
 # compress / block / ref store (P1)
 
+> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+
 Status: implemented in `src/deeppyro/compact/{blocks,refs,compress_tool,block_tools}.py`
 plus the builtin plugin `src/deeppyro/builtin/compress.py`.  This document records the
 format, the transaction protocol, the retrieval tools, and the compatibility boundaries

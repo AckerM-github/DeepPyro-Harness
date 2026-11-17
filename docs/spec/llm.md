@@ -1,5 +1,7 @@
 # LLM provider layer (`deeppyro.llm`)
 
+> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+
 Status: implemented (owner: llm-dev). Consumed by `agent` via `core.protocols.LlmProvider`.
 Streaming-only; two transports: OpenAI chat-completions (DeepSeek, llama-server, vLLM, ...)
 and Anthropic Messages (P1, section 14).
@@ -278,7 +280,7 @@ client-side bug and fail fast with `LlmRequestError(code="BAD_REQUEST")`. Observ
 * Anthropic history reasoning is **not** replayed with a thinking signature: thinking is
   enabled only for the live call, and every replayed assistant turn is sent without a
   thinking block. Multi-turn thinking/tool loops may therefore be rejected by the server
-  (risk R1 in `docs/plan/p1-providers.md`); the core `Finish`/`LlmRequest` contract has no
+  (risk R1 in `docs/archive/research/p1-providers.md`); the core `Finish`/`LlmRequest` contract has no
   channel for signatures, so enabling this needs a core extension (deferred).
 * Anthropic providers must configure `baseURL` explicitly. `ProviderConfig.baseURL` has a
   DeepSeek-flavoured default, so `create_provider` raises `ConfigError` (with
@@ -295,7 +297,7 @@ client-side bug and fail fast with `LlmRequestError(code="BAD_REQUEST")`. Observ
   runtime model check, and emits no `models-updated` event (P1). Selecting a discovered
   model is the caller's job (TUI writes the session `modelSelection` record).
 * `OpenAICompatProvider.list_models` sends the request even without an API key, deviating
-  from the design note in `docs/plan/p1-providers.md` ("return [] without a key"): local
+  from the design note in `docs/archive/research/p1-providers.md` ("return [] without a key"): local
   llama-server has no auth and is the main discovery use case. Auth-gated endpoints answer
   401/403, which surfaces as `LlmHttpError` and falls back to the configured catalog in the
   registry.
@@ -421,7 +423,7 @@ use the list to offer candidates, and a selected model is written to the session
 
 `create_provider` builds this provider for `ProviderConfig.api` in
 `{"anthropic-messages", "anthropic_messages", "anthropic"}`. It implements B1/B2 of
-`docs/plan/p1-providers.md`; B3/B4 (voice/TUI polish, non-streaming helpers) remain out of
+`docs/archive/research/p1-providers.md`; B3/B4 (voice/TUI polish, non-streaming helpers) remain out of
 scope. Lead decisions applied here: thinking signatures are not replayed, `baseURL` must be
 explicit, and model discovery stays metadata-only (section 13).
 
@@ -559,7 +561,7 @@ cached_input_tokens = cache_read_input_tokens
 
 Classification lives in `deeppyro.llm.errors` (`anthropic_error`, `anthropic_error_info`,
 `is_context_window_message`, shared `parse_retry_after`) and mirrors
-`docs/plan/p1-providers.md` section 2.2.4. An explicit Anthropic `error.type` wins over the
+`docs/archive/research/p1-providers.md` section 2.2.4. An explicit Anthropic `error.type` wins over the
 HTTP status (an `invalid_request_error` on a 5xx is a user error). Retries use the same
 `RetryPolicy` as the OpenAI transport: only first-event acquisition is retried, content
 never replays, `CancelledError` propagates untouched, and `Retry-After` (seconds or HTTP

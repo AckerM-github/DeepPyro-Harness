@@ -1,5 +1,7 @@
 # Image offload projection (`deeppyro.session.image_projection`)
 
+> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+
 Status: implemented (P1 image stage 2a, owner: loop-dev). Pure, read-only
 projection over durable session records. It never writes the session log and
 never touches image bytes: it only decides which model-visible message content
@@ -14,7 +16,7 @@ Modules:
 | `tests/session/test_image_projection.py` | 35 tests: text parity, apply/project semantics, derive integration, real-session round trip |
 
 Related docs: `docs/spec/session.md` (log, surface fold, trimmed sessions),
-`docs/plan/p1-tools-runtime.md` section 4.4 (stage 2 design),
+`docs/archive/research/p1-tools-runtime.md` section 4.4 (stage 2 design),
 `docs/spec/llm.md` (wire image parts sent to providers).
 
 ## 1. Why this is a projection, not a message mutation

@@ -1,6 +1,9 @@
 # 插件管理与自扩展规格
 
-本文件记录 DeepPyro 的插件管理能力：外部插件的发现、启用/禁用、校验与删除，用户 bundle 的安装/卸载，插件设置的读写，运行中插件宿主的检视，以及供 agent 调用的插件管理工具。插件清单与 bundle 的 TOML 格式和合并语义复用 @docs/spec/plugin-core.md 与 @docs/spec/INTERFACES.md 第 11 节，本文件不重复定义；设置的详细语义见 @docs/spec/plugin-settings.md。
+> **状态**：现行（API v3） · **层级**：插件规格 · **最后核对**：2026-11-18
+> 公开插件契约见 [plugin-core.md](plugin-core.md)；插件作者指南见 [docs/plugins/README.md](../plugins/README.md)。
+
+本文件记录 DeepPyro 的插件管理能力：外部插件的发现、启用/禁用、校验与删除，用户 bundle 的安装/卸载，插件设置的读写，运行中插件宿主的检视，以及供 agent 调用的插件管理工具。插件清单与 bundle 的 TOML 格式和合并语义复用 @docs/spec/plugin-core.md 与 [plugin-core.md](plugin-core.md)，本文件不重复定义；设置的详细语义见 @docs/spec/plugin-settings.md。
 
 所有能力都是普通插件：PluginManagerPlugin、SettingsPlugin、InspectPlugin 是 Service 插件，PluginToolsPlugin 是注册工具的普通 Plugin。库代码（@src/deeppyro/plugins/）不依赖 TUI，也不 boot kernel。
 

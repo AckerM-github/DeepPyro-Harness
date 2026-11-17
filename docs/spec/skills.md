@@ -1,5 +1,8 @@
 # Skills 规格
 
+> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+> 契约入口：[native/schema.md](../native/schema.md)；总入口：[docs/README.md](../README.md)。
+
 本文件记录 DeepPyro P1 的 skills 能力：只读的 skill 发现、skill 工具的完整指令加载，以及注入系统提示词的 skill 目录。实现对应 DSH 的 packages/skill 三个包（skill、skill-filesystem、tool-skill）的最小可用子集；显式的 /skill 用户手势、文件监听、第三方 provider 与 bundled 资产不在 P1 范围。
 
 ## 1. 文件布局

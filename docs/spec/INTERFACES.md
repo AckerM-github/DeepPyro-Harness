@@ -1,6 +1,7 @@
 # DeepPyro Harness — 模块契约（INTERFACES）
 
-> **M0 status (2026-11-17) — frozen, being superseded.** This file still documents the current DSH-shaped implementation (session.v4, camelCase wire), but it is no longer the target contract. `docs/adr/0001-three-track-native-agent.md` and `docs/native/schema.md` define the native schema 1 / zero-compat direction; see ADR D2–D3 and schema §1. Until M1 lands, existing code remains the source of truth for current behavior; do not build new code against §0 item 2 or §3/§4 v4/zstd details. M1 will replace those sections.
+> **状态**：冻结：迁移参考（M0 frozen，2026-11-18 复核） · **层级**：v4 总接口 · **最后核对**：2026-11-18
+> This file still documents the default 0.2.0 v4 implementation (session.v4, camelCase wire), but it is no longer the target contract. `docs/adr/0001-three-track-native-agent.md` and `docs/native/schema.md` define native schema 1 / zero compatibility (ADR D2–D3, schema §1). Existing v4 code remains the source of truth for current v4 behavior only; do not build new code against §0 item 2 or §3/§4 v4/zstd details. 0.3 removes this file with the v4 runtime.
 
 > 本文件是并行开发的**唯一接口事实源**。任何跨模块调用都必须对齐这里给出的签名。
 > Lead 拥有 `src/deeppyro/core/**`、`src/deeppyro/config.py`、`pyproject.toml`、`fixtures/`、`tools/` 的所有权；

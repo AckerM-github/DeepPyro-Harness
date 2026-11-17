@@ -1,5 +1,7 @@
 # Plugin core: contract, composition, extension points
 
+> **状态**：现行（API v3） · **层级**：功能规格 · **最后核对**：2026-11-18
+
 Status: plugin API v3 is the current contract (0.2.0); layers A (composition kernel) and B
 (capability registries) are implemented. Everything below is the contract external plugins and
 bundles may rely on. v3 is a hard cut: there is no v1/v2 compatibility shim (ADR 0001 section 7),

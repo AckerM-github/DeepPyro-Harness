@@ -1,5 +1,7 @@
 # Agent presets: revisions, agent modes and per-preset plugin realms
 
+> **状态**：现行（M3 已调整） · **层级**：功能规格 · **最后核对**：2026-11-18
+
 Status: implemented by the `presets` core plugin (`src/deeppyro/builtin/presets.py`), the
 `agent-presets` core plugin (`src/deeppyro/builtin/agent_presets.py`), the
 `presets`/agents/tools/prompt integration and `api/types.py` fields. This document is the contract

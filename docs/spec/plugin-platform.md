@@ -1,5 +1,8 @@
 # 插件平台：安装单元、装配顺序与诊断
 
+> **状态**：现行（API v3） · **层级**：插件规格 · **最后核对**：2026-11-18
+> 公开插件契约见 [plugin-core.md](plugin-core.md)；插件作者指南见 [docs/plugins/README.md](../plugins/README.md)。
+
 本文件定义 DeepPyro 的插件平台契约中与「外部插件包」有关的部分：唯一的安装单元是什么、`plugin.toml` 怎么写、插件包如何参与组合、依赖放在哪里、失败如何分类、`dpyro plugin` 子命令做什么。组合层（bundle/patch/清单）的合并语义见 @docs/spec/plugin-core.md；管理器的启用/禁用/删除语义见 @docs/spec/plugins.md；本文件只补充「包格式 + 装配 + 诊断」，不重复定义合并算法。
 
 本层当前覆盖 P0（安装单元、启动期激活、插件包组合层、`dpyro plugin list/info/doctor/path`、`PluginContext.plugin_dir`）与 P1（uv 安装器与 `add/remove/update/enable/disable/allow-version`）。P2（TUI 贡献面 screen/ui 服务）、P3（冻结打包）见 §9。

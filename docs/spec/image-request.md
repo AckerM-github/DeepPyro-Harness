@@ -1,5 +1,7 @@
 # Image request assembly (agent loop, P1 stage 3)
 
+> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+
 Status: implemented in `src/deeppyro/agent/images.py` and wired into
 `AgentSession._turn_body` (`src/deeppyro/agent/session.py`). Tests:
 `tests/agent/test_images.py` (pure planning) and

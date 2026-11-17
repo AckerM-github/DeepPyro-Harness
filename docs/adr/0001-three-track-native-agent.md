@@ -1,19 +1,19 @@
 # ADR 0001 — Three-track native agent: pluginization, Pythonization, AI-nativeness
 
-- **Status:** Accepted; M0 and M1 deliverables complete (2026-11-17); M2 loop/contract scope complete (2026-11-17, §6.2); decisions locked in §7.
-- **Date:** 2026-11-17
+- **Status:** Accepted; M0–M4 deliverables complete (2026-11-17); M5 documentation/release complete and 0.2.0 RC prepared (2026-11-18, §6.5; untagged); decisions locked in §7.
+- **Date:** 2026-11-17 (updated 2026-11-18 for 0.2.0)
 - **Owners:** Lead (integration), lane P/Y/A owners as assigned in §6
 - **Supersedes:** the implicit "DSH-compatible port" direction recorded in `docs/spec/INTERFACES.md` §0
-- **Related:** `D:/dshworkspace/deeppyro-native-python-agent-research.md` (three-track revision), `docs/native/schema.md` (native schema 1, M0)
+- **Related:** external research report `deeppyro-native-python-agent-research.md` (three-track revision), `docs/native/schema.md` (native schema 1, M0), `docs/release/0.2.0-known-issues.md` (0.2.0 residual index)
 
 ## 1. Context
 
-DeepPyro started as a Python port of DeepSeek Harness (DSH). The plugin kernel is already native: the vendored cordis port is gone, `src/deeppyro/kernel/` runs a 986-line `RuntimeContext`/`Fiber`/`ServiceContainer`/`mount` implementation, and 3352 tests pass. What remains DSH-shaped is the **domain contract**:
+DeepPyro started as a Python port of DeepSeek Harness (DSH). The plugin kernel is already native: the vendored cordis port is gone, `src/deeppyro/kernel/` runs a 986-line `RuntimeContext`/`Fiber`/`ServiceContainer`/`mount` implementation, and 3352 tests passed at ADR time (3690 after M2–M5). What remains DSH-shaped is the **domain contract**:
 
 - `src/deeppyro/core/wire.py` defines DSH v4 message and record models with camelCase fields.
 - `src/deeppyro/session/events.py` validates 62 DSH record types; `surfaceOp` and `sourceEventSeqs` encode interval-based surface rewriting.
 - `src/deeppyro/core/events.py` declares 115 event names, 91 of which are reserved and never produced; `core/event_catalog.py` mirrors 94 DSH bus events and asar call sites.
-- 37 source files import `deeppyro.core.wire` (M2 adds exactly one documented provider-adapter importer, §6.2); 27 call sites still use string service lookup; the config model is camelCase with `extra="allow"`.
+- 38 source files import `deeppyro.core.wire` (37 at M0 plus the one documented M2 provider adapter, §6.2); string service lookup is gone from the plugin contract (M3), leaving only deprecated host-level helpers for embedders; the config model emits snake_case and still accepts camelCase aliases.
 - The agent turn/step loop in `src/deeppyro/agent/session_turn.py` still infers phases from record sequences and uses a collaborative `asyncio.Event` for cancellation.
 
 Those contracts are not just naming. They force every new feature to answer "what does DSH do?", make replay and trace correlation expensive, and keep TypeScript runtime concepts in a Python product. At the same time, DSH contains design assets worth keeping: everything-is-a-plugin, declarative bundles, service contracts with lifecycle, durable-log-first, capability contribution, adapter boundaries, least privilege, and replayability.
@@ -137,7 +137,7 @@ M0 may add documentation and baseline data only. It may not edit `src/`, `tests/
 | Lanes drift for weeks | 2–3 day merge cadence; M1/M2/M3 hard gates; one integrator |
 | "Remove DSH" turns into removing good design | This ADR's D3 retain/remove lists; design review checks both columns |
 | AI-native work is deferred again | Trace/ContextPlan/checkpoint are exit gates, not backlog items |
-| 3352 tests churn | Behavior snapshots first; only wire-format assertions are rewritten; tool schema snapshot byte-stable |
+| 3690 tests churn (3352 at M0) | Behavior snapshots first; only wire-format assertions are rewritten; tool schema snapshot byte-stable |
 | Hidden coupling to `core.wire` | Import gate from M1; count only decreases; no dual-write bridge |
 | Performance regression from pydantic on hot path | `dataclass` for messages/events; pydantic only at I/O and tool-argument boundaries |
 
@@ -158,7 +158,7 @@ M0 may add documentation and baseline data only. It may not edit `src/`, `tests/
 | Alternative | Why rejected |
 |---|---|
 | **A. De-brand only** | Renames fields but keeps v4 interval fold, DSH loop shape and string events; does not meet Pythonization or AI-nativeness. |
-| **C. Full rewrite** | Discards a working plugin kernel, tool pipeline, sandbox, TUI and 3352 tests; 8–12 weeks and a second ecosystem. |
+| **C. Full rewrite** | Discards a working plugin kernel, tool pipeline, sandbox, TUI and the 3352-test M0 suite (3690 today); 8–12 weeks and a second ecosystem. |
 | **Sequential P → Y → A** | Three big-bang migrations; each later track reopens the previous contract. |
 | **Keep a v4 reader "just in case"** | Permanent dual semantics, two test surfaces, and every new record needs a compatibility decision. Rejected by D2. |
 | **Keep string service lookup for plugin compatibility** | Type checking cannot see services; API v3 hard cut is cheaper than a permanent string bridge. |
@@ -330,9 +330,20 @@ M4 open items (deliberately not done):
 6. **The long-term store is FTS-only.** No embeddings/vector search, no capacity or compaction policy, no encryption/ACL on the SQLite file, and single-process access is protected only by SQLite locking.
 7. **Section numbering was resolved at integration time.** M2 is §6.2 and M3 is §6.3, both placed before this §6.4; M4 branched from M1 and its section was moved by the integrator. The live status of these open items, plus later additions such as the unwired `Task`/`Handoff`, is tracked in `docs/release/0.2.0-known-issues.md`.
 
+## 6.5 M5 deliverables and exit checklist
+
+Status: **complete for documentation and release packaging (2026-11-18); 0.2.0 release candidate prepared, not tagged**. M5's original scope also named snake_case config and native fixtures; config landed in M3 (snake_case output with camelCase input aliases) and native fixtures in M0/M2, so M5 is the documentation/release lane.
+
+- [x] Version 0.2.0 in `pyproject.toml`, `src/deeppyro/__init__.py` and `uv.lock`; distribution name `deeppyro-harness`.
+- [x] Reader-facing docs: `README.md` (native harness, 0.2.0 status), `docs/README.md` (documentation entry and authority map), `docs/spec/README.md` (spec index with status labels), `docs/plugins/README.md` (API v3 author guide) and `docs/plugins/migration-v2-v3.md`.
+- [x] Release/ops docs: `docs/release/0.2.0.md` (breaking changes, gates, limits), `docs/release/dsh-audit.md` (brand/legacy audit), `docs/ops/telemetry.md` (no telemetry; opt-in boundary) and `docs/release/0.2.0-known-issues.md` (single residual index).
+- [x] Native docs aligned: `docs/native/README.md` and `docs/native/schema.md` state M0–M4 implementation, schema 1 unchanged by M3/M4, and the 0.2.0 runtime boundary (native is opt-in; v4 remains default).
+- [x] Gate evidence on the integrated tree: `ruff check`/`format --check` clean; pyright 79 errors, 0 new; `pytest` **3690 passed, 0 failed, 0 skipped**; `scripts/record_replay.py all` native 10/10 and golden 20/20.
+- [x] Residual gaps documented instead of silently closed: camelCase TOML still accepted; DSH brand references remain (379 lines/91 files at audit); native CI is `continue-on-error`; the v4 runtime is still the default; clean checkouts skip reader fixtures when `manifest.json` is absent. Live status is in `docs/release/0.2.0-known-issues.md`.
+
 ## 7. Decisions locked at M0
 
-All eight decisions below are closed; the recommendation is the decision. Details and edge cases live in `docs/native/schema.md`; schema-specific refinements D-1..D-15 are M1 defaults recorded in its §12. A later change requires an M1 PR that updates both documents.
+All eight decisions below are closed; the recommendation is the decision. Details and edge cases live in `docs/native/schema.md`; schema-specific refinements D-1..D-15 are M1 defaults recorded in its §12. A later change requires a PR that updates both documents.
 
 | # | Decision | Locked at M0 | Why |
 | --- | --- | --- | --- |
@@ -345,13 +356,14 @@ All eight decisions below are closed; the recommendation is the decision. Detail
 | 7 | Fork | Copy records, renumber `seq` from 1, keep `ts` and `message.created_at` verbatim, set `parent_id`; no lazy parent references. | The child is self-contained and fold-identical at the fork point; the source can change independently. |
 | 8 | API v3 break | Hard cut in 0.2.0 with a migration note; no compatibility shim. Session schema is not part of API v3. | 0.x policy permits the break; a shim would keep the string/service bridge this ADR removes. |
 
-No open decision blocks M1 coding.
+No open decision blocks 0.3 work. Residual 0.2.0 items are tracked in `docs/release/0.2.0-known-issues.md`.
 
 ## 8. References
 
-- Research report: `D:/dshworkspace/deeppyro-native-python-agent-research.md` (three-track revision, especially §2.6, §5.3, §9.3–§9.5).
+- Research report: external `deeppyro-native-python-agent-research.md` (three-track revision, especially §2.6, §5.3, §9.3–§9.5).
 - Native schema 1 (M0): `docs/native/schema.md`.
-- Current DSH-shaped contracts: `src/deeppyro/core/wire.py`, `src/deeppyro/session/events.py`, `src/deeppyro/session/derive.py`, `src/deeppyro/core/events.py`, `src/deeppyro/config.py`.
-- Current loop: `src/deeppyro/agent/session_turn.py`.
-- Existing proposal: `docs/spec/INTERFACES.md` §0 (to be superseded by this ADR and the M1 schema).
+- v4 DSH-shaped contracts (still the 0.2.0 default): `src/deeppyro/core/wire.py`, `src/deeppyro/session/events.py`, `src/deeppyro/session/derive.py`, `src/deeppyro/core/events.py`, `src/deeppyro/config.py`.
+- v4 loop: `src/deeppyro/agent/session_turn.py`.
+- Frozen v4 interface spec: `docs/spec/INTERFACES.md` §0; native schema 1 supersedes it and it is removed with v4 in 0.3.
+- Documentation map and 0.2.0 residual index: `docs/README.md`, `docs/release/0.2.0-known-issues.md`.
 - Zero-compat scope and milestone table: report §5.3–§5.5.

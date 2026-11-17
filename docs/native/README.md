@@ -1,12 +1,12 @@
-# Native schema 1 — M1/M2 implementation and M0 baseline
+# Native schema 1 — M0–M4 implementation and baseline
 
-Status: **M1 and M2 complete (2026-11-17)**. The native message, session, fold, trace and `AgentLoop` modules exist and pass their gates. The loop is wired into headless behind `--native-loop` / `DEEPPYRO_NATIVE_LOOP=1`; TUI and default headless still use v4, and removing v4 remains future work. The M0 recorded baseline and provenance remain below unchanged.
+Status: **M0–M4 complete; shipped as an opt-in surface in 0.2.0 (2026-11-18)**. The native message, session, fold, trace and `AgentLoop` modules exist and pass their gates. The loop is wired into headless behind `--native-loop` / `DEEPPYRO_NATIVE_LOOP=1`; the TUI and default headless still use v4, and removing v4 remains 0.3 work. The M0 recorded baseline and provenance remain valid.
 
 ## Deliverables
 
 | Path | What it is |
 | --- | --- |
-| [schema.md](schema.md) | Native session schema 1: header, envelope, 27 core `EventKind`s, Message model, fold, trace, errors, fork/resume/checkpoint, 15 recorded refinements (D-1..D-15). 449 lines. |
+| [schema.md](schema.md) | Native session schema 1: header, envelope, 27 core `EventKind`s, Message model, fold, trace, errors, fork/resume/checkpoint, 15 recorded refinements (D-1..D-15). 476 lines. |
 | [../adr/0001-three-track-native-agent.md](../adr/0001-three-track-native-agent.md) | ADR: three-track break, zero compatibility, retained DSH design assets, milestones and hard gates, locked M0 decisions. |
 | [../../fixtures/native/](../../fixtures/native/) | 10 real provider recordings, manifest with checksums, validation report, and the two small files used by the sequential-tool case. |
 | [README.md](README.md) | This implementation, provenance, layout, validation and replay note. |
@@ -115,7 +115,8 @@ Behavioral notes:
 - **Append is all-or-nothing.** The writer validates the event and its seq/turn/step order before writing; a failed write truncates back to the previous offset. A second writer fails on the `<id>.jsonl.lock` file.
 - **The trace store is separate.** Default location is `~/.dpro/traces/<run_id>.jsonl`, overridable with `DEEPPYRO_TRACES_DIR`; records carry hashes, sizes, latency and IDs, never message text or tool arguments.
 - **Trace smoke is real-session based.** `test_trace_join_smoke_with_native_session` writes a native turn with one tool call, writes one model-call and one tool-call trace record, then joins both by `run_id`/step/call ID.
-- **The loop is opt-in.** `AgentLoop` is selected by headless `--native-loop` / `DEEPPYRO_NATIVE_LOOP=1`; TUI, `run_code` and default headless still emit v4 events. Native trace is emitted by the native loop, not by the v4 path. Full suite after M2: 3542 tests (3690 after M3/M4 integration).
+- **The loop is opt-in.** `AgentLoop` is selected by headless `--native-loop` / `DEEPPYRO_NATIVE_LOOP=1`; TUI, `run_code` and default headless still emit v4 events. Native trace is emitted by the native loop, not by the v4 path. Full 0.2.0 suite: 3690 passed, 0 failed, 0 skipped.
+
 ## Known anomalies and limits
 
 - Case 05 `finish_reason=length` is intentional (tiny `max_tokens`) and is the truncation baseline, not a failure.
@@ -123,8 +124,9 @@ Behavioral notes:
 - Case 07's two calls were emitted voluntarily by the model in one response; the recorder did not retry to force them.
 - Cases 08 and 10 intentionally produce error tool results. Case 10's shell denial is simulated by the harness; no shell command ran.
 - Cases 08 and 09 contain the capture workspace path `D:/dshworkspace/m0/...` inside tool arguments/results. It is data from the real stream and is preserved byte-for-byte for replay; do not rewrite recordings.
-- The baseline does not cover image/attachment parts, approval prompts, compaction checkpoints, MCP/PTC, subagents or multi-agent handoff. Those are M2+ gates (schema §5.2 reserved events, §8 trace).
+- The baseline does not cover image/attachment parts, approval prompts, compaction checkpoints, MCP/PTC, subagents or multi-agent handoff. Those are later milestones (schema §5.2 reserved events, §8 trace).
+- The full 0.2.0 residual list — native opt-in, v4 coexistence, unwired Task/Handoff, provider seam and CI exceptions — is indexed in [docs/release/0.2.0-known-issues.md](../release/0.2.0-known-issues.md).
 
 ## M0 exit state
 
-M0 is documentation and data only. M1 starts with `core/messages.py`, `session/schema.py`, `NativeCodec`, fold and the trace skeleton; it must reject v4 explicitly, keep tool schemas byte-stable, and pass the four existing gates. See ADR §5–§7 and schema §13.
+M0 is documentation and data only. M1 started with `core/messages.py`, `session/schema.py`, `NativeCodec`, fold and the trace skeleton, and kept tool schemas byte-stable. M1–M4 are complete; their checklists are ADR §6.1–§6.5, and the frozen decisions are schema §13. The 0.2.0 boundary is documented in [docs/README.md](../README.md) and the residual index above.

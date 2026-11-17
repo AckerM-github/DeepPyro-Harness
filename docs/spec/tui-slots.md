@@ -1,5 +1,7 @@
 # TUI plugin slots
 
+> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+
 Status: implemented in layer E. The TUI is a **slot host**: plugins add status
 items, conversation rows, panels and settings pages without editing
 `tui/app.py` or the core widgets.

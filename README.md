@@ -6,7 +6,7 @@ Terminal-first **pure Python** agent harness。0.2.0 引入 DeepPyro 自己定�
 > **0.2.0 状态**：M1（native 契约 + 观测骨架）、M2（native loop/checkpoint）、
 > M3（插件 API v3 + typed services）、M4（eval/memory/multi-agent）已完成并合流，M5 完成发布文档与 0.2.0 版本号。
 > native loop 目前是 headless 的显式开关（`DEEPPYRO_NATIVE_LOOP=1` / `--native-loop`），TUI 与默认 headless
-> 仍走 v4；0.2.0 是 release candidate，不是“native-only”最终切换。状态以 `docs/spec/README.md` 为准。
+> 仍走 v4；0.2.0 是 release candidate，不是“native-only”最终切换。文档入口与状态标签见 `docs/README.md`。
 
 ## 0.2.0 的三条主线
 
@@ -43,7 +43,7 @@ Terminal-first **pure Python** agent harness。0.2.0 引入 DeepPyro 自己定�
 - **trace 与 session 物理分离**：trace store 默认写 `~/.dpro/traces/<run_id>.jsonl`（`DEEPPYRO_TRACES_DIR` 可覆盖），
   只记录 `run`/`model_call`/`tool_call` 的 hash、token 计数、大小、时延与 id，**不存 prompt 正文、消息正文、工具输出正文**；
   两者通过 `run_id`/`trace_id` 关联（`docs/native/schema.md` §8）。
-- **M1/M2 已交付**：native message/session/fold/trace 模块、10 例真实录制 fixtures、native `AgentLoop`
+- **M0–M4 已交付**：native message/session/fold/trace 模块、10 例真实录制 fixtures、native `AgentLoop`
   （ContextPlan、budget/cancel、checkpoint/resume、typed trace）已入库并通过门禁。headless 可用
   `--native-loop` 显式切换；TUI 与未加开关的 headless 仍走 v4，完整切换留给后续版本。
 
@@ -233,9 +233,10 @@ class GreetPlugin(Plugin):
 
 | 文档 | 内容 |
 | --- | --- |
+| `docs/README.md` | **文档总入口**：先读顺序、权威性分层、目录地图、状态标签与维护规则 |
 | `docs/native/schema.md` | **当前会话契约**：schema 1 的 header/envelope/EventKind/Message/fold/trace/fork |
-| `docs/native/README.md` | native M1–M2 交付与状态账本 |
-| `docs/spec/README.md` | 全部规格的状态索引（当前契约 vs legacy DSH v4 vs 待删除） |
+| `docs/native/README.md` | native M0–M4 交付、录制基线、验证与状态账本 |
+| `docs/spec/README.md` | 全部规格的状态索引（当前契约/现行/过渡/冻结/历史/归档） |
 | `docs/plugins/README.md` | 插件作者指南（模板、setup、typed inject、bundle、扩展点） |
 | `docs/plugins/migration-v2-v3.md` | 插件 API v2→v3 迁移与 0.2.0 破坏性变更 |
 | `docs/release/0.2.0.md` | 0.2.0 release note：breaking changes、迁移步骤、门禁、已知限制 |

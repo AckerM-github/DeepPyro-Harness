@@ -1,6 +1,8 @@
 # tools/spec/ptc.md — Python PTC（run_code 呈现模式）
 
-> 状态：与 DSH 的 PTC 架构对齐（呈现模式 `native`/`ptc`、自动 Python SDK、`run_code` 保留工具、
+> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+>
+> 实现范围：与 DSH 的 PTC 架构对齐（呈现模式 `native`/`ptc`、自动 Python SDK、`run_code` 保留工具、
 > 内层工具走完整流水线、执行器并发与额度、runtime seam、失败分类）。默认是 `native` 呈现，
 > 因此默认行为与没有 PTC 时完全一致。启用方式有两种：**推荐**在会话里 `/preset ptc`
 > （per-session agent preset，见 `docs/spec/agent-presets.md` §2），或全局配置

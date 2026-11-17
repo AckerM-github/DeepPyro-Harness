@@ -1,5 +1,7 @@
 # Activity, jobs and team surfaces
 
+> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+
 Status: M1, M2 and M3 implemented. This document is the contract shared by the
 kernel services, the agent loop and the terminal UI. It covers plan/todo,
 background jobs and the agent team; the same projection populates the activity

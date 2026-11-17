@@ -1,8 +1,10 @@
 # TUI 对话渲染、活动栏与状态栏规格（widgets）
 
-状态：M1/M2/M3 已实现；对话流按 user turn 组织，思考与工具合并为每 turn 一个可折叠 AgentProcess
-（默认收起为一行摘要，展开按时间顺序显示 step 行与工具行），全屏查看器查看完整 reasoning；
-新增活动栏、计划/任务/团队面板；设置改走 slash 命令（/permission /cwd）。
+> **状态**：现行（0.2.0 保留） · **层级**：TUI 功能规格 · **最后核对**：2026-11-18
+>
+> 实现状态：M1/M2/M3 已实现；对话流按 user turn 组织，思考与工具合并为每 turn 一个可折叠 AgentProcess
+> （默认收起为一行摘要，展开按时间顺序显示 step 行与工具行），全屏查看器查看完整 reasoning；
+> 新增活动栏、计划/任务/团队面板；设置改走 slash 命令（/permission /cwd）。
 
 本文件描述 `src/deeppyro/tui/widgets/` 与相关 screens 的**渲染语义**，以及从 fixtures 事件与终端
 截图逆向出的取舍。总体形态、键位与启动流程见 `docs/spec/tui.md`；跨模块事件字段以

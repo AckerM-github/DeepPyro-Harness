@@ -1,5 +1,7 @@
 # 冻结发布（PyInstaller）兼容规范
 
+> **状态**：现行（0.2.0 保留） · **层级**：发布/打包规格 · **最后核对**：2026-11-18
+
 面向用 PyInstaller 打包 `dpyro.exe` 的发布者与插件作者。结论先行：
 
 - 冻结**技术可行**，但**裸 freeze 不可用**：`src/deeppyro/bundles/core/bundle.toml` 用字符串点名插件模块，静态分析看不到它们，39 行里有 35 行会被裁掉，连带 `httpx`/`Pillow`/`zstandard` 一起消失。

@@ -1,5 +1,8 @@
 # TUI 贡献面（P2）
 
+> **状态**：现行（0.2.0 保留） · **层级**：TUI 插件契约 · **最后核对**：2026-11-18
+> 插件 API v3；交互 TUI 仍走 v4。总入口：[docs/README.md](../README.md)。
+
 本文是外部插件参与 TUI 的契约：有哪些槽位、`ui` 服务如何跨线程推动作、插件声明如何校验、以及宿主与插件各自的红线。实现分布：
 
 - `src/deeppyro/tui/slots.py`：槽位注册表（`SlotRegistry`）与 `SlotsPlugin`；

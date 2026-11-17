@@ -1,6 +1,9 @@
 # Attachments 规格
 
-本文记录 DeepPyro P1 图片附件的阶段 1：附件引用类型、AttachmentStore（校验 / 归一化 / 持久化 / manifest）、以及 attachments 服务插件。实现参考 DSH 的 dsh-attachment 包与 docs/plan/p1-tools-runtime.md §4.4，但按 P1 范围裁剪：只做图片，不做通用 FileBlock、files API、自动删除与 image offload。阶段 2（image offload 预算、session 投影、llm resolver）不在本层，见 §10。
+> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+> 契约入口：[native/schema.md](../native/schema.md)；总入口：[docs/README.md](../README.md)。
+
+本文记录 DeepPyro P1 图片附件的阶段 1：附件引用类型、AttachmentStore（校验 / 归一化 / 持久化 / manifest）、以及 attachments 服务插件。实现参考 DSH 的 dsh-attachment 包与 docs/archive/research/p1-tools-runtime.md §4.4，但按 P1 范围裁剪：只做图片，不做通用 FileBlock、files API、自动删除与 image offload。阶段 2（image offload 预算、session 投影、llm resolver）不在本层，见 §10。
 
 ## 1. 范围
 
