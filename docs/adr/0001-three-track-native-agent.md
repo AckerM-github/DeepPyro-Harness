@@ -1,6 +1,6 @@
 # ADR 0001 — Three-track native agent: pluginization, Pythonization, AI-nativeness
 
-- **Status:** Accepted; M0 deliverables complete (2026-11-17); decisions locked in §7. M1 starts from this baseline.
+- **Status:** Accepted; M0 and M1 deliverables complete (2026-11-17); decisions locked in §7. M2 starts from this baseline.
 - **Date:** 2026-11-17
 - **Owners:** Lead (integration), lane P/Y/A owners as assigned in §6
 - **Supersedes:** the implicit "DSH-compatible port" direction recorded in `docs/spec/INTERFACES.md` §0
@@ -176,6 +176,24 @@ M0 may add documentation and baseline data only. It may not edit `src/`, `tests/
 M0 footprint: `docs/adr/`, `docs/native/`, `fixtures/native/`, the `fixtures/native/` allow-list in `.gitignore`, `.gitattributes` marking `fixtures/native/**` as `-text` so checksums survive checkout, and frozen banners in `docs/spec/`. No product code.
 
 M0 does **not** create `session/schema.py`, `NativeCodec`, `agent/loop.py`, or any placeholder module. Those start in M1.
+
+## 6.1 M1 deliverables and exit checklist
+
+Status: **complete (2026-11-17)**. M1 is additive: the v4 runtime remains the product path until M2 wires the native loop. No v4 module was edited and no dual-write path was added.
+
+- [x] `src/deeppyro/core/messages.py`: frozen slots `Message`, four content parts (text/reasoning/tool_call/image), eight discriminated sources, strict role/part matrix, JSON round-trip, replacement and missing-tool-result helpers; 19 tests.
+- [x] `src/deeppyro/session/errors.py`: the 15 schema §9 exception classes, rooted at `SessionError`.
+- [x] `src/deeppyro/session/schema.py`: `SCHEMA_VERSION = 1`, 24-value `EventKind`, closed `SessionHeader`/`Event`, `NativeCodec` read/encode, `NativeSession` atomic header, `O_EXCL` writer lock, fsync append and truncate rollback; v4 header/zstd rejected with `SessionV4Error`.
+- [x] `src/deeppyro/session/fold.py`: pure `fold(header, events) -> SessionView`; message replacement, compaction, system block, goal/preset/todo/deliverable state, approvals, plugin pass-through, completed-turn tool pairing and missing-result repair.
+- [x] `src/deeppyro/observability/trace.py`: canonical JSON + `sha256:` hashes, run/model-call/tool-call records, `TraceStore` under `DEEPPYRO_TRACES_DIR` or `~/.dpro/traces`, strict reader, and `join_trace` against session events.
+- [x] `src/deeppyro/core/ids.py`: `new_run_id`, `new_turn_id`, `new_step_id`, `new_span_id`, `new_trace_id`.
+- [x] `tests/fixtures/native/golden-session.jsonl`: one complete tool turn; decode → fold → encode is byte-identical (header `cwd` is platform-normalized in the test).
+- [x] Existing 43-tool schema snapshot remains byte-identical (`tests/tools/test_tool_schemas.py`).
+- [x] Four gates green: `ruff check`, `ruff format --check`, `scripts/typecheck.py` (79 errors, 0 new), full `pytest` (3465 passed, 0 failed, 0 skipped).
+
+M1 footprint: `src/deeppyro/core/messages.py`, `src/deeppyro/core/ids.py` (additive helpers), `src/deeppyro/session/errors.py`, `src/deeppyro/session/schema.py`, `src/deeppyro/session/fold.py`, `src/deeppyro/observability/{__init__,trace}.py`; tests under `tests/core`, `tests/session`, `tests/observability`; and the golden fixture above.
+
+M1 deliberately does **not** wire these modules into `agent/`, the CLI, the TUI, compaction or provider adapters. That is M2 work. The trace skeleton exists and its join is tested against a real native session, but the agent does not emit trace records yet; no model/tool payload is stored in the trace.
 
 ## 7. Decisions locked at M0
 

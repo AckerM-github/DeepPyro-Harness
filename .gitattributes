@@ -1,2 +1,4 @@
-# M0 native fixtures are hash-pinned: never apply EOL conversion.
+# M0 native fixtures are hash-pinned and the M1 golden session is byte-exact:
+# never apply EOL conversion.
 fixtures/native/** -text
+tests/fixtures/native/** -text

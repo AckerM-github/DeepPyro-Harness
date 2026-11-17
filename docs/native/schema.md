@@ -4,10 +4,10 @@
 | --- | --- |
 | 文档 | `docs/native/schema.md` |
 | Schema 版本 | `1`（header 字段 `schema:1`） |
-| 状态 | M0 冻结草案、M1 实现契约；M0 只写文档不改代码（ADR D8） |
+| 状态 | M0 冻结、M1 实现完成（2026-11-17）；M0 只写文档不改代码（ADR D8） |
 | Owner | Lane Y（`core/`、`session/`、`agent/`、`prompt/`、`compact/`） |
 | 取代 | `docs/spec/session.md`（`session.v4`） |
-| 权威来源 | `docs/adr/0001-three-track-native-agent.md`（Accepted for M0）；研究报告 `deeppyro-native-python-agent-research.md` §3.3–3.5、§5.3、§9.3–9.5 |
+| 权威来源 | `docs/adr/0001-three-track-native-agent.md`（Accepted；M0/M1 完成）；研究报告 `deeppyro-native-python-agent-research.md` §3.3–3.5、§5.3、§9.3–9.5 |
 | M1 落点 | `src/deeppyro/core/messages.py`、`src/deeppyro/session/schema.py`、`src/deeppyro/session/fold.py`、`src/deeppyro/observability/trace.py` |
 | 冲突处理 | 与 ADR 冲突时以 ADR 为准；偏差在 §12 显式记录 |
 

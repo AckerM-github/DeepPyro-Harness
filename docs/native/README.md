@@ -1,6 +1,6 @@
-# Native schema 1 — M0 baseline and fixtures
+# Native schema 1 — M1 implementation and M0 baseline
 
-Status: M0 complete for the native contract; implementation starts in M1. This directory records the M0 deliverables and the replay baseline that M1 must satisfy. Product code was not changed in M0 (ADR D8).
+Status: **M1 complete (2026-11-17)**. The native message, session, fold and trace modules exist and pass their gates, but the v4 runtime is still the product path; wiring the native loop and removing v4 is M2 work. The M0 recorded baseline and provenance remain below unchanged.
 
 ## Deliverables
 
@@ -9,7 +9,12 @@ Status: M0 complete for the native contract; implementation starts in M1. This d
 | [schema.md](schema.md) | Native session schema 1: header, envelope, 24 core `EventKind`s, Message model, fold, trace, errors, fork/resume/checkpoint, 15 recorded refinements (D-1..D-15). 449 lines. |
 | [../adr/0001-three-track-native-agent.md](../adr/0001-three-track-native-agent.md) | ADR: three-track break, zero compatibility, retained DSH design assets, milestones and hard gates, locked M0 decisions. |
 | [../../fixtures/native/](../../fixtures/native/) | 10 real provider recordings, manifest with checksums, validation report, and the two small files used by the sequential-tool case. |
-| [README.md](README.md) | This provenance, layout, validation and replay note. |
+| [README.md](README.md) | This implementation, provenance, layout, validation and replay note. |
+| [../../src/deeppyro/core/messages.py](../../src/deeppyro/core/messages.py) | Frozen native `Message`, four content parts and eight sources; strict role/part matrix and JSON round-trip. |
+| [../../src/deeppyro/session/schema.py](../../src/deeppyro/session/schema.py) | Schema 1 header/envelope, 24 core `EventKind`s, `NativeCodec` reader/writer, writer lock and atomic append. |
+| [../../src/deeppyro/session/fold.py](../../src/deeppyro/session/fold.py) | Pure fold to `SessionView`: replacement, compaction, state, approvals, tool pairing and missing-result repair. |
+| [../../src/deeppyro/observability/trace.py](../../src/deeppyro/observability/trace.py) | Trace records, canonical hashing, strict reader and `join_trace` against session events. |
+| [../../tests/fixtures/native/golden-session.jsonl](../../tests/fixtures/native/golden-session.jsonl) | One complete tool turn used for byte-exact decode → fold → encode checks. |
 
 The old contracts are retained only as migration references: [../spec/INTERFACES.md](../spec/INTERFACES.md) and [../spec/session.md](../spec/session.md) now carry frozen/superseded banners.
 
@@ -82,6 +87,31 @@ To re-check a checkout without the recorder, compare each `manifest.json` sha256
 3. the native session log round-trips and folds back to the same visible messages;
 4. no session log contains provider token/cost/latency snapshots (schema §8.5); those belong in the trace store.
 
+## M1 native implementation
+
+M1 adds the native contract as a parallel surface; it does not edit `core/wire.py`, `session/events.py`, the agent loop, providers, TUI or CLI. The modules are importable and covered by dedicated tests:
+
+| Module | Contract | Tests |
+| --- | --- | --- |
+| `core/messages.py` | [schema §6](schema.md); 4 parts, 8 sources, no unknown fields | `tests/core/test_messages.py` |
+| `session/schema.py` | [schema §2–§5](schema.md); `EventKind`, `SessionHeader`, `Event`, `NativeCodec`, `NativeSession` | `tests/session/test_native_schema.py` |
+| `session/fold.py` | [schema §7](schema.md); single-pass, deterministic, no clock or I/O | `tests/session/test_fold.py` |
+| `observability/trace.py` | [schema §8](schema.md); hashes only, no prompt/tool payloads | `tests/observability/test_trace.py` |
+| golden fixture | decode → fold → encode is byte-identical | `tests/session/test_golden.py` |
+
+Run the M1 surface only:
+
+```powershell
+uv run --no-sync pytest tests/core/test_messages.py tests/session tests/observability -q
+```
+
+Behavioral notes:
+
+- **v4 is rejected, not read.** A line-1 `"version": 4` header or a zstd magic prefix raises `SessionV4Error` with the schema §9 message. There is no fallback reader and no migration path.
+- **Append is all-or-nothing.** The writer validates the event and its seq/turn/step order before writing; a failed write truncates back to the previous offset. A second writer fails on the `<id>.jsonl.lock` file.
+- **The trace store is separate.** Default location is `~/.dpro/traces/<run_id>.jsonl`, overridable with `DEEPPYRO_TRACES_DIR`; records carry hashes, sizes, latency and IDs, never message text or tool arguments.
+- **Trace smoke is real-session based.** `test_trace_join_smoke_with_native_session` writes a native turn with one tool call, writes one model-call and one tool-call trace record, then joins both by `run_id`/step/call ID.
+- **The loop is not wired yet.** No provider, agent step, TUI or `run_code` path emits native events or trace records in M1. That is the M2 gate; until then, the existing v4 path remains authoritative (the full suite is 3465 tests after M1).
 ## Known anomalies and limits
 
 - Case 05 `finish_reason=length` is intentional (tiny `max_tokens`) and is the truncation baseline, not a failure.
