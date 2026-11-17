@@ -210,6 +210,8 @@ class GreetPlugin(Plugin):
 
 ## 已知限制（0.2.0）
 
+> 完整逐项清单、状态与证据见 [docs/release/0.2.0-known-issues.md](docs/release/0.2.0-known-issues.md)；本节只是发布摘要，冲突以总表为准。
+
 - **native loop 仍是 opt-in**：只有 headless 的 `--native-loop` / `DEEPPYRO_NATIVE_LOOP=1` 走 native schema 1
   与 `AgentLoop`；TUI 和默认 headless 仍走 v4，v4 provider/`core.wire` 尚未删除。这是 0.2.0 最重要的
   发布限制，完整切换排在后续版本。
@@ -237,6 +239,7 @@ class GreetPlugin(Plugin):
 | `docs/plugins/README.md` | 插件作者指南（模板、setup、typed inject、bundle、扩展点） |
 | `docs/plugins/migration-v2-v3.md` | 插件 API v2→v3 迁移与 0.2.0 破坏性变更 |
 | `docs/release/0.2.0.md` | 0.2.0 release note：breaking changes、迁移步骤、门禁、已知限制 |
+| `docs/release/0.2.0-known-issues.md` | **0.2.0 已知问题唯一总表**：S1/S2/S3、证据、目标版本、已解决条目 |
 | `docs/release/dsh-audit.md` | DSH 去品牌审计：`src` 中 dsh 引用的分类与清理建议 |
 | `docs/ops/telemetry.md` | 遥测边界：默认无上报、opt-in 约定 |
 | `docs/adr/0001-three-track-native-agent.md` | 三线决策记录（权威） |

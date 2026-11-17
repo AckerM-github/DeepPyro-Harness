@@ -287,7 +287,8 @@ await app.dispose()
 
 ## 7. 已知限制（0.2.0 仍适用）
 
-摘自 `docs/spec/plugin-core.md` §9，并补充 0.2.0 语境：
+摘自 `docs/spec/plugin-core.md` §9，并补充 0.2.0 语境。完整状态见
+[`docs/release/0.2.0-known-issues.md`](../release/0.2.0-known-issues.md)（KI-019/KI-021）：
 
 - settings 写入下次 boot 生效（volatile 字段除外）；settings 无跨进程锁，重写用户 manifest 会丢注释。
 - `bundle install` 只做结构校验；第三方代码下次 boot 才执行，无签名、无沙箱；移除 bundle 不会停掉已加载插件。

@@ -29,7 +29,7 @@
 | `docs/native/schema.md` | native session schema 1（header/envelope/27 EventKind/Message/fold/trace/fork/校验） | `当前契约` | 取代 `docs/spec/session.md`；native loop 只写、只读 schema 1 |
 | `docs/adr/0001-three-track-native-agent.md` | 三线（插件化/Python 化/AI 原生）决策记录 | `当前契约` | M0 决策冻结；D2 零 wire 兼容、D3 保留/删除清单、D5 里程碑门禁 |
 | `docs/native/README.md` | M1–M2 交付与状态账本（10 例录制、门禁数字） | `当前契约`（状态报告，非规范正文） | 记录 M1/M2 完成时点与 provenance |
-| `docs/spec/INTERFACES.md` | 旧总接口文档（DSH 形状的 v4/camelCase 契约） | `冻结：迁移参考` | M0 冻结横幅；被 ADR §0 与 `docs/native/schema.md` 取代；M5 后归档 |
+| `docs/spec/INTERFACES.md` | 旧总接口文档（DSH 形状的 v4/camelCase 契约） | `冻结：迁移参考` | M0 冻结横幅；被 ADR §0 与 `docs/native/schema.md` 取代；0.2.0 未归档，计划 0.3 |
 | `docs/spec/session.md` | 旧 `session.v4` 存储/派生/fork 规范 | `冻结：迁移参考` | 仅供迁移参考；被 `docs/native/schema.md` 取代 |
 
 > 新代码唯一可依赖的会话契约是 `docs/native/schema.md`。`INTERFACES.md` 与 `session.md` 里的
@@ -39,9 +39,9 @@
 
 | 文档 | 状态 | 现状 | 计划 |
 | --- | --- | --- | --- |
-| `docs/spec/INTERFACES.md` | `冻结：迁移参考` | M0 冻结；记录 v4 记录形状与 camelCase 字段 | M5 后归档，最终删除 |
-| `docs/spec/session.md` | `冻结：迁移参考` | v4 storage/derive/fork 仅供迁移参考 | 归档，最终删除 |
-| `docs/spec/dsh-event-catalog.md` | `历史证据：待删除` | 由 `scripts/extract_dsh_events.mjs` 生成的 DSH 事件目录（M0 artifact；非运行期契约） | M2/M3 随 EventKind 切换删除 |
+| `docs/spec/INTERFACES.md` | `冻结：迁移参考` | M0 冻结；记录 v4 记录形状与 camelCase 字段 | 0.2.0 未归档；0.3 随 v4 删除（见 KI-033） |
+| `docs/spec/session.md` | `冻结：迁移参考` | v4 storage/derive/fork 仅供迁移参考 | 0.2.0 未归档；0.3 随 v4 删除（见 KI-033） |
+| `docs/spec/dsh-event-catalog.md` | `历史证据：待删除` | 由 `scripts/extract_dsh_events.mjs` 生成的 DSH 事件目录（M0 artifact；非运行期契约） | 0.2.0 未删除；0.3 随 v4 删除（见 KI-033） |
 | `docs/spec/dsh-event-catalog-unresolved.md` | `历史证据：待删除` | 从 DSH asar 提取的未解析证据（bus=94 internal=19 record=61 noise=2328） | 同上 |
 | `docs/spec/loop.md` | `现行（过渡：M2 已交付）` | v4 loop 仍为默认；native `AgentLoop` 已实现并通过 10 例差分，走 `--native-loop` | 0.3 切换默认后重写为 `AgentLoop` 文档 |
 | `docs/spec/hooks.md` | `现行（过渡：M2 部分替换）` | P1 bus 与 19 个 well-known hook 名仍用于 v4；native loop 用 typed `AgentHooks`/`events.py` | 0.3 切换后统一 |

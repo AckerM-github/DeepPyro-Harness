@@ -211,7 +211,7 @@ Status: **complete for the loop/contract scope (2026-11-17)**. M2 wires the nati
 - [x] Tests: 63 under `tests/native/` (differential, context plan, budget, loop, kill/resume checkpoint, headless switch) + 11 native run-event tests; schema tests updated for the 27-member enum.
 - [x] Gates: `ruff check src tests` 0; `ruff format --check src tests` 0; `scripts/typecheck.py` 79 errors, 0 new; `python -m pytest -q` 3542 passed (M1 baseline 3465 + 77 new M2 tests), 0 failed, 0 skipped.
 
-Known deviation from §4 rule 1: `src/deeppyro/agent/native_provider.py` is the only new `deeppyro.core.wire` importer (37 pre-existing → 38 files). M2 must call the M1 `LlmProvider`; this is the provider-adapter boundary already permitted by schema §6.5 and is documented in the module docstring and schema §6.5. It disappears with the M3 provider port, after which rule 1 becomes enforceable by a monotone importer-count check. No other M2 module imports `core.wire` (verified: 38 importer files total, one of them this adapter).
+Known deviation from §4 rule 1: `src/deeppyro/agent/native_provider.py` is the only new `deeppyro.core.wire` importer (37 pre-existing → 38 files). M2 must call the M1 `LlmProvider`; this is the provider-adapter boundary already permitted by schema §6.5 and is documented in the module docstring and schema §6.5. It disappears with the M3 provider port, after which rule 1 becomes enforceable by a monotone importer-count check. No other M2 module imports `core.wire` (verified: 38 importer files total, one of them this adapter). **0.2.0 status:** the M3 provider port was not delivered, so this seam and all 38 importers remain; tracked as KI-010 in `docs/release/0.2.0-known-issues.md`.
 
 Not done in M2 (deliberately):
 
@@ -328,7 +328,7 @@ M4 open items (deliberately not done):
 4. **Eval runs recorded or fake runners only.** There is no `AgentRunner` adapter backed by `AgentSession` yet (the native loop arrives in M2); golden outcomes are hand-authored fixtures, not captured live.
 5. **Replay is fixture-level, not session-level.** It reassembles and checks the recordings offline but does not feed them through the native provider adapter or compare a native session log end to end; that differential is the M2 exit gate.
 6. **The long-term store is FTS-only.** No embeddings/vector search, no capacity or compaction policy, no encryption/ACL on the SQLite file, and single-process access is protected only by SQLite locking.
-7. **Section numbering was resolved at integration time.** M2 is §6.2 and M3 is §6.3, both placed before this §6.4; M4 branched from M1 and its section was moved by the integrator.
+7. **Section numbering was resolved at integration time.** M2 is §6.2 and M3 is §6.3, both placed before this §6.4; M4 branched from M1 and its section was moved by the integrator. The live status of these open items, plus later additions such as the unwired `Task`/`Handoff`, is tracked in `docs/release/0.2.0-known-issues.md`.
 
 ## 7. Decisions locked at M0
 
