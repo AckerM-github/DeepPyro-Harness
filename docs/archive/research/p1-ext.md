@@ -1,5 +1,8 @@
 # P1 扩展调研：skills / schedule / memory
 
+> **历史文档（非契约）**。本文是 0.2.0 之前的研究/计划记录，保留用于追溯设计依据；
+> 不再维护，字段、路径与结论可能已过期。当前入口见 [docs/README.md](../../README.md)。
+
 调研任务 task-33 交付物。参考实现：D:/Code/deepseek-harness（DSH TypeScript 源码，下文行号均指该仓库）。目标仓库：D:/code/deeppyro（DeepPyro，纯 Python 内核 + Textual TUI）。本文只做语义调研、Python 设计与任务拆分建议，不含实现代码。
 
 ## 0. 结论速览

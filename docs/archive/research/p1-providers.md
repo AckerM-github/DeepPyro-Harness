@@ -1,5 +1,8 @@
 # P1 调研：模型目录（listModels）与 Anthropic provider
 
+> **历史文档（非契约）**。本文是 0.2.0 之前的研究/计划记录，保留用于追溯设计依据；
+> 不再维护，字段、路径与结论可能已过期。当前入口见 [docs/README.md](../../README.md)。
+
 > 状态：调研/设计文档（P1 实现前）。作者：llm-dev（task-34）。
 > 范围：只做设计与拆分建议，不改任何代码。DSH 结论来自 D:\dshworkspace\_dsh_src\ 下已解包的编译产物（只有 lib/*.js 与 README.md，没有 src/*.ts），行号指 lib/index.js；README 行号指对应包 README.md。
 > 目标仓库：D:\code\deeppyro（DeepPyro Harness，DSH 的纯 Python 重写），现有 llm 模块见 docs/spec/llm.md。

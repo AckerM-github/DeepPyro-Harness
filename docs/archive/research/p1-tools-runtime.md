@@ -1,5 +1,8 @@
 # P1 工具与运行时特性调研（run_code / ask_user_question / working_directory / image offload）
 
+> **历史文档（非契约）**。本文是 0.2.0 之前的研究/计划记录，保留用于追溯设计依据；
+> 不再维护，字段、路径与结论可能已过期。当前入口见 [docs/README.md](../../README.md)。
+
 > 状态：调研与设计文档，**不含实现改动**。仓库 D:\code\deeppyro，基线为当前工作树（其他 workstream 正在并行修改 agent/tui/bundles）。
 > 作者：tools-dev；对应任务：task-31。
 > 约束：本文只覆盖 4 个 P1 特性，不改现有包结构，优先复用已冻结的 core 契约与现有 service/plugin 接线点。

@@ -1,5 +1,8 @@
 # P1 上下文调研：compress / projection checkpoint / session-query / stream chunks
 
+> **历史文档（非契约）**。本文是 0.2.0 之前的研究/计划记录，保留用于追溯设计依据；
+> 不再维护，字段、路径与结论可能已过期。当前入口见 [docs/README.md](../../README.md)。
+
 - 作者：session-dev（task-32）
 - 日期：2026-11-14
 - 状态：调研结论（只读；本文件是唯一交付物，未改 src/ tests/）
