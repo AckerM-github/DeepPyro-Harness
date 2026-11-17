@@ -12,7 +12,9 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from deeppyro.api import Plugin, PluginConfig, PluginContext, PluginDependencyError
+from deeppyro.memory.errors import MemoryStoreError
 from deeppyro.memory.service import MemoryService
+from deeppyro.memory.sqlite import SqliteMemoryBackend
 from deeppyro.memory.store import MemoryStore
 from deeppyro.memory.types import PROJECTION_FILENAMES, TARGETS
 from deeppyro.tools.builtin.memory import memory_tools
@@ -62,7 +64,7 @@ class MemoryPlugin(Plugin):
         self.service: MemoryService | None = None
 
     def setup(self) -> None:
-        service = MemoryService(store=MemoryStore())
+        service = MemoryService(store=MemoryStore(), backend=self._open_long_term_backend())
         self.service = service
         self.ctx.provide("memory", service)
         try:
@@ -76,6 +78,16 @@ class MemoryPlugin(Plugin):
             MEMORY_PROMPT_ORDER,
             self._render_section,
         )
+
+    def _open_long_term_backend(self) -> SqliteMemoryBackend | None:
+        """Open the long-term SQLite backend, degrading when it is unavailable."""
+        try:
+            return SqliteMemoryBackend()
+        except MemoryStoreError as exc:
+            # Hot memory must keep working even when the long-term backend cannot
+            # be opened (read-only home, unsupported sqlite build, ...).
+            self.ctx.logger.warning(f"long-term memory backend unavailable: {exc}")
+            return None
 
     def _render_section(self, tools: Any, prompt_context: Any) -> str:
         try:

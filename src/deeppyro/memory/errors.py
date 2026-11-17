@@ -29,11 +29,31 @@ class MemoryAmbiguousMatchError(MemoryStoreError):
     """A substring selector matches more than one entry."""
 
 
+class MemoryBackendError(MemoryStoreError):
+    """Base class for long-term (backend) memory failures."""
+
+
+class MemoryBackendCorruptError(MemoryBackendError):
+    """The long-term memory database is unreadable, malformed or too new."""
+
+
+class MemoryBackendUnavailableError(MemoryBackendError):
+    """The long-term memory backend cannot be opened or was already closed."""
+
+
+class MemoryRecordNotFoundError(MemoryBackendError):
+    """The requested long-term memory record does not exist."""
+
+
 __all__ = [
     "MemoryAmbiguousMatchError",
+    "MemoryBackendCorruptError",
+    "MemoryBackendError",
+    "MemoryBackendUnavailableError",
     "MemoryCapacityError",
     "MemoryCorruptError",
     "MemoryEntryNotFoundError",
+    "MemoryRecordNotFoundError",
     "MemoryStoreError",
     "MemoryValidationError",
 ]
