@@ -1,6 +1,6 @@
 """Model catalog values shared by discovery, providers and the UI layer.
 
-DSH splits model metadata in two layers (see docs/plan/p1-providers.md and
+DSH splits model metadata in two layers (see docs/archive/research/p1-providers.md and
 docs/spec/llm.md section 13):
 
 * a catalog entry answers "which models may a client offer/select?" and carries only

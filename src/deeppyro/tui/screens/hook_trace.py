@@ -1,7 +1,7 @@
 """Read-only viewer for the recent hook decisions of one session.
 
 The hooks bus records one invoked record before a hook runs and one result
-record when it returns (see docs/plan/p2-bus.md). The session query pairs them
+record when it returns (see docs/archive/research/p2-bus.md). The session query pairs them
 into rows shaped like {"hook", "mode", "invoked", "result"} and this modal
 renders one line per pair: hook name, mode, ok/error/pending, the duration and
 either the error or a short preview of the returned value.

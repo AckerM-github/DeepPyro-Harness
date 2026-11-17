@@ -9,7 +9,7 @@ replays (docs/spec/llm.md section 14):
   Anthropic requires a strict call/result pairing;
 * tool_use `input` is a JSON *object* (unlike OpenAI, which keeps arguments a string).
 
-P1 scope (Lead decisions, docs/plan/p1-providers.md section 2.1.5):
+P1 scope (Lead decisions, docs/archive/research/p1-providers.md section 2.1.5):
 
 * `reasoning_effort="off"` (the default) drops history reasoning, because a thinking
   block is only replayable with its signature and core wire/Finish have no channel for it.

@@ -6,7 +6,7 @@ HTML login page, oversized payload) must degrade to the configured catalog rathe
 breaking the session; that fallback decision lives in LlmRegistry, while this module
 provides the transport plus the small TTL cache the registry drives.
 
-Design notes (docs/plan/p1-providers.md, docs/spec/llm.md section 13):
+Design notes (docs/archive/research/p1-providers.md, docs/spec/llm.md section 13):
 
 * Listings are not streamed and must not hang a UI, hence the short 5 s timeout instead
   of the provider's 600 s stream timeout.

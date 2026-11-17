@@ -19,7 +19,7 @@ Finish(error, code STREAM_CLOSED) when content was already emitted and to a retr
 LlmError(STREAM_CLOSED) before that. Transport failures and provider error events inside
 the stream follow the same produced/not-produced split as OpenAICompatProvider.
 
-P1 scope (Lead decision, docs/plan/p1-providers.md): thinking blocks are streamed as
+P1 scope (Lead decision, docs/archive/research/p1-providers.md): thinking blocks are streamed as
 ReasoningDelta but history reasoning is not replayed with a signature, and the baseURL must
 be configured explicitly because Anthropic has no default endpoint here.
 """
