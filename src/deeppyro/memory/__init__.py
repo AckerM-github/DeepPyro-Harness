@@ -1,16 +1,39 @@
-"""DeepPyro runtime memory: JSON store, USER.md/MEMORY.md projections, service."""
+"""DeepPyro runtime memory: JSON store, projections, service and long-term backend."""
 
 from __future__ import annotations
 
+from deeppyro.memory.backend import (
+    DEFAULT_SEARCH_LIMIT,
+    PROVENANCE_FIELDS,
+    MemoryBackend,
+    MemoryBackendStatus,
+    MemoryProvenance,
+    MemoryRecord,
+    MemorySearchHit,
+    format_timestamp,
+    hash_content,
+    utc_now,
+)
 from deeppyro.memory.errors import (
     MemoryAmbiguousMatchError,
+    MemoryBackendCorruptError,
+    MemoryBackendError,
+    MemoryBackendUnavailableError,
     MemoryCapacityError,
     MemoryCorruptError,
     MemoryEntryNotFoundError,
+    MemoryRecordNotFoundError,
     MemoryStoreError,
     MemoryValidationError,
 )
 from deeppyro.memory.service import MemoryService
+from deeppyro.memory.sqlite import (
+    DB_FILENAME,
+    SCHEMA_VERSION,
+    SqliteMemoryBackend,
+    default_memory_db_path,
+    open_memory_backend,
+)
 from deeppyro.memory.store import Clock, MemoryStore
 from deeppyro.memory.types import (
     CAPACITY_LIMITS,
@@ -32,9 +55,13 @@ from deeppyro.memory.types import (
 
 __all__ = [
     "CAPACITY_LIMITS",
+    "DB_FILENAME",
     "DEFAULT_IMPORTANCE",
+    "DEFAULT_SEARCH_LIMIT",
     "IMPORTANCES",
     "PROJECTION_FILENAMES",
+    "PROVENANCE_FIELDS",
+    "SCHEMA_VERSION",
     "STORE_FILENAME",
     "STORE_VERSION",
     "TARGETS",
@@ -42,12 +69,21 @@ __all__ = [
     "TARGET_USER",
     "Clock",
     "MemoryAmbiguousMatchError",
+    "MemoryBackend",
+    "MemoryBackendCorruptError",
+    "MemoryBackendError",
+    "MemoryBackendStatus",
+    "MemoryBackendUnavailableError",
     "MemoryCapacityError",
     "MemoryCorruptError",
     "MemoryEntry",
     "MemoryEntryNotFoundError",
     "MemoryImportance",
+    "MemoryProvenance",
     "MemoryReceipt",
+    "MemoryRecord",
+    "MemoryRecordNotFoundError",
+    "MemorySearchHit",
     "MemoryService",
     "MemorySnapshot",
     "MemoryStatus",
@@ -55,4 +91,10 @@ __all__ = [
     "MemoryStoreError",
     "MemoryTarget",
     "MemoryValidationError",
+    "SqliteMemoryBackend",
+    "default_memory_db_path",
+    "format_timestamp",
+    "hash_content",
+    "open_memory_backend",
+    "utc_now",
 ]

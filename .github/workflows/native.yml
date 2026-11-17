@@ -1,0 +1,45 @@
+name: native-replay
+
+# M4 offline track: replay the recorded native fixtures and score the 20 golden
+# evals. It never contacts a provider, and the job is deliberately non-blocking
+# (continue-on-error) so fixture drift cannot hold up the four mandatory gates.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-replay-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    name: offline replay + golden eval
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked
+      - name: replay recorded native fixtures and score golden evals
+        run: uv run python scripts/record_replay.py --json native-replay-report.json
+      - name: eval and replay unit tests
+        run: uv run python -m pytest tests/eval -q
+      - name: upload offline report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-replay-report-${{ matrix.python-version }}
+          path: native-replay-report.json
+          if-no-files-found: warn
