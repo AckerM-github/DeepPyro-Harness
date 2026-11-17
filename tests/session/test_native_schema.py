@@ -146,6 +146,31 @@ def valid_data() -> dict[str, dict[str, object]]:
         "plan.mode": {"mode": "plan"},
         "todo.written": {"todos": [{"content": "a", "status": "pending"}]},
         "deliverable.presented": {"files": [{"path": "out.txt", "description": "result"}]},
+        "run.started": {},
+        "run.checkpoint": {
+            "last_seq": 7,
+            "last_message_id": MSG_ASSISTANT,
+            "turn_id": TURN_ID,
+            "step_id": STEP_ID,
+            "status": "running",
+            "budgets": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cost_usd": 0.001,
+                "tool_calls": 1,
+                "wall_ms": 120,
+            },
+            "tool_calls": [
+                {
+                    "call_id": CALL_ID,
+                    "name": "read",
+                    "state": "completed",
+                    "idempotency_key": "idem:" + "a" * 64,
+                }
+            ],
+            "approvals": [],
+        },
+        "run.finished": {"status": "completed", "reason": {"kind": "completed"}},
     }
 
 
@@ -154,9 +179,9 @@ def test_every_event_kind_accepts_its_documented_shape(kind: EventKind) -> None:
     validate_event_data(kind.value, valid_data()[kind.value], seq=1)
 
 
-def test_event_kind_catalog_is_exactly_24() -> None:
-    assert len(EventKind) == 24
-    assert len({kind.value for kind in EventKind}) == 24
+def test_event_kind_catalog_is_exactly_27() -> None:
+    assert len(EventKind) == 27
+    assert len({kind.value for kind in EventKind}) == 27
 
 
 def test_header_round_trip_and_filename_check(tmp_path: Path) -> None:

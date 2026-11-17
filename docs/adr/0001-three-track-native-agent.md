@@ -1,6 +1,6 @@
 # ADR 0001 — Three-track native agent: pluginization, Pythonization, AI-nativeness
 
-- **Status:** Accepted; M0 and M1 deliverables complete (2026-11-17); decisions locked in §7. M2 starts from this baseline.
+- **Status:** Accepted; M0 and M1 deliverables complete (2026-11-17); M2 loop/contract scope complete (2026-11-17, §6.2); decisions locked in §7.
 - **Date:** 2026-11-17
 - **Owners:** Lead (integration), lane P/Y/A owners as assigned in §6
 - **Supersedes:** the implicit "DSH-compatible port" direction recorded in `docs/spec/INTERFACES.md` §0
@@ -13,7 +13,7 @@ DeepPyro started as a Python port of DeepSeek Harness (DSH). The plugin kernel i
 - `src/deeppyro/core/wire.py` defines DSH v4 message and record models with camelCase fields.
 - `src/deeppyro/session/events.py` validates 62 DSH record types; `surfaceOp` and `sourceEventSeqs` encode interval-based surface rewriting.
 - `src/deeppyro/core/events.py` declares 115 event names, 91 of which are reserved and never produced; `core/event_catalog.py` mirrors 94 DSH bus events and asar call sites.
-- 37 source files import `deeppyro.core.wire`; 27 call sites still use string service lookup; the config model is camelCase with `extra="allow"`.
+- 37 source files import `deeppyro.core.wire` (M2 adds exactly one documented provider-adapter importer, §6.2); 27 call sites still use string service lookup; the config model is camelCase with `extra="allow"`.
 - The agent turn/step loop in `src/deeppyro/agent/session_turn.py` still infers phases from record sequences and uses a collaborative `asyncio.Event` for cancellation.
 
 Those contracts are not just naming. They force every new feature to answer "what does DSH do?", make replay and trace correlation expensive, and keep TypeScript runtime concepts in a Python product. At the same time, DSH contains design assets worth keeping: everything-is-a-plugin, declarative bundles, service contracts with lifecycle, durable-log-first, capability contribution, adapter boundaries, least privilege, and replayability.
@@ -195,6 +195,33 @@ M1 footprint: `src/deeppyro/core/messages.py`, `src/deeppyro/core/ids.py` (addit
 
 M1 deliberately does **not** wire these modules into `agent/`, the CLI, the TUI, compaction or provider adapters. That is M2 work. The trace skeleton exists and its join is tested against a real native session, but the agent does not emit trace records yet; no model/tool payload is stored in the trace.
 
+## 6.2 M2 deliverables and exit checklist
+
+Status: **complete for the loop/contract scope (2026-11-17)**. M2 wires the native `AgentLoop`, `ContextPlan`, `RunState`/checkpoint, budget/cancellation and trace emission. The v4 runtime stays the default product path; headless exposes an explicit `DEEPPYRO_NATIVE_LOOP=1` / `--native-loop` switch. TUI migration and the v4 provider port remain M3+ work.
+
+- [x] `src/deeppyro/agent/loop.py` (1030 lines): one native conversation per `run()`. Input is native `Message`; each step builds a `ContextPlan`, converts through the adapter boundary, streams the existing `LlmProvider`, writes one native `assistant.message`, dispatches tool calls through the existing `ToolRegistry`/`Tool` protocol (parallel-safe batches in `asyncio.TaskGroup`), appends native `tool.result` messages and terminates with `turn.ended` + `run.finished`. Only `NativeSession` is written; no v4 session and no dual write.
+- [x] `src/deeppyro/agent/context_plan.py`: frozen slots `ContextPlan(system, messages, tools, estimated_tokens, source_message_ids)`, pure deterministic `build_context_plan()`, deep-copied tool schemas; every provider request is built from a plan.
+- [x] `RunState` + checkpoint (`agent/run_state.py`, `agent/checkpoint.py`): `RunStatus`, `ToolCallCheckpoint`, `RunState.checkpoint_data()` emitting the schema §5.5 shape; atomic JSON sidecar (temp file + fsync + `os.replace`, directory fsync on POSIX) under `DEEPPYRO_CHECKPOINTS_DIR` or `~/.dpro/checkpoints/`; strict reader. A simulated in-process crash leaves an open step/turn; `NativeSession.open` + `loop.run(resume=True)` repairs it with `aborted`/`disposed`, starts a new run, restores cumulative usage from the last matching RUNNING checkpoint and never replays a completed tool call.
+- [x] Budget + cancellation (`agent/budget.py`): `BudgetLimits` (`max_steps`, `max_tokens`, `max_wall_seconds`, optional `max_cost`; `None` = unlimited), cumulative `BudgetUsage`/`BudgetTracker` and typed `BudgetExceeded.turn_reason()`; overruns write the typed `turn.ended`/`run.finished` reason and a FAILED checkpoint. Cancellation uses `asyncio.Event`, a cancel-aware wait and `TaskGroup`, so no task leaks (tests assert `asyncio.all_tasks` after cancel).
+- [x] Typed hooks (`agent/events.py`): frozen event dataclasses + `AgentHooks` `Protocol` + `NullAgentHooks`; the loop never uses the string hook bus (`hooks/types.py`).
+- [x] Native `run.*` events in `session/schema.py`: `EventKind` now has 27 members; closed validation for `run.started`/`run.checkpoint`/`run.finished`; association requires `run_id`+`trace_id` and forbids `turn_id`/`step_id`; `fold()` skips them. Two pre-existing M1 bugs in `_validate_turn_reason` were fixed: the optional fields documented in schema §5.3 (`aborted.message`, `error.code`, `max_tokens.limit`) were rejected as unknown fields.
+- [x] Trace: one `ModelCallRecord` per model call (prompt hash, token counts, latency, finish reason, `context_message_ids`) and one `ToolCallRecord` per tool call (args hash, result size, error flag, latency, idempotency key); no prompt/argument text is stored, and `join_trace` passes against the session log.
+- [x] Headless switch: `DEEPPYRO_NATIVE_LOOP` (`1/true/yes/on`) or `--native-loop` routes one `run_once` through the native loop (native session file, `run.<id>.jsonl` trace, `<session_id>.json` checkpoint); the default path is untouched. The native path intentionally skips the v4 session-service bindings and only maps `--max-steps` onto a budget.
+- [x] Differential replay: `tests/native/test_differential.py` drives all 10 recorded cases from `fixtures/native/` through a test-only replay provider (SSE parsed from the recordings; fixture bytes unchanged) and compares final assistant text/finish reasons, tool call names + JSON arguments, tool result text/error flags and request counts with the recordings.
+- [x] Tests: 63 under `tests/native/` (differential, context plan, budget, loop, kill/resume checkpoint, headless switch) + 11 native run-event tests; schema tests updated for the 27-member enum.
+- [x] Gates: `ruff check src tests` 0; `ruff format --check src tests` 0; `scripts/typecheck.py` 79 errors, 0 new; `python -m pytest -q` 3542 passed (M1 baseline 3465 + 77 new M2 tests), 0 failed, 0 skipped.
+
+Known deviation from §4 rule 1: `src/deeppyro/agent/native_provider.py` is the only new `deeppyro.core.wire` importer (37 pre-existing → 38 files). M2 must call the M1 `LlmProvider`; this is the provider-adapter boundary already permitted by schema §6.5 and is documented in the module docstring and schema §6.5. It disappears with the M3 provider port, after which rule 1 becomes enforceable by a monotone importer-count check. No other M2 module imports `core.wire` (verified: 38 importer files total, one of them this adapter).
+
+Not done in M2 (deliberately):
+
+- TUI migration: the switch exists only in `run_once`/headless; the TUI keeps the v4 agent.
+- v4 provider port and removal of `core.wire`/`llm/` (M3); `agent/native_provider.py` is the temporary seam.
+- Default flip: the native loop is opt-in. Plugin/kernel services are forwarded only as an optional mapping in tool contexts (typed inject arrives with API v3/M3); the native loop performs no string service lookup, so the v3 typed-inject cut needs no v2 compatibility entry from M2.
+- Schema doc was extended additively (§5.5) and stays schema 1; no frozen contract was changed.
+
+M2 footprint: `src/deeppyro/agent/{errors,budget,run_state,events,context_plan,checkpoint,native_provider,loop}.py`; `src/deeppyro/session/schema.py` (3 run events + optional-field bugfixes); `src/deeppyro/headless.py` and `src/deeppyro/tui/main.py` (switch); tests under `tests/native/`, `tests/session/test_native_run_events.py` and the updated `tests/session/test_native_schema.py`; `docs/native/schema.md` §5.5 and this checklist.
+
 ## 6.4 M4 deliverables and exit checklist
 
 Status: **complete with documented open items (2026-11-17)**. M4 is additive: no v4 module was edited, the 43-tool schema snapshot remains byte-identical, and the hot-memory Markdown projection contract is unchanged.
@@ -222,7 +249,7 @@ M4 open items (deliberately not done):
 4. **Eval runs recorded or fake runners only.** There is no `AgentRunner` adapter backed by `AgentSession` yet (the native loop arrives in M2); golden outcomes are hand-authored fixtures, not captured live.
 5. **Replay is fixture-level, not session-level.** It reassembles and checks the recordings offline but does not feed them through the native provider adapter or compare a native session log end to end; that differential is the M2 exit gate.
 6. **The long-term store is FTS-only.** No embeddings/vector search, no capacity or compaction policy, no encryption/ACL on the SQLite file, and single-process access is protected only by SQLite locking.
-7. **Section numbering is provisional.** M2/M3 also append sections to this ADR (§6.2/§6.3 expected); M4 branched from M1, so the integrator must place §6.4 after them and resolve the expected merge conflict.
+7. **Section numbering was resolved at integration time.** M2 is §6.2 and M3 becomes §6.3, placed before this §6.4; M4 branched from M1 and its section was moved by the integrator.
 
 ## 7. Decisions locked at M0
 
