@@ -35,7 +35,7 @@ class ConsumerPlugin:
         self.seen: int | None = None
 
     def init(self) -> None:
-        self.seen = self.ctx.counter.n
+        self.seen = self.ctx.get("counter").n
 
 
 class ExplodingPlugin:
@@ -57,7 +57,7 @@ class OrderedPlugin(Plugin):
         self.tag = str(field_of(config, "tag", "") or "")
         MOUNT_ORDER.append(self.tag)
 
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self) -> None:
         self.ready = True
 
 
@@ -69,10 +69,10 @@ class InterceptProbePlugin(Plugin):
     """Depends on `counter` and records the value it resolved at setup."""
 
     plugin_id = "intercept-probe"
-    inject: ClassVar[list[str]] = ["counter"]
+    inject: ClassVar[list[Any]] = [CounterPlugin]
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        OBSERVED.append(int(ctx.counter.n))
+    def setup(self) -> None:
+        OBSERVED.append(int(self.ctx.require(CounterPlugin).n))
 
 
 class InterceptAwareService(Service):

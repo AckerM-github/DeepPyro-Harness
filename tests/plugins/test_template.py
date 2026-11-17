@@ -9,7 +9,7 @@ from types import ModuleType
 
 import pytest
 
-from deeppyro.api import Plugin
+from deeppyro.api import API_VERSION, Plugin
 from deeppyro.kernel.composition import load_bundle
 from deeppyro.plugins import PluginError, bundle_template, create_bundle
 
@@ -41,10 +41,11 @@ def test_bundle_template_derives_class_from_bundle_id() -> None:
     assert 'name = "my cool-bundle"' in files["bundle.toml"]
 
 
-def test_bundle_template_api_version_is_configurable() -> None:
-    files = bundle_template("demo-bundle", api_version=1)
+def test_bundle_template_defaults_to_the_supported_api_version() -> None:
+    files = bundle_template("demo-bundle")
 
-    assert "api_version = 1" in files["bundle.toml"]
+    assert f"api_version = {API_VERSION}" in files["bundle.toml"]
+    assert f"api_version = {API_VERSION}" in files["plugin.py"]
 
 
 @pytest.mark.parametrize("bundle_id", ["", "  ", ".", "..", "a/b", "a\\b", "a:b"])
@@ -80,7 +81,7 @@ def test_create_bundle_plugin_class_imports(tmp_path: Path) -> None:
 
     assert issubclass(plugin_class, Plugin)
     assert plugin_class.plugin_id == "demo-bundle"
-    assert plugin_class.api_version == 2
+    assert plugin_class.api_version == API_VERSION
     assert plugin_class.volatile == ("greeting",)
     assert plugin_class.inject == ("tools",)
     assert "greeting" in plugin_class.Config.model_fields

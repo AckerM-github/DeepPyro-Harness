@@ -20,11 +20,10 @@ from deeppyro.plugins.settings_store import APPLY_LIVE, APPLY_NEXT_BOOT, Setting
 
 def _kernel_service(ctx: PluginContext) -> Any:
     """Look up the optional kernel service without requiring it to exist."""
-    getter = getattr(ctx, "get", None)
-    if not callable(getter):
-        return None
+    from deeppyro.kernel.runtime import KernelRuntime
+
     try:
-        return getter("kernel")
+        return ctx.get(KernelRuntime)
     except Exception:  # noqa: BLE001 - live apply is best effort
         return None
 

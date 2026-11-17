@@ -74,6 +74,31 @@ def test_validate_directory_plugin(tmp_path) -> None:
     assert row.provides == ("demo",)
 
 
+def test_validate_rejects_plugin_declaring_an_older_api_version(tmp_path) -> None:
+    manager = _manager(tmp_path)
+    source = (
+        "from deeppyro.api import Plugin\n\n\n"
+        "class OldPlugin(Plugin):\n"
+        '    plugin_id = "old"\n'
+        "    api_version = 2\n"
+    )
+    write_plugin(
+        tmp_path / "plugins" / "old",
+        module="manager_old",
+        class_name="OldPlugin",
+        class_provide=None,
+        module_source=source,
+    )
+    manager.refresh()
+
+    result = manager.validate("old")
+
+    assert result.ok is False
+    assert result.error is not None
+    assert "api_version 2" in result.error
+    assert "no compatibility shim" in result.error
+
+
 def test_validate_reports_import_failure_without_raising(tmp_path) -> None:
     manager = _manager(tmp_path)
     plugin = write_plugin(

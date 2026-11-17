@@ -142,7 +142,7 @@ _GUIDE = "\n".join(
         '    id = "my-bundle"',
         '    name = "My Bundle"',
         '    version = "0.1.0"',
-        "    api_version = 2",
+        "    api_version = 3",
         "    order = 500",
         "    critical = false",
         "",
@@ -156,7 +156,7 @@ _GUIDE = "\n".join(
         "## 4. 扩展点",
         "在 setup 中通过 self.ctx 调用 self.ctx.register_tool、self.ctx.register_prompt_section、",
         "self.ctx.register_command、self.ctx.register_provider 或 self.ctx.register_preset。",
-        "通过 self.ctx.require(服务类型) 或 self.ctx.get(服务名) 读取其它服务，例如 self.ctx.require(KernelConfig)。",
+        "通过 self.ctx.require(服务类型) 或 self.ctx.get(服务类型) 读取其它服务，例如 self.ctx.require(KernelConfig)。",
         'ClassVar inject（推荐元组，例如 ("tools",)）列出所需服务名，服务就绪后才调用 setup。',
         "",
         "## 5. 配置生效时机",
@@ -415,7 +415,9 @@ class InspectPlugin(Service):
 
     def slots(self) -> list[dict[str, Any]]:
         """Contributions registered on the optional slots service."""
-        slots = self.ctx.get("slots")
+        from deeppyro.tui.slots import SlotRegistry
+
+        slots = lookup_service(self.ctx, SlotRegistry)
         if slots is None or not hasattr(slots, "list"):
             return []
         try:
@@ -438,7 +440,9 @@ class InspectPlugin(Service):
 
     def theme(self) -> dict[str, Any]:
         """Theme tokens exposed by the optional slots service."""
-        slots = self.ctx.get("slots")
+        from deeppyro.tui.slots import SlotRegistry
+
+        slots = lookup_service(self.ctx, SlotRegistry)
         provider = getattr(slots, "theme", None) if slots is not None else None
         if not callable(provider):
             return {"tokens": {}, "note": "slots service does not expose theme tokens"}

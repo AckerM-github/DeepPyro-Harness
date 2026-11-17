@@ -163,7 +163,7 @@ class AttachmentsPlugin(Plugin):
 ```
 
 - 构造时解析 config：先取 bundle row config，再用 kernel config 的 `[attachments]` 表覆盖（用户配置优先），然后构造 `AttachmentStore`；`setup()` 调用 `ctx.provide("attachments", store)`。
-- 消费方通过 `ctx.get("attachments")` / `ctx.has("attachments")` 取得 store，调用 `save_image` / `read_image_bytes` 等。
+- 消费方通过 `ctx.get(AttachmentStore)` / `ctx.has(AttachmentStore)` 取得 store，调用 `save_image` / `read_image_bytes` 等。
 - bundle 行注册（`src/deeppyro/bundles/core/bundle.toml`）由 Lead 负责；行 id 建议为 `attachments`，plugin 目标 `deeppyro.builtin.attachments:AttachmentsPlugin`。
 
 ## 8. 测试
@@ -187,6 +187,6 @@ class AttachmentsPlugin(Plugin):
 
 ## 10. 接线需求（Lead / 阶段 2 owners）
 
-- Lead：在 `src/deeppyro/bundles/core/bundle.toml` 注册 `attachments` 行（插件 `deeppyro.builtin.attachments:AttachmentsPlugin`），并确认 `ctx.get("attachments")` 在 boot 后可用。
+- Lead：在 `src/deeppyro/bundles/core/bundle.toml` 注册 `attachments` 行（插件 `deeppyro.builtin.attachments:AttachmentsPlugin`），并确认 `ctx.get(AttachmentStore)` 在 boot 后可用。
 - llm-dev（阶段 2）：`src/deeppyro/llm/messages.py` 的 `image_part_url` 增加 resolver：裸 attachment id 或 ref dict → store 读 PNG → data URL；文本模型路径保持现状。
 - session-dev（阶段 2）：`src/deeppyro/session/derive.py` 的 `image/offload` 投影解释器；`src/deeppyro/llm/image_budget.py` 预算算法。两者均不在本层写域。

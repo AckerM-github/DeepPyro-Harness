@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from deeppyro.builtin.presets import PresetsPlugin
+from deeppyro.builtin.sandbox import SandboxPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.core.errors import ConfigError, DeeppyroError
+from deeppyro.sandbox.permission import PermissionPresetsService
 from deeppyro.tui.runtime_catalog import CatalogLayer
 from deeppyro.tui.runtime_support import await_maybe, logger, resolve_workspace
 
@@ -26,7 +30,7 @@ class StatusLayer(CatalogLayer):
 
     def permission_preset(self) -> str:
         """The current named permission preset (or "custom")."""
-        service = self._service("permissionPresets")
+        service = self._service(PermissionPresetsService)
         current = getattr(service, "current", None)
         if callable(current) and self.session is not None:
             try:
@@ -37,7 +41,7 @@ class StatusLayer(CatalogLayer):
 
     async def set_permission(self, preset: str) -> str:
         """Switch the named permission preset for the live session."""
-        service = self._service("permissionPresets")
+        service = self._service(PermissionPresetsService)
         apply = getattr(service, "apply", None)
         if not callable(apply) or self.session is None:
             raise DeeppyroError("permission presets are not available in this session")
@@ -51,8 +55,8 @@ class StatusLayer(CatalogLayer):
         kernel_app = self.kernel_app
         if kernel_app is None:
             raise DeeppyroError("cannot switch workspace after the kernel has stopped")
-        gate = kernel_app.service("sandbox").gate(workspace, ask=self.ask, session=self.session)
-        registry = kernel_app.service("tools").registry_for(workspace)
+        gate = kernel_app.require(SandboxPlugin).gate(workspace, ask=self.ask, session=self.session)
+        registry = kernel_app.require(ToolsPlugin).registry_for(workspace)
         self.permission = gate
         self.registry = registry
         self.cwd = workspace
@@ -78,7 +82,7 @@ class StatusLayer(CatalogLayer):
 
     async def ensure_presets(self) -> None:
         """Materialize every preset realm before any agent is created."""
-        service = self._service("presets")
+        service = self._service(PresetsPlugin)
         ensure_all = getattr(service, "ensure_all", None)
         if callable(ensure_all):
             await await_maybe(ensure_all())

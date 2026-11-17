@@ -45,7 +45,14 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 
-from deeppyro.api import API_VERSION
+from pydantic import ValidationError
+
+from deeppyro.kernel.bundle_schema import (
+    BundleDocument,
+    RequirementEntry,
+    RowEntry,
+    format_validation_error,
+)
 from deeppyro.kernel.manifest import (
     ManifestError,
     PluginSpec,
@@ -103,26 +110,6 @@ class Bundle:
     rows: tuple[PluginRow, ...]
     requires: tuple[BundleRequirement, ...] = ()
 
-
-#: Keys accepted in one [[plugins]] row.
-_ROW_KEYS = frozenset(
-    {
-        "id",
-        "plugin",
-        "name",
-        "config",
-        "disabled",
-        "before",
-        "after",
-        "critical",
-        "isolate",
-        "intercept",
-        "group",
-        "rows",
-        "include",
-    }
-)
-_BUNDLE_KEYS = frozenset({"id", "name", "version", "api_version", "order", "critical", "requires"})
 
 #: Guards against runaway recursive include chains (cycles are rejected first).
 _MAX_INCLUDE_DEPTH = 32
@@ -185,18 +172,6 @@ def discover_plugin_bundles(root: str | Path | None = None) -> list[Path]:
     return found
 
 
-def _string(value: Any, *, field_name: str, origin: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise CompositionError(f"{origin}: {field_name} must be a non-empty string")
-    return value.strip()
-
-
-def _bool(value: Any, *, field_name: str, origin: str) -> bool:
-    if not isinstance(value, bool):
-        raise CompositionError(f"{origin}: {field_name} must be a boolean")
-    return value
-
-
 # -- requirement versions ----------------------------------------------------
 
 
@@ -244,11 +219,11 @@ def _satisfies(version: str, constraint: str, *, origin: str) -> bool:
     return left != right
 
 
-def _parse_requirements(raw: Any, *, origin: str) -> tuple[BundleRequirement, ...]:
-    if raw is None:
-        return ()
-    if not isinstance(raw, list):
-        raise CompositionError(f"{origin}: bundle.requires must be an array of tables or strings")
+def _parse_requirements(
+    raw: list[str | RequirementEntry],
+    *,
+    origin: str,
+) -> tuple[BundleRequirement, ...]:
     requirements: list[BundleRequirement] = []
     for item in raw:
         if isinstance(item, str):
@@ -261,18 +236,11 @@ def _parse_requirements(raw: Any, *, origin: str) -> tuple[BundleRequirement, ..
                 BundleRequirement(id=dep_id, version=_parse_constraint(constraints, origin=origin))
             )
             continue
-        if not isinstance(item, dict):
-            raise CompositionError(f"{origin}: bundle requirement must be a table or string")
-        unknown = set(item) - {"id", "version"}
-        if unknown:
-            names = ", ".join(sorted(unknown))
-            raise CompositionError(f"{origin}: unknown bundle requirement keys: {names}")
-        dep_id = _string(item.get("id"), field_name="requires.id", origin=origin)
-        version = item.get("version")
-        if version is not None and not isinstance(version, str):
-            raise CompositionError(f"{origin}: requires.version for {dep_id!r} must be a string")
         requirements.append(
-            BundleRequirement(id=dep_id, version=_parse_constraint(version or "", origin=origin))
+            BundleRequirement(
+                id=item.id,
+                version=_parse_constraint(item.version or "", origin=origin),
+            )
         )
     return tuple(requirements)
 
@@ -369,41 +337,22 @@ def _row_from_entry(
 ) -> PluginRow:
     if not isinstance(entry, dict):
         raise CompositionError(f"{origin}: every [[plugins]] entry must be a table")
-    unknown = set(entry) - _ROW_KEYS
-    if unknown:
-        names = ", ".join(sorted(unknown))
-        raise CompositionError(f"{origin}: unknown plugin row keys: {names}")
-    plugin_id = _string(entry.get("id"), field_name="id", origin=origin)
-    plugin = entry.get("plugin")
-    if plugin is not None and not isinstance(plugin, str):
-        raise CompositionError(f"{origin}: plugin must be a string")
-    config = entry.get("config")
-    if config is not None and not isinstance(config, dict):
-        raise CompositionError(f"{origin}: config for {plugin_id!r} must be a table")
-    isolate = entry.get("isolate") or []
-    if not isinstance(isolate, list) or not all(isinstance(item, str) for item in isolate):
-        raise CompositionError(f"{origin}: isolate for {plugin_id!r} must be a list of strings")
-    intercept = entry.get("intercept") or {}
-    if not isinstance(intercept, dict):
-        raise CompositionError(f"{origin}: intercept for {plugin_id!r} must be a table")
-    disabled = entry.get("disabled")
-    if disabled is not None:
-        disabled = _bool(disabled, field_name="disabled", origin=origin)
-    critical = entry.get("critical")
-    if critical is not None:
-        critical = _bool(critical, field_name="critical", origin=origin)
-    before = entry.get("before")
-    after = entry.get("after")
-    for key, value in (("before", before), ("after", after)):
-        if value is not None and not isinstance(value, str):
-            raise CompositionError(f"{origin}: {key} for {plugin_id!r} must be a string")
-    group = entry.get("group", False)
-    if group is not None:
-        group = _bool(group, field_name="group", origin=origin)
-    nested = entry.get("rows")
-    include = entry.get("include")
-    if include is not None and not isinstance(include, str):
-        raise CompositionError(f"{origin}: include for {plugin_id!r} must be a string")
+    try:
+        row = RowEntry.model_validate(entry)
+    except ValidationError as exc:
+        raise CompositionError(f"{origin}: {format_validation_error(exc, scope='row')}") from exc
+    plugin_id = row.id
+    plugin = row.plugin
+    config = row.config
+    isolate = row.isolate
+    intercept = row.intercept
+    disabled = row.disabled
+    critical = row.critical
+    before = row.before
+    after = row.after
+    group = row.group
+    nested = row.rows
+    include = row.include
     container = bool(group) or nested is not None or include is not None
     #: An include-only row is a load-time macro and disappears after splicing;
     #: nested rows (or group=true) make the row a real child context.
@@ -415,7 +364,9 @@ def _row_from_entry(
                 f"{origin}: container row {plugin_id!r} (group/include) must not declare a plugin target"
             )
         if nested is not None:
-            children = tuple(_parse_rows(nested, base=base, origin=origin, include_stack=include_stack))
+            children = tuple(
+                _parse_rows(entry["rows"], base=base, origin=origin, include_stack=include_stack)
+            )
     elif not (plugin or "").strip():
         raise CompositionError(f"{origin}: plugin row {plugin_id!r} is missing the plugin target")
     return PluginRow(
@@ -428,7 +379,7 @@ def _row_from_entry(
         critical=critical,
         origin=origin,
         base=base,
-        name=str(entry.get("name") or ""),
+        name=row.name,
         isolate=tuple(isolate),
         intercept={str(k): dict(v) for k, v in intercept.items()},
         group=is_group,
@@ -450,39 +401,25 @@ def load_bundle(path: str | Path) -> Bundle:
         document = tomllib.loads(data.decode("utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise CompositionError(f"cannot read bundle {bundle_path}: {exc}") from exc
-    unknown = set(document) - {"bundle", "plugins"}
-    if unknown:
-        names = ", ".join(sorted(unknown))
-        raise CompositionError(f"{bundle_path}: unknown top-level keys: {names}")
-    meta = document.get("bundle")
-    if not isinstance(meta, dict):
+    if "bundle" not in document:
         raise CompositionError(f"{bundle_path}: missing [bundle] table")
-    unknown = set(meta) - _BUNDLE_KEYS
-    if unknown:
-        names = ", ".join(sorted(unknown))
-        raise CompositionError(f"{bundle_path}: unknown [bundle] keys: {names}")
+    try:
+        schema = BundleDocument.model_validate(document)
+    except ValidationError as exc:
+        raise CompositionError(f"{bundle_path}: {format_validation_error(exc)}") from exc
+    meta = schema.bundle
     origin = f"bundle:{bundle_path}"
-    bundle_id = _string(meta.get("id"), field_name="bundle.id", origin=origin)
-    api_version = meta.get("api_version", API_VERSION)
-    if not isinstance(api_version, int) or api_version < 1:
-        raise CompositionError(f"{bundle_path}: bundle.api_version must be a positive integer")
-    if api_version > API_VERSION:
-        raise CompositionError(
-            f"{bundle_path}: bundle.api_version {api_version} is newer than supported {API_VERSION}"
-        )
-    order = meta.get("order", 0)
-    if not isinstance(order, int):
-        raise CompositionError(f"{bundle_path}: bundle.order must be an integer")
-    critical = meta.get("critical", False)
-    if not isinstance(critical, bool):
-        raise CompositionError(f"{bundle_path}: bundle.critical must be a boolean")
-    requires = _parse_requirements(meta.get("requires"), origin=origin)
+    bundle_id = meta.id
+    api_version = meta.api_version
+    order = meta.order
+    critical = meta.critical
+    requires = _parse_requirements(meta.requires, origin=origin)
     raw_rows = document.get("plugins", [])
     rows = tuple(_parse_rows(raw_rows, base=bundle_path.parent, origin=origin))
     return Bundle(
         id=bundle_id,
-        name=str(meta.get("name") or bundle_id),
-        version=str(meta.get("version") or "0.0.0"),
+        name=str(meta.name or bundle_id),
+        version=str(meta.version or "0.0.0"),
         api_version=api_version,
         order=order,
         path=bundle_path,

@@ -46,8 +46,8 @@ PLUGIN_SOURCE = (
     '    version = "0.1.0"\n'
     '    inject = ["tools", "prompt", "presets"]\n'
     "\n"
-    "    def setup(self, ctx, config):\n"
-    "        ctx.register_preset(PresetSpec(\n"
+    "    def setup(self):\n"
+    "        self.ctx.register_preset(PresetSpec(\n"
     '            id="reviewer",\n'
     '            name="Reviewer",\n'
     '            description="read-only review mode",\n'
@@ -55,9 +55,9 @@ PLUGIN_SOURCE = (
     '            instructions=("Review only.",),\n'
     "            order=20,\n"
     "        ))\n"
-    "        ctx.register_tool(lambda config, workspace: SharedTool())\n"
-    '        ctx.register_tool(lambda config, workspace: ReviewTool(), scope="reviewer")\n'
-    "        ctx.register_prompt_section(\n"
+    "        self.ctx.register_tool(lambda config, workspace: SharedTool())\n"
+    '        self.ctx.register_tool(lambda config, workspace: ReviewTool(), scope="reviewer")\n'
+    "        self.ctx.register_prompt_section(\n"
     '            "review-hint",\n'
     "            45,\n"
     '            lambda tools, prompt_ctx: "## Review mode\\nDo not edit files.",\n'
@@ -181,9 +181,9 @@ async def test_agents_apply_the_selected_preset(tmp_path: Path) -> None:
         await app.stop()
 
 
-REALM_PLUGIN_SOURCE = 'from deeppyro.api import Plugin\nfrom deeppyro.core.protocols import ToolResult\nfrom deeppyro.tools.base import BaseTool, make_parameters\n\n\nclass RealmTool(BaseTool):\n    name = "realm_note"\n    description = "Tool delivered by the preset realm."\n    parameters = make_parameters({"note": {"type": "string"}}, required=["note"])\n\n    async def run(self, args, ctx):\n        return ToolResult(text="realm: " + str(args.get("note", "")))\n\n\nclass RealmPlugin(Plugin):\n    plugin_id = "writer-realm"\n    version = "0.1.0"\n    inject = ["tools", "prompt"]\n\n    def setup(self, ctx, config):\n        ctx.register_tool(lambda config, workspace: RealmTool())\n        ctx.register_prompt_section("realm-hint", 60, lambda tools, prompt_ctx: "## Realm mode\\nRealm tools only.")\n'
-REALM_PLUGIN_V2_SOURCE = 'from deeppyro.api import Plugin\nfrom deeppyro.core.protocols import ToolResult\nfrom deeppyro.tools.base import BaseTool, make_parameters\n\n\nclass RealmToolV2(BaseTool):\n    name = "realm_note_v2"\n    description = "Tool delivered by the preset realm."\n    parameters = make_parameters({"note": {"type": "string"}}, required=["note"])\n\n    async def run(self, args, ctx):\n        return ToolResult(text="realm: " + str(args.get("note", "")))\n\n\nclass RealmPluginV2(Plugin):\n    plugin_id = "writer-realm"\n    version = "0.1.0"\n    inject = ["tools", "prompt"]\n\n    def setup(self, ctx, config):\n        ctx.register_tool(lambda config, workspace: RealmToolV2())\n        ctx.register_prompt_section("realm-hint-v2", 60, lambda tools, prompt_ctx: "## Realm mode v2\\nRealm tools only.")\n'
-REALM_PRESET_SOURCE = 'from pathlib import Path\n\nfrom deeppyro.api import Plugin, PresetPluginRow, PresetSpec\n\n\nclass RealmPresetPlugin(Plugin):\n    plugin_id = "realm-preset-bundle"\n    version = "0.1.0"\n    inject = ["presets"]\n\n    def setup(self, ctx, config):\n        base = Path(__file__).resolve().parent\n        ctx.register_preset(PresetSpec(\n            id="realm-writer",\n            name="Realm Writer",\n            model="realm-model",\n            instructions=("Use the realm.",),\n            order=25,\n            plugins=(\n                PresetPluginRow(id="writer-realm", plugin="realm_plugin.py:RealmPlugin"),\n            ),\n            base=base,\n        ))\n'
+REALM_PLUGIN_SOURCE = 'from deeppyro.api import Plugin\nfrom deeppyro.core.protocols import ToolResult\nfrom deeppyro.tools.base import BaseTool, make_parameters\n\n\nclass RealmTool(BaseTool):\n    name = "realm_note"\n    description = "Tool delivered by the preset realm."\n    parameters = make_parameters({"note": {"type": "string"}}, required=["note"])\n\n    async def run(self, args, ctx):\n        return ToolResult(text="realm: " + str(args.get("note", "")))\n\n\nclass RealmPlugin(Plugin):\n    plugin_id = "writer-realm"\n    version = "0.1.0"\n    inject = ["tools", "prompt"]\n\n    def setup(self):\n        self.ctx.register_tool(lambda config, workspace: RealmTool())\n        self.ctx.register_prompt_section("realm-hint", 60, lambda tools, prompt_ctx: "## Realm mode\\nRealm tools only.")\n'
+REALM_PLUGIN_V2_SOURCE = 'from deeppyro.api import Plugin\nfrom deeppyro.core.protocols import ToolResult\nfrom deeppyro.tools.base import BaseTool, make_parameters\n\n\nclass RealmToolV2(BaseTool):\n    name = "realm_note_v2"\n    description = "Tool delivered by the preset realm."\n    parameters = make_parameters({"note": {"type": "string"}}, required=["note"])\n\n    async def run(self, args, ctx):\n        return ToolResult(text="realm: " + str(args.get("note", "")))\n\n\nclass RealmPluginV2(Plugin):\n    plugin_id = "writer-realm"\n    version = "0.1.0"\n    inject = ["tools", "prompt"]\n\n    def setup(self):\n        self.ctx.register_tool(lambda config, workspace: RealmToolV2())\n        self.ctx.register_prompt_section("realm-hint-v2", 60, lambda tools, prompt_ctx: "## Realm mode v2\\nRealm tools only.")\n'
+REALM_PRESET_SOURCE = 'from pathlib import Path\n\nfrom deeppyro.api import Plugin, PresetPluginRow, PresetSpec\n\n\nclass RealmPresetPlugin(Plugin):\n    plugin_id = "realm-preset-bundle"\n    version = "0.1.0"\n    inject = ["presets"]\n\n    def setup(self):\n        base = Path(__file__).resolve().parent\n        self.ctx.register_preset(PresetSpec(\n            id="realm-writer",\n            name="Realm Writer",\n            model="realm-model",\n            instructions=("Use the realm.",),\n            order=25,\n            plugins=(\n                PresetPluginRow(id="writer-realm", plugin="realm_plugin.py:RealmPlugin"),\n            ),\n            base=base,\n        ))\n'
 REALM_BUNDLE_TOML = '[bundle]\nid = "realm-preset-bundle"\nname = "Realm preset bundle"\nversion = "0.1.0"\norder = 51\n\n[[plugins]]\nid = "realm-preset-bundle"\nplugin = "preset_plugin.py:RealmPresetPlugin"\n'
 
 

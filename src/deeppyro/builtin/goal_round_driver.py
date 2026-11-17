@@ -18,6 +18,7 @@ from deeppyro.builtin.agents import AgentsPlugin
 from deeppyro.goal import GoalService
 from deeppyro.goal.round_driver import RoundDriver
 from deeppyro.hooks.service import HookService
+from deeppyro.kernel.config_service import KernelConfig
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +44,7 @@ def _merged_config(ctx: PluginContext, row_config: PluginConfig) -> dict[str, An
     table = _service_config(row_config)
     if isinstance(table, Mapping):
         merged.update(table)
-    getter = getattr(ctx, "get", None)
-    config_service = getter("config") if callable(getter) else None
+    config_service = ctx.get(KernelConfig)
     value = getattr(config_service, "value", None) if config_service is not None else None
     raw: Any = None
     if value is not None:

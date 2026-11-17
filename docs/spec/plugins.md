@@ -68,7 +68,7 @@ manifest_path 缺省为 ~/.dpro/plugins.toml；root 缺省为 kernel.composition
 | set_enabled(bundle_id, enabled) | 在用户清单里为 bundle 的所有 row id 写 disabled 补丁，返回新信息；restart_required 表示清单是否实际变化 |
 | remove(bundle_id) | 删除已安装目录，并先清掉它独占的清单行，返回 state=removed |
 
-install 细节：source 可以是 bundle 目录或直接指向 bundle.toml。先用 kernel.composition.load_bundle 校验（api_version <= API_VERSION、order 为 int、plugins 为数组、每行有 plugin target、拒绝未知键）。bundle id 来自 [bundle].id，必须是单个路径组件：strip 后非空，不能是 . 或 ..，不能含 / 、反斜杠、冒号或 NUL；否则 PluginError。目标已存在且 force=False 时抛 PluginError；force=True 先删除旧目录。复制在 root 下的临时目录完成（tempfile.mkdtemp + shutil.copytree），随后 os.replace 原子替换，失败清理临时目录。复制成功后再 load_bundle 一次确认目标可解析。
+install 细节：source 可以是 bundle 目录或直接指向 bundle.toml。先用 kernel.composition.load_bundle 校验（bundle.toml 由 kernel.bundle_schema 的 pydantic 模型校验：api_version 必须等于 API_VERSION、order 为 int、plugins 为数组、每行有 plugin target、递归校验 group 子行与 include 文件、拒绝未知键）。bundle id 来自 [bundle].id，必须是单个路径组件：strip 后非空，不能是 . 或 ..，不能含 / 、反斜杠、冒号或 NUL；否则 PluginError。目标已存在且 force=False 时抛 PluginError；force=True 先删除旧目录。复制在 root 下的临时目录完成（tempfile.mkdtemp + shutil.copytree），随后 os.replace 原子替换，失败清理临时目录。复制成功后再 load_bundle 一次确认目标可解析。
 
 set_enabled 细节：bundle 的每个 row id 在用户清单里写 disabled 补丁。禁用时：已有条目则替换为 disabled=True（保留 name/config/before/after），没有条目则追加只有 id 与 disabled=True 的条目。启用时：已有条目则清掉 disabled，若该条目除 id 与 disabled 外没有 name/config/before/after 则整条删除（恢复 bundle 默认），没有条目则无需写。若 bundle 的任何 row id 属于 core bundle 的 id，抛 PluginProtectionError（不允许禁用 core 行）。写盘走 save_user_manifest，restart_required 仅在清单内容变化时为 True。
 
@@ -144,7 +144,7 @@ disable(id)：bundle 保护与已禁用幂等同上；读取清单后把 disable
 
 remove(id)：bundle 保护。entry point 来源抛 PluginRemovalError（提示用 pip uninstall，本工具不做 pip 操作）。目录来源先确认待删目录 resolve 后严格位于 plugins_dir 之内（root 本身与外部路径拒绝），先删除清单条目再 shutil.rmtree；删除失败抛 PluginRemovalError。manifest 来源删除清单条目（必须存在，否则 PluginRemovalError）。最后 refresh。
 
-bundle 生命周期门面：list_bundles()、install_bundle(source, *, force=False)、remove_bundle(bundle_id)、set_bundle(bundle_id, enabled) 委托 BundleStore；create_bundle(dest, bundle_id, name="", *, api_version=2) 与 bundle_template(bundle_id="demo-bundle", name="", *, api_version=2) 委托 @template.py（前者生成脚手架目录并返回 Path，后者只返回文本 dict，不落盘）。
+bundle 生命周期门面：list_bundles()、install_bundle(source, *, force=False)、remove_bundle(bundle_id)、set_bundle(bundle_id, enabled) 委托 BundleStore；create_bundle(dest, bundle_id, name="", *, api_version=API_VERSION) 与 bundle_template(bundle_id="demo-bundle", name="", *, api_version=API_VERSION) 委托 @template.py（前者生成脚手架目录并返回 Path，后者只返回文本 dict，不落盘）。
 
 脚手架：bundle id 使用与 BundleStore 相同的规则（公有 validate_bundle_id 可复用：strip 后非空，不能是 . 或 ..，不能含 /、反斜杠、冒号或 NUL）。生成 bundle.toml（version=0.1.0、order=500、critical=false，单行插件 id=bundle_id、plugin="plugin.py:<Pascal>Plugin"）、plugin.py（示例 Config、volatile 字段、inject 与 register_tool 示例工具 sample_greeting）与 README.md。create_bundle 在临时目录写完三个文件后先用 kernel.composition.load_bundle 校验，再复制到目标；目标必须不存在或为空目录，api_version 非法时校验失败且不留下目标。
 

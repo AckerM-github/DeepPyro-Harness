@@ -21,7 +21,6 @@ def test_provide_get_and_dispose() -> None:
     disposer = ctx.provide("greeting", "hello")
     assert ctx.get("greeting") == "hello"
     assert ctx.has("greeting")
-    assert ctx.greeting == "hello"
 
     disposer.dispose()
     assert ctx.get("greeting") is None
@@ -51,7 +50,6 @@ def test_isolate_shadows_name_for_children_only() -> None:
     assert root.get("shared") == "root"
     assert scoped.get("shared") == "child"
     assert scoped.child().get("shared") == "child"
-    assert scoped.shared == "child"
 
 
 def test_isolate_does_not_leak_into_sibling_scope() -> None:
@@ -124,9 +122,12 @@ def test_service_records_snapshot_in_registration_order() -> None:
     assert [record.value for record in records] == [1, 2]
 
 
-def test_service_attribute_access_raises_attribute_error_when_absent() -> None:
+def test_service_attribute_access_is_sealed_in_api_v3() -> None:
     ctx = _context()
-    with pytest.raises(AttributeError, match="context has no service 'nope'"):
+    ctx.provide("present", object())
+    with pytest.raises(AttributeError, match="no attribute 'present'"):
+        _ = ctx.present
+    with pytest.raises(AttributeError, match="no attribute 'nope'"):
         _ = ctx.nope
 
 

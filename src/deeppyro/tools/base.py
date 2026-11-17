@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from deeppyro.api.capabilities import RiskLevel
 from deeppyro.tools.params import ToolArgs, derive_parameters
 
 
@@ -27,6 +28,11 @@ class BaseTool:
     name: str = ""
     description: str = ""
     parallel_safe: bool = True
+    #: Coarse blast radius reported by capability manifests; never part of the
+    #: model-facing JSON schema.
+    risk: RiskLevel = RiskLevel.LOW
+    #: Whether repeating the call is safe; never part of the JSON schema.
+    idempotent: bool = False
     parameters: dict[str, Any] = {}
     #: Optional JSON schema for the tool's result, used by the PTC SDK renderer.
     output_schema: dict[str, Any] | None = None

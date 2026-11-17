@@ -363,13 +363,13 @@ def test_resolve_slot_registry_variants() -> None:
     registry = SlotRegistry()
 
     class FoundKernel:
-        def service(self, name: str) -> Any:
-            assert name == "slots"
+        def get(self, service: type[Any]) -> Any:
+            assert service is SlotRegistry
             return registry
 
     class MissingKernel:
-        def service(self, name: str) -> Any:
-            raise KeyError(name)
+        def get(self, service: type[Any]) -> Any:
+            return None
 
     assert resolve_slot_registry(registry) is registry
     assert resolve_slot_registry(None) is None

@@ -16,7 +16,7 @@ def test_default_toml_parses(tmp_path: Path) -> None:
     cfg = config.load_config(p, create=False)
     provider, model = cfg.resolve()
     assert cfg.agent.provider == "local"
-    assert provider.baseURL == "http://127.0.0.1:8000/v1"
+    assert provider.base_url == "http://127.0.0.1:8000/v1"
     assert model.startswith("deepseek")
 
 
@@ -81,7 +81,7 @@ def test_save_agent_selection_inserts_missing_keys(tmp_path: Path) -> None:
     config.save_agent_selection("local", "local-model", p)
     cfg = config.load_config(p, create=False)
     assert (cfg.agent.provider, cfg.agent.model) == ("local", "local-model")
-    assert cfg.agent.maxTokens == 1024
+    assert cfg.agent.max_tokens == 1024
     lines = [line.strip() for line in p.read_text(encoding="utf-8").splitlines()]
     assert lines.index('provider = "local"') < lines.index('model = "local-model"')
 

@@ -6,6 +6,7 @@ import contextlib
 from typing import Any
 
 from deeppyro.api import AGENT_MODE_TEAM, DEFAULT_PRESET_ID
+from deeppyro.builtin.presets import PresetsPlugin
 from deeppyro.tui.runtime_schedule import ScheduleLayer
 from deeppyro.tui.runtime_support import await_maybe, logger
 
@@ -185,7 +186,7 @@ class SessionLayer(ScheduleLayer):
 
     def _agent_preset_spec(self) -> Any | None:
         """Resolve the active preset spec (None when the service is unavailable)."""
-        service = self._service("presets")
+        service = self._service(PresetsPlugin)
         resolver = getattr(service, "resolve", None)
         if not callable(resolver):
             return None

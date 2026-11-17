@@ -367,8 +367,8 @@ def parse_metadata(
                 "plugin.toml must declare an integer 'api_version' (see deeppyro.api.API_VERSION)",
                 plugin_id=plugin_id,
             )
-        # Legacy flat packages predate api_version; treat them as v1 so existing
-        # directories keep loading after the upgrade.
+        # Legacy flat packages predate api_version; they default to the host
+        # API version so single-file packages keep loading on the current host.
         from deeppyro.api import API_VERSION
 
         api_version_raw = API_VERSION
@@ -470,11 +470,13 @@ def check_compat(
 
     errors: list[MetadataError] = []
     host_api = API_VERSION if api_version is None else api_version
-    if metadata.api_version > host_api:
+    if metadata.api_version != host_api:
         errors.append(
             MetadataError(
                 FAILURE_INCOMPAT,
-                f"plugin declares api_version {metadata.api_version} but this deeppyro speaks {host_api}",
+                f"plugin declares api_version {metadata.api_version} but this deeppyro speaks {host_api}; "
+                "the v1/v2 plugin API was removed with no compatibility shim (ADR 0001 section 7) -- "
+                "port the plugin to API v3 and Plugin.setup(self)",
                 plugin_id=metadata.id,
             )
         )

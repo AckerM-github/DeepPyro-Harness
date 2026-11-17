@@ -23,7 +23,7 @@ BROKEN_BUNDLE = """
 id = "broken"
 name = "Broken Bundle"
 version = "0.1.0"
-api_version = 1
+api_version = 3
 order = 900
 critical = false
 

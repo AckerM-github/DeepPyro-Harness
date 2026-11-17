@@ -31,7 +31,7 @@ def write_bundle(
     name: str = "Demo Bundle",
     version: str = "1.0.0",
     order: int = 500,
-    api_version: int = 1,
+    api_version: int = 3,
     critical: bool = False,
     rows: tuple[tuple[str, str], ...] = (("demo-plugin", "demo_pkg:DemoPlugin"),),
 ) -> Path:

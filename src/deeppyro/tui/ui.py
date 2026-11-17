@@ -248,11 +248,11 @@ def resolve_ui_service(source: Any) -> UiService | None:
     kernel = getattr(source, "kernel_app", None)
     if kernel is None:
         kernel = source
-    service = getattr(kernel, "service", None)
-    if not callable(service):
+    getter = getattr(kernel, "get", None)
+    if not callable(getter):
         return None
     try:
-        value = service("ui")
+        value = getter(UiService)
     except Exception:  # noqa: BLE001 - optional service, missing is normal
         return None
     return value if isinstance(value, UiService) else None

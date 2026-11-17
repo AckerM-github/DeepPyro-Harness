@@ -7,7 +7,8 @@ import contextlib
 from collections.abc import Callable
 from typing import Any
 
-from deeppyro.hooks import SESSION_CREATED
+from deeppyro.hooks import SESSION_CREATED, HookService
+from deeppyro.sandbox.permission import PermissionPresetsService
 from deeppyro.tui.runtime_state import _RuntimeState
 from deeppyro.tui.runtime_support import await_maybe, logger
 
@@ -54,13 +55,14 @@ class ServiceLayer(_RuntimeState):
         """Open a persisted session for a schedule delivery."""
         return self.store.open(session_id)
 
-    def _service(self, name: str) -> Any | None:
+    def _service(self, contract: type[Any]) -> Any | None:
+        """Resolve one optional service contract (None when unavailable)."""
         app = self.kernel_app
         if app is None:
             return None
         try:
-            return app.service(name)
-        except LookupError:
+            return app.get(contract)
+        except (AttributeError, LookupError):
             return None
 
     async def _session_created(self, session: Any, *, cwd: str, preset: str | None) -> None:
@@ -71,7 +73,7 @@ class ServiceLayer(_RuntimeState):
         await self._emit_hook(SESSION_CREATED, {"sessionId": session_id, "cwd": cwd, "preset": preset})
 
     async def _emit_hook(self, name: str, payload: dict[str, Any]) -> None:
-        hooks = self._service("hooks")
+        hooks = self._service(HookService)
         if hooks is None or not hooks.has(name):
             return
         try:
@@ -81,7 +83,7 @@ class ServiceLayer(_RuntimeState):
 
     def _pin_permission(self, session: Any) -> None:
         """Seed a new session with the default permission preset and knobs."""
-        service = self._service("permissionPresets")
+        service = self._service(PermissionPresetsService)
         pin = getattr(service, "pin_initial", None)
         if not callable(pin) or session is None:
             return

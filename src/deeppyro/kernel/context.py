@@ -10,9 +10,10 @@ layers:
 
 There is no ProtoDict, symbol table, tracker or getattr routing: lookups walk
 the parent chain for the scope token, then read a plain dict in
-:class:`~deeppyro.kernel.container.ServiceContainer`.  Service attribute access
-(``ctx.counter``) is kept as a convenience for older plugin code, implemented as
-one explicit named lookup rather than the vendor's ``reflect.handler_get``.
+:class:`~deeppyro.kernel.container.ServiceContainer`.  API v3 removed the
+`ctx.<service>` attribute forwarding: plugins read services through typed
+contract classes (`PluginContext.require` / `PluginContext.get`), which resolve
+to the same named lookups internally.
 """
 
 from __future__ import annotations
@@ -213,7 +214,12 @@ class RuntimeContext:
         return self.effect(lambda: self._container.remove(record), label=f"ctx.provide({name!r})")
 
     def get(self, name: str, default: Any = None) -> Any | None:
-        """Return an active service value by name, or ``default``."""
+        """Return an active service value by name, or ``default``.
+
+        This is the host-side named primitive behind the typed lookups
+        (`api.services.lookup_service`); API v3 plugins call
+        `PluginContext.get(ServiceContract)` instead of passing names.
+        """
         record = self._container.get(name, self.resolve_isolate(name))
         if record is None:
             return default
@@ -269,16 +275,23 @@ class RuntimeContext:
             raise RuntimeError("context has no fiber to own an effect")
         return self._fiber.effect(execute, label=label)
 
-    def plugin(self, plugin: Any, config: dict[str, Any] | None = None) -> Fiber:
-        """Mount a plugin (class, callable or host plugin dict) and return its fiber."""
+    def mount(self, plugin: Any, config: dict[str, Any] | None = None) -> Fiber:
+        """Mount a plugin (class, callable or host plugin dict) and return its fiber.
+
+        This is the single mount path in API v3: ``PluginContext.mount`` and the
+        kernel/preset adapters all route here.
+        """
         from deeppyro.kernel.host import mount
 
         return mount(self, plugin, config)
 
-    def inject(self, inject: Iterable[str], callback: Callable[..., Any]) -> Fiber:
-        """Mount a callback that receives the context (legacy mount helper)."""
+    def inject(self, inject: Iterable[str | type[Any]], callback: Callable[..., Any]) -> Fiber:
+        """Mount a callback gated on ``inject`` dependencies (host helper)."""
+        from deeppyro.api.plugin import resolve_injections
+
         name = getattr(callback, "__name__", "") or "inject"
-        return self.plugin({"name": name, "apply": callback, "inject": list(inject)}, None)
+        names = resolve_injections(inject, owner=name)
+        return self.mount({"name": name, "apply": callback, "inject": names}, None)
 
     # -- local events -----------------------------------------------------
 
@@ -307,21 +320,6 @@ class RuntimeContext:
             raise TypeError("emit requires an event name")
         name = args[0]
         await self._events.emit(str(name), *args[1:])
-
-    # -- attribute compatibility -----------------------------------------
-
-    def __getattr__(self, name: str) -> Any:
-        """Resolve ``ctx.<service>`` for older plugins (explicit named lookup)."""
-        if name.startswith("_"):
-            raise AttributeError(name)
-        try:
-            container = object.__getattribute__(self, "_container")
-        except AttributeError:  # pragma: no cover - construction edge
-            raise AttributeError(name) from None
-        record = container.get(name, self.resolve_isolate(name))
-        if record is not None and (record.fiber is None or record.fiber.state in _VISIBLE_STATES):
-            return record.value
-        raise AttributeError(f"context has no service {name!r}")
 
     def __repr__(self) -> str:
         fiber = self._fiber.name if self._fiber is not None else "none"

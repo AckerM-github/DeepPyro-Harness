@@ -187,8 +187,11 @@ task completes. Hosts **must** await materialization before creating an agent fo
 carries plugin rows:
 
 ```python
+from deeppyro.builtin.presets import PresetsPlugin
+
 app = await boot(cfg, bundle_paths=[...])
-await app.service("presets").ensure_all()   # or ensure("reviewer") / ensure("reviewer", revision=3)
+presets = app.require(PresetsPlugin)
+await presets.ensure_all()   # or ensure("reviewer") / ensure("reviewer", revision=3)
 agent = agents.create(..., preset="reviewer")
 ```
 

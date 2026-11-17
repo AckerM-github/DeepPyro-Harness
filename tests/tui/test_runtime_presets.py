@@ -11,6 +11,7 @@ import pytest
 from deeppyro.api import PluginDependencyError
 from deeppyro.core.errors import DeeppyroError
 from deeppyro.tui.runtime import TuiRuntime
+from tests.service_doubles import service_lookup, service_require
 
 
 class FakeSession:
@@ -137,6 +138,12 @@ class FakeKernelApp:
         if name not in self._services:
             raise LookupError(name)
         return self._services[name]
+
+    def get(self, service: type[Any]) -> Any | None:
+        return service_lookup(self._services, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self._services, service)
 
 
 def make_runtime(*, store: FakeStore, presets: FakePresets, agents: FakeAgents) -> TuiRuntime:

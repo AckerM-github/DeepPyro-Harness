@@ -20,8 +20,21 @@ from pathlib import Path
 from typing import Any
 
 from deeppyro.api import AGENT_MODE_TEAM, DEFAULT_PRESET_ID, TEAM_PRESET_ID
+from deeppyro.builtin.activity import ActivityService
+from deeppyro.builtin.agents import AgentsPlugin
+from deeppyro.builtin.llm import LlmPlugin
+from deeppyro.builtin.presets import PresetsPlugin
+from deeppyro.builtin.projections import ProjectionsService
+from deeppyro.builtin.sandbox import SandboxPlugin
+from deeppyro.builtin.schedule import SchedulePlugin
+from deeppyro.builtin.sessions import SessionsPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, load_config, save_agent_selection
 from deeppyro.core.errors import ConfigError, DeeppyroError
+from deeppyro.jobs.manager import JobsService
+from deeppyro.sandbox.permission import PermissionPresetsService
+from deeppyro.subagent.manager import SubagentService
+from deeppyro.team.manager import TeamService
 from deeppyro.team.types import LIVE_PHASES
 from deeppyro.tui.runtime_schedule_host import _now_rfc3339 as _now_rfc3339
 from deeppyro.tui.runtime_schedule_host import _ScheduleSink as _ScheduleSink
@@ -36,6 +49,8 @@ from deeppyro.tui.runtime_support import _resolve_model as _resolve_model
 from deeppyro.tui.runtime_support import await_maybe as await_maybe
 from deeppyro.tui.runtime_support import logger as logger
 from deeppyro.tui.runtime_support import resolve_workspace as resolve_workspace
+from deeppyro.user_questions.service import UserQuestionsService
+from deeppyro.working_directory.service import WorkingDirectoryService
 
 
 @dataclass
@@ -65,39 +80,25 @@ class TuiRuntime(StatusLayer):
         model_id = _resolve_model(cfg, provider_name, model=model)
         kernel_app = await boot(cfg)
         try:
-            services = {
-                name: kernel_app.service(name) for name in ("llm", "sessions", "sandbox", "tools", "agents")
-            }
-            llm_provider = services["llm"].provider(provider_name)
-            registry = services["tools"].registry_for(workspace)
-            permission = services["sandbox"].gate(workspace, ask=ask)
+            llm_service = kernel_app.require(LlmPlugin)
+            sessions_service = kernel_app.require(SessionsPlugin)
+            sandbox_service = kernel_app.require(SandboxPlugin)
+            tools_service = kernel_app.require(ToolsPlugin)
+            agents_service = kernel_app.require(AgentsPlugin)
+            llm_provider = llm_service.provider(provider_name)
+            registry = tools_service.registry_for(workspace)
+            permission = sandbox_service.gate(workspace, ask=ask)
         except BaseException:
             await await_maybe(kernel_app.stop())
             raise
-        activity = None
-        with contextlib.suppress(LookupError):
-            activity = kernel_app.service("activity")
-        jobs = None
-        with contextlib.suppress(LookupError):
-            jobs = kernel_app.service("jobs")
-        team = None
-        with contextlib.suppress(LookupError):
-            team = kernel_app.service("team")
-        subagent = None
-        with contextlib.suppress(LookupError):
-            subagent = kernel_app.service("subagent")
-        working_directory = None
-        with contextlib.suppress(LookupError):
-            working_directory = kernel_app.service("working_directory")
-        user_questions = None
-        with contextlib.suppress(LookupError):
-            user_questions = kernel_app.service("user_questions")
-        projections = None
-        with contextlib.suppress(LookupError):
-            projections = kernel_app.service("projections")
-        schedule = None
-        with contextlib.suppress(LookupError):
-            schedule = kernel_app.service("schedule")
+        activity = kernel_app.get(ActivityService)
+        jobs = kernel_app.get(JobsService)
+        team = kernel_app.get(TeamService)
+        subagent = kernel_app.get(SubagentService)
+        working_directory = kernel_app.get(WorkingDirectoryService)
+        user_questions = kernel_app.get(UserQuestionsService)
+        projections = kernel_app.get(ProjectionsService)
+        schedule = kernel_app.get(SchedulePlugin)
         runtime = cls(
             cfg=cfg,
             cwd=workspace,
@@ -105,11 +106,11 @@ class TuiRuntime(StatusLayer):
             provider_name=provider_name,
             model=model_id,
             context_window=_context_window(provider_cfg, model_id),
-            store=services["sessions"].store,
+            store=sessions_service.store,
             provider=llm_provider,
             registry=registry,
             permission=permission,
-            agents=services["agents"],
+            agents=agents_service,
             sink=sink,
             ask=ask,
             activity=activity,
@@ -120,7 +121,7 @@ class TuiRuntime(StatusLayer):
             user_questions=user_questions,
             projections=projections,
             schedule=schedule,
-            llm=services["llm"],
+            llm=llm_service,
         )
         await runtime.ensure_presets()
         runtime._configure_team(None)
@@ -147,7 +148,7 @@ class TuiRuntime(StatusLayer):
     @property
     def presets(self) -> list[Any]:
         """Agent presets offered by the bundle, ordered by the service."""
-        service = self._service("presets")
+        service = self._service(PresetsPlugin)
         if service is None:
             return []
         try:
@@ -164,7 +165,7 @@ class TuiRuntime(StatusLayer):
         active before team mode so /team off can restore it; leaving refuses
         while any team member is still live.
         """
-        service = self._service("presets")
+        service = self._service(PresetsPlugin)
         if service is None:
             raise DeeppyroError("agent presets are not available in this bundle")
         if enabled:
@@ -206,7 +207,7 @@ class TuiRuntime(StatusLayer):
         """Team members that are still spawning, running or idle."""
         service = self.team
         if service is None:
-            service = self._service("team")
+            service = self._service(TeamService)
         getter = getattr(service, "members", None)
         if not callable(getter):
             return []
@@ -308,7 +309,7 @@ class TuiRuntime(StatusLayer):
             self.last_persist_error = None
 
     def permission_names(self) -> tuple[str, ...]:
-        service = self._service("permissionPresets")
+        service = self._service(PermissionPresetsService)
         names = getattr(service, "names", None)
         if callable(names):
             try:

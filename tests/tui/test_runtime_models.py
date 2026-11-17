@@ -18,6 +18,7 @@ from deeppyro.tui.app import DeepPyroApp
 from deeppyro.tui.runtime import TuiRuntime, _recorded_model_selection, _resolve_model
 from deeppyro.tui.screens.picker import PickerScreen
 from deeppyro.tui.widgets.prompt_area import PromptArea
+from tests.service_doubles import service_lookup, service_require
 from tests.tui.test_app import FakeRuntime
 
 
@@ -129,6 +130,12 @@ class FakeKernel:
         if name not in self.services:
             raise LookupError(name)
         return self.services[name]
+
+    def get(self, service: type[Any]) -> Any | None:
+        return service_lookup(self.services, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self.services, service)
 
 
 class FakeStore:

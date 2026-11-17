@@ -205,7 +205,7 @@ def _model_from_config(provider: str, model: ModelConfig) -> ModelInfo:
         provider=provider,
         id=model.id,
         name=model.name or model.id,
-        context_window=_positive_int(model.contextWindow),
+        context_window=_positive_int(model.context_window),
         max_tokens=_first_positive_int(extra, _MAX_TOKENS_KEYS),
         input_modalities=modalities,
     )

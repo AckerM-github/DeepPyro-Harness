@@ -163,10 +163,10 @@ async def await_maybe(value: Any) -> Any:
 def _context_window(provider_cfg: ProviderConfig, model_id: str) -> int:
     models = list(provider_cfg.models or [])
     for entry in models:
-        if entry.id == model_id and entry.contextWindow:
-            return int(entry.contextWindow)
-    if models and models[0].contextWindow:
-        return int(models[0].contextWindow)
+        if entry.id == model_id and entry.context_window:
+            return int(entry.context_window)
+    if models and models[0].context_window:
+        return int(models[0].context_window)
     return DEFAULT_CONTEXT_WINDOW
 
 
@@ -852,17 +852,11 @@ def _hooks_service(runtime: Any) -> Any | None:
     """Resolve the kernel hook service, tolerating runtimes without a kernel."""
     app = getattr(runtime, "kernel_app", None)
     getter = getattr(app, "get", None)
-    if callable(getter):
-        try:
-            return getter(HookService)
-        except Exception:  # noqa: BLE001 - host doubles may not implement typed lookup
-            return None
-    service = getattr(app, "service", None)
-    if service is None:
+    if not callable(getter):
         return None
     try:
-        return service("hooks")
-    except LookupError:
+        return getter(HookService)
+    except Exception:  # noqa: BLE001 - host doubles may not implement typed lookup
         return None
 
 

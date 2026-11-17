@@ -18,6 +18,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from deeppyro.api import API_VERSION, Plugin
 from deeppyro.kernel.manifest import ManifestError, PluginSpec, resolve_plugin_name
 from deeppyro.plugins.bundles import BundleStore
 from deeppyro.plugins.discovery import PluginDiscovery
@@ -136,6 +137,7 @@ class PluginManager:
                 raise PluginError(f"plugin target {target!r} is not module:Class")
             importlib.import_module(module_name)
             plugin_class = resolve_plugin_name(target)
+            _check_api_version(target, plugin_class)
             provides = _provided_services(plugin_class)
         except Exception as exc:  # noqa: BLE001 - report arbitrary import failures
             return ValidationResult(id=plugin_id, ok=False, target=target, error=str(exc))
@@ -203,7 +205,7 @@ class PluginManager:
         bundle_id: str = "demo-bundle",
         name: str = "",
         *,
-        api_version: int = 2,
+        api_version: int = API_VERSION,
     ) -> dict[str, str]:
         """Scaffolded bundle files keyed by relative path (no writes)."""
         return build_bundle_template(bundle_id, name, api_version=api_version)
@@ -214,7 +216,7 @@ class PluginManager:
         bundle_id: str,
         name: str = "",
         *,
-        api_version: int = 2,
+        api_version: int = API_VERSION,
     ) -> Path:
         """Write and validate a new bundle scaffold at dest."""
         return create_bundle_scaffold(dest, bundle_id, name, api_version=api_version)
@@ -346,6 +348,26 @@ def _provided_services(plugin_class: type) -> tuple[str, ...]:
     if isinstance(provide, (list, tuple)):
         return tuple(str(item) for item in provide if isinstance(item, str) and item)
     return ()
+
+
+def _check_api_version(target: str, plugin_class: type) -> None:
+    """Reject plugin classes that target any plugin API other than v3.
+
+    The plugin manager is the load-time gate for external sources (directories,
+    entry points and manifest patches). Bundles are checked separately by
+    kernel.composition.load_bundle, which validates bundle.toml through the
+    pydantic schema in kernel.bundle_schema.
+    """
+    if not issubclass(plugin_class, Plugin):
+        return
+    declared = int(getattr(plugin_class, "api_version", API_VERSION) or API_VERSION)
+    if declared == API_VERSION:
+        return
+    raise PluginError(
+        f"plugin target {target!r} declares api_version {declared}, but this host only speaks "
+        f"API v{API_VERSION}; the v1/v2 plugin API was removed with no compatibility shim "
+        "(ADR 0001 section 7) -- port the plugin to Plugin.setup(self)"
+    )
 
 
 __all__ = ["PluginManager"]

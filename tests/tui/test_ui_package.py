@@ -75,7 +75,7 @@ def write_bundle(
     bundle.mkdir(parents=True)
     if bundle_id:
         (bundle / "bundle.toml").write_text(
-            f'[bundle]\nid = "{bundle_id}"\nname = "Test"\nversion = "0.1.0"\napi_version = 1\n',
+            f'[bundle]\nid = "{bundle_id}"\nname = "Test"\nversion = "0.1.0"\napi_version = 3\n',
             encoding="utf-8",
         )
     (bundle / "ui.toml").write_text(ui_toml, encoding="utf-8")

@@ -1,22 +1,19 @@
-"""Plugin API v2: one injection point plus typed injections.
+"""Plugin API v3: a single mount shape, setup(self), typed injections.
 
-API v2 constructs a plugin with (ctx, config) and calls setup() with no
-arguments; API v1 plugins keep receiving setup(ctx, config). These cases pin the
-dispatch, the once-only deprecation warning and the contract-to-name resolution
-of the inject declaration.
+API v3 constructs a plugin with (ctx, config) and calls setup(self). The v1/v2
+signatures -- setup(ctx, config) and api_version < 3 -- are rejected with a
+migration hint instead of a compatibility branch (ADR 0001 section 7). These
+cases pin the hard cut plus the contract-to-name resolution of inject.
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
-import warnings
-from typing import Any
 
 import pytest
 
-from deeppyro.api import Plugin, PluginError, inject_names, invoke_setup
-from deeppyro.api.plugin import _WARNED_LEGACY_SETUP
+from deeppyro.api import API_VERSION, Plugin, PluginError, inject_names, invoke_setup
 from deeppyro.builtin.commands import CommandsPlugin
 
 
@@ -28,29 +25,30 @@ def make_plugin(cls: type[Plugin]) -> Plugin:
     return cls(Ctx(), {"name": "demo"})
 
 
-class V2Plugin(Plugin):
-    plugin_id = "v2"
+class V3Plugin(Plugin):
+    plugin_id = "v3"
 
     def setup(self) -> None:
-        self.seen = ("v2", self.config["name"])
+        self.seen = ("v3", self.config["name"])
 
 
 class LegacyPlugin(Plugin):
     plugin_id = "legacy"
 
-    def setup(self, ctx: Any, config: Any) -> None:
-        self.seen = (ctx, config, config["name"])
-
-
-class DeclaredV2LegacyPlugin(Plugin):
-    api_version = 2
-    plugin_id = "declared-v2-legacy"
-
-    def setup(self, ctx: Any, config: Any) -> None:
+    def setup(self, ctx: object, config: object) -> None:
         self.seen = (ctx, config)
 
 
-class AsyncV2Plugin(Plugin):
+class DeclaredV2Plugin(Plugin):
+    api_version = 2
+
+    plugin_id = "declared-v2"
+
+    def setup(self) -> None:
+        self.seen = True
+
+
+class AsyncV3Plugin(Plugin):
     plugin_id = "async"
 
     async def setup(self) -> str:
@@ -73,41 +71,41 @@ class GarbageInjectPlugin(Plugin):
     inject = (42,)
 
 
-def test_v2_setup_runs_without_arguments() -> None:
-    plugin = make_plugin(V2Plugin)
+def test_api_version_is_three() -> None:
+    assert API_VERSION == 3
+    assert Plugin.api_version == API_VERSION
+
+
+def test_setup_runs_without_arguments() -> None:
+    plugin = make_plugin(V3Plugin)
     assert invoke_setup(plugin, plugin.ctx, plugin.config) is None
-    assert plugin.seen == ("v2", "demo")
+    assert plugin.seen == ("v3", "demo")
 
 
-def test_legacy_setup_still_receives_ctx_and_config() -> None:
+def test_positional_setup_is_rejected_with_a_migration_hint() -> None:
     plugin = make_plugin(LegacyPlugin)
-    invoke_setup(plugin, plugin.ctx, plugin.config)
-    ctx, config, name = plugin.seen
-    assert ctx is plugin.ctx
-    assert config is plugin.config
-    assert name == "demo"
+    with pytest.raises(PluginError, match="positional parameters"):
+        invoke_setup(plugin, plugin.ctx, plugin.config)
+    with pytest.raises(PluginError, match="no compatibility shim"):
+        invoke_setup(make_plugin(LegacyPlugin), plugin.ctx, plugin.config)
+
+
+def test_declared_v2_plugin_is_rejected_with_a_migration_hint() -> None:
+    plugin = make_plugin(DeclaredV2Plugin)
+    with pytest.raises(PluginError, match="api_version 2"):
+        invoke_setup(plugin, plugin.ctx, plugin.config)
 
 
 def test_async_setup_result_is_awaitable() -> None:
-    plugin = make_plugin(AsyncV2Plugin)
+    plugin = make_plugin(AsyncV3Plugin)
     result = invoke_setup(plugin, plugin.ctx, plugin.config)
     assert inspect.isawaitable(result)
     assert asyncio.run(result) == "ready"
 
 
-def test_base_setup_is_a_noop_in_both_styles() -> None:
+def test_base_setup_is_a_noop() -> None:
     plugin = Plugin(Ctx(), {})
     assert invoke_setup(plugin, plugin.ctx, plugin.config) is None
-
-
-def test_declared_v2_plugin_with_legacy_signature_warns_once() -> None:
-    _WARNED_LEGACY_SETUP.discard(DeclaredV2LegacyPlugin)
-    plugin = make_plugin(DeclaredV2LegacyPlugin)
-    with pytest.warns(DeprecationWarning, match="legacy setup"):
-        invoke_setup(plugin, plugin.ctx, plugin.config)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        invoke_setup(plugin, plugin.ctx, plugin.config)
 
 
 def test_inject_accepts_contracts_and_names() -> None:

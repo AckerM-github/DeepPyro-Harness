@@ -172,7 +172,7 @@
 TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasoning_content` 字段）。本地 dshinfer 端点是否
 返回思考由 `DSHINFER_ENABLE_THINKING` 控制（默认 `false`，即只出答案）；要看到逐句思考，用
 `$env:DSHINFER_ENABLE_THINKING="true"; uv run uvicorn dshinfer.api:app --port 8000` 启动推理服务即可（本机真实冒烟即用此配置）。
-`[agent] maxTokens` 默认 8192：思考、答案与工具调用参数共用这个输出预算。输出被截断（finish.kind=length）时，本轮尚未执行的 tool call 会被丢弃（避免日志里留下没有 tool/result 的孤儿调用），TUI 显示 error “response truncated at maxTokens=...; N tool call(s) were not executed”，turn 以 max-tokens 结束；此时需要提高 maxTokens 或把工作拆成更小步骤。
+`[agent].max_tokens` 默认 8192（旧写法 @maxTokens@ 仍可读，canonical 是 snake_case）：思考、答案与工具调用参数共用这个输出预算。输出被截断（finish.kind=length）时，本轮尚未执行的 tool call 会被丢弃（避免日志里留下没有 tool/result 的孤儿调用），TUI 显示 error “response truncated at maxTokens=...; N tool call(s) were not executed”，turn 以 max-tokens 结束；此时需要提高 maxTokens 或把工作拆成更小步骤。
 
 ## 10. 已知偏离与待办
 

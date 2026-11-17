@@ -12,7 +12,7 @@ from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.kernel import boot
 from deeppyro.prompt import PromptContext
 
-PLUGIN_SOURCE = 'from deeppyro.api import Plugin\nfrom deeppyro.core.protocols import ToolResult\nfrom deeppyro.tools.base import BaseTool, make_parameters\n\n\nclass GreetTool(BaseTool):\n    name = "greet"\n    description = "Greet somebody by name."\n    parameters = make_parameters({"who": {"type": "string"}}, required=["who"])\n\n    async def run(self, args, ctx):\n        return ToolResult(text="hello " + str(args.get("who", "world")))\n\n\nclass GreetPlugin(Plugin):\n    plugin_id = "greet"\n    version = "0.1.0"\n    inject = ["tools", "prompt", "commands", "llm"]\n\n    def setup(self, ctx, config):\n        ctx.register_tool(lambda config, workspace: GreetTool())\n        ctx.register_prompt_section("greet-hint", 45, lambda tools, prompt_ctx: "## Greeting\\nAlways be polite.")\n        ctx.register_command("greet", self.run_greet, summary="greet someone", usage="/greet [name]")\n        ctx.register_provider("fake", lambda llm: object())\n\n    async def run_greet(self, host, argument):\n        host.greeting = argument or "world"\n'
+PLUGIN_SOURCE = 'from deeppyro.api import Plugin\nfrom deeppyro.core.protocols import ToolResult\nfrom deeppyro.tools.base import BaseTool, make_parameters\n\n\nclass GreetTool(BaseTool):\n    name = "greet"\n    description = "Greet somebody by name."\n    parameters = make_parameters({"who": {"type": "string"}}, required=["who"])\n\n    async def run(self, args, ctx):\n        return ToolResult(text="hello " + str(args.get("who", "world")))\n\n\nclass GreetPlugin(Plugin):\n    plugin_id = "greet"\n    version = "0.1.0"\n    inject = ["tools", "prompt", "commands", "llm"]\n\n    def setup(self):\n        self.ctx.register_tool(lambda config, workspace: GreetTool())\n        self.ctx.register_prompt_section("greet-hint", 45, lambda tools, prompt_ctx: "## Greeting\\nAlways be polite.")\n        self.ctx.register_command("greet", self.run_greet, summary="greet someone", usage="/greet [name]")\n        self.ctx.register_provider("fake", lambda llm: object())\n\n    async def run_greet(self, host, argument):\n        host.greeting = argument or "world"\n'
 BUNDLE_TOML = '[bundle]\nid = "greet-bundle"\nname = "Greet bundle"\nversion = "0.1.0"\norder = 50\n\n[[plugins]]\nid = "greet"\nplugin = "greet_plugin.py:GreetPlugin"\n'
 
 
@@ -81,18 +81,19 @@ class StampPlugin(Plugin):
 V2_BUNDLE_TOML = '[bundle]\nid = "stamp-bundle"\nname = "Stamp bundle"\nversion = "2.0.0"\norder = 51\n\n[[plugins]]\nid = "stamp"\nplugin = "stamp_plugin.py:StampPlugin"\n'
 
 
-async def test_v2_plugin_boots_with_a_single_injection(tmp_path: Path) -> None:
-    """API v2 plugins receive ctx/config once and may declare typed injections."""
+async def test_v2_plugin_is_rejected_with_a_migration_hint(tmp_path: Path) -> None:
+    """The v1/v2 plugin API is a hard cut: a stale plugin fails to mount."""
     bundle_dir = tmp_path / "stamp"
     bundle_dir.mkdir()
     (bundle_dir / "bundle.toml").write_text(V2_BUNDLE_TOML, encoding="utf-8")
     (bundle_dir / "stamp_plugin.py").write_text(V2_PLUGIN_SOURCE, encoding="utf-8")
     app = await boot(_config(), bundle_paths=[str(bundle_dir)])
     try:
-        tools = app.service("tools").registry_for(tmp_path)
-        assert "stamp" in tools
-        result = await tools.get("stamp").run({"value": "pyro"}, None)
-        assert result.text == "stamped pyro"
-        assert app.started["stamp"] == "ACTIVE"
+        failure = next(status for status in app.failures if status.id == "stamp")
+        assert failure.state == "failed"
+        assert "stamp" not in app.service("tools").registry_for(tmp_path)
+        assert "api_version 2" in failure.error
+        assert "no compatibility shim" in failure.error
+        assert "setup(self)" in failure.error
     finally:
         await app.stop()

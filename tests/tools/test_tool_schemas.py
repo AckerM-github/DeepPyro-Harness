@@ -58,9 +58,9 @@ def _mcp_adapter(schema: Any) -> McpToolAdapter:
     return McpToolAdapter(SimpleNamespace(), _remote_tool(schema))
 
 
-def _tools() -> dict[str, Any]:
-    """Every static tool the runtime registers, keyed by its public name."""
-    tools = [
+def all_tools() -> list[Any]:
+    """Every static tool instance the runtime registers."""
+    return [
         *builtin_tools(None, Path.cwd()),
         *job_tools(),
         *plugin_tools(),
@@ -76,7 +76,11 @@ def _tools() -> dict[str, Any]:
         RunCodeTool(),
         *resource_tools(_FakeMcpService()),  # type: ignore[arg-type]
     ]
-    return {tool.name: tool.parameters for tool in tools}
+
+
+def _tools() -> dict[str, Any]:
+    """Every static tool the runtime registers, keyed by its public name."""
+    return {tool.name: tool.parameters for tool in all_tools()}
 
 
 def _variants() -> dict[str, Any]:

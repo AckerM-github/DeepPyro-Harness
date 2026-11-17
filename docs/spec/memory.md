@@ -133,7 +133,7 @@ P1 不暴露 recall/related/remember/link/forget/document_*/view_*/memory_body_*
 
 MemoryPlugin（@src/deeppyro/builtin/memory.py）是普通 Plugin：plugin_id = memory，provide = memory，version = 0.1.0，inject = ["prompt"]。setup 中依次：
 1. 创建 MemoryService(store=MemoryStore())（root 即 deeppyro_home()/memory）。
-2. ctx.provide("memory", service)，因此 kernel 中 app.service("memory") 可用。
+2. ctx.provide("memory", service)，因此 kernel 中 app.get(MemoryService)（或 app.require(MemoryService)）可用。
 3. ctx.register_tool(lambda _config, _workspace: memory_tools())，工具随插件行启用/禁用。
 4. ctx.register_prompt_section("memory-runtime", 12, self._render_section)。
 

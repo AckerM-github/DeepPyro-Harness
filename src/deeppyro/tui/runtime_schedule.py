@@ -8,9 +8,53 @@ from pathlib import Path
 from typing import Any
 
 from deeppyro.api import DEFAULT_PRESET_ID
+from deeppyro.api.services import service_name
+from deeppyro.attachments.store import AttachmentStore
+from deeppyro.builtin.inspect import InspectPlugin
+from deeppyro.builtin.llm import LlmPlugin
+from deeppyro.builtin.plugin_manager import PluginManagerPlugin
+from deeppyro.builtin.presets import PresetsPlugin
+from deeppyro.builtin.sandbox import SandboxPlugin
+from deeppyro.builtin.schedule import SchedulePlugin
+from deeppyro.builtin.settings import SettingsPlugin
+from deeppyro.builtin.tools import ToolsPlugin
+from deeppyro.hooks import HookService
+from deeppyro.jobs.manager import JobsService
+from deeppyro.llm.retry import RetryPolicy
+from deeppyro.memory.service import MemoryService
+from deeppyro.ptc.runtime import PtcRuntime
+from deeppyro.sandbox.approval import ApprovalService
+from deeppyro.sandbox.permission import PermissionPresetsService
+from deeppyro.sandbox.policy import SandboxPolicyService
+from deeppyro.subagent.manager import SubagentService
+from deeppyro.team.manager import TeamService
 from deeppyro.tui.runtime_schedule_host import _ScheduleSink
 from deeppyro.tui.runtime_services import ServiceLayer
 from deeppyro.tui.runtime_support import await_maybe
+from deeppyro.user_questions.service import UserQuestionsService
+from deeppyro.working_directory.service import WorkingDirectoryService
+
+_TOOL_CONTEXT_SERVICES: tuple[type[Any], ...] = (
+    LlmPlugin,
+    HookService,
+    RetryPolicy,
+    SandboxPlugin,
+    SandboxPolicyService,
+    ApprovalService,
+    PermissionPresetsService,
+    PluginManagerPlugin,
+    InspectPlugin,
+    SettingsPlugin,
+    JobsService,
+    TeamService,
+    SubagentService,
+    WorkingDirectoryService,
+    UserQuestionsService,
+    AttachmentStore,
+    SchedulePlugin,
+    MemoryService,
+    PtcRuntime,
+)
 
 
 class ScheduleLayer(ServiceLayer):
@@ -71,7 +115,7 @@ class ScheduleLayer(ServiceLayer):
 
     def _registry_for_preset(self, preset: str) -> Any:
         """Tool registry narrowed to one agent preset."""
-        service = self._service("tools")
+        service = self._service(ToolsPlugin)
         registry_for = getattr(service, "registry_for", None)
         if callable(registry_for):
             try:
@@ -90,7 +134,7 @@ class ScheduleLayer(ServiceLayer):
         value = str(preset or "").strip()
         if not value:
             return None
-        service = self._service("presets")
+        service = self._service(PresetsPlugin)
         canonical = getattr(service, "canonical", None)
         if callable(canonical):
             try:
@@ -101,37 +145,22 @@ class ScheduleLayer(ServiceLayer):
         return value
 
     def _plugin_services(self) -> dict[str, Any]:
-        """Plugin services the agent tools read from ToolContext.services."""
+        """Plugin services the agent tools read from ToolContext.services.
+
+        ToolContext.services is a string-keyed mapping by contract (tools receive
+        it as a mapping of service names), so each typed contract is resolved and
+        stored under its registered service name.
+        """
         services: dict[str, Any] = {}
-        for name in (
-            "llm",
-            "hooks",
-            "retryPolicy",
-            "sandbox",
-            "sandboxPolicy",
-            "approval",
-            "permissionPresets",
-            "plugin_manager",
-            "inspect",
-            "settings",
-            "jobs",
-            "team",
-            "subagent",
-            "working_directory",
-            "user_questions",
-            "attachments",
-            "schedule",
-            "memory",
-            "ptc",
-        ):
-            service = self._service(name)
+        for contract in _TOOL_CONTEXT_SERVICES:
+            service = self._service(contract)
             if service is not None:
-                services[name] = service
+                services[service_name(contract)] = service
         return services
 
     def _scoped_registry(self, workspace: Any) -> Any:
         """Tools registry narrowed to contributions visible to the preset."""
-        service = self._service("tools")
+        service = self._service(ToolsPlugin)
         if service is None:
             return self.registry
         registry_for = getattr(service, "registry_for", None)
@@ -145,7 +174,7 @@ class ScheduleLayer(ServiceLayer):
 
     async def _ensure_preset(self, preset_id: str, revision: int | None) -> None:
         """Materialize one preset revision (no-op without a presets service)."""
-        service = self._service("presets")
+        service = self._service(PresetsPlugin)
         ensure = getattr(service, "ensure", None)
         if callable(ensure):
             canonical = self._canonical_preset(preset_id) or preset_id

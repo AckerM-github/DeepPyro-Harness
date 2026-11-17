@@ -6,7 +6,8 @@ The kernel is a plugin host. Boot has four stages:
 2. create the native runtime root context and register the kernel config service;
 3. mount every enabled row in order, awaiting each fiber so load errors surface
    at boot instead of mid-turn;
-4. expose App.ctx / App.service(name) and dispose fibers in reverse order.
+4. expose App.ctx plus the typed App.require(Contract) / App.get(Contract)
+   accessors, and dispose fibers in reverse order.
 
 Rows marked critical (the core bundle) abort boot on failure and unwind the
 plugins that already started. Non-critical rows from external bundles are
@@ -188,9 +189,11 @@ def _plugin_for(
     raw_config = dict(row.config or {})
     if inspect.isclass(cls) and issubclass(cls, Plugin):
         api_version = int(getattr(cls, "api_version", API_VERSION) or API_VERSION)
-        if api_version > API_VERSION:
+        if api_version != API_VERSION:
             raise CompositionError(
-                f"plugin {row.id!r} targets api_version {api_version}, this kernel supports {API_VERSION}"
+                f"plugin {row.id!r} targets api_version {api_version}, but this kernel only speaks "
+                f"API v{API_VERSION}; the v1/v2 plugin API was removed with no compatibility shim "
+                "(ADR 0001 section 7) -- port the plugin to Plugin.setup(self)"
             )
         plugin: Any = {
             "name": row.id,
@@ -213,7 +216,7 @@ def _mount_context(ctx: RuntimeContext, row: PluginRow) -> RuntimeContext:
 
 def _mount(ctx: RuntimeContext, row: PluginRow, plugin: Any, config: dict[str, Any]) -> Fiber:
     """Mount a plugin on ctx after applying the row's isolate/intercept layers."""
-    return _mount_context(ctx, row).plugin(plugin, config)
+    return _mount_context(ctx, row).mount(plugin, config)
 
 
 def _record_only(row: PluginRow, parent: MountRecord | None, critical: bool) -> MountRecord:
@@ -491,10 +494,12 @@ class App:
     def get(self, service: type[T]) -> T | None: ...
 
     def get(self, service: str | type[Any]) -> Any | None:
-        """Return an active service by legacy name or by contract class.
+        """Return an active service by contract class (or legacy name).
 
         The typed form returns None when the service is absent and also when
         the class is not a known contract, so optional lookups never raise.
+        The string form is a host-level compatibility helper for embedders and
+        tests; API v3 plugins call PluginContext.get(Contract) instead.
         """
         if isinstance(service, str):
             return self._service_value(service)
@@ -523,7 +528,13 @@ class App:
         return value
 
     def service(self, name: str) -> Any:
-        """Return an active service by name, or raise LookupError."""
+        """Return an active service by name, or raise LookupError.
+
+        Host-level compatibility helper only: API v3 plugins read services
+        through typed contract classes (PluginContext.require/get), and host
+        code should prefer the typed App.require(Contract).  This named form
+        stays available to embedders and tests that address services by name.
+        """
         value = self._service_value(name)
         if value is None:
             raise LookupError(f"service {name!r} is not registered or not active")

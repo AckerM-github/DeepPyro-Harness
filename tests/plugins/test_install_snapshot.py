@@ -57,7 +57,7 @@ def plugin_toml(
         'description = "fixture"',
         f'module = "{module}"',
         'class = "DemoPlugin"',
-        "api_version = 1",
+        "api_version = 3",
         'provides = ["demo_service"]',
     ]
     if exempt is not None:

@@ -78,6 +78,25 @@ def test_scan_directories(tmp_path) -> None:
     assert beta.description == "a demo plugin"
 
 
+def test_directory_plugin_targeting_older_api_version_is_reported(tmp_path) -> None:
+    _, plugins_dir = _paths(tmp_path)
+    directory = plugins_dir / "legacy"
+    directory.mkdir(parents=True)
+    (directory / "plugin.toml").write_text(
+        '[package]\nid = "legacy"\nname = "Legacy"\nversion = "0.1.0"\n'
+        'module = "legacy_mod"\nclass = "LegacyPlugin"\napi_version = 2\n',
+        encoding="utf-8",
+    )
+    (directory / "legacy_mod.py").write_text("class LegacyPlugin:\n    pass\n", encoding="utf-8")
+
+    rows = _discovery(tmp_path).scan()
+
+    assert [row.id for row in rows] == ["legacy"]
+    assert rows[0].error is not None
+    assert "api_version 2" in rows[0].error
+    assert "no compatibility shim" in rows[0].error
+
+
 def test_scan_ignores_directories_without_manifest(tmp_path) -> None:
     _, plugins_dir = _paths(tmp_path)
     (plugins_dir / "random").mkdir(parents=True)

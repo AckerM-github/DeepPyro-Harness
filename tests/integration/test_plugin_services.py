@@ -19,7 +19,7 @@ from deeppyro.session import SessionStore
 from deeppyro.team.manager import TeamService
 from tests.integration.fake_provider import Response, ScriptedProvider, tool_response
 
-SLOTS_SOURCE = 'from deeppyro.api import Plugin\n\n\nclass DemoslotsPlugin(Plugin):\n    plugin_id = "demo-slots"\n    version = "0.1.0"\n    inject = ["slots"]\n\n    def setup(self, ctx, config):\n        registry = ctx.service("slots")\n        registry.add_status_item(lambda context: "demo: on", id="demo-status", plugin_id="demo-slots")\n        registry.add_panel("Demo panel", lambda context: None, id="demo-panel", plugin_id="demo-slots")\n'
+SLOTS_SOURCE = 'from deeppyro.api import Plugin\nfrom deeppyro.tui.slots import SlotRegistry\n\n\nclass DemoslotsPlugin(Plugin):\n    plugin_id = "demo-slots"\n    version = "0.1.0"\n    inject = ["slots"]\n\n    def setup(self):\n        registry = self.ctx.require(SlotRegistry)\n        registry.add_status_item(lambda context: "demo: on", id="demo-status", plugin_id="demo-slots")\n        registry.add_panel("Demo panel", lambda context: None, id="demo-panel", plugin_id="demo-slots")\n'
 SLOTS_BUNDLE = '[bundle]\nid = "demo-slots-bundle"\nname = "Demo slots bundle"\nversion = "0.1.0"\norder = 60\n\n[[plugins]]\nid = "demo-slots"\nplugin = "demo_slots.py:DemoslotsPlugin"\n'
 
 

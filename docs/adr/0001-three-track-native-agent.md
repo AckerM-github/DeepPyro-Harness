@@ -222,6 +222,85 @@ Not done in M2 (deliberately):
 
 M2 footprint: `src/deeppyro/agent/{errors,budget,run_state,events,context_plan,checkpoint,native_provider,loop}.py`; `src/deeppyro/session/schema.py` (3 run events + optional-field bugfixes); `src/deeppyro/headless.py` and `src/deeppyro/tui/main.py` (switch); tests under `tests/native/`, `tests/session/test_native_run_events.py` and the updated `tests/session/test_native_schema.py`; `docs/native/schema.md` §5.5 and this checklist.
 
+## 6.3 M3 deliverables and exit checklist
+
+Status: **complete (2026-11-17)**. M3 is the plugin API v3 break. Per section 7 row 8 the v1/v2
+plugin API is hard cut in 0.2.0 with a migration note and **no compatibility shim**: the
+transitional `api/compat.py` layer drafted during implementation was deleted before the
+milestone closed, and a plugin or bundle that declares another `api_version`, or a `setup`
+with positional parameters, is rejected at load time with a migration hint.
+
+- [x] One mount shape: `Plugin.setup(self)` is the only plugin entry point and
+  `RuntimeContext.mount(plugin, config)` is the only mounting entry point
+  (`PluginContext.mount` forwards to it). The v2 `RuntimeContext.plugin` name, implicit
+  `ctx.<service>` attribute proxying and the `setup(ctx, config)` invocation are deleted.
+  `kernel/host.py`, `kernel/app.py` and `builtin/presets.py` resolve `inject` entries
+  through `api.inject_names`, so contract classes and service names inject identically.
+  `tests/api/test_v3_mount.py` boots the default composition and proves every core plugin
+  class declares `api_version == 3` with `setup(self)`, that a second mount shape raises
+  `PluginError` / `KernelBootError`, and that preset realms mount through `ctx.mount`.
+- [x] Typed services: `api/services.py` maps contracts to names
+  (`bind_service_type`/`note_service_value`/`service_name`/`ServiceBag`) and
+  `inject` accepts `type[Service]`. Plugin-facing `PluginContext.get/require/has` take a
+  contract class only; strings raise `TypeError`, and `PluginContext.__getattr__` /
+  `RuntimeContext.__getattr__` no longer resolve services. `rg` over `src/` finds zero
+  string service lookups. Host-level `App.service(name)`, `App.get(name)` and
+  `has_service(name)` are retained **only** as deprecated non-plugin helpers for embedders and
+  the test suite; the plugin contract cannot reach them.
+- [x] CapabilityManifest: new `api/capabilities.py` (frozen slots dataclasses
+  `CapabilityManifest`, `ToolCapability`, `TokenCost`, `RiskLevel`,
+  `build_manifest`/`tool_capability`) records plugin id/version, services provided and
+  required, tools, hooks, permissions, sandbox mode, risk, idempotency and token/cost metadata.
+  `BaseTool` gained `risk`/`idempotent` class defaults that never enter the model-facing
+  JSON schema; `tests/api/test_capabilities.py` covers every core plugin and all 43 built-in
+  tools, and the 43-tool schema snapshot stays byte-identical.
+- [x] Bundle and entry-point v3 loader: `kernel/bundle_schema.py` pydantic models validate
+  `bundle.toml`, include files and nested group rows (unknown keys, scalar types, requirements,
+  `api_version == 3`), and `plugins/metadata.py` / `plugins/discovery.py` /
+  `plugins/manager.py` reject plugins declaring another API version at load time. Scaffolding
+  (`plugins/template.py`) and the manager helpers default to `API_VERSION`;
+  `tests/kernel/test_bundle_schema.py` and `tests/plugins/test_discovery.py` /
+  `tests/plugins/test_manager.py` cover the gates.
+- [x] snake_case config skeleton: `config.py` models accept both spellings
+  (`ConfigDict(populate_by_name=True)` plus validation aliases) while attributes, dumps and docs
+  are snake_case (`base_url`, `api_key_env`, `context_window`, `max_tokens`,
+  `max_steps`, `session_dir`). Existing camelCase `~/.dpro/config.toml` files keep loading;
+  `DEFAULT_TOML` uses snake_case for the keys `config.py` owns (plugin-owned sections keep
+  their own schemas). `ModelProfile` (capabilities/context/cost) and the in-memory
+  `builtin/usage.py:UsageService` cost-accounting skeleton are covered by
+  `tests/test_config_v3.py` and `tests/builtin/test_usage.py`; `UsageService` is not yet a
+  core bundle row.
+- [x] Docs: `docs/spec/plugin-core.md` now documents the v3 contract (single mount, typed
+  lookups, no legacy setup, sealed context), and `INTERFACES.md`, `plugins.md`,
+  `plugin-platform.md`, `tui-slots.md`, `tui-contributions.md`, `session-query.md` and the
+  config sections of `tui.md`/`plugin-settings.md` follow the cut.
+- [x] Four gates green: `ruff check`, `ruff format --check`, `scripts/typecheck.py`
+  (79 errors, 0 new) and full `pytest` (3506 passed, 0 failed, 0 skipped).
+- [x] Report to the user with commit, changed files, gate output, remaining v2 compatibility and
+  cross-lane seams.
+
+Interface changes other lanes must adapt:
+
+- `RuntimeContext.plugin(...)` is now `RuntimeContext.mount(...)`; `ctx.plugin` no longer
+  exists (tests under `tests/kernel` were migrated).
+- `PluginContext.get/service/has` are typed-only; use `ctx.get(Contract)`,
+  `ctx.require(Contract)` or `ctx.has(Contract)`. Unknown attributes raise `AttributeError`.
+- `Plugin.setup` takes no arguments; plugins declare `api_version = 3`; `inject` may contain
+  contract classes or service names (classes preferred).
+- Config attributes are snake_case; camelCase constructor keywords and TOML keys still validate.
+  Wire/event payload keys (for example `maxTokens` in request payloads) are frozen and were not
+  renamed.
+- New modules: `api/capabilities.py`, `api/version.py`, `kernel/bundle_schema.py`,
+  `builtin/usage.py` (skeleton, not mounted by the core bundle).
+
+M3 footprint: `src/deeppyro/api/` (`plugin.py`, `context.py`, `services.py`,
+`capabilities.py`, `version.py`, `__init__.py`), `src/deeppyro/kernel/` (`context.py`,
+`host.py`, `app.py`, `bundle_schema.py`, `composition.py`), `src/deeppyro/builtin/`
+(`presets.py`, `ptc.py`, `goal_round_driver.py`, `settings.py`, `inspect.py`,
+`usage.py`), `src/deeppyro/plugins/` (`metadata.py`, `manager.py`, `discovery.py`,
+`template.py`), `src/deeppyro/config.py` and the TUI/`mcp` lookup call sites; tests under
+`tests/api`, `tests/kernel`, `tests/plugins`, `tests/builtin`, `tests/integration` and
+`tests/tui`; and the spec docs above.
 ## 6.4 M4 deliverables and exit checklist
 
 Status: **complete with documented open items (2026-11-17)**. M4 is additive: no v4 module was edited, the 43-tool schema snapshot remains byte-identical, and the hot-memory Markdown projection contract is unchanged.
@@ -249,7 +328,7 @@ M4 open items (deliberately not done):
 4. **Eval runs recorded or fake runners only.** There is no `AgentRunner` adapter backed by `AgentSession` yet (the native loop arrives in M2); golden outcomes are hand-authored fixtures, not captured live.
 5. **Replay is fixture-level, not session-level.** It reassembles and checks the recordings offline but does not feed them through the native provider adapter or compare a native session log end to end; that differential is the M2 exit gate.
 6. **The long-term store is FTS-only.** No embeddings/vector search, no capacity or compaction policy, no encryption/ACL on the SQLite file, and single-process access is protected only by SQLite locking.
-7. **Section numbering was resolved at integration time.** M2 is §6.2 and M3 becomes §6.3, placed before this §6.4; M4 branched from M1 and its section was moved by the integrator.
+7. **Section numbering was resolved at integration time.** M2 is §6.2 and M3 is §6.3, both placed before this §6.4; M4 branched from M1 and its section was moved by the integrator.
 
 ## 7. Decisions locked at M0
 

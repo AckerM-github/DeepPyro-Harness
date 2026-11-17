@@ -21,6 +21,7 @@ from deeppyro.tui.slots import SCREEN, SlotError, SlotRegistry
 from deeppyro.tui.ui import NOTIFY, OPEN_SCREEN, UiAction, UiService
 from deeppyro.tui.widgets.plugin_slots import PluginStatusBar
 from tests.plugins.support import FakeManager, make_info
+from tests.service_doubles import service_lookup, service_require
 from tests.tui.test_app import FakeRuntime, _runtime_with_slots
 
 
@@ -74,6 +75,12 @@ class _UiKernel:
         if name == "ui":
             return self.service_
         raise LookupError(name)
+
+    def get(self, service: type[Any]) -> Any | None:
+        return service_lookup({"slots": self.registry, "ui": self.service_}, service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require({"slots": self.registry, "ui": self.service_}, service)
 
 
 def _runtime_with_ui(registry: SlotRegistry, service: UiService):
@@ -180,7 +187,7 @@ name = "Bad Plugin"
 version = "0.1.0"
 module = "bad_plugin"
 class = "BadPlugin"
-api_version = 1
+api_version = 3
 
 [ui]
 slots = ["hologram"]

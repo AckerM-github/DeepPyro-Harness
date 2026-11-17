@@ -59,9 +59,9 @@ REALM_PLUGIN = (
     '    plugin_id = "realm"\n'
     '    inject = ["tools", "prompt"]\n'
     "\n"
-    "    def setup(self, ctx, config):\n"
-    "        ctx.register_tool(lambda config, workspace: RealmNoteTool())\n"
-    "        ctx.register_prompt_section(\n"
+    "    def setup(self):\n"
+    "        self.ctx.register_tool(lambda config, workspace: RealmNoteTool())\n"
+    "        self.ctx.register_prompt_section(\n"
     '            "realm-hint", 60, lambda tools, prompt_ctx: "## Realm hint\\nRealm section."\n'
     "        )\n"
 )
@@ -85,9 +85,9 @@ REALM_PLUGIN_V2 = (
     '    plugin_id = "realm-v2"\n'
     '    inject = ["tools", "prompt"]\n'
     "\n"
-    "    def setup(self, ctx, config):\n"
-    "        ctx.register_tool(lambda config, workspace: RealmNoteToolV2())\n"
-    "        ctx.register_prompt_section(\n"
+    "    def setup(self):\n"
+    "        self.ctx.register_tool(lambda config, workspace: RealmNoteToolV2())\n"
+    "        self.ctx.register_prompt_section(\n"
     '            "realm-hint-v2", 61, lambda tools, prompt_ctx: "## Realm v2\\nNew section."\n'
     "        )\n"
 )
@@ -116,8 +116,8 @@ PRESET_PLUGIN = (
     '    version = "0.1.0"\n'
     '    inject = ["tools", "prompt", "presets"]\n'
     "\n"
-    "    def setup(self, ctx, config):\n"
-    "        ctx.register_preset(PresetSpec(\n"
+    "    def setup(self):\n"
+    "        self.ctx.register_preset(PresetSpec(\n"
     '            id="writer",\n'
     '            name="Writer",\n'
     '            description="writing mode with its own plugin realm",\n'
@@ -129,8 +129,8 @@ PRESET_PLUGIN = (
     "            ),\n"
     "            base=BASE,\n"
     "        ))\n"
-    '        ctx.register_tool(lambda config, workspace: WriterTool(), scope="writer")\n'
-    "        ctx.register_prompt_section(\n"
+    '        self.ctx.register_tool(lambda config, workspace: WriterTool(), scope="writer")\n'
+    "        self.ctx.register_prompt_section(\n"
     '            "writer-hint",\n'
     "            40,\n"
     '            lambda tools, prompt_ctx: "## Writer mode\\nUse short sentences.",\n'
@@ -161,9 +161,9 @@ COLLISION_PLUGIN = (
     '    plugin_id = "collision-preset"\n'
     '    inject = ["tools", "presets"]\n'
     "\n"
-    "    def setup(self, ctx, config):\n"
-    "        ctx.register_tool(lambda config, workspace: HostSharedTool())\n"
-    "        ctx.register_preset(PresetSpec(\n"
+    "    def setup(self):\n"
+    "        self.ctx.register_tool(lambda config, workspace: HostSharedTool())\n"
+    "        self.ctx.register_preset(PresetSpec(\n"
     '            id="collide",\n'
     '            name="Collide",\n'
     "            order=40,\n"
@@ -193,8 +193,8 @@ COLLIDING_REALM_PLUGIN = (
     '    plugin_id = "collide-realm"\n'
     '    inject = ["tools"]\n'
     "\n"
-    "    def setup(self, ctx, config):\n"
-    "        ctx.register_tool(lambda config, workspace: RealmSharedTool())\n"
+    "    def setup(self):\n"
+    "        self.ctx.register_tool(lambda config, workspace: RealmSharedTool())\n"
 )
 
 BROKEN_PLUGIN = (
@@ -209,8 +209,8 @@ BROKEN_PLUGIN = (
     '    plugin_id = "broken-preset"\n'
     '    inject = ["presets"]\n'
     "\n"
-    "    def setup(self, ctx, config):\n"
-    "        ctx.register_preset(PresetSpec(\n"
+    "    def setup(self):\n"
+    "        self.ctx.register_preset(PresetSpec(\n"
     '            id="broken",\n'
     '            name="Broken",\n'
     "            order=70,\n"

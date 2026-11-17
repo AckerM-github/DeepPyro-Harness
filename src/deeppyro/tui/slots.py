@@ -20,7 +20,7 @@ instead of silently shadowing the first plugin.
 The `SlotsPlugin` exposes one shared :class:`SlotRegistry` as the service
 `slots`:
 
-    slots = ctx.service("slots")
+    slots = ctx.require(SlotRegistry)
     dispose = slots.add_status_item(lambda context: f"items: {len(items)}")
 
 The plugin also loads declarative `ui.toml` packages from installed user
@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 
-from deeppyro.api import Plugin
+from deeppyro.api import Plugin, bind_service_type
 from deeppyro.core.errors import DeeppyroError
 
 if TYPE_CHECKING:
@@ -449,6 +449,9 @@ class SlotRegistry:
         return isinstance(key, tuple) and len(key) == 2 and self.get(str(key[0]), str(key[1])) is not None
 
 
+bind_service_type(SlotRegistry, "slots")
+
+
 class SlotsPlugin(Plugin):
     """Kernel plugin exposing the shared :class:`SlotRegistry` as `slots`.
 
@@ -581,9 +584,9 @@ def _report_slot_error(conversation: Any, contribution: SlotContribution, exc: B
 def resolve_slot_registry(source: Any) -> SlotRegistry | None:
     """Return the `slots` service from an app, runtime, or service host.
 
-    Accepts a booted kernel App (`source.service`), a TUI runtime
-    (`source.kernel_app.service`), or None. Returns None when the plugin is
-    not installed rather than raising, because slots are optional.
+    Accepts a booted kernel App (`source.get(SlotRegistry)`), a TUI runtime
+    (`source.kernel_app`), or None. Returns None when the plugin is not
+    installed rather than raising, because slots are optional.
     """
     if isinstance(source, SlotRegistry):
         return source
@@ -592,11 +595,11 @@ def resolve_slot_registry(source: Any) -> SlotRegistry | None:
     kernel = getattr(source, "kernel_app", None)
     if kernel is None:
         kernel = source
-    service = getattr(kernel, "service", None)
-    if not callable(service):
+    getter = getattr(kernel, "get", None)
+    if not callable(getter):
         return None
     try:
-        registry = service("slots")
+        registry = getter(SlotRegistry)
     except Exception:  # noqa: BLE001 - optional service, missing is normal
         return None
     return registry if isinstance(registry, SlotRegistry) else None

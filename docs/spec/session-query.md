@@ -149,8 +149,8 @@ ge=1)`.
 
 ## 6. Plugin and configuration
 
-`SessionQueryPlugin` gets the store from `ctx.service("sessions")` (its `store` attribute, or
-the service itself for simple fakes), so it never opens a second store. `readWindowMax`
+`SessionQueryPlugin` requires the typed `SessionsPlugin` contract (its `store` attribute, or the
+service itself for simple fakes), so it never opens a second store. `readWindowMax`
 resolution order:
 
 1. global config section `[session_query]` or `[sessionQuery]` (Mapping or pydantic model);

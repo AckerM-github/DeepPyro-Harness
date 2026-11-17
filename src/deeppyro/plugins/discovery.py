@@ -7,8 +7,10 @@ Three sources are scanned, in decreasing precedence:
 3. the user patch manifest ([[plugins]] entries that are not provided by an
    installed source).
 
-Discovery never imports plugin code; PluginManager.validate does that. A row
-whose source cannot be parsed carries a non-empty error string instead of
+Discovery never imports plugin code; PluginManager.validate does that and is
+the load-time gate that enforces the API v3 contract. Directory packages whose
+plugin.toml declares another plugin API version are reported with an error row.
+A row whose source cannot be parsed carries a non-empty error string instead of
 raising, so one broken plugin cannot hide the rest of the list.
 """
 
@@ -174,6 +176,17 @@ class PluginDiscovery:
             target=metadata.target,
             provides=metadata.provides,
         )
+        from deeppyro.api import API_VERSION
+
+        if metadata.api_version != API_VERSION:
+            return replace(
+                info,
+                error=(
+                    f"plugin declares api_version {metadata.api_version}, but this host only speaks "
+                    f"API v{API_VERSION}; the v1/v2 plugin API was removed with no compatibility shim "
+                    "(ADR 0001 section 7)"
+                ),
+            )
         if self.inject_sys_path:
             entry = str(directory)
             if entry not in sys.path:

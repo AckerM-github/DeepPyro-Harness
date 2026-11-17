@@ -13,7 +13,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, cast
 
 from deeppyro.api import PTC_PRESET_ID, Plugin, PluginConfig, PluginContext
+from deeppyro.builtin.prompt_service import PromptPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.core.protocols import ToolSchema
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.ptc import NESTED_EXCLUDED_TOOLS, RUN_CODE_NAME, PtcConfig, PtcRuntime, RunCodeTool
 from deeppyro.ptc.sdk import render_tools_sdk
 
@@ -32,8 +35,7 @@ def _ptc_config(ctx: PluginContext, row_config: PluginConfig) -> dict[str, Any]:
     merged: dict[str, Any] = {}
     if isinstance(row_config, Mapping):
         merged.update(row_config)
-    getter = getattr(ctx, "get", None)
-    config_service = getter("config") if callable(getter) else None
+    config_service = ctx.get(KernelConfig)
     value = getattr(config_service, "value", None) if config_service is not None else None
     raw: Any = None
     if value is not None:
@@ -56,7 +58,7 @@ class PtcPlugin(Plugin):
     plugin_id = "ptc"
     version = "0.1.0"
     description = "Python programmatic tool calling (run_code)"
-    inject: ClassVar[list[str]] = ["config", "tools", "prompt"]
+    inject: ClassVar[tuple[type[Any], ...]] = (KernelConfig, ToolsPlugin, PromptPlugin)
 
     def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
