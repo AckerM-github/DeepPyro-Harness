@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
 from collections.abc import Iterator, Mapping, Sequence
@@ -20,7 +21,13 @@ from pathlib import Path
 from typing import Any
 
 from deeppyro.core.ids import now_ms
-from deeppyro.core.messages import CompactionSource, Message, MessageValidationError
+from deeppyro.core.messages import (
+    MESSAGE_ID_RE,
+    MISSING_MESSAGE_ID_RE,
+    CompactionSource,
+    Message,
+    MessageValidationError,
+)
 from deeppyro.session.errors import (
     CorruptLineError,
     EventFieldError,
@@ -67,6 +74,11 @@ PRESET_MODES: frozenset[str] = frozenset({"default", "team"})
 TODO_STATUSES: frozenset[str] = frozenset({"pending", "in_progress", "completed"})
 GOAL_PHASES: frozenset[str] = frozenset({"active", "paused", "blocked", "complete"})
 ABORTED_BY: frozenset[str] = frozenset({"user", "provider", "disposed"})
+RUN_FINISH_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
+CHECKPOINT_STATUSES: frozenset[str] = frozenset({"running", "completed", "failed", "cancelled"})
+TOOL_CALL_STATES: frozenset[str] = frozenset({"pending", "running", "completed", "failed"})
+IDEMPOTENCY_KEY_PATTERN = r"^idem:[0-9a-f]{64}$"
+IDEMPOTENCY_KEY_RE = re.compile(IDEMPOTENCY_KEY_PATTERN)
 
 HEADER_FIELDS = {
     "type",
@@ -83,7 +95,7 @@ ENVELOPE_FIELDS = {"type", "seq", "ts", "data", "run_id", "turn_id", "step_id", 
 
 
 class EventKind(StrEnum):
-    """The 24 core event types implemented in M1 (schema section 5.2)."""
+    """Core event types: the 24 M1 kinds plus the 3 M2 run kinds (schema 5.2 and 5.5)."""
 
     TURN_STARTED = "turn.started"
     TURN_ENDED = "turn.ended"
@@ -109,6 +121,9 @@ class EventKind(StrEnum):
     PLAN_MODE = "plan.mode"
     TODO_WRITTEN = "todo.written"
     DELIVERABLE_PRESENTED = "deliverable.presented"
+    RUN_STARTED = "run.started"
+    RUN_CHECKPOINT = "run.checkpoint"
+    RUN_FINISHED = "run.finished"
 
 
 CORE_EVENT_TYPES: frozenset[str] = frozenset(kind.value for kind in EventKind)
@@ -780,6 +795,18 @@ def validate_event_data(event_type: str, data: dict[str, Any], *, seq: int) -> N
             if "description" in entry:
                 _string(entry["description"], "description", f"{ctx} file", allow_empty=True)
         return
+    if event_type == "run.started":
+        _object(data, set(), set(), ctx)
+        return
+    if event_type == "run.checkpoint":
+        _validate_run_checkpoint(data, ctx)
+        return
+    if event_type == "run.finished":
+        _object(data, {"status", "reason"}, {"status"}, ctx)
+        _enum(data["status"], RUN_FINISH_STATUSES, "status", ctx)
+        if "reason" in data:
+            _validate_turn_reason(data["reason"], ctx)
+        return
     raise UnknownEventError(
         f"unknown event type {event_type!r} at seq {seq}: plugin events must use the plugin.<id>.<event> namespace"
     )
@@ -799,6 +826,12 @@ def _validate_turn_reason(raw: object, ctx: str) -> None:
     if kind not in expected:
         raise EventFieldError(f"{ctx} field 'reason' has invalid value {raw!r}")
     allowed = {"kind"} | expected[kind]
+    if kind == "aborted":
+        allowed.add("message")
+    elif kind == "error":
+        allowed.add("code")
+    elif kind == "max_tokens":
+        allowed.add("limit")
     unknown = set(reason) - allowed
     if unknown:
         raise EventFieldError(f"{ctx} reason has unknown field {sorted(unknown)[0]!r}")
@@ -843,6 +876,69 @@ def _validate_goal(raw: object, ctx: str) -> None:
         _string(blocked["message"], "message", f"{ctx} goal blocked_reason", allow_empty=True)
 
 
+def _validate_run_checkpoint(raw: object, ctx: str) -> None:
+    checkpoint = _object(
+        raw,
+        {
+            "last_seq",
+            "last_message_id",
+            "turn_id",
+            "step_id",
+            "status",
+            "budgets",
+            "tool_calls",
+            "approvals",
+        },
+        {"last_seq", "status", "budgets", "tool_calls", "approvals"},
+        ctx,
+    )
+    _integer(checkpoint["last_seq"], "last_seq", ctx)
+    if "last_message_id" in checkpoint:
+        _message_id(checkpoint["last_message_id"], "last_message_id", ctx)
+    if "turn_id" in checkpoint:
+        _identifier(checkpoint["turn_id"], "turn_id", ctx, TURN_ID_RE)
+    if "step_id" in checkpoint:
+        _identifier(checkpoint["step_id"], "step_id", ctx, STEP_ID_RE)
+    _enum(checkpoint["status"], CHECKPOINT_STATUSES, "status", ctx)
+    budget_ctx = f"{ctx} budgets"
+    budgets = _object(
+        checkpoint["budgets"],
+        {"input_tokens", "output_tokens", "cost_usd", "tool_calls", "wall_ms"},
+        {"input_tokens", "output_tokens", "cost_usd", "tool_calls", "wall_ms"},
+        budget_ctx,
+    )
+    for name in ("input_tokens", "output_tokens", "tool_calls", "wall_ms"):
+        _integer(budgets[name], name, budget_ctx)
+    _number(budgets["cost_usd"], "cost_usd", budget_ctx)
+    tool_calls = checkpoint["tool_calls"]
+    if not isinstance(tool_calls, list):
+        raise EventFieldError(f"{ctx} field 'tool_calls' must be an array")
+    for item in tool_calls:
+        tool_ctx = f"{ctx} tool_call"
+        record = _object(
+            item, {"call_id", "name", "state", "idempotency_key"}, {"call_id", "name", "state"}, tool_ctx
+        )
+        _string(record["call_id"], "call_id", tool_ctx)
+        _string(record["name"], "name", tool_ctx)
+        _enum(record["state"], TOOL_CALL_STATES, "state", tool_ctx)
+        if "idempotency_key" in record:
+            _identifier(record["idempotency_key"], "idempotency_key", tool_ctx, IDEMPOTENCY_KEY_RE)
+    approvals = checkpoint["approvals"]
+    if not isinstance(approvals, list):
+        raise EventFieldError(f"{ctx} field 'approvals' must be an array")
+    for item in approvals:
+        approval_ctx = f"{ctx} approval"
+        decision = _object(
+            item,
+            {"approval_id", "tool_call_id", "state"},
+            {"approval_id", "tool_call_id", "state"},
+            approval_ctx,
+        )
+        _string(decision["approval_id"], "approval_id", approval_ctx)
+        _string(decision["tool_call_id"], "tool_call_id", approval_ctx)
+        _string(decision["state"], "state", approval_ctx)
+
+
 def _association(event_type: str, raw: Mapping[str, Any], seq: int) -> dict[str, str | None]:
     ctx = f"event {event_type!r} at seq {seq}"
     fields = ("run_id", "turn_id", "step_id", "trace_id")
@@ -881,6 +977,9 @@ def _association(event_type: str, raw: Mapping[str, Any], seq: int) -> dict[str,
     elif event_type in ("user.message", "system.message", "developer.message"):
         required = ()
         forbidden = ("step_id",)
+    elif event_type.startswith("run."):
+        required = ("run_id", "trace_id")
+        forbidden = ("turn_id", "step_id")
     else:
         required = ()
         forbidden = ()
@@ -936,6 +1035,29 @@ def _string(value: object, name: str, ctx: str, *, allow_empty: bool = False) ->
 
 def _integer(value: object, name: str, ctx: str, *, minimum: int = 0) -> int:
     if type(value) is not int or value < minimum:
+        raise EventFieldError(f"{ctx} has invalid value {value!r} for field {name!r}")
+    return value
+
+
+def _number(value: object, name: str, ctx: str, *, minimum: float = 0.0) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise EventFieldError(f"{ctx} has invalid value {value!r} for field {name!r}")
+    number = float(value)
+    if not math.isfinite(number) or number < minimum:
+        raise EventFieldError(f"{ctx} has invalid value {value!r} for field {name!r}")
+    return number
+
+
+def _identifier(value: object, name: str, ctx: str, pattern: re.Pattern[str]) -> str:
+    if not isinstance(value, str) or not pattern.fullmatch(value):
+        raise EventFieldError(f"{ctx} has invalid value {value!r} for field {name!r}")
+    return value
+
+
+def _message_id(value: object, name: str, ctx: str) -> str:
+    if not isinstance(value, str) or not (
+        MESSAGE_ID_RE.fullmatch(value) or MISSING_MESSAGE_ID_RE.fullmatch(value)
+    ):
         raise EventFieldError(f"{ctx} has invalid value {value!r} for field {name!r}")
     return value
 

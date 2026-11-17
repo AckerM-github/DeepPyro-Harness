@@ -44,6 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cwd", default=None, help="workspace directory")
     parser.add_argument("--max-steps", type=int, default=None, help="tool steps per turn")
+    parser.add_argument(
+        "--native-loop",
+        action="store_true",
+        help="run the one-shot prompt through the M2 native agent loop",
+    )
     # Hidden: frozen-build self re-entry (see deeppyro.runtime_env).  REMAINDER
     # passes the payload -- runner options, or nothing for the PTC worker --
     # through untouched.  They are dispatched before argparse in most cases.
@@ -144,6 +149,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         json_output=bool(args.json),
         cwd=args.cwd,
         max_steps=args.max_steps,
+        native_loop=args.native_loop,
     )
 
 

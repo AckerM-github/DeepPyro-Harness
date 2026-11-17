@@ -4,11 +4,12 @@
 | --- | --- |
 | 文档 | `docs/native/schema.md` |
 | Schema 版本 | `1`（header 字段 `schema:1`） |
-| 状态 | M0 冻结、M1 实现完成（2026-11-17）；M0 只写文档不改代码（ADR D8） |
+| 状态 | M0 冻结、M1 实现完成、M2 原生 loop 接入（2026-11-17）；M0 只写文档不改代码（ADR D8） |
 | Owner | Lane Y（`core/`、`session/`、`agent/`、`prompt/`、`compact/`） |
 | 取代 | `docs/spec/session.md`（`session.v4`） |
-| 权威来源 | `docs/adr/0001-three-track-native-agent.md`（Accepted；M0/M1 完成）；研究报告 `deeppyro-native-python-agent-research.md` §3.3–3.5、§5.3、§9.3–9.5 |
+| 权威来源 | `docs/adr/0001-three-track-native-agent.md`（Accepted；M0/M1/M2 完成）；研究报告 `deeppyro-native-python-agent-research.md` §3.3–3.5、§5.3、§9.3–9.5 |
 | M1 落点 | `src/deeppyro/core/messages.py`、`src/deeppyro/session/schema.py`、`src/deeppyro/session/fold.py`、`src/deeppyro/observability/trace.py` |
+| M2 落点 | `src/deeppyro/agent/{loop,run_state,checkpoint,budget,context_plan,events,native_provider}.py`；`session/schema.py` 增加 3 个 run 事件；headless `DEEPPYRO_NATIVE_LOOP` / `--native-loop` 开关（默认仍走 v4） |
 | 冲突处理 | 与 ADR 冲突时以 ADR 为准；偏差在 §12 显式记录 |
 
 ## 1. 状态与范围
@@ -34,7 +35,7 @@ M1 起产品只写、只读 native schema 1；以下为 review 硬门槛：
 | `surfaceOp`（append / `{"op":"replace","startSeq","endSeq"}`） | 删除。消息按创建顺序存在；修改用 `message.replaced`，压缩用 `compaction.done` | 稳定 id 取代区间，避免 seq 区间与消息 id 两套坐标 |
 | `sourceEventSeqs` | 删除；派生只依赖事件顺序与覆盖关系 | 派生可从日志顺序完全重建，冗余校验信息只会漂移 |
 | `ignorable` | 删除；未知事件只有插件命名空间一种合法形态，按命名空间跳过 | 兼容开关是 ADR 明令禁止的后门（§4 规则 3） |
-| 62 个 slash 类型（`user/message`、`tool/result` 等） | 24 个 dotted `EventKind`（§5） | 事件是类型而非字符串，不保留幽灵事件 |
+| 62 个 slash 类型（`user/message`、`tool/result` 等） | 27 个 dotted `EventKind`（§5：M1 24 个 + M2 3 个 run 事件） | 事件是类型而非字符串，不保留幽灵事件 |
 | Header camelCase（`createdAt`、`isSeeded`、`agentPreset`、`parentSession`） | snake_case；`version` 改为 `schema`（§3） | Python-first（ADR D1/D3） |
 | envelope `time` | `ts`，整数毫秒 UTC | ADR §7-2：`time` 留给时长字段 |
 | assistant 消息内嵌 `stream` 快照与 `usage` | 删除；流式细节与 token 计数只进 trace store（§8） | 会话日志瘦身、隐私、回放速度（报告 §9.3） |
@@ -131,6 +132,7 @@ header 不含 `run_id`、`title`、`is_seeded`、`archived`、`updated_at`；标
 | `approval.requested` / `approval.decided` | 必填 | 必填 | 必填 | 必填 |
 | `user.message` / `system.message` / `developer.message` | 可选 | turn 内必填 | 禁止 | 可选 |
 | 状态/元数据事件（`*.selected`、`session.title`、`goal.changed`、`todo.written`、`deliverable.presented`、`plan.mode`、`workspace.cwd_changed`、`sandbox.mode`、`permission.policy`） | 可选 | 可选 | 可选 | 可选 |
+| `run.started` / `run.checkpoint` / `run.finished` | 必填 | 禁止 | 禁止 | 必填 |
 | `message.replaced` / `compaction.done` | 可选 | 可选 | 可选 | 可选 |
 | 插件事件 | 可选 | 可选 | 可选 | 可选 |
 同一 `turn_id`/`step_id`/`run_id` 在文件内只由一条 `turn.started`/`step.started`/`run.started` 引入；turn_id/step_id 在一份日志内唯一，不复用。
@@ -154,9 +156,9 @@ Run 是执行归属，不是会话身份（§3.3）。事件级 `run_id` 让“�
 ### 5.1 命名规则
 - `<domain>.<object>` 或 `<domain>.<verb_past>`，全小写、点分隔（ADR §7-1）；禁止 `/`、禁止 camelCase。
 - 名词性事实用名词短语（`tool.call`、`tool.result`、`user.message`）；状态转移用过去分词（`turn.started`、`goal.changed`）。
-- Python 侧 `class EventKind(StrEnum)`，成员名为值大写替换（`TOOL_CALL = "tool.call"`）。EventKind 只包含 M1 真正实现的类型，不预留幽灵成员（报告 §3.5）。新增事件须同时改本文件、`EventKind` 与 golden fixtures。
+- Python 侧 `class EventKind(StrEnum)`，成员名为值大写替换（`TOOL_CALL = "tool.call"`）。EventKind 只包含真正实现的类型（M1 24 个；M2 增加 `run.started`/`run.checkpoint`/`run.finished` 后共 27 个），不预留幽灵成员（报告 §3.5）。新增事件须同时改本文件、`EventKind` 与 golden fixtures。
 
-### 5.2 核心事件（24 个）
+### 5.2 核心事件（M1 24 个）
 | EventKind | data 形状 | 生产者 | fold 效果 |
 | --- | --- | --- | --- |
 | `turn.started` | `{}` | agent turn 循环 | 打开 turn；之后事件必须属于该 turn |
@@ -189,19 +191,43 @@ Run 是执行归属，不是会话身份（§3.3）。事件级 `run_id` 让“�
 - **Goal**：字段对齐现有 `GoalSnapshot`（`src/deeppyro/goal/types.py`），仅 camelCase 转 snake_case：`{id: string, revision: integer >= 1, objective: string, phase: active 或 paused 或 blocked 或 complete, max_goal_rounds: integer, blocked_reason?: {code: string, message: string}}`。phase 使用现有 `Phase` 字面量（active/paused/blocked/complete）；`max_goal_rounds` 必填，默认 256（`DEFAULT_MAX_GOAL_ROUNDS`）；`blocked_reason` 仅 phase=blocked 时出现。**ApprovalOutcome**：取值为 allowed、rejected、cancelled、unavailable。
 - **Message** 见 §6；事件中的 Message 与 §6 JSON 形状完全一致。
 
-### 5.4 预留事件（不在 M1 EventKind 中）
-下表名称在对应里程碑实现时才加入 `EventKind`；M1 reader 把它们当未知类型拒绝。没有幽灵成员，此处只提前冻结命名：
+### 5.4 预留事件（M3/M4，尚未实现）
+M2 已实现 3 个 `run.*` 事件（§5.5），它们不再属于本表。下表只保留尚未实现的 M3/M4 名称；当前 reader 把它们当未知类型拒绝。没有幽灵成员，此处只提前冻结命名：
 | EventKind | 里程碑 | 何时发出 | data 计划形状 |
 | --- | --- | --- | --- |
-| `run.started` | M2 | Run 开始、第一个 turn 之前 | `{}`（run_id 在 envelope） |
-| `run.checkpoint` | M2 | 每个 step 边界、派发有副作用工具前、暂停/中断时 | `{last_seq, last_message_id?, turn_id?, step_id?, status, budgets: {input_tokens, output_tokens, cost_usd, tool_calls, wall_ms}, tool_calls: [{call_id, name, state, idempotency_key}], approvals: [{approval_id, tool_call_id, state}]}` |
-| `run.finished` | M2 | Run 终止 | `{status: completed 或 failed 或 cancelled, reason?: TurnReason}` |
 | `capability.granted` | M3 | 能力/权限授予后 | `{capability, tool_call_id?, scope?}` |
 | `capability.denied` | M3 | 能力/权限拒绝时 | `{capability, tool_call_id?, reason}` |
 | `schedule.changed` | M3 | 定时任务增删改 | `{schedule_id, operation, ...}` |
 | `mcp.server.connected` / `mcp.server.disconnected` | M3 | MCP 连接状态变化 | `{server, transport}` |
 | `subagent.started` / `subagent.finished` | M4 | 派生子代理/子代理结束 | `{child_session_id, label?}` / `{child_session_id, status}` |
 | `team.member.changed` / `team.task.changed` / `team.message.queued` / `team.message.delivered` | M4 | 团队协作状态变化 | 沿用 v4 语义、改 snake_case |
+
+### 5.5 M2 run 事件（已实现，2026-11-17）
+M2 把 §5.4 预留的 3 个 `run.*` 名称加入 `EventKind`（共 27 个成员）。`run.*` 是执行轨迹（run 生命周期、断点、累计预算），不是对话事实：`fold()` 跳过它们，不产生消息、不改 `SessionState`。写入者必须是 `NativeSession`，禁止双写 v4。
+
+关联字段（§4.2）：`run.*` 必须同时带 `run_id` 与 `trace_id`，禁止 `turn_id`/`step_id`（checkpoint 内的当前 turn/step 放在 data 中）。`_OrderTracker` 不约束 run 事件，因此它们可以写在 turn 之外、turn 之间或 step 内。
+
+| EventKind | data 形状（闭合） | 写入时机 |
+| --- | --- | --- |
+| `run.started` | `{}` | 每个 run 的第一条事件，早于该 run 的第一个 `turn.started` |
+| `run.checkpoint` | 见下 | step 开始后、派发有副作用工具前、每批工具结果写回后、run 终止前 |
+| `run.finished` | `{status, reason?}` | 该 run 的最后一条 session 事件 |
+
+**run.finished**：`status` 必填，取 completed、failed、cancelled；`reason` 可选，为 §5.3 的 TurnReason，且与该 run 的 `turn.ended.reason` 语义一致（例如 `max_steps` 预算超限、`error`+code）。
+
+**run.checkpoint**（闭合字段集）：
+- 必填：`last_seq`（integer >= 0，checkpoint 事件自身的 seq）、`status`（running、completed、failed、cancelled）、`budgets`、`tool_calls`、`approvals`。
+- 可选：`last_message_id`（Message id）、`turn_id`、`step_id`（checkpoint 时刻打开的 turn/step）。
+- `budgets` 闭合对象，5 个字段全部必填：`input_tokens`、`output_tokens`、`cost_usd`、`tool_calls`、`wall_ms`；前四项 integer >= 0，`cost_usd` 为有限非负数（接受 int 或 float）。
+- `tool_calls`：已派发工具数组，每项闭合 `{call_id, name, state, idempotency_key?}`；`state` 取 pending、running、completed、failed；`idempotency_key` 形如 `^idem:[0-9a-f]{64}$`（§10.3）。
+- `approvals`：审批数组，每项闭合 `{approval_id, tool_call_id, state}`，`state` 为非空字符串。
+- 这是唯一允许出现在 session log 的预算数字（§8.5 D-13）：仍是累计值，不含单次调用 token/latency、prompt 正文或消息副本。
+
+M2 loop 的典型 run 事件序：`run.started` → `turn.started` → `user.message` →（每个 step）`step.started` → `run.checkpoint` → `assistant.message` →（有工具时）`tool.call`×N → `run.checkpoint`（pending）→ 执行 → `tool.result`×N → `run.checkpoint`（completed/failed）→ `step.ended` → … → `turn.ended` → `run.checkpoint`（终态）→ `run.finished`。kill/崩溃允许留下未闭合 step/turn，resume 按 §10.2 修复（`aborted`/`by=disposed`）。
+
+断点 sidecar：M2 在 `DEEPPYRO_CHECKPOINTS_DIR` 或 `~/.dpro/checkpoints/<session_id>.json` 额外写原子 JSON 快照（临时文件 + `os.replace`），内容为 `{version, session_id, run_id, trace_id, written_at, state, checkpoint}`；`state` 对齐 checkpoint data（run_id/trace_id/status/last_seq/usage/budget/turn_id/step_id/last_message_id）。sidecar 只是加速恢复的派生缓存，session log 中的 `run.checkpoint` 事件才是权威；两者不一致时以 session log 为准。resume 只使用与当前 `run_id` 匹配的最后一条 checkpoint（§10.2）。
+
+幂等键（§10.3）：`"idem:" + sha256(f"{session_id}\n{call_id}\n{args_hash}")` 的小写 hex；同一调用重试复用同一 key，不产生新 `tool.call` 事件。
 
 ## 6. Native Message model
 ### 6.1 模型定义
@@ -278,6 +304,7 @@ system/developer 只允许 text；tool 只允许 text/image（tool 结果图片�
 ### 6.5 Provider 边界
 - `llm/` 层在调用前后做形状转换：native Message/Part 与 OpenAI/Anthropic 请求和响应互转；`tool_call.arguments` 保持原始 JSON 字符串，provider adapter 负责流式增量拼接，组装完成后一次性写入 `assistant.message`。
 - LLM 层内部流事件（`TextDelta`/`ToolCallArgsDelta`/`Usage`/`Finish`）只用于内存状态与 trace，不写 session log（§8）；session 层不 import provider 类型，provider 层不 import session 存储类型。
+- M2 实现：`src/deeppyro/agent/native_provider.py` 是当前唯一新增的 `core.wire` importer（ADR §4 规则 1 的已记录 seam），只做 native↔wire 形状转换；M3 provider 移植后删除该 seam。
 
 ## 7. 折叠与派生规则
 ### 7.1 输入输出
@@ -395,7 +422,7 @@ session log 全量、长期保留（可回放/可 fork）；trace store 高写�
 1. 加写锁（§2.4）。
 2. 读取并校验 header + 全部事件，fold 得 `SessionView`（最后一条是未完成 turn 时按 §7.4 修复派生视图）。
 3. 确定新 `run_id`、新 `trace_id`；写 `run.started`（M2）与 `turn.started`，继续追加事件。
-4. 若存在 `run.checkpoint`（M2）：以最后一条与当前 `run_id` 匹配的 checkpoint 恢复 run 状态，再重放其后的 session 事件；不允许用旧 run 的 checkpoint 恢复新 run。
+4. 若存在 `run.checkpoint`（M2）：以最后一条与当前 `run_id` 匹配的 checkpoint 恢复 run 状态，再重放其后的 session 事件；不允许用旧 run 的 checkpoint 恢复新 run。run 事件与断点 sidecar 的细节见 §5.5；sidecar 只是加速缓存，与 session log 冲突时以 session log 为准。
 5. Resume 不修改历史事件、不重写 header、不重置 seq。
 
 ### 10.3 有副作用工具的幂等键（M2 契约，M1 预留）

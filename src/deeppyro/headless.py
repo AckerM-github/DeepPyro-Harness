@@ -27,15 +27,27 @@ import contextlib
 import inspect
 import json
 import logging
+import os
 import sys
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, TextIO, cast
 
 from rich.console import Console
 from rich.text import Text
 
+from deeppyro.agent.budget import BudgetExceeded, BudgetLimits
+from deeppyro.agent.checkpoint import CheckpointStore
+from deeppyro.agent.errors import ProviderStreamError, RunCancelledError
+from deeppyro.agent.events import (
+    NullAgentHooks,
+    ReasoningDeltaEvent,
+    TextDeltaEvent,
+    ToolCallFinishedEvent,
+    ToolCallStartedEvent,
+)
+from deeppyro.agent.loop import AgentLoop
 from deeppyro.api import DEFAULT_PRESET_ID, PluginDependencyError, PresetSpec
 from deeppyro.attachments import AttachmentStore
 from deeppyro.builtin.agents import AgentsPlugin
@@ -51,14 +63,18 @@ from deeppyro.builtin.settings import SettingsPlugin
 from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, ProviderConfig, load_config
 from deeppyro.core.errors import ConfigError, DeeppyroError
+from deeppyro.core.ids import new_session_id
 from deeppyro.hooks import SESSION_CREATED, SESSION_DISPOSED
 from deeppyro.hooks.service import HookService
 from deeppyro.jobs import JobsService
 from deeppyro.llm.retry import RetryPolicy
 from deeppyro.memory import MemoryService
+from deeppyro.observability.trace import TraceStore
+from deeppyro.paths import sessions_dir
 from deeppyro.ptc import PtcRuntime
 from deeppyro.sandbox import ApprovalService, PermissionPresetsService, SandboxPolicyService
 from deeppyro.sandbox.types import APPROVALS, PRESETS
+from deeppyro.session.schema import NativeSession
 from deeppyro.subagent import SubagentService
 from deeppyro.team import TeamService
 from deeppyro.user_questions import UserQuestionsService
@@ -74,6 +90,10 @@ EXIT_INTERRUPTED = 130
 DEFAULT_CONTEXT_WINDOW = 32768
 THINKING_MARKER = "· thinking"
 USAGE_KEYS = ("input", "output", "cached")
+
+#: Opt-in switch for the M2 native loop (also exposed as --native-loop).
+NATIVE_LOOP_ENV = "DEEPPYRO_NATIVE_LOOP"
+NATIVE_LOOP_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
 class UnknownPresetError(ConfigError):
@@ -96,6 +116,18 @@ def read_stdin_prompt() -> str:
         return stream.read()
     except OSError:  # pragma: no cover - defensive, stdin may be closed
         return ""
+
+
+def native_loop_enabled(flag: bool = False) -> bool:
+    """Return whether the M2 native loop replaces the v4 headless path.
+
+    An explicit CLI flag wins; otherwise ``DEEPPYRO_NATIVE_LOOP`` enables the
+    native loop. The default headless path is unchanged.
+    """
+    if flag:
+        return True
+    value = os.environ.get(NATIVE_LOOP_ENV, "")
+    return value.strip().lower() in NATIVE_LOOP_TRUTHY
 
 
 def compact_text(text: str, *, max_lines: int = 3, max_chars: int = 300) -> str:
@@ -765,10 +797,16 @@ def run_once(
     json_output: bool = False,
     cwd: str | None = None,
     max_steps: int | None = None,
+    native_loop: bool = False,
     config: Config | None = None,
     console: Console | None = None,
 ) -> int:
-    """Run one turn and return the documented exit code."""
+    """Run one turn and return the documented exit code.
+
+    Args:
+        native_loop: Opt in to the M2 native loop; DEEPPYRO_NATIVE_LOOP has
+            the same effect and the default v4 path stays untouched.
+    """
     ui = console or Console()
     if max_steps is not None and max_steps < 1:
         ui.print("error: --max-steps must be at least 1", style="bold red")
@@ -789,6 +827,7 @@ def run_once(
                 json_output=json_output,
                 cwd=cwd,
                 max_steps=max_steps,
+                native_loop=native_loop_enabled(native_loop),
                 config=config,
                 console=ui,
             )
@@ -838,6 +877,150 @@ async def _emit_hook(runtime: Any, name: str, payload: dict[str, Any]) -> None:
         logger.exception("hook %r dispatch failed", name)
 
 
+# --------------------------------------------------------------------------
+# native loop (M2) switch
+# --------------------------------------------------------------------------
+
+
+class _NativeSinkHooks(NullAgentHooks):
+    """Forward typed native-loop hooks to the headless sink."""
+
+    def __init__(self, sink: Any) -> None:
+        self._sink = sink
+
+    def text_delta(self, event: TextDeltaEvent) -> None:
+        self._sink.emit({"type": "text", "text": event.text})
+
+    def reasoning_delta(self, event: ReasoningDeltaEvent) -> None:
+        self._sink.emit({"type": "thinking", "text": event.text})
+
+    def tool_call_started(self, event: ToolCallStartedEvent) -> None:
+        self._sink.emit(
+            {
+                "type": "tool_call",
+                "callId": event.call_id,
+                "name": event.name,
+                "arguments": event.arguments,
+            }
+        )
+
+    def tool_call_finished(self, event: ToolCallFinishedEvent) -> None:
+        self._sink.emit(
+            {
+                "type": "tool_result",
+                "callId": event.call_id,
+                "name": event.name,
+                "text": event.result.text,
+                "isError": event.result.is_error,
+            }
+        )
+
+
+def _native_tools(runtime: HeadlessRuntime, preset_id: str) -> tuple[Any, ...]:
+    """Return the preset-scoped tool tuple offered to the native loop."""
+    registry: Iterable[Any] = runtime.registry
+    scoped = getattr(runtime.tools, "registry_for", None)
+    if callable(scoped):
+        revision = runtime.preset_spec.revision if runtime.preset_spec is not None else None
+        registry = cast("Iterable[Any]", scoped(str(runtime.cwd), scope=preset_id, revision=revision))
+    return tuple(registry)
+
+
+def _native_session(runtime: HeadlessRuntime, session_id: str) -> NativeSession:
+    """Create this one-shot run schema 1 session file."""
+    root = sessions_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    return NativeSession.create(root / f"{session_id}.jsonl", cwd=runtime.cwd, session_id=session_id)
+
+
+async def _run_native_async(
+    text: str,
+    *,
+    runtime: HeadlessRuntime,
+    console: Console,
+    sink: Any,
+    session_id: str,
+    json_output: bool,
+    max_steps: int | None,
+    preset_id: str,
+) -> int:
+    """Run one turn through the M2 native loop and return an exit code.
+
+    The native path currently maps only --max-steps onto the run budget and
+    leaves v4 session-service bindings alone; see docs/adr/0001 section 6.2
+    for the remaining migration work.
+    """
+    session: NativeSession | None = None
+    try:
+        session = _native_session(runtime, session_id)
+        await _emit_hook(
+            runtime,
+            SESSION_CREATED,
+            {"sessionId": session_id, "cwd": str(runtime.cwd), "preset": preset_id},
+        )
+        session_label = session_id.removeprefix("session-")[:8]
+        sink.emit({"type": "session", "sessionId": session_id})
+        if not json_output:
+            console.print(
+                f"session {session_label}  {runtime.provider_name}/{runtime.model}  cwd {runtime.cwd}",
+                style="dim",
+            )
+        loop = AgentLoop(
+            session=session,
+            provider=runtime.provider,
+            model=runtime.model,
+            tools=_native_tools(runtime, preset_id),
+            cwd=runtime.cwd,
+            hooks=_NativeSinkHooks(sink),
+            budget=BudgetLimits(max_steps=max_steps),
+            checkpoint_store=CheckpointStore(),
+            trace_store=TraceStore(),
+            provider_name=runtime.provider_name,
+            permission=runtime.permission,
+            services=runtime._plugin_services(),
+        )
+        sink.begin_turn()
+        try:
+            result = await loop.run(text)
+        except RunCancelledError:
+            console.print("interrupted", style="yellow")
+            return EXIT_INTERRUPTED
+        except (BudgetExceeded, ProviderStreamError) as exc:
+            sink.emit({"type": "error", "message": str(exc)})
+            return EXIT_ERROR
+        finally:
+            sink.end_turn()
+        sink.emit({"type": "final", "text": result.final_text})
+        sink.emit(
+            {
+                "type": "usage",
+                "input": result.usage.input_tokens,
+                "output": result.usage.output_tokens,
+                "cached": 0,
+            }
+        )
+        if not json_output:
+            console.print(
+                (
+                    f"session {session_label} · tokens in={result.usage.input_tokens}"
+                    f" out={result.usage.output_tokens} cached=0"
+                ),
+                style="dim",
+            )
+        if getattr(sink, "saw_error", False):
+            return EXIT_ERROR
+        return EXIT_OK
+    except (DeeppyroError, OSError) as exc:
+        console.print(f"error: {exc}", style="bold red")
+        return EXIT_ERROR
+    finally:
+        with contextlib.suppress(Exception):
+            await _cancel_jobs(runtime, session_id)
+        if session is not None:
+            with contextlib.suppress(Exception):
+                session.close()
+
+
 async def _run_async(
     text: str,
     *,
@@ -849,6 +1032,7 @@ async def _run_async(
     json_output: bool,
     cwd: str | None,
     max_steps: int | None,
+    native_loop: bool,
     config: Config | None,
     console: Console,
 ) -> int:
@@ -878,6 +1062,18 @@ async def _run_async(
     session_id: str | None = None
     preset_id = runtime.preset or DEFAULT_PRESET_ID
     try:
+        if native_loop:
+            session_id = new_session_id()
+            return await _run_native_async(
+                text,
+                runtime=runtime,
+                console=console,
+                sink=sink,
+                session_id=session_id,
+                json_output=json_output,
+                max_steps=max_steps,
+                preset_id=preset_id,
+            )
         session = runtime.store.create(str(runtime.cwd), agent_preset=preset_id)
         runtime.pin_permission(session)
         session_id = str(session.session_id or "")
@@ -956,12 +1152,14 @@ __all__ = [
     "EXIT_INTERRUPTED",
     "EXIT_OK",
     "EXIT_USAGE",
+    "NATIVE_LOOP_ENV",
     "HeadlessRuntime",
     "JsonLinesSink",
     "RichSink",
     "UnknownPresetError",
     "boot_runtime",
     "compact_text",
+    "native_loop_enabled",
     "read_stdin_prompt",
     "resolve_workspace",
     "run_once",
