@@ -1,11 +1,226 @@
 {
   "case_id": "handoff",
   "capability": "handoff",
-  "title": "multi-agent handoff record type is absent from both vocabularies",
-  "coverage": "xfail",
-  "xfail_reason": "KI-011: neither session v4 nor native schema 1 records a multi-agent handoff today; v4 has no handoff/* record type, native 5.2 reserves the subagent/team events, and Task/Handoff are unwired (KI-017)",
+  "title": "task handoff and its result are first-class facts on both sides",
+  "coverage": "covered",
   "limitations": [
-    "no handoff/* record type in session v4 (core/wire.py RECORD_TYPES)",
-    "no subagent.started/finished or team.* event implemented in native schema 1"
-  ]
+    "the recorded baseline has no handoff traffic; this pair is hand-authored",
+    "session v4 keeps task/* payloads as ignorable extension records while native schema 1 makes task.state, task.handoff and task.handoff.result core kinds",
+    "session v4 keeps the handoff token snapshot in handoff state.usage; native records usage in the trace side channel only (schema 8.5), so the native payload carries no usage keys"
+  ],
+  "v4": {
+    "header": {
+      "type": "session",
+      "version": 4,
+      "id": "session-00000000-0000-4000-8000-000000000012",
+      "createdAt": 1794000000000,
+      "isSeeded": false,
+      "delegationDepth": 0
+    },
+    "records": [
+      {
+        "type": "task/state",
+        "seq": 0,
+        "time": 1794000000100,
+        "data": {
+          "version": 1,
+          "action": "create",
+          "task": {
+            "id": "task_0123456789abcdef",
+            "objective": "write the quarterly report",
+            "status": "pending",
+            "owner": null,
+            "budget": {
+              "max_steps": 32
+            },
+            "created_at": "2026-11-18T12:00:00.000Z",
+            "parent": null
+          }
+        },
+        "ignorable": true
+      },
+      {
+        "type": "task/state",
+        "seq": 1,
+        "time": 1794000000200,
+        "data": {
+          "version": 1,
+          "action": "update",
+          "task": {
+            "id": "task_0123456789abcdef",
+            "objective": "write the quarterly report",
+            "status": "in_progress",
+            "owner": null,
+            "budget": {
+              "max_steps": 32
+            },
+            "created_at": "2026-11-18T12:00:00.000Z",
+            "parent": null
+          }
+        },
+        "ignorable": true
+      },
+      {
+        "type": "task/handoff",
+        "seq": 2,
+        "time": 1794000000300,
+        "data": {
+          "version": 1,
+          "runId": "handoff-0123456789ab",
+          "handoff": {
+            "from": "lead",
+            "to": "subagent:handoff-0123456789ab",
+            "summary": "carry the context",
+            "state": {
+              "turn": 1,
+              "callId": "call-00000000000000b1",
+              "usage": {
+                "input": 10,
+                "output": 5,
+                "cached": 2
+              },
+              "budget": {
+                "max_steps": 32
+              },
+              "prompt": "write the report"
+            },
+            "open_items": [
+              "append appendix"
+            ],
+            "created_at": "2026-11-18T12:00:02.000Z",
+            "task_id": "task_0123456789abcdef"
+          }
+        },
+        "ignorable": true
+      },
+      {
+        "type": "task/handoff/result",
+        "seq": 3,
+        "time": 1794000000400,
+        "data": {
+          "version": 1,
+          "runId": "handoff-0123456789ab",
+          "taskId": "task_0123456789abcdef",
+          "ok": true,
+          "result": "handoff answer",
+          "error": "",
+          "usage": {
+            "inputTokens": 40,
+            "outputTokens": 11,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "totalTokens": 51
+          }
+        },
+        "ignorable": true
+      },
+      {
+        "type": "task/state",
+        "seq": 4,
+        "time": 1794000000500,
+        "data": {
+          "version": 1,
+          "action": "update",
+          "task": {
+            "id": "task_0123456789abcdef",
+            "objective": "write the quarterly report",
+            "status": "completed",
+            "owner": null,
+            "budget": {
+              "max_steps": 32
+            },
+            "created_at": "2026-11-18T12:00:00.000Z",
+            "parent": null
+          }
+        },
+        "ignorable": true
+      }
+    ]
+  },
+  "native": {
+    "session_id": "session-00000000-0000-4000-8000-000000000012",
+    "created_at": 1794000000000,
+    "events": [
+      {
+        "type": "task.state",
+        "data": {
+          "action": "create",
+          "task": {
+            "id": "task_0123456789abcdef",
+            "objective": "write the quarterly report",
+            "status": "pending",
+            "owner": null,
+            "budget": {
+              "max_steps": 32
+            },
+            "created_at": "2026-11-18T12:00:00.000Z",
+            "parent": null
+          }
+        }
+      },
+      {
+        "type": "task.state",
+        "data": {
+          "action": "update",
+          "task": {
+            "id": "task_0123456789abcdef",
+            "objective": "write the quarterly report",
+            "status": "in_progress",
+            "owner": null,
+            "budget": {
+              "max_steps": 32
+            },
+            "created_at": "2026-11-18T12:00:00.000Z",
+            "parent": null
+          }
+        }
+      },
+      {
+        "type": "task.handoff",
+        "data": {
+          "run_id": "handoff-0123456789ab",
+          "task_id": "task_0123456789abcdef",
+          "from": "lead",
+          "to": "subagent:handoff-0123456789ab",
+          "summary": "carry the context",
+          "prompt": "write the report",
+          "turn": 1,
+          "call_id": "call-00000000000000b1",
+          "budget": {
+            "max_steps": 32
+          },
+          "open_items": [
+            "append appendix"
+          ],
+          "created_at": "2026-11-18T12:00:02.000Z"
+        }
+      },
+      {
+        "type": "task.handoff.result",
+        "data": {
+          "run_id": "handoff-0123456789ab",
+          "task_id": "task_0123456789abcdef",
+          "ok": true,
+          "result": "handoff answer"
+        }
+      },
+      {
+        "type": "task.state",
+        "data": {
+          "action": "update",
+          "task": {
+            "id": "task_0123456789abcdef",
+            "objective": "write the quarterly report",
+            "status": "completed",
+            "owner": null,
+            "budget": {
+              "max_steps": 32
+            },
+            "created_at": "2026-11-18T12:00:00.000Z",
+            "parent": null
+          }
+        }
+      }
+    ]
+  }
 }

@@ -115,7 +115,7 @@ class OpenAICompatProvider:
     # -- plumbing -----------------------------------------------------------
     @property
     def endpoint(self) -> str:
-        """chat/completions URL; a baseURL that already names it is used verbatim."""
+        """chat/completions URL; a base_url that already names it is used verbatim."""
         if self.base_url.endswith(_CHAT_COMPLETIONS_SUFFIX):
             return self.base_url
         return self.base_url + _CHAT_COMPLETIONS_SUFFIX

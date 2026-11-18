@@ -1,4 +1,20 @@
-"""Configuration: providers, models, permissions, session storage."""
+"""Configuration: providers, models, permissions, session storage.
+
+The schema is strict (KI-013): keys are snake_case only, and every key inside a
+schema table must be declared there.  Configuration files from 0.1 with
+camelCase spellings fail with :class:`~deeppyro.core.errors.ConfigError` naming
+the offending key and its snake_case replacement; see
+docs/guides/config-migration.md for the mapping table.
+
+Two boundaries stay open because their shape belongs to somebody else:
+
+* the top level of :class:`Config` keeps undeclared tables as plugin
+  configuration ([sandbox], [retry], [[mcp.servers]], ...); the plugin that owns
+  the table reads and validates it itself;
+* :class:`ProviderConfig` and :class:`ModelConfig` accept only the documented
+  adapter options in _allowed_extra_keys; the provider/catalog layer reads them
+  from model_extra (docs/spec/llm.md).
+"""
 
 from __future__ import annotations
 
@@ -7,12 +23,11 @@ import os
 import re
 import tempfile
 import tomllib
-import warnings
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args, get_origin
+from typing import TYPE_CHECKING, Any, ClassVar, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from deeppyro import paths
 from deeppyro.core.errors import ConfigError
@@ -21,10 +36,95 @@ if TYPE_CHECKING:
     from deeppyro.api.capabilities import TokenCost
 
 
-class ModelCapabilities(BaseModel):
-    """Capability flags advertised by one model."""
+#: camelCase spellings removed in 0.2.0, mapped to the snake_case key that replaced
+#: them. A config file still using one of these fails loudly with the replacement
+#: instead of silently configuring nothing.
+_REMOVED_ALIASES: dict[str, str] = {
+    "contextWindow": "context_window",
+    "baseURL": "base_url",
+    "apiKeyEnv": "api_key_env",
+    "apiKey": "api_key",
+    "maxTokens": "max_tokens",
+    "maxSteps": "max_steps",
+    "sessionDir": "session_dir",
+}
 
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
+#: camelCase spellings of the adapter options that 0.1 read from model_extra.
+#: The snake_case option names are the only documented spelling now.
+_ADAPTER_ALIASES: dict[str, str] = {
+    "reasoningEffort": "reasoning_effort",
+    "inputModalities": "input_modalities",
+    "maxOutputTokens": "max_tokens",
+    "maxCompletionTokens": "max_tokens",
+}
+
+#: Top-level keys retired in 0.2.0: validation is always strict, so there is
+#: nothing left for these switches to control.
+_REMOVED_SWITCHES: frozenset[str] = frozenset({"strict_config", "strictConfig"})
+
+
+def _dotted(path: str, key: str) -> str:
+    return f"{path}.{key}" if path else key
+
+
+class _SchemaModel(BaseModel):
+    """Base for config tables: snake_case keys and no undeclared fields.
+
+    The only open boundaries are documented by the class variables below; every
+    other undeclared key is a typo the schema refuses to swallow.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Adapter options the provider layer reads from model_extra.
+    _allowed_extra_keys: ClassVar[frozenset[str]] = frozenset()
+    #: Whether undeclared keys are plugin configuration (top-level Config only).
+    _allow_unknown_keys: ClassVar[bool] = False
+    #: Whether the removed top-level switch keys (strict_config/strictConfig) are
+    #: reported for this model; only the top-level Config table declares them.
+    _report_removed_switches: ClassVar[bool] = False
+
+    @classmethod
+    def _pre_validate(cls, data: Any) -> Any:
+        """Hook for the top-level table: reject every issue with its dotted path."""
+        if isinstance(data, Mapping):
+            for key in data:
+                if isinstance(key, str):
+                    issue = _key_issue(cls, key, "")
+                    if issue is not None:
+                        raise ConfigError(issue)
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_undeclared_keys(cls, data: Any) -> Any:
+        return cls._pre_validate(data)
+
+
+def _declared_keys(model: type[_SchemaModel]) -> frozenset[str]:
+    return frozenset(model.model_fields) | model._allowed_extra_keys
+
+
+def _key_issue(model: type[_SchemaModel], key: str, path: str) -> str | None:
+    """Return the error message for one key of a schema table, or None if valid."""
+    field_path = _dotted(path, key)
+    replacement = _REMOVED_ALIASES.get(key) or _ADAPTER_ALIASES.get(key)
+    if replacement is not None:
+        return f"configuration key {field_path!r} is not supported; use {_dotted(path, replacement)!r}"
+    if key in _REMOVED_SWITCHES and model._report_removed_switches:
+        return (
+            f"configuration key {field_path!r} is no longer supported: "
+            "configuration validation is always strict as of 0.2.0; remove it"
+        )
+    if key in model.model_fields or key in model._allowed_extra_keys:
+        return None
+    if model._allow_unknown_keys:
+        return None
+    return f"unknown configuration key {field_path!r} for {model.__name__}"
+
+
+class ModelCapabilities(_SchemaModel):
+    """Capability flags advertised by one model."""
 
     tools: bool = True
     vision: bool = False
@@ -33,10 +133,8 @@ class ModelCapabilities(BaseModel):
     max_output_tokens: int | None = None
 
 
-class ModelCost(BaseModel):
+class ModelCost(_SchemaModel):
     """Price list for one model, in USD per million tokens."""
-
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     input_per_mtok: float = 0.0
     output_per_mtok: float = 0.0
@@ -44,32 +142,45 @@ class ModelCost(BaseModel):
     currency: str = "USD"
 
 
-class ModelConfig(BaseModel):
+class ModelConfig(_SchemaModel):
     """One model declared inside a provider table.
 
-    Canonical spelling is snake_case.  camelCase keys written by config files
-    from before 0.2 are still accepted as validation aliases, so an existing
-    ~/.dpro/config.toml keeps loading unchanged.
+    Keys are snake_case only; 0.1's camelCase spellings (contextWindow,
+    maxTokens, inputModalities, ...) are rejected as of 0.2.0 with the
+    snake_case replacement.  The provider/catalog layer reads three
+    documented adapter options from model_extra (docs/spec/llm.md): max_tokens,
+    reasoning_effort and input_modalities.
     """
 
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
+    model_config = ConfigDict(extra="allow")
+
+    _allowed_extra_keys: ClassVar[frozenset[str]] = frozenset(
+        {"max_tokens", "reasoning_effort", "input_modalities"}
+    )
 
     id: str
     name: str | None = None
-    context_window: int | None = Field(default=None, alias="contextWindow")
+    context_window: int | None = None
     capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
     cost: ModelCost = Field(default_factory=ModelCost)
 
 
-class ProviderConfig(BaseModel):
-    """One OpenAI-compatible (or Anthropic) provider endpoint."""
+class ProviderConfig(_SchemaModel):
+    """One OpenAI-compatible (or Anthropic) provider endpoint.
 
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
+    Keys are snake_case only; baseURL/apiKeyEnv/apiKey are rejected as of 0.2.0.
+    The documented adapter options max_tokens and reasoning_effort are accepted
+    as model_extra so a provider can set defaults for all of its models.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    _allowed_extra_keys: ClassVar[frozenset[str]] = frozenset({"max_tokens", "reasoning_effort"})
 
     api: str = "openai-completions"
-    base_url: str = Field(default="https://api.deepseek.com/v1", alias="baseURL")
-    api_key_env: str | None = Field(default=None, alias="apiKeyEnv")
-    api_key: str | None = Field(default=None, alias="apiKey")
+    base_url: str = "https://api.deepseek.com/v1"
+    api_key_env: str | None = None
+    api_key: str | None = None
     models: list[ModelConfig] = Field(default_factory=list)
 
     def resolve_api_key(self) -> str | None:
@@ -81,8 +192,8 @@ class ProviderConfig(BaseModel):
         return None
 
 
-class AgentConfig(BaseModel):
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
+class AgentConfig(_SchemaModel):
+    """The [agent] table: provider/model selection and per-call limits."""
 
     provider: str = "local"
     model: str = ""
@@ -91,17 +202,36 @@ class AgentConfig(BaseModel):
     # truncates answers that think first (the dshinfer default is just 512).
     # Tool-heavy steps can emit several long tool calls in one assistant message;
     # 8192 leaves room for that on DeepSeek's 8k-output models.
-    max_tokens: int | None = Field(default=8192, alias="maxTokens")
+    max_tokens: int | None = 8192
     # Unbounded like DSH; set [agent].max_steps to cap a runaway loop.
-    max_steps: int | None = Field(default=None, alias="maxSteps")
+    max_steps: int | None = None
 
 
-class Config(BaseModel):
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
+class Config(_SchemaModel):
+    """The top-level configuration document.
+
+    Undeclared top-level tables are plugin configuration ([sandbox], [retry],
+    [[mcp.servers]], [permission], ...) and are kept as model_extra for the
+    owning plugin to read.  Everything inside the schema tables is strict.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    _allow_unknown_keys: ClassVar[bool] = True
+    _report_removed_switches: ClassVar[bool] = True
+
+    @classmethod
+    def _pre_validate(cls, data: Any) -> Any:
+        """Collect every issue in the document so errors carry dotted paths."""
+        if isinstance(data, Mapping):
+            issues = _collect_issues(data)
+            if issues:
+                raise ConfigError("invalid configuration: " + "; ".join(issues))
+        return data
 
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     agent: AgentConfig = Field(default_factory=AgentConfig)
-    session_dir: Path | None = Field(default=None, alias="sessionDir")
+    session_dir: Path | None = None
 
     def resolve(self) -> tuple[ProviderConfig, str]:
         provider = self.providers.get(self.agent.provider)
@@ -113,7 +243,7 @@ class Config(BaseModel):
         return provider, model
 
 
-class ModelProfile(BaseModel):
+class ModelProfile(_SchemaModel):
     """Capability, context and cost profile of one configured model.
 
     Profiles are the snake_case projection of a ModelConfig that governance and
@@ -121,12 +251,10 @@ class ModelProfile(BaseModel):
     (deeppyro.builtin.usage) prices records through token_cost().
     """
 
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
-
     id: str
     provider: str = ""
     name: str | None = None
-    context_window: int | None = Field(default=None, alias="contextWindow")
+    context_window: int | None = None
     capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
     cost: ModelCost = Field(default_factory=ModelCost)
 
@@ -137,7 +265,7 @@ class ModelProfile(BaseModel):
             id=model.id,
             provider=provider,
             name=model.name,
-            contextWindow=model.context_window,  # pydantic alias; populate_by_name also accepts context_window
+            context_window=model.context_window,
             capabilities=model.capabilities,
             cost=model.cost,
         )
@@ -164,46 +292,39 @@ class ModelProfile(BaseModel):
 
 
 class ConfigWarning(UserWarning):
-    """A configuration key that is accepted today but is probably unintended."""
+    """A configuration problem reported as a warning instead of raised.
+
+    Config loading is always strict as of 0.2.0, so this category is only used by
+    preset model validation (deeppyro.builtin.presets).
+    """
 
 
 _STRICT_CONFIG_ENV = "DEEPPYRO_STRICT_CONFIG"
 _STRICT_TRUTHY = frozenset({"1", "true", "yes", "on"})
-_STRICT_KEYS = ("strict_config", "strictConfig")
 
 
-def _strict_requested(document: Mapping[str, Any], strict: bool | None) -> bool:
-    """Resolve the strict switch: explicit argument, environment, then the file.
+def _strict_requested(strict: bool | None = None) -> bool:
+    """Resolve the preset-model strict switch: explicit argument, then the environment.
 
-    Strict mode rejects deprecated camelCase aliases and unknown keys inside the
-    schema tables instead of warning about them.
+    Preset model validation warns when this is false and raises ConfigError when
+    it is true.  Config loading itself is always strict as of 0.2.0 and never
+    consults this switch (see :func:`load_config`).  The removed
+    strict_config/strictConfig keys are rejected before this point, so only the
+    environment remains as a file-independent switch.
     """
     if strict is not None:
         return bool(strict)
     env = os.environ.get(_STRICT_CONFIG_ENV)
-    if env is not None and env.strip().lower() in _STRICT_TRUTHY:
-        return True
-    for key in _STRICT_KEYS:
-        declared = document.get(key)
-        if declared is None:
-            continue
-        if isinstance(declared, str):
-            return declared.strip().lower() in _STRICT_TRUTHY
-        return bool(declared)
-    return False
+    return env is not None and env.strip().lower() in _STRICT_TRUTHY
 
 
-def _dotted(path: str, key: str) -> str:
-    return f"{path}.{key}" if path else key
-
-
-def _model_type(annotation: Any) -> type[BaseModel] | None:
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+def _model_type(annotation: Any) -> type[_SchemaModel] | None:
+    if isinstance(annotation, type) and issubclass(annotation, _SchemaModel):
         return annotation
     return None
 
 
-def _lint_value(annotation: Any, value: Any, path: str, issues: list[tuple[str, str]]) -> None:
+def _lint_value(annotation: Any, value: Any, path: str, issues: list[str]) -> None:
     """Walk one value according to the declared annotation."""
     model = _model_type(annotation)
     if model is not None:
@@ -221,71 +342,39 @@ def _lint_value(annotation: Any, value: Any, path: str, issues: list[tuple[str, 
             _lint_value(args[1], item, _dotted(path, str(key)), issues)
 
 
-def _lint_model(
-    model: type[BaseModel],
-    data: Mapping[str, Any],
-    path: str,
-    issues: list[tuple[str, str]],
-    *,
-    allow_unknown: bool = False,
-) -> None:
-    aliases = {info.alias: name for name, info in model.model_fields.items() if info.alias}
+def _lint_model(model: type[_SchemaModel], data: Mapping[str, Any], path: str, issues: list[str]) -> None:
     for key, value in data.items():
+        if not isinstance(key, str):
+            continue
+        issue = _key_issue(model, key, path)
+        if issue is not None:
+            issues.append(issue)
+            continue
         info = model.model_fields.get(key)
-        field_path = _dotted(path, key)
-        if info is None:
-            canonical = aliases.get(key)
-            if canonical is None:
-                if allow_unknown:
-                    continue
-                issues.append(
-                    (
-                        "unknown",
-                        f"unknown configuration key {field_path!r} for {model.__name__}: "
-                        "it is accepted today but ignored by the schema",
-                    )
-                )
-                continue
-            issues.append(
-                (
-                    "alias",
-                    f"configuration key {field_path!r} is a deprecated camelCase alias; "
-                    f"rename it to {_dotted(path, canonical)!r}",
-                )
-            )
-            info = model.model_fields[canonical]
-        _lint_value(info.annotation, value, field_path, issues)
+        if info is not None:
+            _lint_value(info.annotation, value, _dotted(path, key), issues)
 
 
-def lint_config(document: Mapping[str, Any], *, strict: bool | None = None) -> list[str]:
-    """Check a parsed config document for deprecated aliases and unknown keys.
+def _collect_issues(document: Mapping[str, Any]) -> list[str]:
+    """Return every schema problem in a parsed config document, with dotted paths."""
+    issues: list[str] = []
+    _lint_model(Config, document, "", issues)
+    return issues
 
-    camelCase aliases are reported with a :class:`DeprecationWarning` that names
-    the full dotted path and the suggested snake_case spelling; they keep working
-    until 0.3.  Unknown keys inside the schema tables (`[agent]`,
-    `[providers.*]`, model capability/cost tables) are reported with
-    :class:`ConfigWarning`, because pydantic would otherwise swallow the typo.
 
-    Strict mode raises :class:`ConfigError` listing every issue instead of
-    warning.  Strictness resolves from the explicit *strict* argument, then the
-    `DEEPPYRO_STRICT_CONFIG` environment variable, then a top-level
-    `strict_config` key in the document.
+def lint_config(document: Mapping[str, Any]) -> list[str]:
+    """Report the schema problems a parsed config document would raise.
 
-    Top-level tables the schema does not know (plugin configuration such as
-    `[sandbox]`, `[retry]` or `[[mcp.servers]]`) are legitimate plugin
-    configuration and are never reported.  Returns the issue messages.
+    Removed camelCase spellings, unknown keys inside the schema tables and keys
+    outside each table's allowed adapter options are listed with their dotted
+    path and (for camelCase) the snake_case replacement.  Top-level tables the
+    schema does not know (plugin configuration such as [sandbox], [retry] or
+    [[mcp.servers]]) are legitimate plugin configuration and are never reported.
+
+    This helper only reports; callers that want the error use :func:`load_config`
+    or Config.model_validate, which always validate strictly.
     """
-    issues: list[tuple[str, str]] = []
-    _lint_model(Config, document, "", issues, allow_unknown=True)
-    messages = [message for _kind, message in issues]
-    if _strict_requested(document, strict):
-        if messages:
-            raise ConfigError("invalid configuration: " + "; ".join(messages))
-        return []
-    for kind, message in issues:
-        category = DeprecationWarning if kind == "alias" else ConfigWarning
-        warnings.warn(message, category, stacklevel=2)
-    return messages
+    return _collect_issues(document)
 
 
 # User-scoped locations live under one home directory (DSH-style, ~/.dpro).
@@ -296,8 +385,12 @@ DEFAULT_SESSION_DIR = paths.default_sessions_dir()
 
 DEFAULT_TOML = """
 # deeppyro configuration
-# Canonical keys are snake_case; camelCase spellings from older config files
-# (baseURL, maxTokens, contextWindow, ...) are still accepted when reading.
+# Keys in schema tables ([agent], [providers.*], model entries) are snake_case.
+# 0.1 camelCase spellings (baseURL, maxTokens, contextWindow, ...) are rejected
+# as of 0.2.0: loading fails and names the snake_case replacement. Unknown keys in
+# those tables fail too. Plugin sections below keep their own option names.
+# Migration guide: docs/guides/config-migration.md
+
 [agent]
 provider = "local"
 model = "deepseek-v4-pro-qwen3.5-9b"
@@ -398,16 +491,13 @@ def session_dir(cfg: Config | None = None) -> Path:
     return paths.sessions_dir()
 
 
-def load_config(
-    path: Path | None = None,
-    create: bool = True,
-    *,
-    strict: bool | None = None,
-) -> Config:
-    """Load the configuration file, linting deprecated aliases and unknown keys.
+def load_config(path: Path | None = None, create: bool = True) -> Config:
+    """Load the configuration file, which is always validated strictly.
 
-    *strict* overrides the `DEEPPYRO_STRICT_CONFIG` environment variable and the
-    file's top-level `strict_config` key; see :func:`lint_config`.
+    Removed camelCase aliases, unknown keys inside the schema tables and keys
+    outside each table's allowed adapter options raise ConfigError naming the
+    dotted path and (for camelCase) the snake_case replacement.  Top-level plugin
+    tables are kept as plugin configuration, not validated here.
     """
     p = path or config_path()
     if not p.exists():
@@ -419,9 +509,9 @@ def load_config(
         data: dict[str, Any] = tomllib.loads(p.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"invalid config file {p}: {exc}") from exc
-    lint_config(data, strict=strict)
-    for key in _STRICT_KEYS:
-        data.pop(key, None)
+    issues = _collect_issues(data)
+    if issues:
+        raise ConfigError("invalid configuration: " + "; ".join(issues))
     return Config.model_validate(data)
 
 

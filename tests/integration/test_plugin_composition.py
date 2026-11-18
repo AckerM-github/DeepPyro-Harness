@@ -22,7 +22,9 @@ BUNDLE_TOML = '[bundle]\nid = "greet-bundle"\nname = "Greet bundle"\nversion = "
 
 def _config() -> Config:
     return Config(
-        providers={"local": ProviderConfig(baseURL="http://127.0.0.1:8000/v1", models=[ModelConfig(id="m")])},
+        providers={
+            "local": ProviderConfig(base_url="http://127.0.0.1:8000/v1", models=[ModelConfig(id="m")])
+        },
         agent={"provider": "local", "model": "m"},
     )
 

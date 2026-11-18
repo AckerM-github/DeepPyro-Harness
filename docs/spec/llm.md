@@ -282,7 +282,7 @@ client-side bug and fail fast with `LlmRequestError(code="BAD_REQUEST")`. Observ
   thinking block. Multi-turn thinking/tool loops may therefore be rejected by the server
   (risk R1 in `docs/archive/research/p1-providers.md`); the core `Finish`/`LlmRequest` contract has no
   channel for signatures, so enabling this needs a core extension (deferred).
-* Anthropic providers must configure `baseURL` explicitly. `ProviderConfig.baseURL` has a
+* Anthropic providers must configure `base_url` explicitly. `ProviderConfig.base_url` has a
   DeepSeek-flavoured default, so `create_provider` raises `ConfigError` (with
   `https://api.anthropic.com` as the hint) instead of silently calling the wrong host.
 * Anthropic system/developer messages are always folded into the top-level `system` string;
@@ -323,7 +323,7 @@ client-side bug and fail fast with `LlmRequestError(code="BAD_REQUEST")`. Observ
   `list_models` listing parsing/headers, 405->[], keyless requests, 401 surfacing, HTML
   payload rejection.
 * `test_registry.py`: provider construction, OpenAI/Anthropic api dispatch, Anthropic
-  baseURL requirement and `maxTokens`/`reasoningEffort` extras, context-window selection,
+  `base_url` requirement and `max_tokens`/`reasoning_effort` adapter options, context-window selection,
   env api keys, caching, unknown provider, close-all ordering/errors; plus catalog discovery:
   configured snapshot, listing merge/precedence, TTL cache, refresh bypass, failure fallback
   with last-known-good, 404 empty means configured, providers without listings, `model_info`,
@@ -377,7 +377,8 @@ use the list to offer candidates, and a selected model is written to the session
   kept, default `("text",)`). Non-listing payloads raise
   `LlmRequestError(code="PROTOCOL")` with the `source` in the message.
 * `catalog_from_config(provider, pc)` builds the configured catalog from `ProviderConfig`,
-  including `maxTokens`/`inputModalities` from `ModelConfig.model_extra`.
+  including snake_case adapter options `max_tokens`/`input_modalities` from
+  `ModelConfig.model_extra` (config validation rejects their camelCase spellings since 0.2.0).
 * `merge_catalogs(base, overlay)`: the configured order is the spine; a listing entry with the
   same id overrides display fields (`name`, `description`, `badge`) and fills missing
   `context_window`/`max_tokens`/modalities from config; listing-only ids are appended.
@@ -424,16 +425,17 @@ use the list to offer candidates, and a selected model is written to the session
 `create_provider` builds this provider for `ProviderConfig.api` in
 `{"anthropic-messages", "anthropic_messages", "anthropic"}`. It implements B1/B2 of
 `docs/archive/research/p1-providers.md`; B3/B4 (voice/TUI polish, non-streaming helpers) remain out of
-scope. Lead decisions applied here: thinking signatures are not replayed, `baseURL` must be
+scope. Lead decisions applied here: thinking signatures are not replayed, `base_url` must be
 explicit, and model discovery stays metadata-only (section 13).
 
 ### 14.1 Construction, endpoint and headers
 
-* `baseURL` is mandatory and must be set explicitly; a missing value raises `ConfigError`
+* `base_url` is mandatory and must be set explicitly; a missing value raises `ConfigError`
   mentioning `https://api.anthropic.com` (no auto-detection).
-* `model_max_tokens` and `reasoning_effort` come from config extras, model-level first and
-  provider-level as fallback: `maxTokens`/`max_tokens` and
-  `reasoningEffort`/`reasoning_effort`. The effort must be one of `off`, `low`, `medium`,
+* `model_max_tokens` and `reasoning_effort` come from config adapter options, model-level first and
+  provider-level as fallback: `max_tokens` and
+  `reasoning_effort` (snake_case only since 0.2.0; camelCase spellings are rejected at config
+  validation). The effort must be one of `off`, `low`, `medium`,
   `high`, `max`; an invalid value fails in the constructor (`ConfigError`).
 * `messages_url`: a base already ending in `/messages` is used verbatim; a base ending in
   `/v1` gets `/messages`; otherwise `/v1/messages` is appended.

@@ -1,11 +1,14 @@
 # DeepPyro TUI 规格（Textual 8.2.8）
 
-> **状态**：现行（0.2.0 保留） · **层级**：TUI 功能规格 · **最后核对**：2026-11-18
+> **状态**：现行（过渡：v4 待移除） · **层级**：TUI 功能规格 · **最后核对**：2026-11-18
 >
 > 交互 TUI 已完整实现（FIGlet 启动页、每 turn 一个统一 AgentProcess、全屏思考查看器、对话流、活动栏、
 > 多行输入与 slash 补全、选择器、审批、插件管理/槽位、后台任务、团队面板与任务板、状态栏）；全量测试
-> 全量 pytest 通过、ruff 全绿。**TUI 交互路径仍走 v4**（0.2.0 未迁移）；headless 一次性模式已默认 native，
-> 但 TUI 既不写也不读 native 会话（`/sessions`、`/resume` 只见 v4 会话）。
+> 全量 pytest 通过、ruff 全绿。**TUI 交互路径仍走 v4**（0.2.0 未迁移）；headless 一次性模式已默认 native。
+> TUI 仍只写 v4，但 `/sessions` 与 `/resume` 已能**只读查看** native（schema 1）会话：列表把 v4 与 native
+> 按最近时间合并，native 行标注 `native · read-only`；`/resume` 对 native id 只渲染转录（标题、工作目录、
+> turn/事件数、user/assistant/tool 消息与工具名）并提示迁移，不接管、不替换当前 live 会话，也不改动 turn 引擎；
+> 要继续 native 会话先执行 `dpyro migrate --to v4 --session <ID>`。
 
 ## 1. 形态与范围
 
@@ -174,7 +177,7 @@
 TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasoning_content` 字段）。本地 dshinfer 端点是否
 返回思考由 `DSHINFER_ENABLE_THINKING` 控制（默认 `false`，即只出答案）；要看到逐句思考，用
 `$env:DSHINFER_ENABLE_THINKING="true"; uv run uvicorn dshinfer.api:app --port 8000` 启动推理服务即可（本机真实冒烟即用此配置）。
-`[agent].max_tokens` 默认 8192（旧写法 @maxTokens@ 仍可读，canonical 是 snake_case）：思考、答案与工具调用参数共用这个输出预算。输出被截断（finish.kind=length）时，本轮尚未执行的 tool call 会被丢弃（避免日志里留下没有 tool/result 的孤儿调用），TUI 显示 error “response truncated at maxTokens=...; N tool call(s) were not executed”，turn 以 max-tokens 结束；此时需要提高 maxTokens 或把工作拆成更小步骤。
+`[agent].max_tokens` 默认 8192（snake_case；camelCase 旧写法自 0.2.0 起被拒绝）：思考、答案与工具调用参数共用这个输出预算。输出被截断（finish.kind=length）时，本轮尚未执行的 tool call 会被丢弃（避免日志里留下没有 tool/result 的孤儿调用），TUI 显示 error “response truncated at max_tokens=...; N tool call(s) were not executed”，turn 以 max-tokens 结束；此时需要提高 max_tokens 或把工作拆成更小步骤。
 
 ## 10. 已知偏离与待办
 

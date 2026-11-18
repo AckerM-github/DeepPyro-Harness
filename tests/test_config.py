@@ -62,7 +62,7 @@ def test_save_agent_selection_preserves_comments(tmp_path: Path) -> None:
     p = tmp_path / "config.toml"
     p.write_text(
         '# my config\n[agent]\nprovider = "local"  # keep me\nmodel = "old"\n\n'
-        '[providers.local]\nbaseURL = "http://127.0.0.1:8000/v1"\n',
+        '[providers.local]\nbase_url = "http://127.0.0.1:8000/v1"\n',
         encoding="utf-8",
     )
     written = config.save_agent_selection("deepseek", "deepseek-chat", p)
@@ -77,7 +77,7 @@ def test_save_agent_selection_preserves_comments(tmp_path: Path) -> None:
 
 def test_save_agent_selection_inserts_missing_keys(tmp_path: Path) -> None:
     p = tmp_path / "config.toml"
-    p.write_text('[agent]\nmaxTokens = 1024\n\n[bundle]\nid = "core"\n', encoding="utf-8")
+    p.write_text('[agent]\nmax_tokens = 1024\n\n[bundle]\nid = "core"\n', encoding="utf-8")
     config.save_agent_selection("local", "local-model", p)
     cfg = config.load_config(p, create=False)
     assert (cfg.agent.provider, cfg.agent.model) == ("local", "local-model")
@@ -88,7 +88,7 @@ def test_save_agent_selection_inserts_missing_keys(tmp_path: Path) -> None:
 
 def test_save_agent_selection_appends_agent_section(tmp_path: Path) -> None:
     p = tmp_path / "config.toml"
-    p.write_text('[providers.local]\nbaseURL = "http://127.0.0.1:8000/v1"\n', encoding="utf-8")
+    p.write_text('[providers.local]\nbase_url = "http://127.0.0.1:8000/v1"\n', encoding="utf-8")
     config.save_agent_selection("deepseek", "deepseek-chat", p)
     cfg = config.load_config(p, create=False)
     assert (cfg.agent.provider, cfg.agent.model) == ("deepseek", "deepseek-chat")

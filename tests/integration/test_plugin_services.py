@@ -30,7 +30,9 @@ SLOTS_BUNDLE = '[bundle]\nid = "demo-slots-bundle"\nname = "Demo slots bundle"\n
 
 def _config() -> Config:
     return Config(
-        providers={"local": ProviderConfig(baseURL="http://127.0.0.1:8000/v1", models=[ModelConfig(id="m")])},
+        providers={
+            "local": ProviderConfig(base_url="http://127.0.0.1:8000/v1", models=[ModelConfig(id="m")])
+        },
         agent={"provider": "local", "model": "m"},
     )
 

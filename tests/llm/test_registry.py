@@ -24,15 +24,15 @@ from deeppyro.llm.errors import CODE_SERVER
 def provider_config(**kwargs: object) -> ProviderConfig:
     data = {
         "api": "openai-completions",
-        "baseURL": "http://127.0.0.1:8000/v1",
-        "models": [{"id": "deepseek-v4-pro-qwen3.5-9b", "contextWindow": 32768}],
+        "base_url": "http://127.0.0.1:8000/v1",
+        "models": [{"id": "deepseek-v4-pro-qwen3.5-9b", "context_window": 32768}],
     }
     data.update(kwargs)
     return ProviderConfig.model_validate(data)
 
 
 def test_create_provider_builds_openai_compat_provider() -> None:
-    provider = create_provider("local", provider_config(apiKey="secret"))
+    provider = create_provider("local", provider_config(api_key="secret"))
     assert isinstance(provider, OpenAICompatProvider)
     assert isinstance(provider, LlmProvider)
     assert provider.name == "local"
@@ -50,14 +50,14 @@ def test_create_provider_accepts_openai_alias() -> None:
 def anthropic_config(**kwargs: object) -> ProviderConfig:
     data: dict[str, object] = {
         "api": "anthropic-messages",
-        "baseURL": "https://api.anthropic.com",
-        "apiKey": "anthropic-key",
+        "base_url": "https://api.anthropic.com",
+        "api_key": "anthropic-key",
         "models": [
             {
                 "id": "claude-sonnet-4-5",
-                "contextWindow": 200000,
-                "maxTokens": 64000,
-                "reasoningEffort": "medium",
+                "context_window": 200000,
+                "max_tokens": 64000,
+                "reasoning_effort": "medium",
             }
         ],
     }
@@ -93,8 +93,8 @@ def test_create_provider_anthropic_defaults_to_thinking_off() -> None:
 def test_create_provider_anthropic_reads_provider_level_extras() -> None:
     config = anthropic_config(
         models=[{"id": "claude-haiku"}],
-        maxTokens=4096,
-        reasoningEffort="high",
+        max_tokens=4096,
+        reasoning_effort="high",
     )
     provider = create_provider("claude", config)
     assert isinstance(provider, AnthropicProvider)
@@ -103,9 +103,9 @@ def test_create_provider_anthropic_reads_provider_level_extras() -> None:
 
 
 def test_create_provider_anthropic_requires_explicit_base_url() -> None:
-    config = ProviderConfig(api="anthropic-messages", apiKey="key")
-    assert "baseURL" not in config.model_fields_set
-    with pytest.raises(ConfigError, match="baseURL") as info:
+    config = ProviderConfig(api="anthropic-messages", api_key="key")
+    assert "base_url" not in config.model_fields_set
+    with pytest.raises(ConfigError, match="base_url") as info:
         create_provider("claude", config)
     assert "https://api.anthropic.com" in str(info.value)
 
@@ -124,8 +124,8 @@ def test_create_provider_without_models_has_no_context_window() -> None:
 def test_create_provider_model_ctx_uses_largest_window() -> None:
     config = provider_config(
         models=[
-            {"id": "small", "contextWindow": 8192},
-            {"id": "big", "contextWindow": 65536},
+            {"id": "small", "context_window": 8192},
+            {"id": "big", "context_window": 65536},
             {"id": "unknown"},
         ]
     )
@@ -136,7 +136,7 @@ def test_create_provider_model_ctx_uses_largest_window() -> None:
 
 def test_create_provider_reads_api_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEEPPYRO_TEST_KEY", "env-secret")
-    provider = create_provider("p", provider_config(apiKeyEnv="DEEPPYRO_TEST_KEY"))
+    provider = create_provider("p", provider_config(api_key_env="DEEPPYRO_TEST_KEY"))
     assert isinstance(provider, OpenAICompatProvider)
     assert provider.api_key == "env-secret"
 
@@ -154,8 +154,8 @@ def _config() -> Config:
             "deepseek": ProviderConfig.model_validate(
                 {
                     "api": "openai-completions",
-                    "baseURL": "https://api.deepseek.com/v1",
-                    "models": [{"id": "deepseek-chat", "contextWindow": 65536}],
+                    "base_url": "https://api.deepseek.com/v1",
+                    "models": [{"id": "deepseek-chat", "context_window": 65536}],
                 }
             ),
         }

@@ -606,7 +606,7 @@ def main(
         return _usage_error(f"no model configured for provider {provider_name!r}; pass --model")
     profile = _profile_for(provider_config, model, provider_name)
     if provider_config.resolve_api_key() is None:
-        hint = provider_config.api_key_env or f"[providers.{provider_name}].apiKey"
+        hint = provider_config.api_key_env or f"[providers.{provider_name}].api_key"
         return _usage_error(f"provider {provider_name!r} has no API key; set {hint}")
     factory = provider_factory if provider_factory is not None else _default_provider_factory
     try:

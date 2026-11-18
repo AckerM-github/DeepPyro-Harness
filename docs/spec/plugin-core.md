@@ -395,8 +395,10 @@ class GreetPlugin(Plugin):
   the new id. The TUI `SessionLayer` snapshot/assert now enforces this: a preset application that
   mutates an existing header raises `DeeppyroError` and the switch rolls back.
 - Preset `model` overrides are validated when the preset is registered and resolved, against the
-  `[providers]` configuration: a `ConfigWarning` by default (strict `DEEPPYRO_STRICT_CONFIG`
-  raises `ConfigError`); unknown provider/model no longer waits for the next request.
+  `[providers]` configuration: a `ConfigWarning` by default, a `ConfigError` when
+  `DEEPPYRO_STRICT_CONFIG` is set; unknown provider/model no longer waits for the next request.
+  Configuration loading itself is always strict since 0.2.0; this switch only affects preset-model
+  validation.
 - Plugins run in-process and are trusted once loaded; there is no OS-level isolation.
 - `Plugin.api_version` and `bundle.api_version` must equal the host `API_VERSION` (3); there
   is no negotiation protocol and no v1/v2 compatibility shim (ADR 0001 section 7).

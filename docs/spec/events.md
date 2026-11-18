@@ -1,8 +1,8 @@
 # The kernel event catalog
 
 > **状态**：现行（过渡：v4 待移除） · **层级**：v4 事件目录 · **最后核对**：2026-11-18
-> 本文描述 v4 HookService（`hooks`）；native loop 使用 27 个 `EventKind` 与 typed events。
-> 0.3 切换后重写。
+> 本文描述 v4 HookService（`hooks`）；native loop 使用 30 个 `EventKind` 与 typed events（含 3 个 `task.*`）。
+> 0.3 随 v4 移除后重写或删除。
 
 This document describes the single bus catalogue that decides whether a name is a
 domain event, how it dispatches, and who produces it. The transport is

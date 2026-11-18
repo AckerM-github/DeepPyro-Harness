@@ -13,9 +13,10 @@ Running a case writes both sides into a temporary directory, reads them back
 through the production parsers (read_session_file / NativeCodec), derives the
 message history on each side, and compares semantic projections rather than
 bytes: message sequence and parts, tool call/result pairing, usage presence,
-and one capability-specific invariant.  The handoff capability is declared
-xfail until a vocabulary records it: native schema 5.2 reserves the
-subagent/team events and session v4 has no handoff record type.
+and one capability-specific invariant.  The handoff capability is covered by
+the task facts both vocabularies can express: session v4 keeps the task plugin
+payloads as ignorable extension records and native schema 1 makes task.state,
+task.handoff and task.handoff.result core kinds.
 
 render_matrix lists the covered/uncovered matrix; scripts/differential_matrix.py
 prints it in CI.
@@ -31,6 +32,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from deeppyro.builtin.task_tools import HANDOFF_EVENT, HANDOFF_RESULT_EVENT, TASK_EVENT
 from deeppyro.compact.prompts import CHECKPOINT_PREAMBLE, SUMMARY_CLOSE_TAG, SUMMARY_OPEN_TAG
 from deeppyro.core.messages import (
     CompactionSource,
@@ -46,7 +48,6 @@ from deeppyro.core.messages import (
     UserSource,
 )
 from deeppyro.core.wire import (
-    RECORD_TYPES,
     SURFACE_EVENT_TYPES,
     ReplaceOp,
 )
@@ -99,8 +100,9 @@ FORBIDDEN_USAGE_KEYS = frozenset(
     }
 )
 
-HANDOFF_V4_TYPES = ("handoff/start", "handoff/update", "handoff/end")
-HANDOFF_NATIVE_TYPES = (
+HANDOFF_V4_TYPES = (TASK_EVENT, HANDOFF_EVENT, HANDOFF_RESULT_EVENT)
+HANDOFF_NATIVE_TYPES = ("task.state", "task.handoff", "task.handoff.result")
+RESERVED_SUBAGENT_TYPES = (
     "subagent.started",
     "subagent.finished",
     "team.member.changed",
@@ -171,18 +173,17 @@ class SyntheticCase:
     trace: Mapping[str, object] | None
 
     def require_representation(self) -> None:
-        """Raise when neither vocabulary can record a multi-agent handoff yet."""
+        """Raise when native schema 1 cannot record the task handoff facts yet."""
         if self.capability is not Capability.HANDOFF:
             return
         native_kinds = {kind.value for kind in EventKind}
-        missing_v4 = [name for name in HANDOFF_V4_TYPES if name not in RECORD_TYPES]
         missing_native = [name for name in HANDOFF_NATIVE_TYPES if name not in native_kinds]
-        if not missing_v4 and not missing_native:
+        if not missing_native:
             return
         raise NotSupportedError(
-            f"{self.case_id}: neither vocabulary records a multi-agent handoff yet "
-            f"(session v4 lacks {missing_v4 or 'handoff fields'}; native schema 5.2 reserves "
-            f"{missing_native or 'the subagent/team events'}); KI-011 and KI-017 track this gap"
+            f"{self.case_id}: native schema 1 cannot record task handoff facts yet "
+            f"(missing {missing_native}); the v4 side uses ignorable extension records "
+            f"{HANDOFF_V4_TYPES}; KI-011 tracks this gap"
         )
 
 
@@ -1050,7 +1051,7 @@ def _check_subagent(
         f"{case.case_id}: the subagent child id must surface in the tool result text",
     )
     native_kinds = {kind.value for kind in EventKind}
-    reserved = [name for name in HANDOFF_NATIVE_TYPES if name in native_kinds]
+    reserved = [name for name in RESERVED_SUBAGENT_TYPES if name in native_kinds]
     _check(
         not reserved,
         f"{case.case_id}: native subagent lifecycle events landed; update the differential",
@@ -1069,8 +1070,181 @@ def _message_text(message: object) -> str:
 def _check_handoff(
     case: SyntheticCase, records: Sequence[Any], events: Sequence[Event], view: SessionView
 ) -> None:
-    del case, records, events, view
-    raise DifferentialMismatch("handoff cases are xfail; compare_case is expected to raise first")
+    task_states = [record for record in records if record.type == TASK_EVENT]
+    handoffs = [record for record in records if record.type == HANDOFF_EVENT]
+    results = [record for record in records if record.type == HANDOFF_RESULT_EVENT]
+    native_states = [event for event in events if event.type == "task.state"]
+    native_handoffs = [event for event in events if event.type == "task.handoff"]
+    native_results = [event for event in events if event.type == "task.handoff.result"]
+    _check(
+        bool(task_states) and bool(handoffs) and bool(results),
+        f"{case.case_id}: v4 side must record task/state, task/handoff and task/handoff/result",
+    )
+    _check(
+        len(task_states) == len(native_states),
+        f"{case.case_id}: task state count differs (v4={len(task_states)}, native={len(native_states)})",
+    )
+    _check(
+        len(handoffs) == len(native_handoffs),
+        f"{case.case_id}: handoff count differs (v4={len(handoffs)}, native={len(native_handoffs)})",
+    )
+    _check(
+        len(results) == len(native_results),
+        f"{case.case_id}: handoff result count differs (v4={len(results)}, native={len(native_results)})",
+    )
+    for record in (*task_states, *handoffs, *results):
+        _check(
+            record.ignorable is True,
+            f"{case.case_id}: session v4 keeps {record.type!r} as an ignorable extension record",
+        )
+        _check(
+            record.surfaceOp is None and record.sourceEventSeqs is None,
+            f"{case.case_id}: {record.type!r} is a non-surface log fact",
+        )
+    for record, event in zip(task_states, native_states, strict=True):
+        v4_data = record.data
+        native_data = event.data
+        _check(
+            _require_text(v4_data.get("action"), f"{case.case_id}: v4 task action")
+            == _require_text(native_data.get("action"), f"{case.case_id}: native task action"),
+            f"{case.case_id}: task state actions differ",
+        )
+        _check(
+            dict(_require_mapping(v4_data.get("task"), f"{case.case_id}: v4 task"))
+            == dict(_require_mapping(native_data.get("task"), f"{case.case_id}: native task")),
+            f"{case.case_id}: task projections differ",
+        )
+    last_task = _require_mapping(task_states[-1].data.get("task"), f"{case.case_id}: v4 last task")
+    _check(
+        _require_text(last_task.get("status"), f"{case.case_id}: v4 last task status") == "completed",
+        f"{case.case_id}: v4 task must end completed",
+    )
+    v4_handoff = _require_mapping(handoffs[0].data, f"{case.case_id}: v4 handoff fact")
+    v4_handoff_payload = _require_mapping(v4_handoff.get("handoff"), f"{case.case_id}: v4 handoff payload")
+    v4_state = _require_mapping(v4_handoff_payload.get("state"), f"{case.case_id}: v4 handoff state")
+    native_handoff = native_handoffs[0].data
+    _check(
+        _require_text(v4_handoff.get("runId"), f"{case.case_id}: v4 handoff run id")
+        == _require_text(native_handoff.get("run_id"), f"{case.case_id}: native handoff run id"),
+        f"{case.case_id}: handoff run ids differ",
+    )
+    for field in ("from", "to", "summary", "created_at"):
+        _check(
+            _require_text(v4_handoff_payload.get(field), f"{case.case_id}: v4 handoff {field}")
+            == _require_text(native_handoff.get(field), f"{case.case_id}: native handoff {field}"),
+            f"{case.case_id}: handoff {field} differs",
+        )
+    _check(
+        _optional_text(v4_handoff_payload.get("task_id"), f"{case.case_id}: v4 handoff task id")
+        == _optional_text(native_handoff.get("task_id"), f"{case.case_id}: native handoff task id"),
+        f"{case.case_id}: handoff task ids differ",
+    )
+    _check(
+        _optional_texts(v4_handoff_payload.get("open_items"), f"{case.case_id}: v4 open items")
+        == _optional_texts(native_handoff.get("open_items"), f"{case.case_id}: native open items"),
+        f"{case.case_id}: handoff open items differ",
+    )
+    _check(
+        _require_text(v4_state.get("prompt"), f"{case.case_id}: v4 handoff prompt")
+        == _require_text(native_handoff.get("prompt"), f"{case.case_id}: native handoff prompt"),
+        f"{case.case_id}: handoff prompt differs",
+    )
+    _check(
+        _require_int(v4_state.get("turn"), f"{case.case_id}: v4 handoff turn")
+        == _require_int(native_handoff.get("turn"), f"{case.case_id}: native handoff turn"),
+        f"{case.case_id}: handoff turns differ",
+    )
+    _check(
+        _require_text(v4_state.get("callId"), f"{case.case_id}: v4 handoff call id")
+        == _require_text(native_handoff.get("call_id"), f"{case.case_id}: native handoff call id"),
+        f"{case.case_id}: handoff call ids differ",
+    )
+    _check(
+        dict(_require_mapping(v4_state.get("budget"), f"{case.case_id}: v4 handoff budget"))
+        == dict(_require_mapping(native_handoff.get("budget"), f"{case.case_id}: native handoff budget")),
+        f"{case.case_id}: handoff budgets differ",
+    )
+    _check(
+        "usage" in v4_state,
+        f"{case.case_id}: session v4 keeps the parent usage snapshot in handoff state.usage",
+    )
+    leaked = sorted(set(_walk_keys(native_handoff)) & FORBIDDEN_USAGE_KEYS)
+    _check(
+        not leaked,
+        f"{case.case_id}: native handoff payload carries usage facts {leaked} "
+        "(schema 8.5: they belong in trace)",
+    )
+    v4_result = results[0].data
+    native_result = native_results[0].data
+    _check(
+        _require_text(v4_result.get("runId"), f"{case.case_id}: v4 result run id")
+        == _require_text(native_result.get("run_id"), f"{case.case_id}: native result run id"),
+        f"{case.case_id}: handoff result run ids differ",
+    )
+    _check(
+        _optional_text(v4_result.get("taskId"), f"{case.case_id}: v4 result task id")
+        == _optional_text(native_result.get("task_id"), f"{case.case_id}: native result task id"),
+        f"{case.case_id}: handoff result task ids differ",
+    )
+    _check(
+        bool(v4_result.get("ok")) == bool(native_result.get("ok")),
+        f"{case.case_id}: handoff result outcomes differ",
+    )
+    _check(
+        _optional_text(v4_result.get("result"), f"{case.case_id}: v4 result text")
+        == _optional_text(native_result.get("result"), f"{case.case_id}: native result text"),
+        f"{case.case_id}: handoff result texts differ",
+    )
+    _check(
+        _optional_result_text(v4_result.get("error"), f"{case.case_id}: v4 result error")
+        == _optional_result_text(native_result.get("error"), f"{case.case_id}: native result error"),
+        f"{case.case_id}: handoff result errors differ",
+    )
+    v4_usage = _require_mapping(v4_result.get("usage"), f"{case.case_id}: v4 result usage")
+    _check(
+        set(v4_usage) == USAGE_FIELDS,
+        f"{case.case_id}: v4 handoff result usage lacks the five token fields ({sorted(v4_usage)})",
+    )
+    leaked = sorted(set(_walk_keys(native_result)) & FORBIDDEN_USAGE_KEYS)
+    _check(
+        not leaked,
+        f"{case.case_id}: native handoff result carries usage facts {leaked} "
+        "(schema 8.5: they belong in trace)",
+    )
+    _check(len(view.tasks) == 1, f"{case.case_id}: native fold must project one task")
+    folded_task = view.tasks[0]
+    _check(
+        folded_task.task_id == _require_text(last_task.get("id"), f"{case.case_id}: v4 task id"),
+        f"{case.case_id}: folded task id differs",
+    )
+    _check(
+        folded_task.status == _require_text(last_task.get("status"), f"{case.case_id}: v4 task status"),
+        f"{case.case_id}: folded task status differs",
+    )
+    _check(len(view.handoffs) == 1, f"{case.case_id}: native fold must project one handoff")
+    folded_handoff = view.handoffs[0]
+    _check(
+        folded_handoff.run_id == _require_text(v4_handoff.get("runId"), f"{case.case_id}: v4 run id"),
+        f"{case.case_id}: folded handoff run id differs",
+    )
+    _check(folded_handoff.result_ok is True, f"{case.case_id}: folded handoff result must be ok")
+    _check(
+        folded_handoff.result == _optional_text(v4_result.get("result"), f"{case.case_id}: v4 result text"),
+        f"{case.case_id}: folded handoff result text differs",
+    )
+    _check(
+        folded_handoff.task_id
+        == _optional_text(v4_result.get("taskId"), f"{case.case_id}: v4 result task id"),
+        f"{case.case_id}: folded handoff task id differs",
+    )
+
+
+def _optional_result_text(value: object, where: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise DifferentialMismatch(f"{where}: expected a string")
+    return value or None
 
 
 _CAPABILITY_CHECKS: dict[
@@ -1120,11 +1294,7 @@ def check_matrix(cases: Sequence[SyntheticCase]) -> None:
                 f"{row.case_id}: an xfail row must cite KI-011",
             )
     uncovered = [capability.value for capability in CAPABILITIES if capability not in covered]
-    if uncovered:
-        _check(
-            uncovered == [Capability.HANDOFF.value],
-            f"capabilities covered by no synthetic case: {uncovered}",
-        )
+    _check(not uncovered, f"capabilities covered by no synthetic case: {uncovered}")
 
 
 def render_matrix(cases: Sequence[SyntheticCase]) -> str:

@@ -2,7 +2,7 @@
 
 deeppyro used to stop after 100 steps by default. DSH has no cap at all, and a
 default cap silently truncates long investigations, so the cap became an
-explicit opt-in while ``[agent].maxSteps`` keeps working for scripts that want
+explicit opt-in while ``[agent].max_steps`` keeps working for scripts that want
 a guard rail.
 """
 

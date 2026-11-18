@@ -25,8 +25,8 @@ def make_config() -> Config:
             "agent": {"provider": "local", "model": "local-model"},
             "providers": {
                 "local": {
-                    "baseURL": "http://127.0.0.1:8000/v1",
-                    "models": [{"id": "local-model", "contextWindow": 32768}],
+                    "base_url": "http://127.0.0.1:8000/v1",
+                    "models": [{"id": "local-model", "context_window": 32768}],
                 }
             },
         }

@@ -375,7 +375,8 @@ echo prompt | dpyro --headless --json
 ## 9. fixtures 与黄金对照（Lead 提供，只读）
 
 > 注意：真实会话样本含个人数据，**不入库**（`fixtures/` 已 gitignore）。本地用
-> `node tools/gen_fixtures.mjs` 生成；缺失时相关测试自动 skip。
+> `node tools/gen_fixtures.mjs` 生成；缺失时由入库的 `tests/fixtures/synthetic/` 兜底，
+> 相关 reader 测试不再整模块 skip（KI-030）。
 
 - `fixtures/manifest.json`：30 个真实会话（42 种记录类型全覆盖），含 `trimmed`、`seqBreaks`、类型直方图。
 - `fixtures/sessions/*.jsonl`：解码后的会话（超过 3MB 的只保留首 70 + 末 70 条，`trimmed: true`）。

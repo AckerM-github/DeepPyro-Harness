@@ -10,6 +10,7 @@ from deeppyro.builtin.sandbox import SandboxPlugin
 from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.core.errors import ConfigError, DeeppyroError
 from deeppyro.sandbox.permission import PermissionPresetsService
+from deeppyro.session.native_index import NativeSessionInfo, list_native_sessions
 from deeppyro.tui.runtime_catalog import CatalogLayer
 from deeppyro.tui.runtime_support import await_maybe, logger, resolve_workspace
 
@@ -115,6 +116,16 @@ class StatusLayer(CatalogLayer):
     def recent_sessions(self, limit: int = 20, *, include_archived: bool = False) -> list[Any]:
         """Most recent sessions, newest first; archived ones are hidden by default."""
         return list(self.store.list(include_archived=include_archived))[: max(limit, 0)]
+
+    def native_sessions(self, limit: int = 20) -> list[NativeSessionInfo]:
+        """Schema 1 (native) sessions beside the v4 store, newest first, read-only."""
+        if limit <= 0:
+            return []
+        try:
+            return list_native_sessions()[:limit]
+        except Exception:  # noqa: BLE001 - the session browser must survive a bad directory
+            logger.debug("native session listing failed", exc_info=True)
+            return []
 
     def archived_sessions(self, limit: int = 20) -> list[Any]:
         """Archived sessions only, newest first."""

@@ -35,7 +35,7 @@ M1 起产品只写、只读 native schema 1；以下为 review 硬门槛：
 | `surfaceOp`（append / `{"op":"replace","startSeq","endSeq"}`） | 删除。消息按创建顺序存在；修改用 `message.replaced`，压缩用 `compaction.done` | 稳定 id 取代区间，避免 seq 区间与消息 id 两套坐标 |
 | `sourceEventSeqs` | 删除；派生只依赖事件顺序与覆盖关系 | 派生可从日志顺序完全重建，冗余校验信息只会漂移 |
 | `ignorable` | 删除；未知事件只有插件命名空间一种合法形态，按命名空间跳过 | 兼容开关是 ADR 明令禁止的后门（§4 规则 3） |
-| 62 个 slash 类型（`user/message`、`tool/result` 等） | 27 个 dotted `EventKind`（§5：M1 24 个 + M2 3 个 run 事件） | 事件是类型而非字符串，不保留幽灵事件 |
+| 62 个 slash 类型（`user/message`、`tool/result` 等） | 30 个 dotted `EventKind`（§5：M1 24 个 + M2 3 个 run 事件 + 3 个 `task.*` 事件） | 事件是类型而非字符串，不保留幽灵事件 |
 | Header camelCase（`createdAt`、`isSeeded`、`agentPreset`、`parentSession`） | snake_case；`version` 改为 `schema`（§3） | Python-first（ADR D1/D3） |
 | envelope `time` | `ts`，整数毫秒 UTC | ADR §7-2：`time` 留给时长字段 |
 | assistant 消息内嵌 `stream` 快照与 `usage` | 删除；流式细节与 token 计数只进 trace store（§8） | 会话日志瘦身、隐私、回放速度（报告 §9.3） |
@@ -156,7 +156,7 @@ Run 是执行归属，不是会话身份（§3.3）。事件级 `run_id` 让“�
 ### 5.1 命名规则
 - `<domain>.<object>` 或 `<domain>.<verb_past>`，全小写、点分隔（ADR §7-1）；禁止 `/`、禁止 camelCase。
 - 名词性事实用名词短语（`tool.call`、`tool.result`、`user.message`）；状态转移用过去分词（`turn.started`、`goal.changed`）。
-- Python 侧 `class EventKind(StrEnum)`，成员名为值大写替换（`TOOL_CALL = "tool.call"`）。EventKind 只包含真正实现的类型（M1 24 个；M2 增加 `run.started`/`run.checkpoint`/`run.finished` 后共 27 个），不预留幽灵成员（报告 §3.5）。新增事件须同时改本文件、`EventKind` 与 golden fixtures。
+- Python 侧 `class EventKind(StrEnum)`，成员名为值大写替换（`TOOL_CALL = "tool.call"`）。EventKind 只包含真正实现的类型（M1 24 个；M2 增加 `run.started`/`run.checkpoint`/`run.finished` 后 27 个；task 接线再增加 `task.state`/`task.handoff`/`task.handoff.result`，共 30 个），不预留幽灵成员（报告 §3.5）。新增事件须同时改本文件、`EventKind` 与 golden fixtures。
 
 ### 5.2 核心事件（M1 24 个）
 | EventKind | data 形状 | 生产者 | fold 效果 |
@@ -203,7 +203,7 @@ M2 已实现 3 个 `run.*` 事件（§5.5），它们不再属于本表。下表
 | `team.member.changed` / `team.task.changed` / `team.message.queued` / `team.message.delivered` | M4 | 团队协作状态变化 | 沿用 v4 语义、改 snake_case |
 
 ### 5.5 M2 run 事件（已实现，2026-11-17）
-M2 把 §5.4 预留的 3 个 `run.*` 名称加入 `EventKind`（共 27 个成员）。`run.*` 是执行轨迹（run 生命周期、断点、累计预算），不是对话事实：`fold()` 跳过它们，不产生消息、不改 `SessionState`。写入者必须是 `NativeSession`，禁止双写 v4。
+M2 把 §5.4 预留的 3 个 `run.*` 名称加入 `EventKind`（27 个成员）；随后 Task 接线再加入 3 个 `task.*`（共 30 个）。`run.*` 是执行轨迹（run 生命周期、断点、累计预算），不是对话事实：`fold()` 跳过它们，不产生消息、不改 `SessionState`。写入者必须是 `NativeSession`，禁止双写 v4。
 
 关联字段（§4.2）：`run.*` 必须同时带 `run_id` 与 `trace_id`，禁止 `turn_id`/`step_id`（checkpoint 内的当前 turn/step 放在 data 中）。`_OrderTracker` 不约束 run 事件，因此它们可以写在 turn 之外、turn 之间或 step 内。
 

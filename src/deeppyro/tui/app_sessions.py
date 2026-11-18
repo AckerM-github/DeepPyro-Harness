@@ -5,15 +5,29 @@ from __future__ import annotations
 from typing import Any
 
 from deeppyro.session.metadata import record_archive, record_title
+from deeppyro.session.native_index import NativeSessionInfo, NativeTranscript, read_native_transcript
 from deeppyro.tui.app_policy import PolicyLayer
 from deeppyro.tui.commands import help_text, live_commands
 from deeppyro.tui.format import short_session_id
 from deeppyro.tui.history import is_ptc_mode_message, process_map
-from deeppyro.tui.session_view import listing_lines, matches, picker_items
+from deeppyro.tui.session_view import (
+    listing_lines,
+    matches,
+    picker_items,
+    preview_of,
+    relative_time,
+    title_of,
+)
 
 
 class SessionLayer(PolicyLayer):
     """Session lifecycle and transcript rendering layer."""
+
+    # Native schema 1 sessions are visible but read-only: the TUI turn engine
+    # still runs on v4, so /resume on a native id only renders its transcript.
+    NATIVE_LABEL = "native · read-only"
+    NATIVE_HINT = "use /resume <index|id|text> to open a v4 session or read a native one (read-only)"
+    SESSION_HINT = "use /resume <index|id|text> to open one"
 
     # -- session rendering ----------------------------------------------
     def _render_welcome(self) -> None:
@@ -84,13 +98,138 @@ class SessionLayer(PolicyLayer):
         self.refresh_status()
 
     def _session_items(self, sessions: list[Any]) -> list[tuple[str, str, str]]:
-        return picker_items(sessions)
+        if not self._has_native(sessions):
+            return picker_items(sessions)
+        items: list[tuple[str, str, str]] = []
+        for info in sessions:
+            label = f"{title_of(info)}  ·  {relative_time(self._session_stamp(info))}"
+            turns = getattr(info, "turns", 0)
+            if turns:
+                label += f"  ·  {turns}t"
+            if isinstance(info, NativeSessionInfo):
+                label += f"  ·  {self.NATIVE_LABEL}"
+            note = "  ".join(part for part in (preview_of(info), str(getattr(info, "cwd", "") or "")) if part)
+            items.append((str(getattr(info, "id", "") or ""), label, note))
+        return items
+
+    @staticmethod
+    def _session_stamp(info: Any) -> float:
+        for name in ("updatedAt", "updated_at", "createdAt", "created_at"):
+            value = getattr(info, name, 0)
+            if isinstance(value, (int, float)) and value:
+                return float(value)
+        return 0.0
+
+    @staticmethod
+    def _has_native(sessions: list[Any]) -> bool:
+        return any(isinstance(info, NativeSessionInfo) for info in sessions)
+
+    def _native_sessions(self, limit: int = 50) -> list[NativeSessionInfo]:
+        lister = getattr(self.runtime, "native_sessions", None)
+        if not callable(lister) or limit <= 0:
+            return []
+        try:
+            listed = lister(limit)
+        except Exception:  # noqa: BLE001 - a native listing must never break the TUI
+            return []
+        if not isinstance(listed, list):
+            return []
+        return [info for info in listed if isinstance(info, NativeSessionInfo)][:limit]
+
+    def _merged_sessions(self, sessions: list[Any]) -> list[Any]:
+        native = self._native_sessions()
+        if not native:
+            return list(sessions)
+        merged: dict[str, Any] = {}
+        for info in sessions:
+            merged.setdefault(str(getattr(info, "id", "") or ""), info)
+        for info in native:
+            merged.setdefault(info.id, info)
+        return sorted(merged.values(), key=self._session_stamp, reverse=True)
+
+    def _listing_rows(self, sessions: list[Any]) -> list[str]:
+        if not self._has_native(sessions):
+            return listing_lines(sessions)
+        lines: list[str] = []
+        workspace = ""
+        for index, info in enumerate(sessions, start=1):
+            cwd = str(getattr(info, "cwd", "") or "")
+            if index == 1 or cwd != workspace:
+                workspace = cwd
+                lines.append(cwd or "(no workspace)")
+            parts = [
+                f"  {index:>2}. {short_session_id(str(getattr(info, 'id', '') or ''))}",
+                title_of(info),
+                relative_time(self._session_stamp(info)),
+            ]
+            turns = getattr(info, "turns", 0)
+            if turns:
+                parts.append(f"{turns}t")
+            if getattr(info, "archived", False):
+                parts.append("archived")
+            if isinstance(info, NativeSessionInfo):
+                parts.append(self.NATIVE_LABEL)
+            line = "  ".join(parts)
+            preview = preview_of(info)
+            if preview:
+                line += f"  —  {preview}"
+            lines.append(line)
+        return lines
+
+    def _resume_hint(self, sessions: list[Any]) -> str:
+        return self.NATIVE_HINT if self._has_native(sessions) else "use /resume <index|id|text>"
+
+    def _show_native_session(self, info: NativeSessionInfo) -> None:
+        conversation = self.conversation
+        short = short_session_id(info.id)
+        conversation.add_info(f"native session {short} — schema 1, read-only in the TUI")
+        conversation.add_info(
+            f"title: {title_of(info)}  ·  workspace: {info.cwd or '(unknown)'}  ·  "
+            f"turns: {info.turns}  ·  events: {info.event_count}  ·  "
+            f"updated {relative_time(info.updated_at)}"
+        )
+        try:
+            transcript = read_native_transcript(info.id, root=info.path.parent)
+        except Exception as exc:  # noqa: BLE001 - a read-only view must not break the live TUI
+            conversation.add_error(f"cannot read native session {short}: {exc}")
+            transcript = None
+        if transcript is not None:
+            self._render_native_transcript(transcript)
+        conversation.add_info(
+            "native sessions are read-only in the TUI until the turn engine migrates; "
+            f"to continue, run: dpyro migrate --to v4 --session {info.id}"
+        )
+        live = getattr(self.runtime, "session", None)
+        live_id = str(getattr(live, "session_id", "") or "")
+        if live_id:
+            conversation.add_info(f"live session {short_session_id(live_id)} is still active")
+        self.refresh_status()
+
+    def _render_native_transcript(self, transcript: NativeTranscript) -> None:
+        conversation = self.conversation
+        if not transcript.entries:
+            conversation.add_info("(no user/assistant messages recorded)")
+        for entry in transcript.entries:
+            if entry.role == "user":
+                conversation.add_user(entry.text)
+            elif entry.role == "assistant":
+                if entry.text:
+                    conversation.stream_text(entry.text)
+                    conversation.finish_assistant(entry.text)
+                if entry.tool_names:
+                    conversation.add_info("tool calls: " + ", ".join(entry.tool_names))
+            elif entry.role == "tool":
+                name = entry.tool_names[0] if entry.tool_names else "tool"
+                marker = " (error)" if entry.is_error else ""
+                conversation.add_info(f"tool {name}{marker}: {entry.text or '(no output)'}")
+        for issue in transcript.issues:
+            conversation.add_info(f"fold note: {issue}")
 
     async def resume(self, argument: str) -> None:
         if self._working:
             self.notify("cannot switch session during a turn", severity="warning")
             return
-        sessions = self.runtime.recent_sessions(limit=50)
+        sessions = self._merged_sessions(self.runtime.recent_sessions(limit=50))
         if not argument:
             if not sessions:
                 self.conversation.add_info("no previous sessions")
@@ -98,9 +237,9 @@ class SessionLayer(PolicyLayer):
             choice = await self._pick("Resume session", self._session_items(sessions))
             if choice is None:
                 self.conversation.add_info("recent sessions:")
-                for line in listing_lines(sessions):
+                for line in self._listing_rows(sessions):
                     self.conversation.add_info(line)
-                self.conversation.add_info("use /resume <index|id|text>")
+                self.conversation.add_info(self._resume_hint(sessions))
                 return
             argument = choice
         target = None
@@ -121,12 +260,16 @@ class SessionLayer(PolicyLayer):
                 target = candidates[0]
             elif candidates:
                 self.conversation.add_info(f"{len(candidates)} sessions match {argument!r}:")
-                for line in listing_lines(candidates[:20]):
+                for line in self._listing_rows(candidates[:20]):
                     self.conversation.add_info(line)
                 self.conversation.add_info("use /resume <index|id>")
                 return
         if target is None:
             self.conversation.add_error(f"session not found: {argument}")
+            return
+        if isinstance(target, NativeSessionInfo):
+            # Read-only: never attach a schema 1 session to the live v4 runtime.
+            self._show_native_session(target)
             return
         session_id = str(getattr(target, "id", "") or "")
         await self.runtime.open_session(session_id)
@@ -143,7 +286,9 @@ class SessionLayer(PolicyLayer):
         include_archived = raw in {"--all", "-a"}
         if include_archived:
             raw = ""
-        sessions = self.runtime.recent_sessions(limit=50, include_archived=include_archived)
+        sessions = self._merged_sessions(
+            self.runtime.recent_sessions(limit=50, include_archived=include_archived)
+        )
         if raw:
             sessions = [info for info in sessions if matches(info, raw)]
         if not sessions:
@@ -154,9 +299,9 @@ class SessionLayer(PolicyLayer):
         if raw:
             header += f" matching {raw!r}"
         self.conversation.add_info(f"{header} ({len(sessions)}):")
-        for line in listing_lines(sessions):
+        for line in self._listing_rows(sessions):
             self.conversation.add_info(line)
-        self.conversation.add_info("use /resume <index|id|text> to open one")
+        self.conversation.add_info(self.NATIVE_HINT if self._has_native(sessions) else self.SESSION_HINT)
 
     def rename_command(self, argument: str = "") -> None:
         """Give the current session a title that survives reload and /resume."""

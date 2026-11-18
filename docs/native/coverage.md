@@ -1,6 +1,7 @@
 # Native replay coverage and re-recording
 
-Status: **0.3 coverage note for KI-011, KI-031 and KI-034** (2026-11-18). The
+Status: **0.2.0 coverage note for KI-011, KI-031 and KI-034** (2026-11-18). KI-011
+and KI-031 are resolved; KI-034 remains an accepted limit of the baseline. The
 recorded baseline under [`fixtures/native/`](../../fixtures/native/) is real
 provider traffic, but it only exercises text and tool turns. This page records
 exactly what it proves, which protocol surfaces must be synthesized for the
@@ -30,7 +31,7 @@ captured 2026-11-17 from `deepseek-flash` with `temperature=0`, streaming, and
 | MCP lifecycle and `mcp__<server>__<tool>` names | no | needs synthetic (tool seam only) |
 | PTC nested dispatch (`tool/ptc-dispatch*`) | no | needs synthetic |
 | subagent catalog / descriptor / child ids | no | needs synthetic |
-| multi-agent handoff | no | not representable yet (xfail, see §2) |
+| multi-agent handoff | no | native `task.*` facts (synthesized, see §2) |
 | trace side channel (per-call tokens/latency/retries) | no | synthesized where usage is compared |
 
 The recordings are data only: replay never re-executes a provider request and
@@ -57,7 +58,7 @@ one hand-authored JSON pair per capability. Each file contains:
 | MCP | `mcp.json` | covered | `mcp__demo__lookup` name and result survive both sides |
 | PTC | `ptc.json` | covered | nested `tool/ptc-dispatch*` stay non-surface; only the outer call/result is visible |
 | subagent | `subagent.json` | covered | child id from `subagent/catalog` appears in the tool result; no native lifecycle event exists |
-| handoff | `handoff.json` | xfail (KI-011) | no `handoff/*` v4 type and no native subagent/team event yet |
+| handoff | `handoff.json` | covered | v4 `task/state`, `task/handoff`, `task/handoff/result` (ignorable extension records) vs native `task.state`, `task.handoff`, `task.handoff.result`; run id, from/to, summary, open items, task id, prompt/turn/call id/budget, last-wins task status and result `ok`/text/error. Usage boundary: v4 embeds the parent snapshot in `handoff.state.usage` and the child usage in the result record, while native keeps both in the trace only |
 
 The harness [`tests/native/synthetic.py`](../../tests/native/synthetic.py) runs
 both sides through production parsers only: `read_session_file` plus
@@ -71,6 +72,15 @@ semantic projections rather than bytes:
    `model_call` records, and the native session log must contain no token,
    latency or cost fields (schema §8.5 keeps usage in the trace);
 4. one capability-specific invariant from the table above.
+
+Handoff is the one surface whose two representations have different shapes: v4
+task tools write `task/state`, `task/handoff` and `task/handoff/result` as
+*ignorable extension records* (they are not in `RECORD_TYPES`, so a v4 reader
+skips them unless `ignorable` is true), while native schema 1 added first-class
+`task.state`, `task.handoff` and `task.handoff.result` events. The case compares
+the same facts on both sides and asserts the documented boundary: v4 keeps the
+parent and child token usage in the session records, native keeps usage in the
+trace only (schema §8.5), so the native facts must never sprout a usage field.
 
 Run it directly:
 

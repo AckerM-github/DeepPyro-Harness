@@ -24,13 +24,13 @@ def _config(tmp_path: Path) -> Config:
     return Config(
         providers={
             "local": ProviderConfig(
-                baseURL="http://127.0.0.1:8000/v1",
-                apiKey="test-key",
-                models=[ModelConfig(id="m", contextWindow=32768)],
+                base_url="http://127.0.0.1:8000/v1",
+                api_key="test-key",
+                models=[ModelConfig(id="m", context_window=32768)],
             )
         },
-        agent={"provider": "local", "model": "m", "permissionPreset": "workspace-write"},
-        sessionDir=tmp_path / "sessions",
+        agent={"provider": "local", "model": "m"},
+        session_dir=tmp_path / "sessions",
     )
 
 

@@ -2,14 +2,18 @@
 
 Tasks and handoffs are facts in the session log, exactly like goal changes or
 team members: the service folds task/state, task/handoff and
-task/handoff/result records back into the six-state machine from
-deeppyro.agent.task.  Reopening a session therefore restores unfinished work
-without a second storage location.
+task/handoff/result records (session v4) or task.state, task.handoff and
+task.handoff.result events (native schema 1) back into the six-state machine
+from deeppyro.agent.task.  Reopening a session therefore restores unfinished
+work without a second storage location.
 
 task_handoff delegates one turn's context to the subagent service, writes the
-handoff (summary + budget + usage) to the parent session before the child runs,
-and copies the result and the child's real usage back into the parent turn.
-Budget overruns fail the task instead of silently overspending.
+handoff (summary, budget, open items, and the prompt) to the parent session
+before the child runs, and copies the result and the child's real usage back
+into the parent turn.  Token usage stays a payload fact and a trace fact under
+native schema 1, never a session-log fact (schema 8.5); the v4 representation
+keeps its historical usage snapshot inside the handoff record.  Budget overruns
+fail the task instead of silently overspending.
 """
 
 from __future__ import annotations
@@ -39,6 +43,8 @@ from deeppyro.agent.task import (
 from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext, ToolResult
+from deeppyro.session.fold import fold
+from deeppyro.session.schema import EventKind, NativeSession
 from deeppyro.subagent.types import SubagentUsage
 from deeppyro.tools.base import BaseTool
 from deeppyro.tools.params import (
@@ -54,6 +60,16 @@ TASK_EVENT = "task/state"
 HANDOFF_EVENT = "task/handoff"
 HANDOFF_RESULT_EVENT = "task/handoff/result"
 TASK_RECORD_VERSION = 1
+
+#: v4 record type -> native schema 1 event kind for the same fact.
+NATIVE_TASK_EVENTS: dict[str, EventKind] = {
+    TASK_EVENT: EventKind.TASK_STATE,
+    HANDOFF_EVENT: EventKind.TASK_HANDOFF,
+    HANDOFF_RESULT_EVENT: EventKind.TASK_HANDOFF_RESULT,
+}
+_NATIVE_RECORD_TYPES: dict[EventKind, str] = {
+    event_kind: record_type for record_type, event_kind in NATIVE_TASK_EVENTS.items()
+}
 
 # -- tool-layer error codes -------------------------------------------------
 TASK_TOOL_AGENT_REQUIRED = "TASK_TOOL_AGENT_REQUIRED"
@@ -96,6 +112,8 @@ def _session_key(session: Any) -> str:
     """Stable cache key for a session-like object."""
     if isinstance(session, str):
         return session
+    if isinstance(session, NativeSession):
+        return session.header.id
     for attribute in ("session_id", "sessionId"):
         value = getattr(session, attribute, None)
         if isinstance(value, str) and value:
@@ -103,11 +121,164 @@ def _session_key(session: Any) -> str:
     return f"object:{id(session)}"
 
 
-def _records_of(session: Any) -> list[Any]:
+def _fact_text(value: Any, name: str) -> str:
+    if isinstance(value, str) and value:
+        return value
+    raise TaskValidationError(f"task fact requires a non-empty {name}")
+
+
+def _native_task_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate a v4 task/state payload to the native task.state shape."""
+    task = payload.get("task")
+    if not isinstance(task, Mapping):
+        raise TaskValidationError("task fact requires a task object")
+    action = payload.get("action")
+    if action not in ("create", "update"):
+        raise TaskValidationError(f"task fact has unknown action {action!r}")
+    return {"action": action, "task": dict(task)}
+
+
+def _native_handoff_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate a v4 task/handoff payload to the native task.handoff shape.
+
+    The v4 record embeds the parent usage snapshot in handler state; native
+    schema 1 keeps token facts out of the log (schema 8.5), so it is dropped.
+    """
+    run_id = _fact_text(payload.get("runId"), "runId")
+    raw = payload.get("handoff")
+    if not isinstance(raw, Mapping):
+        raise TaskValidationError("handoff fact requires a handoff object")
+    state = raw.get("state")
+    handoff_state = state if isinstance(state, Mapping) else {}
+    data: dict[str, Any] = {
+        "run_id": run_id,
+        "from": _fact_text(raw.get("from"), "handoff from"),
+        "to": _fact_text(raw.get("to"), "handoff to"),
+        "summary": _fact_text(raw.get("summary"), "handoff summary"),
+        "created_at": _fact_text(raw.get("created_at"), "handoff created_at"),
+    }
+    task_id = raw.get("task_id")
+    if isinstance(task_id, str) and task_id:
+        data["task_id"] = task_id
+    prompt = handoff_state.get("prompt")
+    if isinstance(prompt, str):
+        data["prompt"] = prompt
+    turn = handoff_state.get("turn")
+    if isinstance(turn, int) and not isinstance(turn, bool):
+        data["turn"] = turn
+    call_id = handoff_state.get("callId")
+    if isinstance(call_id, str) and call_id:
+        data["call_id"] = call_id
+    budget = handoff_state.get("budget")
+    if isinstance(budget, Mapping):
+        data["budget"] = dict(budget)
+    open_items = raw.get("open_items")
+    if isinstance(open_items, list):
+        data["open_items"] = [item for item in open_items if isinstance(item, str)]
+    return data
+
+
+def _native_handoff_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate a v4 task/handoff/result payload to the native result shape."""
+    run_id = _fact_text(payload.get("runId"), "runId")
+    ok = payload.get("ok")
+    if not isinstance(ok, bool):
+        raise TaskValidationError("handoff result requires a boolean ok")
+    result = payload.get("result")
+    data: dict[str, Any] = {
+        "run_id": run_id,
+        "ok": ok,
+        "result": result if isinstance(result, str) else "",
+    }
+    task_id = payload.get("taskId")
+    if isinstance(task_id, str) and task_id:
+        data["task_id"] = task_id
+    error = payload.get("error")
+    if isinstance(error, str) and error:
+        data["error"] = error
+    return data
+
+
+def _native_payload(record_type: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate one v4 task fact payload to its native event data shape."""
+    if record_type == TASK_EVENT:
+        return _native_task_payload(payload)
+    if record_type == HANDOFF_EVENT:
+        return _native_handoff_payload(payload)
+    return _native_handoff_result_payload(payload)
+
+
+def _v4_task_payload(data: Mapping[str, Any]) -> dict[str, Any]:
+    return {"version": TASK_RECORD_VERSION, "action": data.get("action"), "task": data.get("task")}
+
+
+def _v4_handoff_payload(data: Mapping[str, Any]) -> dict[str, Any]:
+    state: dict[str, Any] = {}
+    for native_name, v4_name in (
+        ("turn", "turn"),
+        ("call_id", "callId"),
+        ("budget", "budget"),
+        ("prompt", "prompt"),
+    ):
+        if native_name in data:
+            state[v4_name] = data[native_name]
+    open_items = data.get("open_items")
+    handoff = {
+        "from": data.get("from"),
+        "to": data.get("to"),
+        "summary": data.get("summary"),
+        "state": state,
+        "open_items": list(open_items) if isinstance(open_items, list) else [],
+        "created_at": data.get("created_at"),
+        "task_id": data.get("task_id"),
+    }
+    return {"version": TASK_RECORD_VERSION, "runId": data.get("run_id"), "handoff": handoff}
+
+
+def _v4_handoff_result_payload(data: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "version": TASK_RECORD_VERSION,
+        "runId": data.get("run_id"),
+        "taskId": data.get("task_id"),
+        "ok": data.get("ok"),
+        "result": data.get("result"),
+        "error": data.get("error", ""),
+        "usage": None,
+    }
+
+
+def _record_payload(record_type: str, data: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Normalize a native task fact to the v4 payload shape the fold understands."""
+    if record_type == TASK_EVENT:
+        return _v4_task_payload(data)
+    if record_type == HANDOFF_EVENT:
+        return _v4_handoff_payload(data)
+    return _v4_handoff_result_payload(data)
+
+
+def _facts_of(session: Any) -> list[tuple[str, Mapping[str, Any]]]:
+    """Task facts in the session log, normalized to the v4 record payload shape."""
+    if isinstance(session, NativeSession):
+        facts: list[tuple[str, Mapping[str, Any]]] = []
+        for event in session.events:
+            kind = event.kind
+            if kind is None:
+                continue
+            record_type = _NATIVE_RECORD_TYPES.get(kind)
+            if record_type is None:
+                continue
+            facts.append((record_type, _record_payload(record_type, event.data)))
+        return facts
     records = getattr(session, "records", None)
     if records is None:
         return []
-    return list(records)
+    facts = []
+    for record in records:
+        record_type = getattr(record, "type", None)
+        data = getattr(record, "data", None)
+        if isinstance(record_type, str) and isinstance(data, Mapping):
+            facts.append((record_type, data))
+    return facts
 
 
 def _non_negative_int(value: Any) -> int:
@@ -152,11 +323,17 @@ def _message_text(message: Any) -> str:
 def _context_summary(session: Any, prompt: str) -> str:
     """A compact summary of the turn the handoff leaves behind."""
     messages: list[Any] = []
-    derive: Any = getattr(session, "derive_messages", None)
-    try:
-        messages = list(derive()) if derive is not None else []
-    except Exception:  # noqa: BLE001 - fall back to the prompt
-        messages = []
+    if isinstance(session, NativeSession):
+        try:
+            messages = list(fold(session.header, session.events).messages)
+        except Exception:  # noqa: BLE001 - fall back to the prompt
+            messages = []
+    else:
+        derive: Any = getattr(session, "derive_messages", None)
+        try:
+            messages = list(derive()) if derive is not None else []
+        except Exception:  # noqa: BLE001 - fall back to the prompt
+            messages = []
     lines: list[str] = []
     for message in messages[-4:]:
         text = " ".join(_message_text(message).split())
@@ -243,9 +420,10 @@ def _apply_handoff_fact(state: _TaskState, record_type: str, data: Mapping[str, 
 class TaskService:
     """Fold task and handoff facts out of one session log.
 
-    The service is deliberately storage-agnostic: callers hand it a session
-    object with records and append (see deeppyro.session.session), and the same
-    fold works for a reopened session read through the store.
+    The service is deliberately storage-agnostic: callers hand it a v4 session
+    object with records and append (see deeppyro.session.session) or a native
+    NativeSession with events and append, and the same fold works for a
+    reopened session read through either store.
     """
 
     provide: ClassVar[str] = "task"
@@ -388,25 +566,24 @@ class TaskService:
         append = getattr(session, "append", None)
         if not callable(append):
             raise TaskValidationError("task service requires a session with append(); pass a session log")
+        if isinstance(session, NativeSession):
+            session.append(NATIVE_TASK_EVENTS[record_type], _native_payload(record_type, payload))
+            return
         append(record_type, payload, ignorable=True)
 
     def _fold(self, session: Any) -> _TaskState:
-        records = _records_of(session)
+        facts = _facts_of(session)
         key = _session_key(session)
         cached = self._states.get(key)
-        if cached is not None and cached[0] == len(records):
+        if cached is not None and cached[0] == len(facts):
             return cached[1]
         state = _TaskState()
-        for record in records:
-            record_type = getattr(record, "type", None)
-            data = getattr(record, "data", None)
-            if not isinstance(data, Mapping):
-                continue
+        for record_type, data in facts:
             if record_type == TASK_EVENT:
                 _apply_task_fact(state, data)
             elif record_type in (HANDOFF_EVENT, HANDOFF_RESULT_EVENT):
-                _apply_handoff_fact(state, str(record_type), data)
-        self._states[key] = (len(records), state)
+                _apply_handoff_fact(state, record_type, data)
+        self._states[key] = (len(facts), state)
         return state
 
 
@@ -419,7 +596,11 @@ def _result(payload: dict[str, Any]) -> ToolResult:
 def _agent_and_session(ctx: ToolContext) -> tuple[Any, Any]:
     agent = getattr(ctx, "agent", None)
     session = getattr(agent, "session", None) if agent is not None else None
-    if agent is None or session is None:
+    if session is None:
+        # The native loop owns the NativeSession and exposes it as a service;
+        # tool calls there have no v4 agent session to read from.
+        session = (ctx.services or {}).get("session")
+    if session is None:
         raise TaskToolError(_AGENT_TEXT, TASK_TOOL_AGENT_REQUIRED)
     return agent, session
 
@@ -441,15 +622,22 @@ def _domain_error(exc: Exception) -> TaskToolError:
     return TaskToolError(f"{type(exc).__name__}: {exc}", TASK_TOOL_INVALID_TASK)
 
 
-def _task_owner(agent: Any) -> str:
-    owner = getattr(agent, "agent_id", None) or getattr(agent, "name", None)
-    if isinstance(owner, str) and owner:
-        return owner
-    session = getattr(agent, "session", None)
+def _task_owner(agent: Any, session: Any) -> str:
+    if agent is not None:
+        owner = getattr(agent, "agent_id", None) or getattr(agent, "name", None)
+        if isinstance(owner, str) and owner:
+            return owner
     session_id = getattr(session, "session_id", None)
+    if not isinstance(session_id, str) or not session_id:
+        session_id = getattr(getattr(session, "header", None), "id", None)
     if isinstance(session_id, str) and session_id:
         return session_id
     return "lead"
+
+
+def _handoff_turn(agent: Any, ctx: ToolContext) -> int:
+    turn = _int(getattr(agent, "turn", 0)) if agent is not None else 0
+    return turn if turn > 0 else _int(ctx.turn)
 
 
 def _int(value: Any) -> int:
@@ -646,7 +834,7 @@ class TaskHandoffTool(BaseTool):
     name = "task_handoff"
     description = (
         "Hand a task to a subagent in the background: the parent turn's summary, the "
-        "task budget and the current usage are persisted as a handoff fact and passed to "
+        "task budget and the open items are persisted as a handoff fact and passed to "
         "the subagent in its work packet, the subagent's reply and real token usage are "
         "written back into this turn, and the task advances to completed (or failed when "
         "the subagent errors or the budget is exceeded)."
@@ -703,10 +891,11 @@ class TaskHandoffTool(BaseTool):
         summary = parsed.summary or _context_summary(session, parsed.prompt)
         open_items = tuple(parsed.open_items or ())
         handoff = _build_handoff(
-            agent,
+            _task_owner(agent, session),
             session,
             task,
             summary,
+            turn=_handoff_turn(agent, ctx),
             run_id=run_id,
             prompt=parsed.prompt,
             open_items=open_items,
@@ -810,25 +999,26 @@ def _handoff_packet(prompt: str, summary: str, budget: TaskBudget, usage: dict[s
 
 
 def _build_handoff(
-    agent: Any,
+    owner: str,
     session: Any,
     task: Task,
     summary: str,
     *,
+    turn: int,
     run_id: str,
     prompt: str,
     open_items: tuple[str, ...],
     call_id: str,
 ) -> Handoff:
     state: dict[str, Any] = {
-        "turn": _int(getattr(agent, "turn", 0)),
+        "turn": turn,
         "callId": call_id,
         "usage": _session_usage(session),
         "budget": task.budget.to_dict(),
         "prompt": prompt,
     }
     return new_handoff(
-        from_owner=_task_owner(agent),
+        from_owner=owner,
         to_owner=f"subagent:{run_id}",
         summary=summary,
         state=state,
@@ -873,6 +1063,7 @@ class TaskPlugin(Plugin):
 __all__ = [
     "HANDOFF_EVENT",
     "HANDOFF_RESULT_EVENT",
+    "NATIVE_TASK_EVENTS",
     "TASK_EVENT",
     "TASK_RECORD_VERSION",
     "TASK_TOOL_AGENT_REQUIRED",

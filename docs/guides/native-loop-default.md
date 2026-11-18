@@ -179,8 +179,7 @@ native loop 使用 `deeppyro.core.messages` 与 `deeppyro.session.schema`，不�
 
 ## 9. 与发布文档的衔接
 
-- `docs/release/0.2.0-known-issues.md` 的 KI-001 / KI-010 行不在本次改动范围，由发布
-  文档维护者按本文与代码现状更新（KI-001 partial、KI-010 partial）；
-- `docs/spec/`、`docs/native/`、`docs/plugins/` 中仍写“native 是 opt-in / 默认 v4”的段落
-  需要另行同步（不在本指南范围）；
+- 发布总表已同步：KI-001 / KI-010 按本文与代码现状记为 partial，KI-011 / KI-013 / KI-037 已解决；
+- `docs/spec/`、`docs/native/`、`docs/plugins/` 中“native 是 opt-in / 默认 v4”的段落已改为
+  “headless 默认 native、TUI 交互仍 v4、native 只读可见”；
 - README 已按默认化更新：状态块、CLI 表、`sessions/` 目录说明、已知限制与文档导航。

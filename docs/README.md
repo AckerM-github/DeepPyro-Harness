@@ -41,11 +41,12 @@
 | --- | --- | --- |
 | [spec/](spec/) | 38 篇规格 + 状态索引（39 个文件） | [spec/README.md](spec/README.md) |
 | [native/](native/) | schema 1 契约、实现/录制说明、覆盖与重录说明 | [native/schema.md](native/schema.md)、[native/coverage.md](native/coverage.md) |
-| [guides/](guides/) | 面向使用者的操作指南：native 默认化、会话迁移、bundle digest、Windows 沙箱边界 | [guides/native-loop-default.md](guides/native-loop-default.md) |
+| [guides/](guides/) | 面向使用者的操作指南：native 默认化、会话迁移、配置迁移、bundle digest、Windows 沙箱边界（5 篇） | [guides/native-loop-default.md](guides/native-loop-default.md) |
 | [adr/](adr/) | 架构决策记录 | [ADR 0001](adr/0001-three-track-native-agent.md) |
 | [plugins/](plugins/) | 插件作者指南与 v2→v3 迁移 | [plugins/README.md](plugins/README.md) |
 | [release/](release/) | 0.2.0 发布说明、已知问题总表、去品牌审计 | [release/0.2.0.md](release/0.2.0.md) |
 | [ops/](ops/) | 遥测、数据与运维边界 | [ops/telemetry.md](ops/telemetry.md) |
+| [design/](design/) | 0.3 迁移设计草案（TUI native、provider port、native host），不是现行契约 | [design/tui-native-migration.md](design/tui-native-migration.md) |
 | [archive/](archive/) | 6 篇历史研究/审计 + 归档索引 | [archive/README.md](archive/README.md) |
 
 根目录还有 [README.md](../README.md) 与
@@ -59,7 +60,6 @@
 - **现行（0.2.0 保留）**：已实现、与 native 方向一致；以代码为准。
 - **现行（过渡：v4 待移除）**：同一版本内 headless 已默认 native、TUI 仍走 v4；只用于理解现状。
 - **现行（native 默认）**：headless 默认 native，`--legacy-v4` 可回退。
-- **现行（native opt-in）**：默认 v4，显式开关走 native（0.2.0 仅 TUI 交互路径仍属此类）。
 - **冻结：迁移参考**：只用于读旧数据或写迁移说明，0.3 删除。
 - **历史证据（0.2.0 保留，0.3 删除）**：生成/逆向材料，不是运行期契约。
 - **历史文档（非契约）**：已归档，不再维护。
@@ -95,3 +95,4 @@
 | --- | --- |
 | 2026-11-18 | 建立本入口；删除 14 篇已完成计划；归档 6 篇历史研究；38 篇规格 + 索引全部补齐状态头；重写 spec 索引、ADR/native/release 状态与链接。 |
 | 2026-11-18 | 新增 [guides/](guides/) 目录（4 篇操作指南）；状态标签区分“native 默认”与“TUI 仍 v4”；目录地图补 guides 行。 |
+| 2026-11-18 | 新增 [guides/config-migration.md](guides/config-migration.md) 与 [design/](design/) 三篇 0.3 设计草案；guides 增至 5 篇；TUI 可只读查看 native 会话。 |

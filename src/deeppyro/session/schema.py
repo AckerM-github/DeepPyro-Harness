@@ -52,6 +52,7 @@ RUN_ID_PATTERN = r"^run_[0-9a-f]{16}$"
 TURN_ID_PATTERN = r"^turn_[0-9a-f]{16}$"
 STEP_ID_PATTERN = r"^step_[0-9a-f]{16}$"
 TRACE_ID_PATTERN = r"^[0-9a-f]{32}$"
+TASK_ID_PATTERN = r"^task_[0-9a-f]{16}$"
 PLUGIN_EVENT_PATTERN = r"^plugin\.[a-z][a-z0-9-]{0,31}\.[a-z][a-z0-9._-]{0,63}$"
 SESSION_ID_RE = re.compile(SESSION_ID_PATTERN)
 PRESET_RE = re.compile(PRESET_PATTERN)
@@ -59,6 +60,7 @@ RUN_ID_RE = re.compile(RUN_ID_PATTERN)
 TURN_ID_RE = re.compile(TURN_ID_PATTERN)
 STEP_ID_RE = re.compile(STEP_ID_PATTERN)
 TRACE_ID_RE = re.compile(TRACE_ID_PATTERN)
+TASK_ID_RE = re.compile(TASK_ID_PATTERN)
 PLUGIN_EVENT_RE = re.compile(PLUGIN_EVENT_PATTERN)
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
@@ -79,6 +81,10 @@ CHECKPOINT_STATUSES: frozenset[str] = frozenset({"running", "completed", "failed
 TOOL_CALL_STATES: frozenset[str] = frozenset({"pending", "running", "completed", "failed"})
 IDEMPOTENCY_KEY_PATTERN = r"^idem:[0-9a-f]{64}$"
 IDEMPOTENCY_KEY_RE = re.compile(IDEMPOTENCY_KEY_PATTERN)
+TASK_STATE_ACTIONS: frozenset[str] = frozenset({"create", "update"})
+TASK_STATUSES: frozenset[str] = frozenset(
+    {"pending", "in_progress", "blocked", "completed", "failed", "cancelled"}
+)
 
 HEADER_FIELDS = {
     "type",
@@ -95,7 +101,7 @@ ENVELOPE_FIELDS = {"type", "seq", "ts", "data", "run_id", "turn_id", "step_id", 
 
 
 class EventKind(StrEnum):
-    """Core event types: the 24 M1 kinds plus the 3 M2 run kinds (schema 5.2 and 5.5)."""
+    """Core event types: the 24 M1 kinds, 3 M2 run kinds and 3 task facts (schema 5.2, 5.5, 5.6)."""
 
     TURN_STARTED = "turn.started"
     TURN_ENDED = "turn.ended"
@@ -124,6 +130,9 @@ class EventKind(StrEnum):
     RUN_STARTED = "run.started"
     RUN_CHECKPOINT = "run.checkpoint"
     RUN_FINISHED = "run.finished"
+    TASK_STATE = "task.state"
+    TASK_HANDOFF = "task.handoff"
+    TASK_HANDOFF_RESULT = "task.handoff.result"
 
 
 CORE_EVENT_TYPES: frozenset[str] = frozenset(kind.value for kind in EventKind)
@@ -807,6 +816,15 @@ def validate_event_data(event_type: str, data: dict[str, Any], *, seq: int) -> N
         if "reason" in data:
             _validate_turn_reason(data["reason"], ctx)
         return
+    if event_type == "task.state":
+        _validate_task_state(data, ctx)
+        return
+    if event_type == "task.handoff":
+        _validate_task_handoff(data, ctx)
+        return
+    if event_type == "task.handoff.result":
+        _validate_task_handoff_result(data, ctx)
+        return
     raise UnknownEventError(
         f"unknown event type {event_type!r} at seq {seq}: plugin events must use the plugin.<id>.<event> namespace"
     )
@@ -937,6 +955,98 @@ def _validate_run_checkpoint(raw: object, ctx: str) -> None:
         _string(decision["approval_id"], "approval_id", approval_ctx)
         _string(decision["tool_call_id"], "tool_call_id", approval_ctx)
         _string(decision["state"], "state", approval_ctx)
+
+
+def _validate_task_budget(raw: object, ctx: str) -> None:
+    budget = _object(raw, {"max_steps", "max_tokens", "max_seconds"}, {"max_steps"}, ctx)
+    _integer(budget["max_steps"], "max_steps", ctx, minimum=1)
+    if "max_tokens" in budget:
+        _integer(budget["max_tokens"], "max_tokens", ctx, minimum=1)
+    if "max_seconds" in budget and _number(budget["max_seconds"], "max_seconds", ctx) <= 0:
+        raise EventFieldError(f"{ctx} has invalid value {budget['max_seconds']!r} for field 'max_seconds'")
+
+
+def _validate_task(raw: object, ctx: str) -> None:
+    task = _object(
+        raw,
+        {"id", "objective", "status", "budget", "created_at", "owner", "parent"},
+        {"id", "objective", "status", "budget", "created_at"},
+        ctx,
+    )
+    _identifier(task["id"], "id", ctx, TASK_ID_RE)
+    _string(task["objective"], "objective", ctx)
+    _enum(task["status"], TASK_STATUSES, "status", ctx)
+    _validate_task_budget(task["budget"], f"{ctx} budget")
+    _string(task["created_at"], "created_at", ctx)
+    if "owner" in task and task["owner"] is not None:
+        _string(task["owner"], "owner", ctx)
+    if "parent" in task and task["parent"] is not None:
+        _identifier(task["parent"], "parent", ctx, TASK_ID_RE)
+
+
+def _validate_task_state(raw: object, ctx: str) -> None:
+    state = _object(raw, {"action", "task"}, {"action", "task"}, ctx)
+    _enum(state["action"], TASK_STATE_ACTIONS, "action", ctx)
+    _validate_task(state["task"], f"{ctx} task")
+
+
+def _validate_task_handoff(raw: object, ctx: str) -> None:
+    handoff = _object(
+        raw,
+        {
+            "run_id",
+            "task_id",
+            "from",
+            "to",
+            "summary",
+            "prompt",
+            "turn",
+            "call_id",
+            "budget",
+            "open_items",
+            "created_at",
+        },
+        {"run_id", "from", "to", "summary", "created_at"},
+        ctx,
+    )
+    _string(handoff["run_id"], "run_id", ctx)
+    _string(handoff["from"], "from", ctx)
+    _string(handoff["to"], "to", ctx)
+    _string(handoff["summary"], "summary", ctx)
+    _string(handoff["created_at"], "created_at", ctx)
+    if "task_id" in handoff and handoff["task_id"] is not None:
+        _identifier(handoff["task_id"], "task_id", ctx, TASK_ID_RE)
+    if "prompt" in handoff:
+        _string(handoff["prompt"], "prompt", ctx)
+    if "turn" in handoff:
+        _integer(handoff["turn"], "turn", ctx)
+    if "call_id" in handoff:
+        _string(handoff["call_id"], "call_id", ctx)
+    if "budget" in handoff:
+        _validate_task_budget(handoff["budget"], f"{ctx} budget")
+    if "open_items" in handoff:
+        items = handoff["open_items"]
+        if not isinstance(items, list):
+            raise EventFieldError(f"{ctx} field 'open_items' must be an array")
+        for item in items:
+            _string(item, "open_item", ctx)
+
+
+def _validate_task_handoff_result(raw: object, ctx: str) -> None:
+    result = _object(
+        raw,
+        {"run_id", "task_id", "ok", "result", "error"},
+        {"run_id", "ok", "result"},
+        ctx,
+    )
+    _string(result["run_id"], "run_id", ctx)
+    if "task_id" in result and result["task_id"] is not None:
+        _identifier(result["task_id"], "task_id", ctx, TASK_ID_RE)
+    if not isinstance(result["ok"], bool):
+        raise EventFieldError(f"{ctx} has invalid value {result['ok']!r} for field 'ok'")
+    _string(result["result"], "result", ctx, allow_empty=True)
+    if "error" in result and result["error"] is not None:
+        _string(result["error"], "error", ctx, allow_empty=True)
 
 
 def _association(event_type: str, raw: Mapping[str, Any], seq: int) -> dict[str, str | None]:

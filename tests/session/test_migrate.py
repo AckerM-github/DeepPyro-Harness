@@ -314,7 +314,7 @@ def test_session_migrate_service_runs_through_a_plugin_context(tmp_path: pathlib
     from deeppyro.session.migrate_service import SessionMigratePlugin
 
     v4 = _v4_root(tmp_path)
-    cfg = Config.model_validate({"sessionDir": str(v4)})
+    cfg = Config.model_validate({"session_dir": str(v4)})
     plugin = SessionMigratePlugin(_Ctx({"config": SimpleNamespace(value=cfg)}))
     assert SessionMigratePlugin.provide == "session_migrate"
     assert SessionMigratePlugin.inject == ["config"]

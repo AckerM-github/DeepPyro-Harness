@@ -14,7 +14,7 @@ DeepPyro started as a Python port of DeepSeek Harness (DSH). The plugin kernel i
 - `src/deeppyro/core/wire.py` defines DSH v4 message and record models with camelCase fields.
 - `src/deeppyro/session/events.py` validates 62 DSH record types; `surfaceOp` and `sourceEventSeqs` encode interval-based surface rewriting.
 - `src/deeppyro/core/events.py` declares 115 event names, 91 of which are reserved and never produced; `core/event_catalog.py` mirrors 94 DSH bus events and asar call sites.
-- 38 source files import `deeppyro.core.wire` (37 at M0 plus the one documented M2 provider adapter, §6.2); string service lookup is gone from the plugin contract (M3), leaving only deprecated host-level helpers for embedders; the config model emits snake_case and still accepts camelCase aliases.
+- 39 source files import `deeppyro.core.wire` (45 import statements; 37 at M0 plus the one documented M2 provider adapter, §6.2); string service lookup is gone from the plugin contract (M3) and the deprecated host-level helpers were removed in 0.2.0 (KI-035); the config model emits snake_case (its camelCase input aliases were removed in 0.2.0, KI-013).
 - The agent turn/step loop in `src/deeppyro/agent/session_turn.py` still infers phases from record sequences and uses a collaborative `asyncio.Event` for cancellation.
 
 Those contracts are not just naming. They force every new feature to answer "what does DSH do?", make replay and trace correlation expensive, and keep TypeScript runtime concepts in a Python product. At the same time, DSH contains design assets worth keeping: everything-is-a-plugin, declarative bundles, service contracts with lifecycle, durable-log-first, capability contribution, adapter boundaries, least privilege, and replayability.
@@ -138,7 +138,7 @@ M0 may add documentation and baseline data only. It may not edit `src/`, `tests/
 | Lanes drift for weeks | 2–3 day merge cadence; M1/M2/M3 hard gates; one integrator |
 | "Remove DSH" turns into removing good design | This ADR's D3 retain/remove lists; design review checks both columns |
 | AI-native work is deferred again | Trace/ContextPlan/checkpoint are exit gates, not backlog items |
-| 3690 tests churn (3352 at M0) | Behavior snapshots first; only wire-format assertions are rewritten; tool schema snapshot byte-stable |
+| 4028 tests churn (3352 at M0) | Behavior snapshots first; only wire-format assertions are rewritten; tool schema snapshot byte-stable |
 | Hidden coupling to `core.wire` | Import gate from M1; count only decreases; no dual-write bridge |
 | Performance regression from pydantic on hot path | `dataclass` for messages/events; pydantic only at I/O and tool-argument boundaries |
 
@@ -159,7 +159,7 @@ M0 may add documentation and baseline data only. It may not edit `src/`, `tests/
 | Alternative | Why rejected |
 |---|---|
 | **A. De-brand only** | Renames fields but keeps v4 interval fold, DSH loop shape and string events; does not meet Pythonization or AI-nativeness. |
-| **C. Full rewrite** | Discards a working plugin kernel, tool pipeline, sandbox, TUI and the 3352-test M0 suite (3690 today); 8–12 weeks and a second ecosystem. |
+| **C. Full rewrite** | Discards a working plugin kernel, tool pipeline, sandbox, TUI and the 3352-test M0 suite (4028 today); 8–12 weeks and a second ecosystem. |
 | **Sequential P → Y → A** | Three big-bang migrations; each later track reopens the previous contract. |
 | **Keep a v4 reader "just in case"** | Permanent dual semantics, two test surfaces, and every new record needs a compatibility decision. Rejected by D2. |
 | **Keep string service lookup for plugin compatibility** | Type checking cannot see services; API v3 hard cut is cheaper than a permanent string bridge. |
@@ -212,7 +212,7 @@ Status: **complete for the loop/contract scope (2026-11-17)**. M2 wires the nati
 - [x] Tests: 63 under `tests/native/` (differential, context plan, budget, loop, kill/resume checkpoint, headless switch) + 11 native run-event tests; schema tests updated for the 27-member enum.
 - [x] Gates: `ruff check src tests` 0; `ruff format --check src tests` 0; `scripts/typecheck.py` 79 errors, 0 new; `python -m pytest -q` 3542 passed (M1 baseline 3465 + 77 new M2 tests), 0 failed, 0 skipped.
 
-Known deviation from §4 rule 1: `src/deeppyro/agent/native_provider.py` is the only new `deeppyro.core.wire` importer (37 pre-existing → 38 files). M2 must call the M1 `LlmProvider`; this is the provider-adapter boundary already permitted by schema §6.5 and is documented in the module docstring and schema §6.5. It disappears with the M3 provider port, after which rule 1 becomes enforceable by a monotone importer-count check. No other M2 module imports `core.wire` (verified: 38 importer files total, one of them this adapter). **0.2.0 status:** the M3 provider port was not delivered, so this seam and all 38 importers remain; tracked as KI-010 in `docs/release/0.2.0-known-issues.md`.
+Known deviation from §4 rule 1: `src/deeppyro/agent/native_provider.py` is the only new `deeppyro.core.wire` importer (37 pre-existing → 38 files at M2; 39 files / 45 imports in the 0.2.0 review). M2 must call the M1 `LlmProvider`; this is the provider-adapter boundary already permitted by schema §6.5 and is documented in the module docstring and schema §6.5. It disappears with the M3 provider port, after which rule 1 becomes enforceable by a monotone importer-count check. No other M2 module imports `core.wire` (verified: 38 importer files total, one of them this adapter). **0.2.0 status:** the M3 provider port was not delivered, so this seam and all 39 importers remain; tracked as KI-010 in `docs/release/0.2.0-known-issues.md`.
 
 Not done in M2 (deliberately):
 
@@ -266,7 +266,9 @@ with positional parameters, is rejected at load time with a migration hint.
 - [x] snake_case config skeleton: `config.py` models accept both spellings
   (`ConfigDict(populate_by_name=True)` plus validation aliases) while attributes, dumps and docs
   are snake_case (`base_url`, `api_key_env`, `context_window`, `max_tokens`,
-  `max_steps`, `session_dir`). Existing camelCase `~/.dpro/config.toml` files keep loading;
+  `max_steps`, `session_dir`). Existing camelCase `~/.dpro/config.toml` files keep loading
+  (**0.2.0 update / KI-013:** the aliases and `populate_by_name` were removed; camelCase keys and
+  unknown schema keys now raise `ConfigError`; migration in `docs/guides/config-migration.md`);
   `DEFAULT_TOML` uses snake_case for the keys `config.py` owns (plugin-owned sections keep
   their own schemas). `ModelProfile` (capabilities/context/cost) and the in-memory
   `builtin/usage.py:UsageService` cost-accounting skeleton are covered by
@@ -289,7 +291,8 @@ Interface changes other lanes must adapt:
   `ctx.require(Contract)` or `ctx.has(Contract)`. Unknown attributes raise `AttributeError`.
 - `Plugin.setup` takes no arguments; plugins declare `api_version = 3`; `inject` may contain
   contract classes or service names (classes preferred).
-- Config attributes are snake_case; camelCase constructor keywords and TOML keys still validate.
+- Config attributes are snake_case; camelCase constructor keywords and TOML keys are rejected with a
+  `ConfigError` naming the snake_case replacement (0.2.0 / KI-013).
   Wire/event payload keys (for example `maxTokens` in request payloads) are frozen and were not
   renamed.
 - New modules: `api/capabilities.py`, `api/version.py`, `kernel/bundle_schema.py`,
@@ -334,14 +337,14 @@ M4 open items (deliberately not done):
 
 ## 6.5 M5 deliverables and exit checklist
 
-Status: **complete for documentation and release packaging (2026-11-18); 0.2.0 release candidate prepared, not tagged**. M5's original scope also named snake_case config and native fixtures; config landed in M3 (snake_case output with camelCase input aliases) and native fixtures in M0/M2, so M5 is the documentation/release lane.
+Status: **complete for documentation and release packaging (2026-11-18); 0.2.0 release candidate prepared, not tagged**. M5's original scope also named snake_case config and native fixtures; config landed in M3 (snake_case output, and camelCase input aliases removed in 0.2.0 by KI-013) and native fixtures in M0/M2, so M5 is the documentation/release lane.
 
 - [x] Version 0.2.0 in `pyproject.toml`, `src/deeppyro/__init__.py` and `uv.lock`; distribution name `deeppyro-harness`.
 - [x] Reader-facing docs: `README.md` (native harness, 0.2.0 status), `docs/README.md` (documentation entry and authority map), `docs/spec/README.md` (spec index with status labels), `docs/plugins/README.md` (API v3 author guide) and `docs/plugins/migration-v2-v3.md`.
 - [x] Release/ops docs: `docs/release/0.2.0.md` (breaking changes, gates, limits), `docs/release/dsh-audit.md` (brand/legacy audit), `docs/ops/telemetry.md` (no telemetry; opt-in boundary) and `docs/release/0.2.0-known-issues.md` (single residual index).
-- [x] Native docs aligned: `docs/native/README.md` and `docs/native/schema.md` state M0–M4 implementation, schema 1 unchanged by M3/M4, and the 0.2.0 runtime boundary (native is opt-in; v4 remains default).
-- [x] Gate evidence on the integrated tree: `ruff check`/`format --check` clean; pyright 79 errors, 0 new; `pytest` **3690 passed, 0 failed, 0 skipped**; `scripts/record_replay.py all` native 10/10 and golden 20/20.
-- [x] Residual gaps documented instead of silently closed: camelCase TOML still accepted; DSH brand references remain (379 lines/91 files at audit); native CI is `continue-on-error`; the v4 runtime is still the default; clean checkouts skip reader fixtures when `manifest.json` is absent. Live status is in `docs/release/0.2.0-known-issues.md`.
+- [x] Native docs aligned: `docs/native/README.md` and `docs/native/schema.md` state M0–M4 implementation, 30 core EventKinds (3 `task.*` added by KI-011), and the 0.2.0 runtime boundary (headless defaults to native; TUI interaction remains v4; native sessions are read-only visible in the TUI).
+- [x] Gate evidence on the integrated tree: `ruff check`/`format --check` clean; pyright 79 errors, 0 new; full `pytest` green (measured counts in `docs/release/0.2.0.md` §4); `scripts/record_replay.py all` native 10/10 and golden 20/20.
+- [x] Residual gaps documented instead of silently closed: camelCase TOML aliases were removed in 0.2.0 (KI-013); DSH brand references remain (377 lines/94 files at audit, KI-032); native CI is blocking (KI-031); headless defaults to native while TUI interaction is still v4 (KI-001); clean checkouts no longer skip reader tests thanks to synthetic fixtures (KI-030). Live status is in `docs/release/0.2.0-known-issues.md`.
 
 ## 7. Decisions locked at M0
 

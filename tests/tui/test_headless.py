@@ -483,10 +483,10 @@ class FakeKernelApp:
 
 
 def make_config(*, models: list[ModelConfig] | None = None, agent_model: str = "declared-1") -> Config:
-    entries = models or [ModelConfig(id="declared-1", contextWindow=32768)]
+    entries = models or [ModelConfig(id="declared-1", context_window=32768)]
     return Config(
         providers={
-            "local": ProviderConfig(baseURL="http://127.0.0.1:8000/v1", models=entries),
+            "local": ProviderConfig(base_url="http://127.0.0.1:8000/v1", models=entries),
         },
         agent=AgentConfig(provider="local", model=agent_model),
     )
@@ -604,7 +604,7 @@ async def test_boot_runtime_uses_configured_window_without_discovery(
     llm = FakeLlmService()
     kernel_app = make_kernel_app(llm)
     patch_kernel_boot(monkeypatch, kernel_app)
-    config = make_config(models=[ModelConfig(id="declared-1", contextWindow=65536)])
+    config = make_config(models=[ModelConfig(id="declared-1", context_window=65536)])
     runtime = await headless.boot_runtime(config=config, cwd=tmp_path, model="declared-1")
     try:
         assert runtime.context_window == 65536

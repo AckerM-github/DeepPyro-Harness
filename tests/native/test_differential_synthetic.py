@@ -7,22 +7,28 @@ a temporary directory, read back through the production parsers (read_session_fi
 NativeCodec, fold, derive_messages) and compared semantically; nothing here touches
 the network, the 26 MB recorded session corpus, or node.
 
-The handoff case is xfail until a vocabulary records multi-agent handoff facts
-(native schema 5.2 reserves the subagent/team events; session v4 has no handoff
-record type), so the gap stays visible instead of turning green.
+The handoff case is covered by the task facts both vocabularies express: session v4
+keeps the task plugin payloads as ignorable extension records and native schema 1
+records task.state, task.handoff and task.handoff.result. The one boundary is where
+the per-handoff token snapshot lives (v4 log versus the native trace side channel);
+the case documents it in its limitations.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+from deeppyro.session.schema import EventKind
 from tests.native.synthetic import (
     CAPABILITIES,
+    HANDOFF_NATIVE_TYPES,
+    HANDOFF_V4_TYPES,
     DifferentialMismatch,
     MatrixRow,
-    NotSupportedError,
     SyntheticCase,
     check_matrix,
     compare_case,
@@ -55,15 +61,15 @@ def test_synthetic_case_is_semantically_equivalent(case: SyntheticCase, tmp_path
 
 
 def test_matrix_covers_every_protocol_surface() -> None:
-    """Every capability from KI-011 carries at least one case, xfail or not."""
+    """Every capability from KI-011 carries a covered case."""
     check_matrix(CASES)
     rows: list[MatrixRow] = matrix_rows(CASES)
     capabilities = {row.capability for row in rows}
     assert capabilities == set(CAPABILITIES)
     uncovered = {row.capability.value for row in rows if row.coverage.value == "xfail"}
-    assert uncovered == {"handoff"}
-    covered = {row.capability.value for row in rows} - uncovered
-    assert covered == {"image", "approval", "compaction", "mcp", "ptc", "subagent"}
+    assert uncovered == set()
+    covered = {row.capability.value for row in rows}
+    assert covered == {"image", "approval", "compaction", "mcp", "ptc", "subagent", "handoff"}
 
 
 def test_matrix_is_printed_as_a_ci_report(capsys: pytest.CaptureFixture[str]) -> None:
@@ -72,8 +78,8 @@ def test_matrix_is_printed_as_a_ci_report(capsys: pytest.CaptureFixture[str]) ->
         print(render_matrix(CASES))
     report = render_matrix(CASES)
     assert report.startswith("native synthetic differential coverage (KI-011)")
-    assert "covered: approval, compaction, image, mcp, ptc, subagent" in report
-    assert "xfail (KI-011): handoff" in report
+    assert "covered: approval, compaction, handoff, image, mcp, ptc, subagent" in report
+    assert "xfail (KI-011): -" in report
     assert "hand-authored" in report
 
 
@@ -92,14 +98,20 @@ def test_covered_cases_are_offline_pairs() -> None:
         assert fixture.stat().st_size < 64 * 1024
 
 
-def test_handoff_still_has_no_representation() -> None:
-    """The xfail is honest: the missing vocabularies are the reason, not the fixture."""
+def test_handoff_case_is_covered_by_task_facts() -> None:
+    """The handoff gap is closed on both sides; no xfail hides a missing vocabulary."""
     handoff = next(case for case in CASES if case.capability.value == "handoff")
-    with pytest.raises(NotSupportedError, match="KI-011"):
-        handoff.require_representation()
-    reason = handoff.xfail_reason
-    assert reason is not None
-    assert "handoff/*" in reason or "handoff" in reason
+    handoff.require_representation()
+    assert handoff.coverage.value == "covered"
+    assert handoff.xfail_reason is None
+    assert handoff.v4 is not None
+    assert handoff.native is not None
+    kinds = {kind.value for kind in EventKind}
+    assert set(HANDOFF_NATIVE_TYPES) <= kinds
+    v4 = cast(Mapping[str, object], handoff.v4)
+    records = cast(Sequence[Mapping[str, object]], v4["records"])
+    types = {record.get("type") for record in records}
+    assert set(HANDOFF_V4_TYPES) <= types
 
 
 def test_unknown_capability_is_rejected(tmp_path: Path) -> None:

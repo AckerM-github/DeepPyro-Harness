@@ -229,8 +229,7 @@ class PresetsPlugin(Service):
         """Check a preset's model override against the host provider config.
 
         Mirrors config lint: a mismatch is a ConfigWarning by default and a
-        hard ConfigError when strict mode is on (DEEPPYRO_STRICT_CONFIG, the
-        same switch config lint reads). "Not declared" means "any model the
+        hard ConfigError when strict mode is on (DEEPPYRO_STRICT_CONFIG). "Not declared" means "any model the
         provider accepts": a provider without a models list is a wildcard.
         The check runs on registration and on each resolve (application), so a
         config edit made after registration is caught before the next request.
@@ -238,7 +237,7 @@ class PresetsPlugin(Service):
         issue = self._preset_model_issue(preset_id, model)
         if issue is None:
             return
-        if _strict_requested({}, None):
+        if _strict_requested():
             raise ConfigError(f"invalid preset model: {issue}")
         key = (preset_id, model)
         if key in self._model_issues:

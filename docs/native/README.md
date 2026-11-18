@@ -6,13 +6,13 @@ Status: **M0–M4 complete; headless runs native by default in 0.2.0 (2026-11-18
 
 | Path | What it is |
 | --- | --- |
-| [schema.md](schema.md) | Native session schema 1: header, envelope, 27 core `EventKind`s, Message model, fold, trace, errors, fork/resume/checkpoint, 15 recorded refinements (D-1..D-15). 476 lines. |
+| [schema.md](schema.md) | Native session schema 1: header, envelope, 30 core `EventKind`s, Message model, fold, trace, errors, fork/resume/checkpoint, 15 recorded refinements (D-1..D-15). 476 lines. |
 | [../adr/0001-three-track-native-agent.md](../adr/0001-three-track-native-agent.md) | ADR: three-track break, zero compatibility, retained DSH design assets, milestones and hard gates, locked M0 decisions. |
 | [../../fixtures/native/](../../fixtures/native/) | 10 real provider recordings, manifest with checksums, validation report, and the two small files used by the sequential-tool case. |
 | [README.md](README.md) | This implementation, provenance, layout, validation and replay note. |
 | [coverage.md](coverage.md) | What the recorded baseline proves, which surfaces must be synthesized (`tests/fixtures/native/synthetic/`), and how much re-recording costs. |
 | [../../src/deeppyro/core/messages.py](../../src/deeppyro/core/messages.py) | Frozen native `Message`, four content parts and eight sources; strict role/part matrix and JSON round-trip. |
-| [../../src/deeppyro/session/schema.py](../../src/deeppyro/session/schema.py) | Schema 1 header/envelope, 27 core `EventKind`s, `NativeCodec` reader/writer, writer lock and atomic append. |
+| [../../src/deeppyro/session/schema.py](../../src/deeppyro/session/schema.py) | Schema 1 header/envelope, 30 core `EventKind`s, `NativeCodec` reader/writer, writer lock and atomic append. |
 | [../../src/deeppyro/session/fold.py](../../src/deeppyro/session/fold.py) | Pure fold to `SessionView`: replacement, compaction, state, approvals, tool pairing and missing-result repair. |
 | [../../src/deeppyro/observability/trace.py](../../src/deeppyro/observability/trace.py) | Trace records, canonical hashing, strict reader and `join_trace` against session events. |
 | [../../src/deeppyro/agent/loop.py](../../src/deeppyro/agent/loop.py) | Native `AgentLoop`: fold → `ContextPlan` → provider stream → assistant message, tools, budget/cancel, `run.*` events and trace. |
@@ -116,7 +116,7 @@ Behavioral notes:
 - **Append is all-or-nothing.** The writer validates the event and its seq/turn/step order before writing; a failed write truncates back to the previous offset. A second writer fails on the `<id>.jsonl.lock` file.
 - **The trace store is separate.** Default location is `~/.dpro/traces/<run_id>.jsonl`, overridable with `DEEPPYRO_TRACES_DIR`; records carry hashes, sizes, latency and IDs, never message text or tool arguments.
 - **Trace smoke is real-session based.** `test_trace_join_smoke_with_native_session` writes a native turn with one tool call, writes one model-call and one tool-call trace record, then joins both by `run_id`/step/call ID.
-- **Headless defaults to native; TUI does not.** `AgentLoop` is the default for headless `run_once` (`DEEPPYRO_NATIVE_LOOP=0` or `--legacy-v4` selects the v4 path). TUI interaction and `--legacy-v4` headless runs still emit v4 events. Native trace is emitted by the native loop, not by the v4 path. Full 0.2.0 suite passes with 1 expected xfail (handoff differential).
+- **Headless defaults to native; TUI does not.** `AgentLoop` is the default for headless `run_once` (`DEEPPYRO_NATIVE_LOOP=0` or `--legacy-v4` selects the v4 path). TUI interaction and `--legacy-v4` headless runs still emit v4 events. Native trace is emitted by the native loop, not by the v4 path. Full 0.2.0 suite passes with no expected xfails (the handoff differential is covered).
 
 ## Known anomalies and limits
 
@@ -125,8 +125,8 @@ Behavioral notes:
 - Case 07's two calls were emitted voluntarily by the model in one response; the recorder did not retry to force them.
 - Cases 08 and 10 intentionally produce error tool results. Case 10's shell denial is simulated by the harness; no shell command ran.
 - Cases 08 and 09 contain the capture workspace path `D:/dshworkspace/m0/...` inside tool arguments/results. It is data from the real stream and is preserved byte-for-byte for replay; do not rewrite recordings.
-- The baseline does not cover image/attachment parts, approval prompts, compaction checkpoints, MCP/PTC, subagents or multi-agent handoff. Hand-authored offline pairs under `tests/fixtures/native/synthetic/` now cover six of them in the native/v4 differential; handoff remains a strict xfail citing KI-011. Matrix, synthesis rules and re-recording cost: [coverage.md](coverage.md).
-- The full 0.2.0 residual list — TUI still v4, v4 coexistence, handoff differential gap, provider seam and accepted CI exceptions — is indexed in [docs/release/0.2.0-known-issues.md](../release/0.2.0-known-issues.md).
+- The baseline does not cover image/attachment parts, approval prompts, compaction checkpoints, MCP/PTC, subagents or multi-agent handoff. Hand-authored offline pairs under `tests/fixtures/native/synthetic/` now cover all seven in the native/v4 differential, including handoff. Matrix, synthesis rules and re-recording cost: [coverage.md](coverage.md).
+- The full 0.2.0 residual list — TUI still v4, v4 coexistence, provider seam and accepted recording-baseline limits — is indexed in [docs/release/0.2.0-known-issues.md](../release/0.2.0-known-issues.md).
 
 ## M0 exit state
 

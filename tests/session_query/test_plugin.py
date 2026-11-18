@@ -140,9 +140,9 @@ async def test_kernel_mounts_service(tmp_path: pathlib.Path) -> None:
         {
             "agent": {"provider": "local", "model": "m"},
             "providers": {
-                "local": {"api": "openai", "baseURL": "http://127.0.0.1:8000/v1", "models": [{"id": "m"}]}
+                "local": {"api": "openai", "base_url": "http://127.0.0.1:8000/v1", "models": [{"id": "m"}]}
             },
-            "sessionDir": str(tmp_path / "sessions"),
+            "session_dir": str(tmp_path / "sessions"),
         }
     )
     rows = (

@@ -34,7 +34,7 @@ def _config() -> Config:
         {
             "agent": {"provider": "local", "model": "m"},
             "providers": {
-                "local": {"api": "openai", "baseURL": "http://127.0.0.1:8000/v1", "models": [{"id": "m"}]}
+                "local": {"api": "openai", "base_url": "http://127.0.0.1:8000/v1", "models": [{"id": "m"}]}
             },
         }
     )

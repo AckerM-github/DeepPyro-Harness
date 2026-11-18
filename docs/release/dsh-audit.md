@@ -145,7 +145,7 @@ Get-ChildItem -Recurse src -File | Select-String -Pattern 'DSH' -CaseSensitive |
 ## 6. 不做的事（明确边界）
 
 - 本 M5 不改 `src` 代码（只改 `pyproject.toml` 与 `src/deeppyro/__init__.py` 的版本号）。
-- 0.2.0 不删除 `core/event_catalog.py`、不改 `core/wire.py`：v4 退出已推迟到 0.3，提前删除会破坏默认 TUI/headless 路径。
+- 0.2.0 不删除 `core/event_catalog.py`、不改 `core/wire.py`：v4 退出已推迟到 0.3，提前删除会破坏默认 TUI 交互路径与 `--legacy-v4` headless 路径。
 - 不批量改测试与 fixtures：等 M2 的会话/事件替换落地后再改，避免重复返工。
 - `docs/` 中的历史引用不要求清零；由 `docs/spec/README.md` 标注状态即可。
 

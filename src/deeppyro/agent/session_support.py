@@ -114,7 +114,7 @@ def _usage_dict(usage: Usage) -> dict[str, int]:
 def _truncation_message(max_tokens: int | None, dropped_calls: int) -> str:
     """Explain a max-tokens stop instead of silently ending the turn."""
     limit = max_tokens if max_tokens is not None else "the configured limit"
-    message = f"response truncated at maxTokens={limit}"
+    message = f"response truncated at max_tokens={limit}"
     if dropped_calls:
         message += f"; {dropped_calls} tool call(s) were not executed"
     return message + "; raise maxTokens or split the work into smaller steps"

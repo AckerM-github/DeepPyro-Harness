@@ -16,8 +16,8 @@
 | `setup(self)` 成为唯一 mount 形状 | 已实现（M3） | 位置参数形式的 setup 在挂载时拒绝并给出迁移提示 |
 | typed `inject`（契约类）与 zero-string service 查找 | 已实现（M3） | 插件侧 `ctx.get/require/has` 只接受契约类；字符串抛 `TypeError` |
 | `CapabilityManifest` 能力清单 | 已实现（M3） | 插件的 `capability_manifest()` 从类属性派生，见 §4 |
-| 配置键 snake_case（含插件 row config） | 已落地（M3） | 属性与输出为 snake_case；0.2.0 仍读取旧 camelCase TOML alias |
-| 会话日志格式 | native schema 1 仅用于 native loop | 默认 TUI/headless/run_code 仍走 v4；插件不得假设只有一种格式 |
+| 配置键 snake_case（含插件 row config） | 已落地（M3）；0.2.0 起严格 | 属性与输出为 snake_case；camelCase TOML alias 与 schema 未知键抛 `ConfigError`，见 `docs/guides/config-migration.md` |
+| 会话日志格式 | native schema 1 | headless 默认 native（`--legacy-v4` 回退），TUI 交互仍写 v4；插件不得假设只有一种格式 |
 
 插件包与 bundle 的文件形态（`bundle.toml` + `[[plugins]]` 行）不变。`bundle.api_version` 必须等于 3
 （省略时默认 3）；其它值在加载期直接 `CompositionError`。
@@ -307,6 +307,7 @@ await app.dispose()
   不变（违规抛 `DeeppyroError` 并回滚切换），只有新会话或显式 fork 才写入新的 `agentPreset`。
 - preset 的 `model` 在注册（`add()`）与应用（`resolve()`）时按 `[providers]` 配置校验：默认
   `ConfigWarning`，`DEEPPYRO_STRICT_CONFIG` 下为 `ConfigError`；未知 provider/model 不再等下一次请求才失败。
+  配置加载本身自 0.2.0 起始终严格，这个开关只影响 preset-model 校验。
 - headless 默认写 native schema 1（`--legacy-v4` 回退），TUI 交互仍写 v4；插件不要假设只有一种会话格式。
   两种格式可用 `dpyro migrate` 转换但不 dual-write、不互读；v4 预计 0.3 移除。
 

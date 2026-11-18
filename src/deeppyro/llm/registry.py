@@ -52,7 +52,7 @@ _ANTHROPIC_APIS = frozenset(
     }
 )
 
-#: Hint shown when an Anthropic provider omits baseURL (it has no default on purpose).
+#: Hint shown when an Anthropic provider omits base_url (it has no default on purpose).
 _DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 
 
@@ -60,7 +60,7 @@ def create_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) 
     """Build the LlmProvider described by one ProviderConfig.
 
     Raises ConfigError for an unknown api kind or an Anthropic provider without an explicit
-    baseURL, so misconfiguration fails at startup instead of on the first request.
+    base_url, so misconfiguration fails at startup instead of on the first request.
     """
     api = (pc.api or "").strip().lower()
     if api in _OPENAI_COMPAT_APIS:
@@ -74,7 +74,7 @@ def create_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) 
     if api in _ANTHROPIC_APIS:
         if "base_url" not in pc.model_fields_set or not pc.base_url.strip():
             raise ConfigError(
-                f"provider {name!r} uses api {pc.api!r} but does not set baseURL; "
+                f"provider {name!r} uses api {pc.api!r} but does not set base_url; "
                 "Anthropic providers require an explicit endpoint "
                 f"(for the official API: {_DEFAULT_ANTHROPIC_BASE_URL})"
             )

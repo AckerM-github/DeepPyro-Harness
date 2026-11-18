@@ -15,7 +15,7 @@
 | 4 | `PluginContext` 封闭，不再把未知属性代理到 runtime context | 依赖 `ctx.on/emit/effect` 的插件 | ✅ M3 已实现 |
 | 5 | `CapabilityManifest` 成为插件契约的一部分 | 能力治理、审计、成本 | ✅ M3 已实现 |
 | 6 | `bundle.api_version` 必须为 3 | 所有 bundle | ✅ M3 已实现 |
-| 7 | 配置 canonical 键改 snake_case | `config.toml`、插件 `Config` | ⚠️ 0.2.0 仍读取 camelCase alias，0.3 移除 |
+| 7 | 配置 canonical 键改 snake_case | `config.toml`、插件 `Config` | ✅ 0.2.0 起严格：camelCase alias 与 schema 未知键抛 `ConfigError`，迁移见 `docs/guides/config-migration.md` |
 | 8 | 会话日志新增 native schema 1；headless 自 0.2.0 起默认 native，TUI 交互仍写 v4 | 读会话的插件 | ⚠️ 两种格式并存、不 dual-write、可用 `dpyro migrate` 转换；v4 预计 0.3 移除 |
 | 9 | 去品牌门禁（`rg -i dsh src` 接近 0） | `src/`、测试 fixtures | ⚠️ 未达标：377 行 / 94 文件（0.3 随 v4 清理） |
 | 10 | Node/TypeScript fixtures 退役，CI 不安装 Node | 测试、fixtures | ⚠️ 部分完成：合成 fixtures 已入库（46 文件），真实录制基线仍为未跟踪的 26.6MB |
@@ -37,7 +37,7 @@
 | 提供服务 | `ctx.provide("notes", value)` 或 `class Notes(Service)` | `Service` 子类 + `provide` |
 | 配置热更新 | `volatile` + `on_config(config)` | 不变 |
 | 清理 | `async def stop(self)` | 不变 |
-| 插件配置字段 | camelCase 或任意 pydantic 字段名 | snake_case（0.2.0 读 alias） |
+| 插件配置字段 | camelCase 或任意 pydantic 字段名 | snake_case（核心 `[agent]`/`[providers]` 表自 0.2.0 起严格；插件自有配置模型仍自定义字段） |
 | 能力声明 | 无 | `capability_manifest()` / 类属性 |
 | bundle 版本 | `api_version = 2` | `api_version = 3`（省略时默认 3） |
 | 安装方式 | `plugin.toml` 包 / `plugins.toml` / bundle 路径 | 三者保留；新增 entry points 发现 |
@@ -136,8 +136,8 @@ class GreetPlugin(Plugin):
 
 - 0.2.0 硬切 v3，不为 v2 提供 shim；0.x 版本允许破坏性变更。
 - 不希望迁移的插件可以继续锁定 `deeppyro-harness` 0.1.x；0.2.0 不保证 0.1.x 插件可加载。
-- 0.2.0 仍读取 camelCase 配置 alias，并在 native loop 之外保留 v4 会话；这两项计划在 0.3 移除。
-- `UsageService` 仍为记账骨架，未挂入 core bundle；能力清单已可供 inspect/工具读取。
+- 0.2.0 已移除 camelCase 配置 alias 并始终严格校验（迁移见 `docs/guides/config-migration.md`）；v4 会话读写路径仍保留，计划在 0.3 随 TUI 迁移退出。
+- `UsageService` 已挂入 core bundle（`usage` 行），每轮记账写入 `~/.dpro/usage/usage.jsonl`；能力清单仍可供 inspect/工具读取。
 
 ## 7. 参考
 

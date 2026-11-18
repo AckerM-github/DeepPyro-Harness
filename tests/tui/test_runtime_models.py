@@ -25,21 +25,21 @@ from tests.tui.test_app import FakeRuntime
 def make_config() -> Config:
     return Config.model_validate(
         {
-            "agent": {"provider": "local", "model": "local-model", "maxTokens": 4096},
+            "agent": {"provider": "local", "model": "local-model", "max_tokens": 4096},
             "providers": {
                 "local": {
-                    "baseURL": "http://127.0.0.1:8000/v1",
+                    "base_url": "http://127.0.0.1:8000/v1",
                     "models": [
-                        {"id": "local-model", "contextWindow": 32768},
-                        {"id": "local-small", "contextWindow": 8192},
+                        {"id": "local-model", "context_window": 32768},
+                        {"id": "local-small", "context_window": 8192},
                     ],
                 },
                 "deepseek": {
-                    "baseURL": "https://api.deepseek.com/v1",
-                    "apiKey": "sk-test",
-                    "models": [{"id": "deepseek-chat", "contextWindow": 65536}],
+                    "base_url": "https://api.deepseek.com/v1",
+                    "api_key": "sk-test",
+                    "models": [{"id": "deepseek-chat", "context_window": 65536}],
                 },
-                "keyless": {"baseURL": "https://example.invalid/v1", "models": []},
+                "keyless": {"base_url": "https://example.invalid/v1", "models": []},
             },
         }
     )

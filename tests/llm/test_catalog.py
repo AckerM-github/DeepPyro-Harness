@@ -23,7 +23,7 @@ from deeppyro.llm.errors import CODE_PROTOCOL, LlmRequestError
 
 
 def provider_config(**kwargs: object) -> ProviderConfig:
-    data = {"api": "openai-completions", "baseURL": "http://127.0.0.1:8000/v1", "models": []}
+    data = {"api": "openai-completions", "base_url": "http://127.0.0.1:8000/v1", "models": []}
     data.update(kwargs)
     return ProviderConfig.model_validate(data)
 
@@ -91,7 +91,7 @@ def test_model_info_to_dict_includes_optional_fields() -> None:
 def test_catalog_from_config_reads_models() -> None:
     pc = provider_config(
         models=[
-            {"id": "deepseek-chat", "name": "DeepSeek Chat", "contextWindow": 65536},
+            {"id": "deepseek-chat", "name": "DeepSeek Chat", "context_window": 65536},
             {"id": "local"},
         ]
     )
@@ -109,9 +109,9 @@ def test_catalog_from_config_accepts_extra_fields() -> None:
         models=[
             {
                 "id": "vision",
-                "contextWindow": 8192,
-                "maxTokens": 2048,
-                "inputModalities": ["text", "image", "audio"],
+                "context_window": 8192,
+                "max_tokens": 2048,
+                "input_modalities": ["text", "image", "audio"],
             }
         ]
     )

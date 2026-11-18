@@ -20,7 +20,7 @@ LlmError(STREAM_CLOSED) before that. Transport failures and provider error event
 the stream follow the same produced/not-produced split as OpenAICompatProvider.
 
 P1 scope (Lead decision, docs/archive/research/p1-providers.md): thinking blocks are streamed as
-ReasoningDelta but history reasoning is not replayed with a signature, and the baseURL must
+ReasoningDelta but history reasoning is not replayed with a signature, and the base_url must
 be configured explicitly because Anthropic has no default endpoint here.
 """
 
@@ -140,7 +140,7 @@ class AnthropicProvider:
     # -- plumbing -----------------------------------------------------------
     @property
     def messages_url(self) -> str:
-        """POST target; a baseURL that already names the endpoint is used verbatim."""
+        """POST target; a base_url that already names the endpoint is used verbatim."""
         base = self.base_url
         if base.endswith(_MESSAGES_SUFFIX):
             return base

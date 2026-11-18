@@ -89,6 +89,36 @@ class FoldIssue:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskFact:
+    """The last-wins task snapshot written by the task plugin."""
+
+    task_id: str
+    objective: str
+    status: str
+    owner: str | None
+    created_at: str
+    seq: int
+
+
+@dataclass(frozen=True, slots=True)
+class HandoffFact:
+    """One multi-agent handoff and its optional result, folded from task events."""
+
+    run_id: str
+    from_owner: str
+    to_owner: str
+    summary: str
+    task_id: str | None
+    created_at: str
+    seq: int
+    open_items: tuple[str, ...] = ()
+    result_ok: bool | None = None
+    result: str | None = None
+    error: str | None = None
+    result_seq: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SessionState:
     """Last-wins state projected from state events."""
 
@@ -119,6 +149,8 @@ class SessionView:
     last_message_id: str | None
     plugin_events: tuple[Event, ...]
     issues: tuple[FoldIssue, ...]
+    tasks: tuple[TaskFact, ...] = ()
+    handoffs: tuple[HandoffFact, ...] = ()
 
 
 @dataclass(slots=True)
@@ -151,6 +183,8 @@ class _Folder:
         self.turn_calls: dict[str, list[str]] = {}
         self.covered: set[str] = set()
         self.current_turn: str | None = None
+        self.tasks: dict[str, TaskFact] = {}
+        self.handoffs: dict[str, HandoffFact] = {}
 
     def run(self) -> SessionView:
         for event in self.events:
@@ -172,6 +206,8 @@ class _Folder:
             last_message_id=last_message_id,
             plugin_events=tuple(self.plugin_events),
             issues=tuple(self.issues),
+            tasks=tuple(self.tasks.values()),
+            handoffs=tuple(self.handoffs.values()),
         )
 
     def _last_seq(self) -> int:
@@ -281,6 +317,15 @@ class _Folder:
                     Deliverable(item["path"], item.get("description")) for item in event.data["files"]
                 ),
             )
+            return
+        if kind == "task.state":
+            self._task_state(event)
+            return
+        if kind == "task.handoff":
+            self._task_handoff(event)
+            return
+        if kind == "task.handoff.result":
+            self._task_handoff_result(event)
             return
 
     def _message(self, event: Event, key: str = "message") -> Message:
@@ -397,6 +442,58 @@ class _Folder:
                 f"approval id {approval_id!r} is not pending"
             )
         del self.pending[approval_id]
+
+    def _task_state(self, event: Event) -> None:
+        task = event.data["task"]
+        self.tasks[task["id"]] = TaskFact(
+            task_id=task["id"],
+            objective=task["objective"],
+            status=task["status"],
+            owner=task.get("owner"),
+            created_at=task["created_at"],
+            seq=event.seq,
+        )
+
+    def _task_handoff(self, event: Event) -> None:
+        data = event.data
+        run_id = data["run_id"]
+        if run_id in self.handoffs:
+            raise OrderingError(
+                f"event {event.type!r} at seq {event.seq} is not allowed here: "
+                f"handoff run id {run_id!r} is used more than once"
+            )
+        self.handoffs[run_id] = HandoffFact(
+            run_id=run_id,
+            from_owner=data["from"],
+            to_owner=data["to"],
+            summary=data["summary"],
+            task_id=data.get("task_id"),
+            created_at=data["created_at"],
+            seq=event.seq,
+            open_items=tuple(data.get("open_items", ())),
+        )
+
+    def _task_handoff_result(self, event: Event) -> None:
+        data = event.data
+        run_id = data["run_id"]
+        fact = self.handoffs.get(run_id)
+        if fact is None:
+            raise OrderingError(
+                f"event {event.type!r} at seq {event.seq} is not allowed here: "
+                f"handoff run id {run_id!r} has no task.handoff"
+            )
+        if fact.result_seq is not None:
+            raise OrderingError(
+                f"event {event.type!r} at seq {event.seq} is not allowed here: "
+                f"handoff run id {run_id!r} already has a result"
+            )
+        self.handoffs[run_id] = replace(
+            fact,
+            result_ok=data["ok"],
+            result=data["result"],
+            error=data.get("error"),
+            result_seq=event.seq,
+        )
 
     def _register_calls(self, message: Message, event: Event) -> None:
         turn_id = _require_turn(event)
@@ -516,10 +613,12 @@ __all__ = [
     "ApprovalRecord",
     "Deliverable",
     "FoldIssue",
+    "HandoffFact",
     "ModelSelection",
     "PresetSelection",
     "SessionState",
     "SessionView",
+    "TaskFact",
     "TodoItem",
     "fold",
 ]

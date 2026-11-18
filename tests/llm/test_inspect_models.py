@@ -29,8 +29,8 @@ def make_config() -> Config:
     return Config(
         providers={
             "local": ProviderConfig(
-                baseURL="http://127.0.0.1:8000/v1",
-                models=[ModelConfig(id="m", name="Model M", contextWindow=32768)],
+                base_url="http://127.0.0.1:8000/v1",
+                models=[ModelConfig(id="m", name="Model M", context_window=32768)],
             )
         },
         agent={"provider": "local", "model": "m"},

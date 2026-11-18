@@ -103,8 +103,8 @@ def _runner(
 def _config(*, api_key: str | None = "test-key") -> Config:
     provider: dict[str, Any] = {
         "api": "openai",
-        "baseURL": "http://127.0.0.1:9/v1",
-        "apiKeyEnv": TEST_API_KEY_ENV,
+        "base_url": "http://127.0.0.1:9/v1",
+        "api_key_env": TEST_API_KEY_ENV,
         "models": [
             {
                 "id": "test-model",
@@ -113,7 +113,7 @@ def _config(*, api_key: str | None = "test-key") -> Config:
         ],
     }
     if api_key is not None:
-        provider["apiKey"] = api_key
+        provider["api_key"] = api_key
     return Config.model_validate(
         {
             "agent": {"provider": "local", "model": "test-model"},

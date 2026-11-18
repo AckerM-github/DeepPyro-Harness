@@ -171,6 +171,38 @@ def valid_data() -> dict[str, dict[str, object]]:
             "approvals": [],
         },
         "run.finished": {"status": "completed", "reason": {"kind": "completed"}},
+        "task.state": {
+            "action": "create",
+            "task": {
+                "id": "task_0000000000000011",
+                "objective": "ship the native handoff vocabulary",
+                "status": "in_progress",
+                "owner": None,
+                "parent": None,
+                "budget": {"max_steps": 32},
+                "created_at": "2026-11-18T00:00:00.000Z",
+            },
+        },
+        "task.handoff": {
+            "run_id": "handoff-0123456789ab",
+            "task_id": "task_0000000000000011",
+            "from": "lead",
+            "to": "subagent:handoff-0123456789ab",
+            "summary": "carry the context",
+            "prompt": "write the report",
+            "turn": 1,
+            "call_id": CALL_ID,
+            "budget": {"max_steps": 32},
+            "open_items": ["append appendix"],
+            "created_at": "2026-11-18T00:00:01.000Z",
+        },
+        "task.handoff.result": {
+            "run_id": "handoff-0123456789ab",
+            "task_id": "task_0000000000000011",
+            "ok": True,
+            "result": "done",
+            "error": "",
+        },
     }
 
 
@@ -179,9 +211,9 @@ def test_every_event_kind_accepts_its_documented_shape(kind: EventKind) -> None:
     validate_event_data(kind.value, valid_data()[kind.value], seq=1)
 
 
-def test_event_kind_catalog_is_exactly_27() -> None:
-    assert len(EventKind) == 27
-    assert len({kind.value for kind in EventKind}) == 27
+def test_event_kind_catalog_is_exactly_30() -> None:
+    assert len(EventKind) == 30
+    assert len({kind.value for kind in EventKind}) == 30
 
 
 def test_header_round_trip_and_filename_check(tmp_path: Path) -> None:

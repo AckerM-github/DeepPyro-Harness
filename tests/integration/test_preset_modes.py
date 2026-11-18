@@ -36,9 +36,11 @@ class DummySink:
 
 def _config(tmp_path: Path) -> Config:
     return Config(
-        providers={"local": ProviderConfig(baseURL="http://127.0.0.1:8000/v1", models=[ModelConfig(id="m")])},
+        providers={
+            "local": ProviderConfig(base_url="http://127.0.0.1:8000/v1", models=[ModelConfig(id="m")])
+        },
         agent={"provider": "local", "model": "m"},
-        sessionDir=tmp_path / "sessions",
+        session_dir=tmp_path / "sessions",
     )
 
 

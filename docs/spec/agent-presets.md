@@ -164,9 +164,9 @@ registered (`add()`) and again when it is resolved for use (`resolve()`):
 - the provider checked is `[agent].provider`; an unknown provider name is reported;
 - when that provider declares a `models` list, the declared model must be one of its ids;
 - a provider that declares no `models` list is a wildcard and accepts any model id;
-- severity mirrors the configuration lint: a `ConfigWarning` by default and a `ConfigError`
-  when strict configuration is on (`DEEPPYRO_STRICT_CONFIG`, the same switch the config loader
-  reads). The message names the preset, model and provider, for example:
+- severity is independent of configuration loading (which is always strict since 0.2.0): a
+  `ConfigWarning` by default and a `ConfigError` when `DEEPPYRO_STRICT_CONFIG` is set. The
+  message names the preset, model and provider, for example:
   `preset 'reviewer' model 'reviewer-model' is not offered by provider 'local' (offers: m)`.
 
 Warn mode does not reject the registration: the preset stays registered and the problem is
