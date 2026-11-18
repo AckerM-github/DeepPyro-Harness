@@ -124,6 +124,7 @@ class RunResult:
     usage: BudgetUsage
     last_message_id: str | None
     checkpoint_path: Path | None
+    cached_input_tokens: int = 0
 
 
 class AgentLoop:
@@ -323,6 +324,7 @@ class AgentLoop:
                 usage=BudgetUsage.from_dict(self._usage.to_dict()),
                 last_message_id=self._last_message_id,
                 checkpoint_path=self._last_checkpoint_path,
+                cached_input_tokens=self._turn_cached_tokens,
             )
         finally:
             self._running = False

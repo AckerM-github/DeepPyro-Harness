@@ -91,6 +91,7 @@ async def test_native_turn_reports_usage_and_forwards_trace_records(tmp_path: An
         result = await loop.run("hi")
 
         assert result.status is RunStatus.COMPLETED
+        assert result.cached_input_tokens == 1
         assert len(usage_sink.records) == 1
         usage = usage_sink.records[0]
         assert usage.provider == "scripted"

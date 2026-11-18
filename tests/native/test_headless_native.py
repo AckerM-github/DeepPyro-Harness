@@ -156,7 +156,7 @@ def test_cli_forwards_the_backend_choice(monkeypatch: pytest.MonkeyPatch) -> Non
 
 async def test_native_headless_run_persists_native_session(native_dirs: Path) -> None:
     provider = ScriptedProvider(
-        [ScriptedTurn(events=[TextDelta("hello from native"), finish("stop"), usage(7, 3)])]
+        [ScriptedTurn(events=[TextDelta("hello from native"), finish("stop"), usage(7, 3, cached=2)])]
     )
     runtime = FakeNativeRuntime(provider)
     sink, stream = _sink()
@@ -174,7 +174,7 @@ async def test_native_headless_run_persists_native_session(native_dirs: Path) ->
     events = _events(stream)
     assert [event["type"] for event in events] == ["session", "text", "final", "usage"]
     assert events[-2] == {"type": "final", "text": "hello from native"}
-    assert events[-1] == {"type": "usage", "input": 7, "output": 3, "cached": 0}
+    assert events[-1] == {"type": "usage", "input": 7, "output": 3, "cached": 2}
     files = sorted((native_dirs / "sessions").glob("*.jsonl"))
     assert len(files) == 1
     log = NativeCodec.read(files[0])

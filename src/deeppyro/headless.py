@@ -1011,14 +1011,14 @@ async def _run_native_async(
                 "type": "usage",
                 "input": result.usage.input_tokens,
                 "output": result.usage.output_tokens,
-                "cached": 0,
+                "cached": result.cached_input_tokens,
             }
         )
         if not json_output:
             console.print(
                 (
                     f"session {session_label} · tokens in={result.usage.input_tokens}"
-                    f" out={result.usage.output_tokens} cached=0"
+                    f" out={result.usage.output_tokens} cached={result.cached_input_tokens}"
                 ),
                 style="dim",
             )
