@@ -18,25 +18,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from deeppyro.core.protocols import (
+from deeppyro.core.llm import (
     Finish,
-    LlmRequest,
+    ModelRequest,
+    StopReason,
     StreamEvent,
     TextDelta,
     ToolCallArgsDelta,
     ToolCallStart,
     Usage,
+    UsageEvent,
 )
 
 NATIVE_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "native"
 
-FINISH_TO_KIND: dict[str, str] = {
-    "stop": "stop",
-    "tool_calls": "tool-calls",
-    "length": "length",
-    "error": "error",
-    "aborted": "aborted",
-    "content_filter": "content-filter",
+# Recorded provider finish reasons map onto the native stop-reason enum.
+FINISH_TO_STOP: dict[str, StopReason] = {
+    "stop": StopReason.STOP,
+    "tool_calls": StopReason.TOOL_CALLS,
+    "length": StopReason.LENGTH,
+    "error": StopReason.ERROR,
+    "aborted": StopReason.ABORTED,
+    "content_filter": StopReason.CONTENT_FILTER,
 }
 
 
@@ -220,7 +223,7 @@ def load_recording(path: Path) -> Recording:
             raise ValueError(f"recording {path.name} has no response end for {request_id}")
         events, content, _ = _stream_events(chunks.get(request_id, []))
         finish_raw = str(end.get("finish_reason") or "stop")
-        if finish_raw not in FINISH_TO_KIND:
+        if finish_raw not in FINISH_TO_STOP:
             raise ValueError(f"recording {path.name} has unknown finish reason {finish_raw!r}")
         recorded_content = str(end.get("content") or "")
         if content != recorded_content:
@@ -229,8 +232,8 @@ def load_recording(path: Path) -> Recording:
             )
         usage_raw = end.get("usage")
         usage = _usage(usage_raw) if isinstance(usage_raw, dict) else Usage()
-        events.append(usage)
-        events.append(Finish(kind=FINISH_TO_KIND[finish_raw]))
+        events.append(UsageEvent(usage=usage))
+        events.append(Finish(stop_reason=FINISH_TO_STOP[finish_raw]))
         exchanges.append(
             Exchange(
                 request_id=request_id,
@@ -284,14 +287,14 @@ def _prompts(bodies: Sequence[dict[str, Any]]) -> tuple[list[str], list[str]]:
 
 
 class ReplayProvider:
-    """LlmProvider that replays recorded SSE events and records requests."""
+    """Native LlmProvider that replays recorded SSE events and records requests."""
 
     name = "native-replay"
 
     def __init__(self, exchanges: Iterable[Exchange]) -> None:
         self._exchanges = list(exchanges)
         self._index = 0
-        self.requests: list[LlmRequest] = []
+        self.requests: list[ModelRequest] = []
         self.closed = False
 
     @property
@@ -299,7 +302,7 @@ class ReplayProvider:
         """Number of exchanges already served."""
         return self._index
 
-    async def stream(self, request: LlmRequest) -> AsyncIterator[StreamEvent]:
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         self.requests.append(request)
         if self._index >= len(self._exchanges):
             raise AssertionError("replay provider ran out of recorded responses")

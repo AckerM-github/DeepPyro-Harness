@@ -56,6 +56,7 @@ from deeppyro.llm.errors import (
     http_error,
     shorten,
 )
+from deeppyro.llm.http import build_client, headers
 from deeppyro.llm.messages import build_chat_payload
 from deeppyro.llm.retry import RETRYABLE_CODES, RetryPolicy
 from deeppyro.llm.sse import iter_sse
@@ -128,15 +129,11 @@ class OpenAICompatProvider:
                 code=CODE_PROTOCOL,
             )
         if self._client is None:
-            timeout = httpx.Timeout(self.timeout_s, connect=min(30.0, self.timeout_s))
-            self._client = httpx.AsyncClient(timeout=timeout)
+            self._client = build_client(self.timeout_s)
         return self._client
 
     def _headers(self) -> dict[str, str]:
-        headers = {"content-type": "application/json", "accept": "text/event-stream"}
-        if self.api_key:
-            headers["authorization"] = f"Bearer {self.api_key}"
-        return headers
+        return headers(self.api_key)
 
     async def aclose(self) -> None:
         """Close the underlying HTTP client (idempotent)."""

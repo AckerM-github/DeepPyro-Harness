@@ -25,10 +25,12 @@ from typing import Any
 
 from deeppyro.config import Config, ProviderConfig
 from deeppyro.core.errors import ConfigError, LlmError
+from deeppyro.core.llm import LlmProvider as NativeLlmProvider
 from deeppyro.core.protocols import LlmProvider
 from deeppyro.llm.anthropic import AnthropicProvider
 from deeppyro.llm.catalog import ModelInfo, catalog_from_config, merge_catalogs
 from deeppyro.llm.discovery import DEFAULT_CATALOG_TTL_S, CatalogCache
+from deeppyro.llm.native_provider import NativeOpenAICompatProvider
 from deeppyro.llm.openai_compat import OpenAICompatProvider
 
 #: ProviderConfig.api values that map to OpenAICompatProvider. The canonical value is
@@ -91,6 +93,29 @@ def create_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) 
     raise ConfigError(f"provider {name!r} uses unsupported api {pc.api!r}; supported: {supported}")
 
 
+def create_native_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) -> NativeLlmProvider:
+    """Build the native (KI-010) LlmProvider described by one ProviderConfig.
+
+    Only OpenAI-compatible endpoints have a native transport today. Anthropic keeps the
+    v4 provider, so callers get a ConfigError instead of a silent downgrade: the native
+    loop reports "native loop unavailable" rather than pretending the request went
+    through the native provider.
+    """
+    api = (pc.api or "").strip().lower()
+    if api in _OPENAI_COMPAT_APIS:
+        return NativeOpenAICompatProvider(
+            name,
+            pc.base_url,
+            pc.resolve_api_key(),
+            model_ctx=_context_window(pc),
+            timeout_s=timeout_s,
+        )
+    raise ConfigError(
+        f"provider {name!r} uses api {pc.api!r}, which has no native (KI-010) transport; "
+        "use the legacy v4 loop for this provider"
+    )
+
+
 def _context_window(pc: ProviderConfig) -> int | None:
     windows = [m.context_window for m in pc.models if m.context_window is not None]
     return max(windows) if windows else None
@@ -133,6 +158,7 @@ class LlmRegistry:
         self.config = cfg
         self.catalog_ttl_s = float(catalog_ttl_s)
         self._providers: dict[str, LlmProvider] = {}
+        self._native_providers: dict[str, NativeLlmProvider] = {}
         self._catalog = CatalogCache(ttl_s=self.catalog_ttl_s)
         self._catalog_locks: dict[str, asyncio.Lock] = {}
 
@@ -152,6 +178,22 @@ class LlmRegistry:
             raise ConfigError(self._unknown_provider_message(provider))
         created = create_provider(provider, pc)
         self._providers[provider] = created
+        return created
+
+    def native_provider(self, provider: str) -> NativeLlmProvider:
+        """Return the (cached) native provider for a configured name.
+
+        Separate cache from get(): the native loop may run next to the legacy one during
+        the migration, and the two provider objects own different HTTP clients.
+        """
+        cached = self._native_providers.get(provider)
+        if cached is not None:
+            return cached
+        pc = self.config.providers.get(provider)
+        if pc is None:
+            raise ConfigError(self._unknown_provider_message(provider))
+        created = create_native_provider(provider, pc)
+        self._native_providers[provider] = created
         return created
 
     @property
@@ -259,15 +301,15 @@ class LlmRegistry:
         """
         self._catalog.clear()
         self._catalog_locks.clear()
-        providers, self._providers = self._providers, {}
-        if not providers:
+        closures = list(self._providers.values()) + list(self._native_providers.values())
+        self._providers = {}
+        self._native_providers = {}
+        if not closures:
             return
-        results: list[Any] = await asyncio.gather(
-            *(p.aclose() for p in providers.values()), return_exceptions=True
-        )
+        results: list[Any] = await asyncio.gather(*(p.aclose() for p in closures), return_exceptions=True)
         for result in results:
             if isinstance(result, BaseException):
                 raise result
 
 
-__all__ = ["LlmRegistry", "create_provider"]
+__all__ = ["LlmRegistry", "create_native_provider", "create_provider"]

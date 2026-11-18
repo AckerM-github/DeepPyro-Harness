@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from deeppyro.builtin.presets import PresetsPlugin
 from deeppyro.builtin.sandbox import SandboxPlugin
@@ -11,6 +12,7 @@ from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.core.errors import ConfigError, DeeppyroError
 from deeppyro.sandbox.permission import PermissionPresetsService
 from deeppyro.session.native_index import NativeSessionInfo, list_native_sessions
+from deeppyro.tui.native_facts import native_view
 from deeppyro.tui.runtime_catalog import CatalogLayer
 from deeppyro.tui.runtime_support import await_maybe, logger, resolve_workspace
 
@@ -31,6 +33,10 @@ class StatusLayer(CatalogLayer):
 
     def permission_preset(self) -> str:
         """The current named permission preset (or "custom")."""
+        if self.native:
+            derived = self._native_permission_preset()
+            if derived is not None:
+                return derived
         service = self._service(PermissionPresetsService)
         current = getattr(service, "current", None)
         if callable(current) and self.session is not None:
@@ -42,6 +48,8 @@ class StatusLayer(CatalogLayer):
 
     async def set_permission(self, preset: str) -> str:
         """Switch the named permission preset for the live session."""
+        if self.native:
+            return await self._set_permission_native(preset)
         service = self._service(PermissionPresetsService)
         apply = getattr(service, "apply", None)
         if not callable(apply) or self.session is None:
@@ -56,7 +64,8 @@ class StatusLayer(CatalogLayer):
         kernel_app = self.kernel_app
         if kernel_app is None:
             raise DeeppyroError("cannot switch workspace after the kernel has stopped")
-        gate = kernel_app.require(SandboxPlugin).gate(workspace, ask=self.ask, session=self.session)
+        bound = native_view(self.session) if self.native else self.session
+        gate = kernel_app.require(SandboxPlugin).gate(workspace, ask=self.ask, session=bound)
         registry = kernel_app.require(ToolsPlugin).registry_for(workspace)
         self.permission = gate
         self.registry = registry
@@ -70,7 +79,7 @@ class StatusLayer(CatalogLayer):
         """Workspace paths remembered by previous sessions, newest first."""
         paths: list[str] = []
         try:
-            infos = self.store.list()
+            infos = self._native_infos() if self.native else self.store.list()
         except Exception:  # noqa: BLE001 - the dropdown must keep working
             infos = []
         for info in infos:
@@ -80,6 +89,80 @@ class StatusLayer(CatalogLayer):
             if len(paths) >= max(limit, 1):
                 break
         return paths
+
+    def _native_permission_preset(self) -> str | None:
+        """Derive the named preset from the sandbox and approval facts."""
+        state = self._native_state()
+        if state is None:
+            return None
+        sandbox_mode = getattr(state, "sandbox_mode", None)
+        approval = getattr(state, "permission_policy", None)
+        if sandbox_mode is None and approval is None:
+            return None
+        service = self._service(PermissionPresetsService)
+        catalog = getattr(service, "catalog", None)
+        if callable(catalog):
+            try:
+                for spec in cast("Iterable[Any]", catalog()):
+                    if spec.sandbox == sandbox_mode and spec.approval == approval:
+                        return str(spec.name)
+            except Exception:  # noqa: BLE001 - the status line must never fail
+                logger.debug("permission preset catalog unavailable", exc_info=True)
+        return "custom"
+
+    def _native_state(self) -> Any:
+        """Folded session state of the live native session (None when absent)."""
+        view = native_view(self.session)
+        fold = getattr(view, "fold", None)
+        if not callable(fold):
+            return None
+        try:
+            folded = fold()
+            return getattr(folded, "state", None)
+        except Exception:  # noqa: BLE001 - status must never fail
+            return None
+
+    def _native_infos(self, *, include_archived: bool = False, limit: int | None = None) -> list[Any]:
+        """Native session infos through the sessions plugin (empty when unavailable)."""
+        sessions = self.sessions
+        lister = getattr(sessions, "native_list", None)
+        if not callable(lister):
+            return []
+        try:
+            entries = list(cast("Iterable[Any]", lister(include_archived=include_archived, limit=limit)))
+        except TypeError:
+            entries = list(cast("Iterable[Any]", lister(include_archived=include_archived)))
+        except Exception:  # noqa: BLE001 - the session browser must survive a bad directory
+            logger.debug("native session listing failed", exc_info=True)
+            return []
+        infos = [info for info in entries if info is not None]
+        if limit is not None:
+            return infos[: max(limit, 0)]
+        return infos
+
+    async def _set_permission_native(self, preset: str) -> str:
+        """Record permission facts on the native session and rebuild the agent."""
+        service = self._service(PermissionPresetsService)
+        getter = getattr(service, "get", None)
+        if not callable(getter) or self.session is None:
+            raise DeeppyroError("permission presets are not available in this session")
+        spec = cast(Any, getter(preset))
+        session = self.session
+        state = self._native_state()
+        if getattr(state, "sandbox_mode", None) != spec.sandbox:
+            session.append("sandbox/mode", {"mode": spec.sandbox})
+        if getattr(state, "permission_policy", None) != spec.approval:
+            session.append("approval/policy", {"policy": spec.approval})
+        kernel_app = self.kernel_app
+        if kernel_app is not None:
+            gate = kernel_app.require(SandboxPlugin).gate(
+                self.cwd,
+                ask=self.ask,
+                session=native_view(session),
+            )
+            self.permission = gate
+            await self._attach(session)
+        return str(spec.name)
 
     async def ensure_presets(self) -> None:
         """Materialize every preset realm before any agent is created."""
@@ -115,12 +198,16 @@ class StatusLayer(CatalogLayer):
 
     def recent_sessions(self, limit: int = 20, *, include_archived: bool = False) -> list[Any]:
         """Most recent sessions, newest first; archived ones are hidden by default."""
+        if self.native:
+            return self._native_infos(include_archived=include_archived, limit=max(limit, 0))
         return list(self.store.list(include_archived=include_archived))[: max(limit, 0)]
 
     def native_sessions(self, limit: int = 20) -> list[NativeSessionInfo]:
         """Schema 1 (native) sessions beside the v4 store, newest first, read-only."""
         if limit <= 0:
             return []
+        if self.native:
+            return [info for info in self.recent_sessions(limit) if isinstance(info, NativeSessionInfo)]
         try:
             return list_native_sessions()[:limit]
         except Exception:  # noqa: BLE001 - the session browser must survive a bad directory
@@ -129,11 +216,18 @@ class StatusLayer(CatalogLayer):
 
     def archived_sessions(self, limit: int = 20) -> list[Any]:
         """Archived sessions only, newest first."""
+        if self.native:
+            archived = [
+                info for info in self._native_infos(include_archived=True) if getattr(info, "archived", False)
+            ]
+            return archived[: max(limit, 0)]
         sessions = [info for info in self.store.list(include_archived=True) if info.archived]
         return sessions[: max(limit, 0)]
 
     async def compact_now(self) -> bool:
         """Compact the active session immediately; True when it shrank."""
+        if self.native:
+            return await self._compact_native()
         session, agent = self.session, self.agent
         if session is None or agent is None:
             return False
@@ -142,3 +236,19 @@ class StatusLayer(CatalogLayer):
             raise DeeppyroError("compaction is not available for this agent")
         messages = session.derive_messages()
         return bool(await compactor.compact(session, messages))
+
+    async def _compact_native(self) -> bool:
+        """Compact a native session through the optional native compactor."""
+        compactor = self.compactor
+        if compactor is None:
+            raise DeeppyroError("native compaction is not in this bundle; /compact is unavailable")
+        session = self.session
+        if session is None:
+            return False
+        fold = getattr(session, "fold", None)
+        view = fold() if callable(fold) else None
+        compact = getattr(compactor, "native_compact", None) or getattr(compactor, "compact", None)
+        if not callable(compact):
+            raise DeeppyroError("native compaction is not in this bundle; /compact is unavailable")
+        result = await cast(Any, compact)(session, view=view)
+        return result is not None

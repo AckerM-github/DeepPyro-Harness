@@ -2,12 +2,13 @@
 
 The v4 models in ``deeppyro.core.wire`` are a compatibility contract for
 session.v4.jsonl and are slated for deletion when the v4 stack retires.  The
-native loop speaks ``deeppyro.core.messages`` / ``deeppyro.session.schema``
-instead, and ``deeppyro.agent.native_provider`` is the only sanctioned seam
-(it adapts the v4 model catalog for the native loop).  These tests scan
-imports with AST rather than importing modules: importing the native package
-transitively loads ``core.wire`` through ``core.protocols`` anyway, so a
-subprocess import check would not prove anything.
+native loop speaks ``deeppyro.core.messages``, ``deeppyro.core.llm`` and
+``deeppyro.session.schema`` instead; the old native provider adapter that
+adapted the v4 model catalog is gone, replaced by ``deeppyro.agent.model_call``
+and the native transport in ``deeppyro.llm.native_provider``.  These tests
+scan imports with AST rather than importing modules: importing the native
+package transitively loads ``core.wire`` through ``core.protocols`` anyway,
+so a subprocess import check would not prove anything.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import pytest
 SRC = Path(__file__).resolve().parents[2] / "src" / "deeppyro"
 
 WIRE = "deeppyro.core.wire"
+PROTOCOLS = "deeppyro.core.protocols"
 
 #: Native-loop modules (M2 footprint): none of them may import ``core.wire``.
 NATIVE_FOOTPRINT = (
@@ -30,12 +32,30 @@ NATIVE_FOOTPRINT = (
     "agent/errors.py",
     "agent/events.py",
     "agent/loop.py",
+    "agent/model_call.py",
     "agent/run_state.py",
     "session/fold.py",
     "session/schema.py",
     "observability/trace.py",
     "core/ids.py",
+    "core/llm.py",
     "core/messages.py",
+    "llm/attachments.py",
+    "llm/http.py",
+    "llm/native_messages.py",
+    "llm/native_provider.py",
+)
+
+#: Native protocol modules must not import ``core.protocols`` either: that
+#: module re-exports the v4 types and imports ``core.wire`` at import time, so
+#: the footprint would be only one indirection away from the wire layer.
+NATIVE_PROTOCOL_MODULES = (
+    "core/llm.py",
+    "agent/model_call.py",
+    "llm/attachments.py",
+    "llm/http.py",
+    "llm/native_messages.py",
+    "llm/native_provider.py",
 )
 
 #: The remaining v4 agent modules allowed to import the wire layer.  This
@@ -44,7 +64,6 @@ AGENT_WIRE_ALLOWLIST = frozenset(
     {
         "agent/images.py",
         "agent/inbox.py",
-        "agent/native_provider.py",
         "agent/request.py",
         "agent/session_records.py",
         "agent/session_state.py",
@@ -92,6 +111,12 @@ def _imports_wire(path: Path) -> bool:
     return any(module == WIRE or module.startswith(WIRE + ".") for module in _imported_modules(path))
 
 
+def _imports_protocols(path: Path) -> bool:
+    return any(
+        module == PROTOCOLS or module.startswith(PROTOCOLS + ".") for module in _imported_modules(path)
+    )
+
+
 def test_native_footprint_does_not_import_core_wire() -> None:
     checkouts = [module for module in NATIVE_FOOTPRINT if not (SRC / module).is_file()]
     assert checkouts == [], f"native footprint files are missing: {checkouts}"
@@ -118,7 +143,13 @@ def test_agent_wire_importers_are_the_known_v4_surface() -> None:
     assert unknown == set(), (
         f"new agent modules import {WIRE}; native code must use core.messages: {sorted(unknown)}"
     )
-    assert "agent/native_provider.py" in importers, "the sanctioned v4 seam disappeared"
+
+
+def test_native_protocol_modules_do_not_import_core_protocols() -> None:
+    checkouts = [module for module in NATIVE_PROTOCOL_MODULES if not (SRC / module).is_file()]
+    assert checkouts == [], f"native protocol files are missing: {checkouts}"
+    offenders = [module for module in NATIVE_PROTOCOL_MODULES if _imports_protocols(SRC / module)]
+    assert offenders == [], f"native protocol modules import {PROTOCOLS}, which imports {WIRE}: {offenders}"
 
 
 def test_import_scanner_catches_wire_import_styles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

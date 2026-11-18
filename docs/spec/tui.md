@@ -8,7 +8,19 @@
 > TUI 仍只写 v4，但 `/sessions` 与 `/resume` 已能**只读查看** native（schema 1）会话：列表把 v4 与 native
 > 按最近时间合并，native 行标注 `native · read-only`；`/resume` 对 native id 只渲染转录（标题、工作目录、
 > turn/事件数、user/assistant/tool 消息与工具名）并提示迁移，不接管、不替换当前 live 会话，也不改动 turn 引擎；
-> 要继续 native 会话先执行 `dpyro migrate --to v4 --session <ID>`。
+> 要继续 native 会话先执行 `dpyro migrate --to v4 --session <ID>`。native 会话服务层已到模块级：
+> `session/native_query.py` 提供有界查询/搜索/过滤/排序、重命名（`session.title`）与归档
+> （`plugin.session.archived` 插件事件，schema 1 无归档事件类型）、`session/native_fork.py` 提供全量快照 fork，
+> `builtin/session_title.py` 新增 native 模式（可直接为 NativeSession 命名；原生 loop 发出 AGENT_TURN_STOPPING 后自动生效），
+> `InspectPlugin.native_session`
+> 可输出 header/事件计数/run/turn/tool/trace 链接报告；带归档标记的 native 会话默认不出现在 `/sessions` 列表
+> （`list_native_sessions(include_archived=True)` 才列出）。本波只落到模块与只读视图，TUI 接线（搜索/过滤/重命名/
+> 归档/fork 入口）属下一波。
+>
+> **native TUI 路径（0.2.x 过渡，flag 门控）**：设置 `DEEPPYRO_TUI_NATIVE=1`（也接受 `true`/`yes`/`on`）时，
+> TUI 的 runtime 改由 schema 1 control plane 装配（SessionsPlugin native API + `AgentsPlugin.host` +
+> `NativeAgentFactory`/`PresetPromptSource`），并支持 `--resume SESSION_ID`、native `/sessions`/`/resume`/
+> `/fork`、native rename/archive；未设置该变量时走原 v4 路径且行为逐字节不变。详见 §11。
 
 ## 1. 形态与范围
 
@@ -196,3 +208,88 @@ TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasonin
 - 插件设置页（SETTINGS 槽位）已注册但暂无宿主界面；设置写入仍是 next-boot 生效（volatile 字段除外）。
 - 后台任务输出保存在内存中（模型侧 job_output 有界预览），进程重启后不恢复；headless 退出会 cancel_owner 取消本会话任务。
 - 插件状态栏项在 refresh_status 时才刷新，插件内部状态变化需自行触发；插件对话行只追加。
+- native 会话服务层已就绪（`session/native_query.py` 的有界查询/搜索/过滤/排序、`rename_native_session`、
+  `archive_native_session`、`session/native_fork.py` 的全量 fork、`builtin/session_title.py` 的 native 命名、
+  `InspectPlugin.native_session` 报告）。v4 默认 TUI 对 native 会话仍是只读列表 + 转录查看；native TUI 路径
+  （`DEEPPYRO_TUI_NATIVE=1`）已接线 /sessions、/resume（attach）、/fork、/rename、/archive，见 §11。native 归档用
+  `plugin.session.archived` 事件表示，`list_native_sessions` 默认隐藏归档行，按 id 读取（/resume）仍可用。
+
+## 11. native TUI 路径（DEEPPYRO_TUI_NATIVE=1）
+
+### 11.1 开关与入口
+
+- `DEEPPYRO_TUI_NATIVE`：`1`/`true`/`yes`/`on`（不区分大小写）为 native；未设置或其他值走 v4，默认路径行为逐字节不变。
+  `TuiRuntime.boot(..., native=None)` 的显式参数优先于环境变量（测试/内嵌用）。
+- `dpyro --resume SESSION_ID`：native 模式下按 id 打开 native 会话，重建 host 并从 fold 恢复 model/preset/工作目录/历史。
+  v4 模式忽略该参数并提示 `--resume needs DEEPPYRO_TUI_NATIVE=1; starting a new session`；`--headless` 忽略该参数。
+- native 模式不装配 v4 SessionStore/Projections（store/projections 为 None），v4 SessionStore 一次也不调用
+  （tests/tui/test_native_runtime.py 用 monkeypatch 断言）。
+
+### 11.2 装配
+
+- boot 额外 require PromptPlugin；provider 走 `LlmPlugin.native_provider`（只有 OpenAI-compatible 有 native transport，
+  其他 provider 报 no native transport）；context meter 用的 `TraceExportSink` 从 kernel 取出并合并进 host services，
+  host 的 `_ContextTap` 据此把最近一次 ModelCallRecord 的 inputTokens 记为 context_tokens。native-compact 插件装了才有 compactor。
+- new_session：`sessions.native_create(NewSession(cwd, preset, origin="user"))` → `NativeSessionHandle` →
+  `_pin_permission`（写 sandbox/mode、approval/policy 事实）→ SESSION_CREATED hook → `_attach_native`；
+  `_attach_native` 用 `AgentBuild(provider, model, cwd, preset, preset_revision, permission, hooks, prompt_facts,
+  services, context_window)` 调 `agents.host(handle.native_session, build)`，随后 `self.session = host.handle`
+  （usage/context 计数在 host.handle 上）、`self.agent = host`。
+- open_session/resume_session：`sessions.native_open(id)`（被其他进程锁定抛 SessionLockedError，未知 id 抛 NativeQueryError，
+  都不破坏当前会话）；从 `handle.fold()` 恢复 state.model/state.preset（含 revision/previous）后重建 host，并 emit
+  `{"type":"session","sessionId":...}`。
+- 同一 native 会话 re-attach 不关闭旧 host（关闭会释放 NativeSession 写锁，反而卡住自己）；切换/关闭走 `_detach()`
+  （aclose host 释放锁）。
+- 工作目录/权限是 native 事实：set_workspace 写 working-directory/change 后 rebuild；set_permission 写
+  sandbox/mode + approval/policy 事实；native gate 没有可 bind 的 v4 session，提示词用同一份 policy 文本。
+- 会话标题：turn 1 结束后 TurnLayer 调 `runtime.name_session_title()` → `builtin/session_title.name_native_session`
+  （已有标题或没有首条 user 消息时跳过；失败只记日志，不中断 turn）。
+
+### 11.3 事件与 turn
+
+- `tui/native_hooks.py` 的 TuiAgentHooks 把 AgentHooks Protocol 适配成 widgets/slots 已消费的 v4 dict 事件：
+  run_started→status(thinking)、step_started→step、text_delta→text、reasoning_delta→thinking、
+  tool_call_started→tool_call、tool_call_finished→tool_result；assistant_message/checkpoint_written/budget_exceeded/
+  run_finished 不产生 TUI 事件（run_finished 只清 active）。有 active-run 守卫、turn/step 计数与事件上限
+  （DEFAULT_EVENT_LIMIT=4096），不产生死事件/重复 emission。
+- TurnLayer native 分支：`host.send(text)`；CancelledError→final(host.last_assistant_text())+status interrupted；
+  BudgetExceeded/ProviderStreamError→error(str)；其他异常→error("Type: msg")；成功→final(result.final_text)+usage+
+  status done，`finish_reason=="length"` 再追加一条截断 error。
+- usage/context：native loop 的 RunResult.usage 不累计（token 只在 UsageSink tap 上），所以 usage 事件与
+  `session_usage()`/`context_tokens()` 取 host 累计计数器；host 的 trace_export tap 使 context_tokens 反映最近一次
+  ModelCallRecord 的 inputTokens。没有 TraceExportSink 时上下文计数不可用（不伪造 0）。
+- Ctrl+C：`host.interrupt()` 返回 bool；true → notify("interrupt requested")，false → notify("nothing to interrupt")。
+
+### 11.4 /sessions、/resume、/fork、/rename、/archive
+
+- /sessions 在 native 模式只列 `sessions.native_list`（不再合并 v4 行），行标 `native`；`--all` 含归档；`--resume` 提示改为 attach。
+- /resume：可 attach 的会话直接 `open_session` 并重放历史；被别的进程锁定 → 只读转录 + "another process owns this session"；
+  fold 失败（readable=False）→ 只读转录 + "this session log did not fold cleanly"；损坏/外来的 .jsonl 在列表里跳过，
+  按 id 打开时报错并提示，不崩溃。
+- /fork [index|id|文本]：`SessionsPlugin.native_fork(source)`（新会话 parent_id=source、origin=fork、
+  delegation_depth+1；源会话无需可写锁），detach 当前 host、aclose 新 handle、`open_session(新 id)`，UI 显示
+  "forked a -> b"。裸 uuid 自动补 `session-` 前缀（fork 解析要求完整 id）。
+- /rename：当前 native 会话通过 live handle append `session/title`（v4 的 record_title 只对 v4 会话有效）。
+- /archive：通过 live native session append `plugin.session.archived`（{"archived": true, "source": "user"}）后 new_session；
+  /unarchive 用 `sessions.native_archive(id, archived=False)`（只能对非 live 会话，live 锁会报 locked）。
+- v4 模式保持原行为：/sessions 合并 v4+native 并标 `native · read-only`，/resume 对 native id 只读转录并提示 migrate。
+
+### 11.5 诚实的能力边界（native 模式显式失败/禁用，不静默回退 v4 agents）
+
+- team / subagent / compact 尚未移植：/team 明确提示 "team mode is not ported to the native TUI runtime yet"；
+  set_team_mode 抛 DeeppyroError；/compact 在 bundle 无 native-compact 时抛
+  "native compaction is not in this bundle; /compact is unavailable"；preset 的 team mode 在 attach 时被拒绝。
+- /hooks：schema 1 不记 hook/invoked 记录，native 模式显示 "native sessions do not journal hook calls ..."（trace store 仍有 span）。
+- PTC preset 在 native factory 被拒绝（"requires the PTC runtime, which the native agent host does not provide yet"）。
+- v4 会话在 native 模式不可见（native 会话在 v4 模式只读）；不做隐式迁移。
+- 上下文米需要 trace_export sink；缺失时显示不可用而不是 0。
+
+### 11.6 测试
+
+- tests/tui/test_native_hooks.py：事件形状/顺序/去重/有界队列。
+- tests/tui/test_native_resume.py：native /sessions 列表与 attach 提示、按 index/id/title 恢复、picker 路径、locked 只读转录、
+  fold 损坏提示、损坏 jsonl 跳过、真实历史渲染（含 tool 过程）、/fork（当前与被命名来源）、/rename、/archive+/unarchive、fork 失败提示。
+- tests/tui/test_native_runtime.py：flag 关闭保持 v4；flag 开启 native 装配（native session/host、store None、session 事件、
+  session id 一致、fold model/preset）；环境变量开关；native 路径不调用 v4 SessionStore（monkeypatch 断言）；
+  turn 精确事件序列；截断（finish_reason length）追加 error；provider 异常与普通异常映射；interrupt（运行中 true / 空闲 false）；
+  resume 重建；native 标题写入；未移植能力的显式失败；CLI --resume 与 App 透传。

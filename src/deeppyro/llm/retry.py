@@ -136,8 +136,19 @@ class RetryPolicy:
     async def __aexit__(self, exc_type: object, exc: BaseException | None, tb: object) -> None:
         return None
 
-    async def run(self, operation: Callable[[], Awaitable[T]]) -> T:
-        """Run operation, retrying retryable failures up to max_attempts times."""
+    async def run(
+        self,
+        operation: Callable[[], Awaitable[T]],
+        *,
+        on_retry: Callable[[int, BaseException, float], None] | None = None,
+    ) -> T:
+        """Run operation, retrying retryable failures up to max_attempts times.
+
+        *on_retry* is called as `on_retry(attempt, exc, delay_s)` right before the
+        backoff sleep.  Providers use it to report scheduled retries to the trace
+        (native `RetryScheduled` events) without duplicating the backoff math;
+        omitted, the policy behaves exactly as before.
+        """
         attempt = 0
         while True:
             attempt += 1
@@ -150,7 +161,10 @@ class RetryPolicy:
                 if attempt >= self.max_attempts or not self.should_retry(exc):
                     raise
                 retry_after = getattr(exc, "retry_after", None)
-                await self.sleep(self.delay_for(attempt, retry_after=retry_after))
+                delay = self.delay_for(attempt, retry_after=retry_after)
+                if on_retry is not None:
+                    on_retry(attempt, exc, delay)
+                await self.sleep(delay)
 
 
 def _first(data: Mapping[str, Any], *names: str) -> Any:

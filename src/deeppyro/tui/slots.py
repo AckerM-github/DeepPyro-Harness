@@ -14,8 +14,16 @@ Five slot kinds are supported:
 * `screen` - a full modal screen shown in `SlotScreen`.
 
 All registrations return an idempotent dispose callable. Contributions are
-de-duplicated by `(kind, id)`; the second registration raises `SlotError`
-instead of silently shadowing the first plugin.
+de-duplicated by `(kind, id)`; append-only is the default, so the second
+registration raises `SlotError` (naming both plugin owners) instead of
+silently shadowing the first plugin.
+
+Replacement is explicit: pass `on_conflict=SlotConflict.REPLACE` to update a
+slot this plugin already owns, or `on_conflict=SlotConflict.OVERRIDE` to
+replace another plugin's contribution. Implicit conflicts always raise, and a
+cross-plugin `REPLACE` raises with both plugin ids and the exact policy to use.
+The winning contribution records `replaced_plugin_id`, and the registry keeps
+the cross-plugin replacement history available through `overrides()`.
 
 The `SlotsPlugin` exposes one shared :class:`SlotRegistry` as the service
 `slots`:
@@ -39,7 +47,8 @@ import inspect
 import re
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 
@@ -64,6 +73,19 @@ class SlotError(DeeppyroError):
     """A slot registration is invalid or collides with an existing slot."""
 
 
+class SlotConflict(StrEnum):
+    """What to do when `(kind, id)` is already registered.
+
+    `REJECT` is the default and preserves the append-only contract;
+    `REPLACE` updates a slot that this plugin already owns; `OVERRIDE` is the
+    only policy that may replace another plugin's contribution.
+    """
+
+    REJECT = "reject"
+    REPLACE = "replace"
+    OVERRIDE = "override"
+
+
 @dataclass(frozen=True, slots=True)
 class SlotContribution:
     """One plugin contribution to a UI slot.
@@ -81,6 +103,10 @@ class SlotContribution:
         predicate: Optional event filter for conversation rows.
         title: Human-readable title for panel/settings entries.
         metadata: Small plugin-defined payload; never mutated by the host.
+        replaced_plugin_id: Plugin whose contribution this registration
+            replaced through an explicit conflict policy; empty unless this
+            contribution won a replace/override. Carried through a same-owner
+            replace so the original owner stays visible.
     """
 
     kind: SlotKind
@@ -91,6 +117,24 @@ class SlotContribution:
     predicate: Callable[[dict[str, Any]], bool] | None = None
     title: str = ""
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    replaced_plugin_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SlotOverride:
+    """One explicit cross-plugin slot replacement, kept for observability.
+
+    Attributes:
+        kind: Slot kind of the replaced `(kind, id)` pair.
+        slot_id: Identity of the replaced slot within its kind.
+        plugin_id: Plugin that now owns the slot.
+        replaced_plugin_id: Plugin that owned the slot before the override.
+    """
+
+    kind: SlotKind
+    slot_id: str
+    plugin_id: str
+    replaced_plugin_id: str
 
 
 def _is_callable(value: Any) -> bool:
@@ -101,6 +145,17 @@ def _validate_order(order: int) -> int:
     if not isinstance(order, int) or isinstance(order, bool):
         raise SlotError(f"slot order must be an int, got {type(order).__name__}")
     return order
+
+
+def _validate_conflict(policy: Any) -> SlotConflict:
+    """Coerce/validate a conflict policy, rejecting unknown values loudly."""
+    if isinstance(policy, SlotConflict):
+        return policy
+    try:
+        return SlotConflict(str(policy))
+    except ValueError as exc:
+        known = ", ".join(member.value for member in SlotConflict)
+        raise SlotError(f"unknown slot conflict policy {policy!r} (known: {known})") from exc
 
 
 def _validate_string_map(value: Mapping[str, str], name: str) -> dict[str, str]:
@@ -183,6 +238,7 @@ class SlotRegistry:
         self._slots: dict[tuple[str, str], SlotContribution] = {}
         self._theme: dict[str, str] = {}
         self._locale: dict[str, str] = {}
+        self._overrides: list[SlotOverride] = []
         self._lock = threading.RLock()
 
     # -- registration ---------------------------------------------------
@@ -195,6 +251,7 @@ class SlotRegistry:
         plugin_id: str = "",
         title: str = "",
         metadata: Mapping[str, Any] | None = None,
+        on_conflict: SlotConflict = SlotConflict.REJECT,
     ) -> Callable[[], None]:
         """Register a one-line status renderer; returns a dispose callable."""
         return self._add(
@@ -205,6 +262,7 @@ class SlotRegistry:
             plugin_id=plugin_id,
             title=title,
             metadata=metadata,
+            on_conflict=on_conflict,
         )
 
     def add_conversation_row(
@@ -217,6 +275,7 @@ class SlotRegistry:
         plugin_id: str = "",
         title: str = "",
         metadata: Mapping[str, Any] | None = None,
+        on_conflict: SlotConflict = SlotConflict.REJECT,
     ) -> Callable[[], None]:
         """Register an event row renderer; returns a dispose callable.
 
@@ -235,6 +294,7 @@ class SlotRegistry:
             title=title,
             metadata=metadata,
             predicate=predicate,
+            on_conflict=on_conflict,
         )
 
     def add_panel(
@@ -246,6 +306,7 @@ class SlotRegistry:
         id: str | None = None,
         plugin_id: str = "",
         metadata: Mapping[str, Any] | None = None,
+        on_conflict: SlotConflict = SlotConflict.REJECT,
     ) -> Callable[[], None]:
         """Register a titled panel factory; returns a dispose callable."""
         return self._add(
@@ -256,6 +317,7 @@ class SlotRegistry:
             plugin_id=plugin_id,
             title=title,
             metadata=metadata,
+            on_conflict=on_conflict,
         )
 
     def add_settings_page(
@@ -267,6 +329,7 @@ class SlotRegistry:
         id: str | None = None,
         plugin_id: str = "",
         metadata: Mapping[str, Any] | None = None,
+        on_conflict: SlotConflict = SlotConflict.REJECT,
     ) -> Callable[[], None]:
         """Register a titled settings-page factory; returns a dispose callable."""
         return self._add(
@@ -277,6 +340,7 @@ class SlotRegistry:
             plugin_id=plugin_id,
             title=title,
             metadata=metadata,
+            on_conflict=on_conflict,
         )
 
     def add_screen(
@@ -289,6 +353,7 @@ class SlotRegistry:
         order: int = DEFAULT_ORDER,
         plugin_id: str = "",
         metadata: Mapping[str, Any] | None = None,
+        on_conflict: SlotConflict = SlotConflict.REJECT,
     ) -> Callable[[], None]:
         """Register a full-screen renderer; returns a dispose callable.
 
@@ -309,6 +374,7 @@ class SlotRegistry:
             plugin_id=plugin_id,
             title=title,
             metadata=metadata,
+            on_conflict=on_conflict,
         )
 
     def _add(
@@ -322,6 +388,7 @@ class SlotRegistry:
         title: str,
         metadata: Mapping[str, Any] | None,
         predicate: Callable[[dict[str, Any]], bool] | None = None,
+        on_conflict: SlotConflict = SlotConflict.REJECT,
     ) -> Callable[[], None]:
         if kind not in SLOT_KINDS:
             known = ", ".join(SLOT_KINDS)
@@ -333,6 +400,7 @@ class SlotRegistry:
         resolved_id = str(slot_id or default_slot_id(kind, factory, title))
         if not resolved_id.strip():
             raise SlotError(f"{kind} slot id must not be empty")
+        policy = _validate_conflict(on_conflict)
         contribution = SlotContribution(
             kind=kind,
             id=resolved_id,
@@ -347,11 +415,46 @@ class SlotRegistry:
         with self._lock:
             existing = self._slots.get(key)
             if existing is not None:
-                raise SlotError(
-                    f"duplicate {kind} slot id {resolved_id!r}: "
-                    f"owned by {existing.plugin_id!r}, also registered by {owner!r}"
-                )
+                contribution = self._resolve_conflict(existing, contribution, policy)
             self._slots[key] = contribution
+        return self._disposer(key, contribution)
+
+    def _resolve_conflict(
+        self,
+        existing: SlotContribution,
+        contribution: SlotContribution,
+        policy: SlotConflict,
+    ) -> SlotContribution:
+        """Apply an explicit replace/override policy, or raise for conflicts."""
+        if policy is SlotConflict.REJECT:
+            raise SlotError(
+                f"duplicate {contribution.kind} slot id {contribution.id!r}: "
+                f"owned by {existing.plugin_id!r}, "
+                f"also registered by {contribution.plugin_id!r}"
+            )
+        if existing.plugin_id == contribution.plugin_id:
+            # Same owner: both explicit policies refresh the plugin's own slot.
+            # Provenance from an earlier cross-plugin override survives.
+            return replace(contribution, replaced_plugin_id=existing.replaced_plugin_id)
+        if policy is SlotConflict.REPLACE:
+            raise SlotError(
+                f"refusing to replace {contribution.kind} slot id {contribution.id!r} "
+                f"owned by {existing.plugin_id!r} from {contribution.plugin_id!r}: "
+                "replace only updates this plugin's own slot; pass "
+                "on_conflict=SlotConflict.OVERRIDE to replace another plugin's contribution"
+            )
+        self._overrides.append(
+            SlotOverride(
+                kind=existing.kind,
+                slot_id=existing.id,
+                plugin_id=contribution.plugin_id,
+                replaced_plugin_id=existing.plugin_id,
+            )
+        )
+        return replace(contribution, replaced_plugin_id=existing.plugin_id)
+
+    def _disposer(self, key: tuple[str, str], contribution: SlotContribution) -> Callable[[], None]:
+        """Return an idempotent dispose that only removes this contribution."""
 
         def dispose() -> None:
             with self._lock:
@@ -395,6 +498,11 @@ class SlotRegistry:
         with self._lock:
             return self._slots.get((kind, slot_id))
 
+    def overrides(self) -> tuple[SlotOverride, ...]:
+        """Explicit cross-plugin replacements applied so far, oldest first."""
+        with self._lock:
+            return tuple(self._overrides)
+
     # -- theme and locale ------------------------------------------------
     def set_theme(self, tokens: Mapping[str, str]) -> None:
         """Replace the UI theme token map.
@@ -435,9 +543,10 @@ class SlotRegistry:
         return default if default is not None else key
 
     def clear(self) -> None:
-        """Forget every contribution, theme token and translation."""
+        """Forget every contribution, override history, theme token and translation."""
         with self._lock:
             self._slots.clear()
+            self._overrides.clear()
             self._theme.clear()
             self._locale.clear()
 
@@ -671,9 +780,11 @@ __all__ = [
     "SETTINGS",
     "SLOT_KINDS",
     "STATUS",
+    "SlotConflict",
     "SlotContribution",
     "SlotError",
     "SlotKind",
+    "SlotOverride",
     "SlotRegistry",
     "SlotsPlugin",
     "apply_conversation_slots",

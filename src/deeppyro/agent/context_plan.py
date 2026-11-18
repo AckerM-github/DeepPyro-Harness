@@ -8,13 +8,14 @@ The loop builds a new plan each step; nothing here has side effects.
 
 from __future__ import annotations
 
-import copy
 import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+from deeppyro.agent.turn_messages import tool_specs
+from deeppyro.core.llm import ToolSpec
 from deeppyro.core.messages import ImagePart, Message, ReasoningPart, TextPart, ToolCallPart
-from deeppyro.core.protocols import Tool, ToolSchema
+from deeppyro.core.protocols import Tool
 
 _TOKENS_PER_CHAR = 4
 _IMAGE_TOKEN_ESTIMATE = 256
@@ -40,16 +41,14 @@ def estimate_message_tokens(message: Message) -> int:
     return tokens
 
 
-def _tool_schema(tool: Tool) -> ToolSchema:
-    parameters = copy.deepcopy(dict(tool.parameters))
-    output_raw = getattr(tool, "output_schema", None)
-    output = copy.deepcopy(dict(output_raw)) if isinstance(output_raw, dict) else None
-    return ToolSchema(name=tool.name, description=tool.description, parameters=parameters, output=output)
+def message_tokens(messages: Iterable[Message]) -> int:
+    """Total estimated tokens for a sequence of conversation messages."""
+    return sum(estimate_message_tokens(message) for message in messages)
 
 
-def _estimate_tool_schema(schema: ToolSchema) -> int:
+def _estimate_tool_spec(spec: ToolSpec) -> int:
     payload = json.dumps(
-        schema.model_dump(exclude_none=True),
+        spec.to_dict(),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -63,7 +62,7 @@ class ContextPlan:
 
     system: Message | None
     messages: tuple[Message, ...]
-    tools: tuple[ToolSchema, ...]
+    tools: tuple[ToolSpec, ...]
     estimated_tokens: int
     source_message_ids: tuple[str, ...]
 
@@ -74,8 +73,8 @@ class ContextPlan:
             isinstance(item, Message) for item in self.messages
         ):
             raise ValueError("context plan field 'messages' must be a tuple of Messages")
-        if not isinstance(self.tools, tuple) or not all(isinstance(item, ToolSchema) for item in self.tools):
-            raise ValueError("context plan field 'tools' must be a tuple of ToolSchema")
+        if not isinstance(self.tools, tuple) or not all(isinstance(item, ToolSpec) for item in self.tools):
+            raise ValueError("context plan field 'tools' must be a tuple of ToolSpec")
         if not isinstance(self.estimated_tokens, int) or isinstance(self.estimated_tokens, bool):
             raise ValueError("context plan field 'estimated_tokens' must be an integer")
         if self.estimated_tokens < 0:
@@ -109,14 +108,14 @@ def build_context_plan(
         tools: Tools offered to the model; their order is preserved.
     """
     message_tuple = tuple(messages)
-    schemas = tuple(_tool_schema(tool) for tool in tools)
+    schemas = tool_specs(tools)
     source_ids: list[str] = []
     if system is not None:
         source_ids.append(system.id)
     source_ids.extend(message.id for message in message_tuple)
     estimated = 0 if system is None else estimate_message_tokens(system)
-    estimated += sum(estimate_message_tokens(message) for message in message_tuple)
-    estimated += sum(_estimate_tool_schema(schema) for schema in schemas)
+    estimated += message_tokens(message_tuple)
+    estimated += sum(_estimate_tool_spec(spec) for spec in schemas)
     return ContextPlan(
         system=system,
         messages=message_tuple,
@@ -126,9 +125,19 @@ def build_context_plan(
     )
 
 
+def plan_tokens(plan: ContextPlan) -> int:
+    """Recompute the token estimate of one plan (system + messages + tool specs)."""
+    tokens = 0 if plan.system is None else estimate_message_tokens(plan.system)
+    tokens += message_tokens(plan.messages)
+    tokens += sum(_estimate_tool_spec(spec) for spec in plan.tools)
+    return tokens
+
+
 __all__ = [
     "ContextPlan",
     "build_context_plan",
     "estimate_message_tokens",
     "estimate_text_tokens",
+    "message_tokens",
+    "plan_tokens",
 ]

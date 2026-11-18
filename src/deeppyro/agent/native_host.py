@@ -30,27 +30,40 @@ from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType, TracebackType
-from typing import Any
+from types import TracebackType
+from typing import TYPE_CHECKING, Any
 
 from deeppyro.agent.budget import BudgetLimits
 from deeppyro.agent.checkpoint import CheckpointStore
 from deeppyro.agent.errors import RunCancelledError
 from deeppyro.agent.events import AgentHooks
 from deeppyro.agent.loop import AgentLoop, RunResult
+from deeppyro.agent.native_records import (
+    RECORD_KIND_MAP,
+    RecordMapping,
+    UnsupportedRecordTypeError,
+    append_mapped,
+    append_native,
+    notice_source,
+)
+from deeppyro.agent.turn_messages import tool_specs, user_message
 from deeppyro.core.ids import new_message_id, now_ms
+from deeppyro.core.llm import LlmProvider
 from deeppyro.core.messages import (
     Message,
     MessageSource,
     PluginSource,
+    SystemSource,
     TextPart,
-    UserSource,
 )
-from deeppyro.core.protocols import LlmProvider, Tool
+from deeppyro.core.protocols import Tool
 from deeppyro.observability.protocols import TraceExportSink, TurnUsage, UsageSink
 from deeppyro.observability.trace import ModelCallRecord, RunRecord, ToolCallRecord, TraceStore
-from deeppyro.session.fold import fold
-from deeppyro.session.schema import EventKind, NativeSession
+from deeppyro.session.fold import SessionView, fold
+from deeppyro.session.schema import Event, EventKind, NativeSession
+
+if TYPE_CHECKING:
+    from deeppyro.agent.native_factory import PromptFacts, PromptSource
 
 __all__ = [
     "DEFAULT_NOTICE_LIMIT",
@@ -65,17 +78,6 @@ __all__ = [
 
 DEFAULT_NOTICE_LIMIT = 64
 """How many injected notices may wait for the next run before drops are counted."""
-
-
-class UnsupportedRecordTypeError(ValueError):
-    """A record type outside the adapter's explicit mapping table was appended."""
-
-    def __init__(self, record_type: str) -> None:
-        self.record_type = record_type
-        supported = ", ".join(sorted(RECORD_KIND_MAP))
-        super().__init__(
-            f"native host does not accept record type {record_type!r}; supported types: {supported}"
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,75 +142,11 @@ class NativeNotice:
     source: Mapping[str, Any] | None = None
 
 
-def _notice_source(source: Mapping[str, Any] | None, /) -> MessageSource:
-    """Pick the native MessageSource for a queued notice."""
-    if source is not None:
-        plugin = source.get("plugin") or source.get("kind")
-        if isinstance(plugin, str) and plugin:
-            return PluginSource(plugin=plugin)
-    return UserSource()
-
-
-def _normalise_title(data: Mapping[str, Any], /) -> dict[str, Any]:
-    """Flatten v4's {"source": {"kind": ...}} title source to the native string."""
-    source = data.get("source")
-    kind = "user"
-    if isinstance(source, Mapping):
-        raw_kind = source.get("kind")
-        if isinstance(raw_kind, str):
-            kind = raw_kind
-    elif isinstance(source, str):
-        kind = source
-    title = data.get("title", "")
-    return {
-        "title": title if isinstance(title, str) else str(title),
-        "source": "llm" if kind == "llm" else "user",
-    }
-
-
-@dataclass(frozen=True, slots=True)
-class RecordMapping:
-    """One v4 record type and the native event it becomes."""
-
-    kind: EventKind
-    note: str
-    normalise: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None
-
-
-RECORD_KIND_MAP: Mapping[str, RecordMapping] = MappingProxyType(
-    {
-        "agent-preset/selected": RecordMapping(
-            EventKind.PRESET_SELECTED,
-            "v4 preset switch; the payload is already native-shaped ({preset, mode, ...}).",
-        ),
-        "model/selection": RecordMapping(
-            EventKind.MODEL_SELECTED,
-            "v4 model switch ({provider, model}).",
-        ),
-        "sandbox/mode": RecordMapping(
-            EventKind.SANDBOX_MODE,
-            "v4 sandbox mode; the values match the native enum.",
-        ),
-        "approval/policy": RecordMapping(
-            EventKind.PERMISSION_POLICY,
-            "v4 approval policy; ask/never match the native enum.",
-        ),
-        "working-directory/change": RecordMapping(
-            EventKind.WORKSPACE_CWD_CHANGED,
-            "v4 cd record; the native event requires an absolute cwd.",
-        ),
-        "session/title": RecordMapping(
-            EventKind.SESSION_TITLE,
-            "v4 title record; the {kind: user|llm} source object is flattened.",
-            _normalise_title,
-        ),
-        "todo/write": RecordMapping(
-            EventKind.TODO_WRITTEN,
-            "v4 todo snapshot ({todos: [{content, status}]}).",
-        ),
-    }
-)
-"""Only these v4 record types cross the bridge; everything else is rejected."""
+def _source_payload(source: MessageSource | None) -> dict[str, Any] | None:
+    """Flatten one message source to the mapping NativeSessionHandle.inject accepts."""
+    if isinstance(source, PluginSource):
+        return {"plugin": source.plugin}
+    return None
 
 
 class NativeSessionHandle:
@@ -250,6 +188,7 @@ class NativeSessionHandle:
         self._usage_output = 0
         self._usage_cached = 0
         self._context_tokens = 0
+        self._fold_cache: tuple[int, SessionView] | None = None
 
     # ------------------------------------------------------------- identity
 
@@ -284,13 +223,22 @@ class NativeSessionHandle:
         schema's own validation error.
         """
         self._ensure_open()
-        mapping = RECORD_KIND_MAP.get(record_type)
-        if mapping is None:
-            raise UnsupportedRecordTypeError(record_type)
-        payload = dict(data or {})
-        if mapping.normalise is not None:
-            payload = mapping.normalise(payload)
-        return self._session.append(mapping.kind, payload).seq
+        return append_mapped(self._session, record_type, data).seq
+
+    def append_native(
+        self,
+        kind: EventKind | str,
+        data: Mapping[str, Any] | None = None,
+        **envelope: Any,
+    ) -> Event:
+        """Append one schema event directly, forwarding the shared envelope fields.
+
+        This is the native counterpart of append(): callers that already have a
+        schema EventKind (goal.changed, task.*, ...) append it without going
+        through the v4 record mapping.
+        """
+        self._ensure_open()
+        return append_native(self._session, kind, data, **envelope)
 
     def inject(self, text: str, source: Mapping[str, Any] | None = None) -> bool:
         """Queue a notice for the next run; False when the bounded queue is full.
@@ -324,12 +272,32 @@ class NativeSessionHandle:
                     role="user",
                     content=(TextPart(text=notice.text),),
                     created_at=timestamp,
-                    source=_notice_source(notice.source),
+                    source=notice_source(notice.source),
                 )
             )
         return messages
 
     # ----------------------------------------------------------------- reads
+
+    @property
+    def events(self) -> tuple[Event, ...]:
+        """The session events as of the last append (read-only, no lock)."""
+        return self._session.events
+
+    def fold(self) -> SessionView:
+        """Fold the session into a SessionView, cached by last sequence number.
+
+        The cache is keyed by the session's last seq, so a caller may fold
+        repeatedly (refresh_prompt, transcript reads) and only pay for new
+        events. Reads use the in-memory log and never take the write lock.
+        """
+        last_seq = self._session.last_seq
+        cached = self._fold_cache
+        if cached is not None and cached[0] == last_seq:
+            return cached[1]
+        view = fold(self._session.header, self._session.events)
+        self._fold_cache = (last_seq, view)
+        return view
 
     def usage(self) -> dict[str, int]:
         """Cumulative input/output/cached tokens over every finished turn."""
@@ -345,7 +313,7 @@ class NativeSessionHandle:
 
     def derive_messages(self, *, strict: bool | None = None) -> list[Message]:
         """Rebuild the transcript from the session fold, like the v4 Session API."""
-        view = fold(self._session.header, self._session.events)
+        view = self.fold()
         if strict and view.issues:
             raise ValueError(f"session fold reported {len(view.issues)} issue(s)")
         return list(view.messages)
@@ -471,6 +439,10 @@ class NativeAgentHost:
         self._handle = NativeSessionHandle(session, notice_limit=notice_limit)
         self._task: asyncio.Task[RunResult] | None = None
         self._closed = False
+        self._tools = tuple(tools)
+        self._prompt_source: PromptSource | None = None
+        self._prompt_facts: PromptFacts | None = None
+        self._pending_callback: Callable[[], None] | None = None
         service_map: dict[str, Any] = dict(services or {})
         usage_inner = service_map.get("usage")
         trace_inner = service_map.get("trace_export")
@@ -496,22 +468,129 @@ class NativeAgentHost:
 
     # ------------------------------------------------------------- lifecycle
 
-    async def send(self, text: str) -> RunResult:
+    async def send(self, text: str, *, source: MessageSource | None = None) -> RunResult:
         """Run one fresh turn on the owned session and stream it through hooks.
 
-        Any notices queued by inject() become user messages in the log before
-        the run starts, so the new run folds them into its context. Raises
-        asyncio.CancelledError when the run was interrupted.
+        The system prompt is refreshed first (a no-op unless it changed), then
+        any notices queued by inject() become user messages in the log, so the
+        new run folds both into its context. source defaults to UserSource().
+        Raises asyncio.CancelledError when the run was interrupted.
         """
-        if self._closed or self._session.closed:
-            raise ValueError("session is closed")
+        self._ensure_ready()
         if not isinstance(text, str) or not text:
             raise ValueError("send requires a non-empty prompt")
-        if self._task is not None and not self._task.done():
-            raise RuntimeError("agent host already has a send in flight")
-        for notice in self._handle._drain_notices():
-            self._session.append(EventKind.USER_MESSAGE, {"message": notice.to_dict()})
-        task = asyncio.create_task(self._loop.run(text))
+        self._ensure_idle()
+        self.refresh_prompt()
+        self._drain_notices_into_log()
+        return await self._await_run(asyncio.create_task(self._loop.run(text, source=source)))
+
+    async def resume(self) -> RunResult:
+        """Continue a session whose previous run did not finish.
+
+        Repairs any dangling step/turn in the log (no fabricated messages), then
+        starts a new run without appending a user message. Refuses while busy.
+        """
+        self._ensure_ready()
+        self._ensure_idle()
+        self.refresh_prompt()
+        self._drain_notices_into_log()
+        return await self._await_run(asyncio.create_task(self._loop.run(None, resume=True)))
+
+    def deliver(self, text: str, *, source: MessageSource | None = None) -> bool:
+        """Append one user message now, or queue it when a run is in flight.
+
+        Returns True when the text was queued as a notice for the next run and
+        False when it was appended to the log immediately. The pending callback
+        (see on_pending) fires after a successful queue.
+        """
+        self._ensure_ready()
+        if not isinstance(text, str) or not text:
+            raise ValueError("deliver requires a non-empty prompt")
+        if self.busy:
+            accepted = self._handle.inject(text, _source_payload(source))
+            if accepted:
+                self._notify_pending()
+            return accepted
+        message = user_message(text, source=source, created_at=self._next_ts())
+        self._session.append(EventKind.USER_MESSAGE, {"message": message.to_dict()})
+        return False
+
+    def on_pending(self, callback: Callable[[], None] | None) -> None:
+        """Register the single callback fired when deliver() had to queue text."""
+        if callback is not None and not callable(callback):
+            raise ValueError("on_pending callback must be callable or None")
+        self._pending_callback = callback
+
+    async def wait_for_idle(self) -> None:
+        """Wait for the in-flight run to finish; returns immediately when idle."""
+        task = self._task
+        if task is None:
+            return
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.shield(task)
+
+    def restore(self) -> bool:
+        """Close an interrupted open turn without fabricating content.
+
+        Returns True when a dangling turn (and step, if any) was closed in the
+        log as aborted-by-disposed.
+        """
+        self._ensure_ready()
+        return self._loop.repair_open_turn({"kind": "aborted", "by": "disposed"})
+
+    def attach_prompt(self, source: PromptSource, facts: PromptFacts | None = None) -> bool:
+        """Attach the system-prompt renderer and render it into the log now.
+
+        Rendering is the host's only system.message writer; returns True when a
+        system.message fact was written. facts is stored for callers that
+        inspect the build but is not required to render.
+        """
+        self._ensure_ready()
+        self._prompt_source = source
+        self._prompt_facts = facts
+        return self.refresh_prompt()
+
+    def refresh_prompt(self) -> bool:
+        """Render the system prompt and persist it when it changed.
+
+        The fold keeps system.message last-wins and out of the message sequence,
+        so re-rendering an unchanged prompt writes nothing. Never called
+        mid-turn: send()/resume() refresh before starting a run.
+        """
+        self._ensure_ready()
+        source = self._prompt_source
+        if source is None:
+            return False
+        view = self._handle.fold()
+        text = source.render(view.header, tool_specs(self._tools))
+        if not text:
+            return False
+        current = view.system.text() if view.system is not None else ""
+        if text == current:
+            return False
+        message = Message(
+            id=new_message_id(),
+            role="system",
+            content=(TextPart(text=text),),
+            created_at=self._next_ts(),
+            source=SystemSource(),
+        )
+        self._session.append(EventKind.SYSTEM_MESSAGE, {"message": message.to_dict()})
+        return True
+
+    def last_assistant_text(self) -> str:
+        """The last assistant text in the folded transcript (empty when none)."""
+        for message in reversed(self._handle.fold().messages):
+            if message.role == "assistant":
+                return message.text()
+        return ""
+
+    def turn_count(self) -> int:
+        """How many turns were started in this session so far."""
+        return sum(1 for event in self._session.events if event.type == EventKind.TURN_STARTED.value)
+
+    async def _await_run(self, task: asyncio.Task[RunResult]) -> RunResult:
+        """Await one loop run, translating cooperative stops into cancellations."""
         self._task = task
         try:
             return await task
@@ -529,6 +608,28 @@ class NativeAgentHost:
         finally:
             if self._task is task:
                 self._task = None
+
+    def _ensure_ready(self) -> None:
+        if self._closed or self._session.closed:
+            raise ValueError("session is closed")
+
+    def _ensure_idle(self) -> None:
+        if self._task is not None and not self._task.done():
+            raise RuntimeError("agent host already has a send in flight")
+
+    def _drain_notices_into_log(self) -> None:
+        for notice in self._handle._drain_notices():
+            self._session.append(EventKind.USER_MESSAGE, {"message": notice.to_dict()})
+
+    def _next_ts(self) -> int:
+        return max(now_ms(), self._session.last_ts)
+
+    def _notify_pending(self) -> None:
+        callback = self._pending_callback
+        if callback is None:
+            return
+        with contextlib.suppress(Exception):
+            callback()
 
     async def interrupt(self) -> bool:
         """Cancel the in-flight run; True when a run was actually interrupted.

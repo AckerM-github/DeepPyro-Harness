@@ -35,6 +35,9 @@ BLOCK_SUFFIX = ".jsonl"
 #: File suffix for the reference sidecar.
 REFS_SUFFIX = ".refs.jsonl"
 
+#: Supported block sources: v4 compress-tool blocks and native auto-compaction.
+BLOCK_SOURCES = ("compress", "auto")
+
 _ERROR_BASE = "COMPACT_"
 
 
@@ -74,11 +77,15 @@ class BlockRecord:
     """
 
     __slots__ = (
+        "compaction_id",
         "created_at",
+        "end_message_id",
         "end_ref",
         "end_seq",
         "id",
         "session_id",
+        "source",
+        "start_message_id",
         "start_ref",
         "start_seq",
         "summary",
@@ -97,15 +104,23 @@ class BlockRecord:
         title: str,
         summary: str,
         created_at: int,
+        source: str = "compress",
+        compaction_id: str = "",
+        start_message_id: str = "",
+        end_message_id: str = "",
     ) -> None:
         if not id or not id.startswith("b") or not id[1:].isdigit():
             raise ValueError("block id must look like 'b1'")
         if not session_id:
             raise ValueError("block session_id must be non-empty")
-        if not start_ref or not end_ref:
+        if source not in BLOCK_SOURCES:
+            raise ValueError(f"block source {source!r} is not supported")
+        if source == "compress" and (not start_ref or not end_ref):
             raise ValueError("block range refs must be non-empty")
         if start_seq < 0 or end_seq < start_seq:
             raise ValueError("block seq range must be non-negative and ordered")
+        if source == "auto" and not compaction_id:
+            raise ValueError("automatic compaction blocks must name a compaction_id")
         if not isinstance(summary, str):
             raise TypeError("block summary must be a string")
         self.id = id
@@ -117,10 +132,14 @@ class BlockRecord:
         self.title = title
         self.summary = summary
         self.created_at = created_at
+        self.source = source
+        self.compaction_id = compaction_id
+        self.start_message_id = start_message_id
+        self.end_message_id = end_message_id
 
     def to_dict(self) -> dict[str, Any]:
         """Return the canonical JSON object written to disk."""
-        return {
+        data: dict[str, Any] = {
             "version": BLOCK_STORE_VERSION,
             "id": self.id,
             "sessionId": self.session_id,
@@ -131,6 +150,16 @@ class BlockRecord:
             "summary": self.summary,
             "createdAt": self.created_at,
         }
+        if self.source != "compress":
+            data["source"] = self.source
+        if self.compaction_id:
+            data["compactionId"] = self.compaction_id
+        if self.start_message_id or self.end_message_id:
+            data["messageRange"] = {
+                "start": self.start_message_id,
+                "end": self.end_message_id,
+            }
+        return data
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> BlockRecord:
@@ -145,6 +174,14 @@ class BlockRecord:
             created = 0
         if isinstance(created, bool) or not isinstance(created, int) or created < 0:
             raise ValueError("block record createdAt must be a non-negative integer")
+        message_range = raw.get("messageRange")
+        if message_range is not None and not isinstance(message_range, Mapping):
+            raise TypeError("block record messageRange must be an object")
+        start_message_id = ""
+        end_message_id = ""
+        if isinstance(message_range, Mapping):
+            start_message_id = str(message_range.get("start", ""))
+            end_message_id = str(message_range.get("end", ""))
         return cls(
             id=str(raw.get("id", "")),
             session_id=str(raw.get("sessionId", "")),
@@ -155,6 +192,10 @@ class BlockRecord:
             title=str(raw.get("title", "")),
             summary=str(raw.get("summary", "")),
             created_at=created,
+            source=str(raw.get("source", "compress")),
+            compaction_id=str(raw.get("compactionId", "")),
+            start_message_id=start_message_id,
+            end_message_id=end_message_id,
         )
 
     def _key(self) -> tuple[Any, ...]:
@@ -168,6 +209,10 @@ class BlockRecord:
             self.title,
             self.summary,
             self.created_at,
+            self.source,
+            self.compaction_id,
+            self.start_message_id,
+            self.end_message_id,
         )
 
     def __eq__(self, other: object) -> bool:
@@ -258,6 +303,10 @@ class BlockStore:
         summary: str,
         created_at: int | None = None,
         block_id: str | None = None,
+        source: str = "compress",
+        compaction_id: str = "",
+        start_message_id: str = "",
+        end_message_id: str = "",
     ) -> BlockRecord:
         """Append one block, assigning the next bN id, and return it."""
         with self._lock:
@@ -279,6 +328,10 @@ class BlockStore:
                 title=title,
                 summary=summary,
                 created_at=now_ms() if created_at is None else created_at,
+                source=source,
+                compaction_id=compaction_id,
+                start_message_id=start_message_id,
+                end_message_id=end_message_id,
             )
             self._append_line(self.path(session_id), record.to_dict())
             return record

@@ -22,12 +22,13 @@
 
 宿主级事实的实现：
 
-- `src/deeppyro/kernel/capabilities.py:166-187` —— `SandboxBoundary`（frozen
+- `src/deeppyro/kernel/capabilities.py:228-249` —— `SandboxBoundary`（frozen
   dataclass，`to_dict()` 输出 `platform/enforcement/reason`）；
-- `src/deeppyro/kernel/capabilities.py:190-216` —— `host_sandbox_boundary()`；
-- `src/deeppyro/kernel/capabilities.py:303-311` —— `CapabilityReport.sandbox`；
-- `src/deeppyro/kernel/app.py:392` `capability_report()` /
-  `src/deeppyro/kernel/app.py:400` `capability_dict()`。
+- `src/deeppyro/kernel/capabilities.py:251-277` —— `host_sandbox_boundary()`；
+- `src/deeppyro/kernel/capabilities.py:505` —— `CapabilityReport.sandbox`
+  （序列化在 `CapabilityReport.to_dict()`，`src/deeppyro/kernel/capabilities.py:621` 起）；
+- `src/deeppyro/kernel/app.py:395` `capability_report()` /
+  `src/deeppyro/kernel/app.py:403` `capability_dict()`。
 
 Windows 上报告的取值固定为：
 
@@ -41,15 +42,17 @@ Windows 上报告的取值固定为：
 
 `reason` 不是装饰：它是机器可读的边界声明，测试会断言其中同时出现
 “file writes only”“ACL”“network”“not constrained”等关键词
-（`tests/kernel/test_sandbox_boundary.py`），避免文档与代码漂移。
+（`tests/kernel/test_sandbox_boundary.py::test_host_sandbox_boundary_matches_the_platform`），
+避免文档与代码漂移。但 `reason` 只是摘要，不是完整清单：可执行声明与覆盖
+状态见 §8，明确不声明的事项见 §9。
 
 非 Windows 上同一字段是 `{"platform": "posix", "enforcement":
 "unavailable", ...}`，表示 read-only / workspace-write 无法执行。
 
 单命令口径来自沙箱插件返回的 live `Confinement`
-（`src/deeppyro/sandbox/provider.py:88-96`）：shell 工具把
+（`src/deeppyro/sandbox/provider.py:89-96`）：shell 工具把
 `mode/enforcement` 写进结果 `meta["sandbox"]`
-（后台任务同样带，`src/deeppyro/tools/builtin/shell.py:185-188`），前台
+（后台任务同样带，`src/deeppyro/tools/builtin/shell.py:188`），前台
 命令额外带 `denied` 与（runner 自身失败时）`runnerFailed`
 （`src/deeppyro/tools/builtin/shell.py:245-258`）。
 
@@ -91,6 +94,12 @@ Windows 上报告的取值固定为：
 | 环境变量 | 否（TEMP/TMP 例外） | 只有 TEMP/TMP 被重定向到私有 temp |
 | 剪贴板、窗口、COM 等用户态操作 | 否 | 无桌面/会话隔离 |
 | 向 stdout/stderr 写数据、退出码 | 否 | 原样镜像 |
+| 命名管道、共享内存等 IPC 写入 | 未验证 | 不属于文件 ACL 的写路径；没有专门断言，不能假定被拦 |
+| COM/RPC 服务端写入、跨进程副作用 | 未验证 | 无用户态隔离；与剪贴板/窗口同类，未做探针验证 |
+
+> 表中“否”表示**没有专门的约束机制**，不等于“已经被自动化测试证明不受约束”。
+> 目前没有断言覆盖网络/读/进程/注册表/服务/用户态操作的“不受约束”这一侧；
+> 覆盖状态见 §8，明确不声明项见 §9。
 
 因此，“跑在沙箱里”在 Windows 上的准确含义是**文件写受限**，不是
 “行为被隔离”。需要防网络外传或防读取的负载，不能依赖本地沙箱。
@@ -109,11 +118,12 @@ partial enforcement 不是策略层模拟，而是真实的 OS 机制组合；�
    （`_grant_dir_ace`，`src/deeppyro/sandbox/windows_acl_runner.py:463-498`），
    掩码 `GRANT_MASK = 1114454`（含 write+delete；刻意**不含**
    `WRITE_DAC`/`WRITE_OWNER`，见
-   `src/deeppyro/sandbox/windows_acl_runner.py:177-178`）。workspace ACE 常驻；
+   `src/deeppyro/sandbox/windows_acl_runner.py:178`）。workspace ACE 常驻；
    私有 temp 的 ACE 在命令结束时 revoke（`_revoke_dir_ace`，
    `src/deeppyro/sandbox/windows_acl_runner.py:500-533`）。
 3. **受限令牌**：`CreateRestrictedToken`
-   （`src/deeppyro/sandbox/windows_acl_runner.py:574-598`），标志
+   （`src/deeppyro/sandbox/windows_acl_runner.py:574-608`；令牌组装在
+   `_build_token` :600-608），标志
    `RESTRICTED_TOKEN_FLAGS = 13` = `DISABLE_MAX_PRIVILEGE |
    LUA_TOKEN | WRITE_RESTRICTED`；restricting SIDs 为“当前登录 SID、World
    SID、合成写 SID”（read-only 模式没有写 SID）。`WRITE_RESTRICTED` 使写
@@ -128,13 +138,14 @@ partial enforcement 不是策略层模拟，而是真实的 OS 机制组合；�
    否则即使沙箱本来允许，workspace 内写也会被普通 ACL 拒绝。
 6. **进程生命周期**：子进程通过 `CreateProcessAsUserW(CREATE_SUSPENDED)`
    启动，先加入 `KILL_ON_JOB_CLOSE` 的 job object 再 resume
-   （`_spawn_restricted`，`src/deeppyro/sandbox/windows_acl_runner.py:610-721`），
+   （`_create_kill_on_close_job` :610-621、`_spawn_restricted` :663-721，
+   `src/deeppyro/sandbox/windows_acl_runner.py`），
    父进程退出/被杀时后台子进程随之被杀。stdin/stdout/stderr 句柄继承。
 7. **fail closed**：runner 任何失败都写 stderr
    `windows-acl-run: <detail>`、退出码 127
-   （`src/deeppyro/sandbox/windows_acl_runner.py:14-15,37-40,149-152`），
+   （`src/deeppyro/sandbox/windows_acl_runner.py:1-20,38,133-152`），
    且失败发生在启动子进程之前。provider 把 `(127, "windows-acl-run: ")`
-   注册为 runner-failure 规则（`src/deeppyro/sandbox/provider.py:210-216`），
+   注册为 runner-failure 规则（`src/deeppyro/sandbox/provider.py:214`），
    工具据此区分“命令失败”和“沙箱自身失败”。
 
 由此带来的直接推论：
@@ -154,7 +165,7 @@ partial enforcement 不是策略层模拟，而是真实的 OS 机制组合；�
 | 非 Windows | `read-only`/`workspace-write` 抛 `SandboxUnavailableError`，命令不执行（`src/deeppyro/sandbox/provider.py:179-180`） |
 | `additionalWritableRoots` 非空 | 抛 `SandboxUnsupportedPolicyError`（`src/deeppyro/sandbox/provider.py:181-185`）；Windows ACL 后端只能表达一个 workspace (+私有 temp) |
 | workspace 不可写 | workspace 内写也被拒；runner 可能因无法设置 ACE 而直接失败（exit 127） |
-| 私有 temp | 每命令新建，命令结束后由消费方删除（`src/deeppyro/tools/builtin/shell.py:107-111`）；ACL 在 runner 退出时 revoke |
+| 私有 temp | 每命令新建，命令结束后由消费方删除（`src/deeppyro/tools/builtin/shell.py:108-111`）；ACL 在 runner 退出时 revoke |
 | 网络/读/进程/注册表 | 不受约束（partial 的定义） |
 | 审批 | 只有 once/deny；没有 always（配置会拒绝 `always`） |
 | 后台任务 | 后台 shell 也走 confinement；任务结束时清理 temp |
@@ -222,6 +233,9 @@ shutil.rmtree(confinement.temp_root, ignore_errors=True)  # 清理私有 temp
 预期：`enforcement == "partial"`；workspace 内 `exit 0`；workspace 外
 失败并出现 access denied 文本；workspace 外读取成功（证明“只拦写、不拦读”）。
 
+这个探针只验证“写被拦、读没被拦”。网络、进程、注册表在 §3 的否定声明
+**没有**自动化断言（见 §8），不要把它外推成“其它通道也已被测试证明”。
+
 ### 6.3 看 workspace 上的 ACL 残留
 
 ```powershell
@@ -243,9 +257,11 @@ icacls path\to\probe-workspace
 ```
 
 `tests/kernel/test_sandbox_boundary.py` 断言 Windows report 的
-`enforcement == "partial"` 且 `reason` 存在；runner/shell 测试覆盖
-workspace/temp/outside 写、read-only、退出码镜像、stdio、fail-closed、
-marker 与 `runnerFailed`。
+`enforcement == "partial"`、`reason` 关键词与 report 的默认值/registry/boot
+序列化；runner/shell 测试覆盖 workspace/temp/outside 写、read-only、退出码镜像、
+stdio、fail-closed、marker 与 `runnerFailed`。逐条声明到具体 node id 的映射见
+§8；**§8 中标为“仅手工探针”或“代码事实（无自动断言）”的声明不在这条命令的
+覆盖范围内**。
 
 ### 6.5 区分三种失败
 
@@ -264,11 +280,62 @@ marker 与 `runnerFailed`。
 | 合成写 SID | `src/deeppyro/sandbox/windows_acl_runner.py:65-75` |
 | ACE 授予/回收 | `src/deeppyro/sandbox/windows_acl_runner.py:463-533` |
 | 受限令牌与默认 DACL | `src/deeppyro/sandbox/windows_acl_runner.py:535-608` |
-| job object / 子进程启动 | `src/deeppyro/sandbox/windows_acl_runner.py:610-721` |
-| 工具结果事实与 marker | `src/deeppyro/tools/builtin/shell.py:84-105,185-188,245-258` |
-| report 的 sandbox 事实 | `src/deeppyro/kernel/capabilities.py:166-216,303-311` |
+| job object / 子进程启动 | `src/deeppyro/sandbox/windows_acl_runner.py:610-621,663-721` |
+| 工具结果事实与 marker | `src/deeppyro/tools/builtin/shell.py:84-111,188,245-258` |
+| report 的 sandbox 事实 | `src/deeppyro/kernel/capabilities.py:228-277,505`、`src/deeppyro/kernel/app.py:395-406` |
 | 测试 | `tests/kernel/test_sandbox_boundary.py`、`tests/sandbox/test_windows_acl_runner.py`、`tests/tools/test_shell.py`、`tests/tools/test_fs.py` |
 
+## 8. 声明与可执行证据矩阵
+
+把本文的每条边界声明映射到具体证据。**覆盖状态**只有三种，不要混写：
+
+- **自动**：有 pytest node 在跑，可作为门禁；
+- **仅手工探针**：只能按 §6.2/§6.3 人工验证，没有自动断言；
+- **代码事实**：由实现直接决定，但没有测试断言，改动时需人工复核。
+
+| # | 声明 | 证据 | 覆盖状态 |
+| --- | --- | --- | --- |
+| 1 | Windows 宿主级 report 为 `platform=windows`、`enforcement=partial`，`reason` 含 file writes only / ACL / network / not constrained 关键词 | `tests/kernel/test_sandbox_boundary.py::test_host_sandbox_boundary_matches_the_platform` | 自动（Windows） |
+| 2 | report 默认值、registry 生成、boot 后 `capability_dict()` 都携带同一 sandbox 事实 | 同文件 `::test_capability_report_defaults_to_the_host_boundary`、`::test_registry_report_carries_the_sandbox_boundary`、`::test_booted_capability_dict_exposes_the_boundary` | 自动 |
+| 3 | workspace 内文件写允许，workspace 外文件写被拒 | `tests/sandbox/test_windows_acl_runner.py::test_workspace_write_confines_child_writes` | 自动（Windows） |
+| 4 | read-only 拒绝所有文件写，且不改动 workspace ACL | 同文件 `::test_read_only_denies_all_writes`、`::test_read_only_does_not_touch_workspace_acl` | 自动 |
+| 5 | workspace 的写 ACE 常驻可复用；私有 temp 的 ACE 每条命令结束撤销 | 同文件 `::test_workspace_grant_is_standing_and_temp_grant_is_revoked` | 自动 |
+| 6 | runner 自身失败时 fail closed：命令不执行、stderr 以 `windows-acl-run:` 开头、退出码 127 | 同文件 `::test_cli_failure_exits_127_with_prefixed_stderr`、`::test_main_failure_is_fail_closed` | 自动 |
+| 7 | 子进程退出码镜像、stdio 继承、合成写 SID 稳定且按 workspace 区分 | 同文件 `::test_child_exit_code_is_mirrored`、`::test_child_stdio_is_inherited`、`::test_workspace_write_sid_is_stable_and_well_formed`、`::test_workspace_write_sid_differs_per_workspace` | 自动 |
+| 8 | 工具层：denial marker 启发式、`denied` 标记、`runnerFailed` 区分、私有 temp 清理、read-only 走 runner | `tests/tools/test_shell.py::test_pwsh_marks_a_sandbox_denial_and_offers_escalation`、`::test_pwsh_reports_a_runner_failure_as_a_sandbox_problem`、`::test_pwsh_removes_the_private_temp_root_after_the_run`、`::test_pwsh_runs_in_read_only_mode_through_the_runner` | 自动 |
+| 9 | 网络、读文件、进程、注册表、服务、用户态操作**不受沙箱约束** | §6.2 探针第 3 步只演示“读”没被拦；无专门断言 | 仅手工探针（声明，未自动覆盖） |
+| 10 | danger-full-access 完全不经过沙箱 | `src/deeppyro/sandbox/provider.py:177-178` 直接返回 `enforcement="full"` 的 `Confinement` | 代码事实（无自动断言） |
+| 11 | `additionalWritableRoots` 非空时拒绝执行 | `src/deeppyro/sandbox/provider.py:181-185` 抛 `SandboxUnsupportedPolicyError` | 代码事实（无自动断言） |
+| 12 | 非 Windows 平台 read-only / workspace-write 在启动命令前 fail closed | `src/deeppyro/sandbox/provider.py:179-180`；`test_sandbox_boundary.py` 非 Windows 分支只断言 report 文案含 fail closed | 部分自动（仅 report 文案）；本仓库 CI 无非 Windows runner，执行路径未验证 |
+| 13 | 命令自己打印 “access is denied” 也可能被标记为沙箱拒绝 | `src/deeppyro/tools/builtin/shell.py:100-105` 的文本匹配启发式 | 已知局限（无测试，行为故意保持） |
+| 14 | 本文**不**声称的隔离保证（VM/网络/身份/插件进程内） | 见 §9 | 非声明 |
+
+## 9. 明确不声明的事项（non-claims）
+
+以下都是**有意不声明**的能力。改动沙箱后端或发布说明时，不得把它们写成已提供：
+
+- **不是 VM / 容器 / OS 级隔离**，也不切换登录会话或用户身份：受限令牌子进程
+  仍以**当前用户**身份运行，只是叠加了写限制 SID（§4.3）。
+- **不是“防恶意代码”的安全边界**：partial 后端下，被执行命令仍拥有当前用户的
+  网络、读文件、进程、注册表、服务与用户态权限（§3）。
+- **不约束非文件通道**：命名管道/共享内存等 IPC、COM/RPC 服务端写入、剪贴板、
+  窗口/桌面均未验证被拦（§3 脚注），不能假定“写不了文件就出不去”。
+- **不防数据外泄、不防读取**：只限制文件写路径。需要这些保证的负载必须使用
+  真正的 OS/虚拟化隔离，这不在 0.2.0 范围内。
+- **不是插件隔离**：插件在 kernel 进程内受信运行（KI-021）；沙箱只约束
+  shell/pwsh 启动的子进程，不约束进程内的插件代码。
+- **不支持 additionalWritableRoots**：Windows 后端只能表达一个 workspace
+  加每命令私有 temp（§5）。
+- **不提供跨命令/跨会话隔离**：私有 temp 每命令一个；workspace 写 SID 的 ACE
+  常驻是设计（同一 workspace 复用），不是泄漏。
+- **审批没有 always**：只有 once/deny（§5）。
+- **非 Windows 没有本地后端**：read-only/workspace-write 在启动命令前 fail
+  closed，不会降级为无约束执行。
+- **danger-full-access 有意完全不沙箱**：这是显式选择，不是遗漏。
+- **本文不改变 KI-020 状态**：KI-020 仍是 `accepted`/partial。把
+  `enforcement` 提升到 `full` 需要新的后端实现与 ADR，不能靠改
+  文档或加测试断言完成。
+
 与 release 文档的关系：KI-020 的关闭状态由
-`docs/release/0.2.0-known-issues.md` 维护者更新；本文只提供边界说明与验证
-方法，不改变已知问题表。
+`docs/release/0.2.0-known-issues.md` 维护者更新；本文只提供边界说明、验证
+方法与 §8/§9 的可执行声明清单，不改变已知问题表。

@@ -26,17 +26,18 @@ from deeppyro.core.ids import (
     new_trace_id,
     new_turn_id,
 )
-from deeppyro.core.protocols import (
+from deeppyro.core.llm import (
     Finish,
-    LlmRequest,
+    ModelRequest,
+    StopReason,
     StreamEvent,
     TextDelta,
     ToolCallArgsDelta,
     ToolCallStart,
-    ToolContext,
-    ToolResult,
     Usage,
+    UsageEvent,
 )
+from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.session.fold import fold
 from deeppyro.session.schema import EventKind, NativeCodec, NativeSession
 
@@ -129,9 +130,9 @@ class _ScriptedProvider:
 
     def __init__(self, script: list[Any]) -> None:
         self.script = list(script)
-        self.requests: list[LlmRequest] = []
+        self.requests: list[ModelRequest] = []
 
-    async def stream(self, request: LlmRequest) -> AsyncIterator[StreamEvent]:
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         self.requests.append(request)
         item = self.script.pop(0)
         if isinstance(item, BaseException):
@@ -161,8 +162,8 @@ def _tool_call_events(provider_id: str = "call_provider_1") -> tuple[StreamEvent
     return (
         ToolCallStart(call_id=provider_id, name="echo"),
         ToolCallArgsDelta(call_id=provider_id, delta='{"value": 1}'),
-        Finish(kind="tool-calls"),
-        Usage(input_tokens=3, output_tokens=2, total_tokens=5),
+        UsageEvent(usage=Usage(input_tokens=3, output_tokens=2, total_tokens=5)),
+        Finish(stop_reason=StopReason.TOOL_CALLS),
     )
 
 
@@ -205,8 +206,8 @@ async def test_crash_then_resume_continues_run(tmp_path) -> None:
         [
             (
                 TextDelta(text="recovered"),
-                Finish(kind="stop"),
-                Usage(input_tokens=2, output_tokens=1, total_tokens=3),
+                UsageEvent(usage=Usage(input_tokens=2, output_tokens=1, total_tokens=3)),
+                Finish(stop_reason=StopReason.STOP),
             ),
         ]
     )
@@ -259,7 +260,7 @@ async def test_resume_without_checkpoint_store_repairs_and_continues(tmp_path) -
     reopened = NativeSession.open(session_path)
     resumed = AgentLoop(
         session=reopened,
-        provider=_ScriptedProvider([(TextDelta(text="done"), Finish(kind="stop"))]),
+        provider=_ScriptedProvider([(TextDelta(text="done"), Finish(stop_reason=StopReason.STOP))]),
         model="fake-model",
         cwd=tmp_path,
     )

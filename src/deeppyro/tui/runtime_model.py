@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
+from deeppyro.agent.native_host import NativeSessionHandle
 from deeppyro.api import DEFAULT_PRESET_ID, TEAM_PRESET_ID, PluginDependencyError
 from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.core.errors import ConfigError, DeeppyroError
@@ -17,6 +18,8 @@ class ModelLayer(SessionLayer):
 
     async def open_session(self, session_id: str) -> Any:
         """Open an existing session and rebuild the agent around it."""
+        if self.native:
+            return await self._open_native_session(session_id)
         self._save_projections()
         session = self.store.open(session_id)
         self._pin_permission(session)
@@ -61,6 +64,36 @@ class ModelLayer(SessionLayer):
             await self._attach(session)
         return session
 
+    async def _open_native_session(self, session_id: str) -> Any:
+        """Open a schema 1 session, hydrate the agent and record the selection."""
+        handle = NativeSessionHandle(self.sessions.native_open(session_id))
+        view = handle.fold()
+        state = view.state
+        model = getattr(state, "model", None)
+        if model is not None:
+            provider_name = str(getattr(model, "provider", "") or "")
+            if provider_name and provider_name in self.cfg.providers:
+                provider_cfg = self.cfg.providers[provider_name]
+                # a stale provider must not brick the resume
+                with contextlib.suppress(Exception):
+                    self.provider = self._build_provider(provider_name)
+                    self.provider_name = provider_name
+                    self.model = str(getattr(model, "model", "") or self.model)
+                    self.context_window = _context_window_for(
+                        provider_cfg, self.model, self._cached_model(provider_name, self.model)
+                    )
+        preset = getattr(state, "preset", None)
+        recorded_preset = self._canonical_preset(getattr(preset, "preset", None) or "") or DEFAULT_PRESET_ID
+        revision = getattr(preset, "revision", None)
+        previous = self._canonical_preset(getattr(preset, "previous", None) or "") or DEFAULT_PRESET_ID
+        self.agent_preset = recorded_preset
+        self.preset_revision = revision if isinstance(revision, int) else None
+        self.team_previous_preset = previous if recorded_preset == TEAM_PRESET_ID else DEFAULT_PRESET_ID
+        await self._ensure_preset(self.agent_preset, self.preset_revision)
+        await self._attach_native(handle)
+        self._emit_session_event(handle)
+        return handle
+
     def providers(self) -> list[str]:
         """Configured provider names, in config order."""
         return [str(name) for name in self.cfg.providers]
@@ -84,6 +117,8 @@ class ModelLayer(SessionLayer):
         if service is None:
             raise DeeppyroError("llm service is not available")
         try:
+            if self.native:
+                return service.native_provider(provider_name)
             return service.provider(provider_name)
         except KeyError as exc:
             raise ConfigError(f"unknown provider: {provider_name}") from exc

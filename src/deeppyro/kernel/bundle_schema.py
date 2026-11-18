@@ -23,6 +23,8 @@ __all__ = [
     "DIGEST_PATTERN",
     "DIGEST_PREFIX",
     "ROW_KEYS",
+    "SIGNATURE_PATTERN",
+    "SIGNATURE_PREFIX",
     "BundleDocument",
     "BundleMeta",
     "RequirementEntry",
@@ -56,9 +58,29 @@ ROW_KEYS = frozenset(
 DIGEST_PREFIX = "sha256:"
 #: Pattern a declared ``[bundle].digest`` value must match.
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+#: Prefix of an optional bundle signature: ``hmac-sha256:`` plus 64 lowercase
+#: hex characters.  The value is an HMAC-SHA256 over the raw bundle.toml bytes
+#: with the declared signature value itself replaced by an all-zero
+#: placeholder, using a shared secret supplied by the environment at boot (see
+#: docs/guides/bundle-signing.md).
+SIGNATURE_PREFIX = "hmac-sha256:"
+#: Pattern a declared ``[bundle].signature`` value must match.
+SIGNATURE_PATTERN = re.compile(r"^hmac-sha256:[0-9a-f]{64}$")
 
 #: Keys accepted in the [bundle] table.
-BUNDLE_KEYS = frozenset({"id", "name", "version", "api_version", "order", "critical", "requires", "digest"})
+BUNDLE_KEYS = frozenset(
+    {
+        "id",
+        "name",
+        "version",
+        "api_version",
+        "order",
+        "critical",
+        "requires",
+        "digest",
+        "signature",
+    }
+)
 
 
 def _non_empty(value: str) -> str:
@@ -96,6 +118,9 @@ class BundleMeta(BaseModel):
     requires: list[str | RequirementEntry] = Field(default_factory=list)
     #: Optional pin of the bundle.toml raw bytes (see docs/guides/bundle-digest.md).
     digest: str | None = None
+    #: Optional HMAC-SHA256 signature of the bundle.toml raw bytes, verified at
+    #: boot only when present (see docs/guides/bundle-signing.md).
+    signature: str | None = None
 
     @field_validator("id")
     @classmethod
@@ -110,6 +135,16 @@ class BundleMeta(BaseModel):
         normalized = value.strip()
         if not DIGEST_PATTERN.fullmatch(normalized):
             raise ValueError("digest must be 'sha256:' followed by 64 lowercase hex characters")
+        return normalized
+
+    @field_validator("signature")
+    @classmethod
+    def _check_signature(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not SIGNATURE_PATTERN.fullmatch(normalized):
+            raise ValueError("signature must be 'hmac-sha256:' followed by 64 lowercase hex characters")
         return normalized
 
     @field_validator("api_version")

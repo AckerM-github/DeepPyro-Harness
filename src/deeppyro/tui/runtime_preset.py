@@ -24,6 +24,8 @@ class PresetLayer(ModelLayer):
     @property
     def agent_presentation(self) -> str:
         """Tool presentation of the active agent ("native" or "ptc")."""
+        if self.native:
+            return AGENT_PRESENTATION_NATIVE
         presentation = str(getattr(self.agent, "presentation", "") or "").strip()
         if presentation:
             return presentation

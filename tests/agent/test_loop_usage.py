@@ -13,7 +13,16 @@ from deeppyro.agent.errors import ProviderStreamError
 from deeppyro.agent.loop import AgentLoop
 from deeppyro.agent.run_state import RunStatus
 from deeppyro.core.ids import new_session_id
-from deeppyro.core.protocols import Finish, LlmRequest, StreamEvent, TextDelta, Usage
+from deeppyro.core.llm import (
+    Finish,
+    ModelRequest,
+    RetryScheduled,
+    StopReason,
+    StreamEvent,
+    TextDelta,
+    Usage,
+    UsageEvent,
+)
 from deeppyro.observability.protocols import TurnUsage
 from deeppyro.observability.trace import ModelCallRecord, RunRecord, TraceStore
 from deeppyro.session.schema import NativeSession
@@ -29,8 +38,8 @@ def _session(tmp_path: Any) -> NativeSession:
 def _response(text: str, *, usage: Usage | None = None) -> tuple[StreamEvent, ...]:
     return (
         TextDelta(text=text),
-        Finish(kind="stop"),
-        usage if usage is not None else Usage(input_tokens=3, output_tokens=2, total_tokens=5),
+        UsageEvent(usage if usage is not None else Usage(input_tokens=3, output_tokens=2, total_tokens=5)),
+        Finish(stop_reason=StopReason.STOP),
     )
 
 
@@ -39,9 +48,9 @@ class _ScriptedProvider:
 
     def __init__(self, script: list[Any]) -> None:
         self.script = list(script)
-        self.requests: list[LlmRequest] = []
+        self.requests: list[ModelRequest] = []
 
-    async def stream(self, request: LlmRequest) -> AsyncIterator[StreamEvent]:
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         self.requests.append(request)
         item = self.script.pop(0)
         if isinstance(item, BaseException):
@@ -125,7 +134,7 @@ async def test_native_turn_reports_usage_and_forwards_trace_records(tmp_path: An
 async def test_native_error_run_still_reports_a_turn(tmp_path: Any) -> None:
     session = _session(tmp_path)
     usage_sink = RecordingUsageSink()
-    provider = _ScriptedProvider([[Finish(kind="error", failure={"message": "boom"})]])
+    provider = _ScriptedProvider([[Finish(stop_reason=StopReason.ERROR, message="boom")]])
     loop = AgentLoop(
         session=session,
         provider=provider,
@@ -212,6 +221,36 @@ async def test_concurrent_loops_report_their_own_turns(tmp_path: Any) -> None:
     finally:
         for session in sessions:
             session.close()
+
+
+async def test_native_turn_reports_transport_retries(tmp_path: Any) -> None:
+    session = _session(tmp_path)
+    usage_sink = RecordingUsageSink()
+    export = RecordingTraceExport()
+    provider = _ScriptedProvider(
+        [
+            (
+                RetryScheduled(attempt=1, code="RATE_LIMIT", delay_s=0.0),
+                *_response("recovered"),
+            )
+        ]
+    )
+    loop = AgentLoop(
+        session=session,
+        provider=provider,
+        model="fake-model",
+        cwd=tmp_path,
+        services={"usage": usage_sink, "trace_export": export},
+    )
+    try:
+        result = await loop.run("hi")
+        assert result.status is RunStatus.COMPLETED
+        assert usage_sink.records[0].retries == 1
+        call = export.records[-1]
+        assert isinstance(call, ModelCallRecord)
+        assert call.retry_count == 1
+    finally:
+        session.close()
 
 
 async def test_native_loop_writes_local_traces_and_reports_usage(tmp_path: Any) -> None:

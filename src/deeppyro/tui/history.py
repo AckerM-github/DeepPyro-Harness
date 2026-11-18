@@ -211,14 +211,14 @@ class TurnProcess:
 def _tool_call_part(part: Any) -> tuple[str, str, str] | None:
     """Return (callId, name, arguments) for a tool-call content part."""
     if isinstance(part, dict):
-        if part.get("type") != "tool-call":
+        if part.get("type") not in ("tool-call", "tool_call"):
             return None
         return (
             str(part.get("id") or ""),
             str(part.get("name") or ""),
             str(part.get("arguments") or "{}"),
         )
-    if getattr(part, "type", "") == "tool-call":
+    if getattr(part, "type", "") in ("tool-call", "tool_call"):
         return (
             str(getattr(part, "id", "") or ""),
             str(getattr(part, "name", "") or ""),
@@ -237,13 +237,13 @@ def _message_content(message: Any) -> list[Any] | None:
 def _tool_result_fields(message: Any) -> tuple[str, str, bool]:
     """Return (callId, text, isError) for a recorded tool message."""
     if isinstance(message, dict):
-        call_id = str(message.get("toolCallId") or message.get("callId") or "")
+        call_id = str(message.get("toolCallId") or message.get("callId") or message.get("tool_call_id") or "")
         content = message.get("content")
-        is_error = bool(message.get("isError"))
+        is_error = bool(message.get("isError") or message.get("is_error"))
     else:
-        call_id = str(getattr(message, "toolCallId", "") or "")
+        call_id = str(getattr(message, "toolCallId", "") or getattr(message, "tool_call_id", "") or "")
         content = getattr(message, "content", None)
-        is_error = bool(getattr(message, "isError", False))
+        is_error = bool(getattr(message, "isError", False) or getattr(message, "is_error", False))
     text = ""
     if isinstance(content, list):
         for part in content:

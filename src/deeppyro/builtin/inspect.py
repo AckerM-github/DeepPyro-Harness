@@ -24,6 +24,9 @@ from deeppyro.kernel.bundle import load_composition
 from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.kernel.runtime import KernelRuntime
 from deeppyro.plugins.settings_store import SettingsStore
+from deeppyro.session.fold import fold
+from deeppyro.session.native_index import native_session_archived, read_native_log
+from deeppyro.session.schema import SCHEMA_VERSION, EventKind, SessionLog
 
 
 def _service_name(value: Any) -> str:
@@ -89,6 +92,102 @@ def _event_row(record_type: str) -> dict[str, Any]:
         "kind": record_type.partition("/")[0],
         "surface": record_type in SURFACE_EVENT_TYPES,
         "projection": record_type in MESSAGE_PROJECTION_TYPES,
+    }
+
+
+def _native_title(log: SessionLog) -> str | None:
+    for event in reversed(log.events):
+        if event.type != EventKind.SESSION_TITLE.value:
+            continue
+        data = event.data if isinstance(event.data, dict) else {}
+        title = data.get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+    return None
+
+
+def _native_tool_calls(log: SessionLog) -> list[dict[str, Any]]:
+    calls: dict[str, dict[str, Any]] = {}
+    for event in log.events:
+        data = event.data if isinstance(event.data, dict) else {}
+        if event.type == EventKind.TOOL_CALL.value:
+            call_id = str(data.get("call_id", ""))
+            calls[call_id] = {
+                "callId": call_id,
+                "name": str(data.get("name", "")),
+                "status": "pending",
+                "seq": event.seq,
+                "resultSeq": None,
+                "traceId": event.trace_id,
+                "errorCode": None,
+            }
+        elif event.type == EventKind.TOOL_RESULT.value:
+            call = calls.get(str(data.get("call_id", "")))
+            if call is None:
+                continue
+            raw_message = data.get("message")
+            message = raw_message if isinstance(raw_message, dict) else {}
+            error = data.get("error_code")
+            call["status"] = "error" if error or message.get("is_error") else "completed"
+            call["resultSeq"] = event.seq
+            call["errorCode"] = str(error) if error else None
+    return list(calls.values())
+
+
+def _trace_path(run_id: str | None) -> str | None:
+    if not run_id:
+        return None
+    try:
+        from deeppyro.observability.trace import TraceStore
+
+        return str(TraceStore().path_for(run_id))
+    except Exception:  # noqa: BLE001 - a trace path is a convenience, not a guarantee
+        return None
+
+
+def _native_trace(log: SessionLog) -> dict[str, Any]:
+    trace_ids = sorted({event.trace_id for event in log.events if event.trace_id})
+    run_ids = sorted({event.run_id for event in log.events if event.run_id})
+    last_trace = next((event.trace_id for event in reversed(log.events) if event.trace_id), None)
+    last_run = next((event.run_id for event in reversed(log.events) if event.run_id), None)
+    return {
+        "traceIds": trace_ids,
+        "lastTraceId": last_trace,
+        "runIds": run_ids,
+        "lastRunId": last_run,
+        "tracePath": _trace_path(last_run),
+    }
+
+
+def _native_session_report(log: SessionLog) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    for event in log.events:
+        counts[event.type] = counts.get(event.type, 0) + 1
+    header = log.header
+    turns = counts.get(EventKind.TURN_STARTED.value, 0) or counts.get(EventKind.USER_MESSAGE.value, 0)
+    return {
+        "mode": "native",
+        "sessionId": header.id,
+        "path": str(log.path),
+        "header": {
+            "id": header.id,
+            "createdAt": header.created_at,
+            "cwd": header.cwd,
+            "preset": header.preset,
+            "parentId": header.parent_id,
+            "origin": header.origin,
+            "delegationDepth": header.delegation_depth,
+            "schema": SCHEMA_VERSION,
+        },
+        "title": _native_title(log),
+        "archived": native_session_archived(log.events),
+        "eventCount": len(log.events),
+        "counts": {key: counts[key] for key in sorted(counts)},
+        "turns": turns,
+        "steps": counts.get(EventKind.STEP_STARTED.value, 0),
+        "runs": len({event.run_id for event in log.events if event.run_id}),
+        "toolCalls": _native_tool_calls(log),
+        "trace": _native_trace(log),
     }
 
 
@@ -412,6 +511,37 @@ class InspectPlugin(Service):
             seen.add(record_type)
             rows.append(_event_row(record_type))
         return rows
+
+    def native_session(self, session_id: str, *, root: Path | str | None = None) -> dict[str, Any]:
+        """Inspect one schema 1 (native) session log, read-only.
+
+        Reports the header, event counts, run/turn/step/tool facts and a trace
+        link. An unreadable or folded-broken log still yields the readable
+        facts plus an issues list; an unknown id yields an error payload. v4
+        sessions keep the record-type view reported by events().
+        """
+        base = Path(root) if root is not None else None
+        try:
+            log = read_native_log(str(session_id), base)
+        except FileNotFoundError:
+            return {"mode": "native", "sessionId": str(session_id), "error": "Native session not found"}
+        except Exception as exc:  # noqa: BLE001 - inspection must not crash on a bad log
+            return {
+                "mode": "native",
+                "sessionId": str(session_id),
+                "readable": False,
+                "issues": [f"{type(exc).__name__}: {exc}"],
+            }
+        report = _native_session_report(log)
+        try:
+            fold(log.header, log.events)
+        except Exception as exc:  # noqa: BLE001 - partial facts still help a broken log
+            report["readable"] = False
+            report["issues"] = [f"{type(exc).__name__}: {exc}"]
+        else:
+            report["readable"] = True
+            report["issues"] = []
+        return report
 
     def slots(self) -> list[dict[str, Any]]:
         """Contributions registered on the optional slots service."""

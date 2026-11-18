@@ -23,6 +23,7 @@ from typing import Protocol, runtime_checkable
 
 from deeppyro.subagent.errors import SubagentError
 from deeppyro.subagent.manager import SubagentService
+from deeppyro.subagent.native_manager import NativeSubagentService
 from deeppyro.subagent.types import SubagentResult, SubagentUsage, sum_usages
 
 MAX_WORKERS = 2
@@ -628,6 +629,20 @@ class Supervisor:
         )
 
 
+def _worker_outcome(result: SubagentResult) -> WorkerOutcome:
+    """Translate one subagent result into the Worker protocol outcome."""
+    usage = result.usage
+    return WorkerOutcome(
+        summary=result.text,
+        steps=usage.steps if usage is not None else 0,
+        tokens=usage.total_tokens if usage is not None else 0,
+        done=not result.is_error,
+        failed=result.is_error,
+        error=result.error or None,
+        usage=usage,
+    )
+
+
 class SubagentServiceWorker:
     """Adapt a SubagentService to the Worker protocol.
 
@@ -652,16 +667,33 @@ class SubagentServiceWorker:
             assignment.objective,
             description=assignment.objective,
         )
-        usage = result.usage
-        return WorkerOutcome(
-            summary=result.text,
-            steps=usage.steps if usage is not None else 0,
-            tokens=usage.total_tokens if usage is not None else 0,
-            done=not result.is_error,
-            failed=result.is_error,
-            error=result.error or None,
-            usage=usage,
+        return _worker_outcome(result)
+
+
+class NativeSubagentServiceWorker:
+    """Adapt a NativeSubagentService to the Worker protocol.
+
+    The native branch returns the same SubagentResult contract, so the
+    supervisor sees the same measured usage, convergence and failure signals.
+    """
+
+    def __init__(self, service: NativeSubagentService) -> None:
+        if not isinstance(service, NativeSubagentService):
+            raise SupervisorError("native subagent worker requires a NativeSubagentService")
+        self._service = service
+
+    @property
+    def service(self) -> NativeSubagentService:
+        """The wrapped native subagent service."""
+        return self._service
+
+    async def run(self, assignment: WorkerAssignment) -> WorkerOutcome:
+        """Run one native child agent and translate its result."""
+        result: SubagentResult = await self._service.run(
+            assignment.objective,
+            description=assignment.objective,
         )
+        return _worker_outcome(result)
 
 
 __all__ = [
@@ -669,6 +701,7 @@ __all__ = [
     "DEFAULT_MAX_STEPS",
     "DEFAULT_STALL_ROUNDS",
     "MAX_WORKERS",
+    "NativeSubagentServiceWorker",
     "SubagentServiceWorker",
     "Supervisor",
     "SupervisorError",

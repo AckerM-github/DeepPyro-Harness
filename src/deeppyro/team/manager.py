@@ -31,6 +31,7 @@ from deeppyro.session.session import Session
 from deeppyro.session.writer import write_new_session
 from deeppyro.subagent.types import SubagentUsage, sum_usages, usage_from_records
 from deeppyro.team.errors import TeamError
+from deeppyro.team.native_manager import NativeTeamManager, native_parts
 from deeppyro.team.types import (
     LIVE_PHASES,
     MAX_MEMBERS,
@@ -177,6 +178,8 @@ class TeamService:
         self._runs: dict[str, MemberRun] = {}
         self._usage_sink: Any = None
         self._restored = False
+        self._native: NativeTeamManager | None = None
+        self._configured = False
 
     # -- configuration --------------------------------------------------
     @property
@@ -188,6 +191,8 @@ class TeamService:
 
     @property
     def parent_session_id(self) -> str:
+        if self._native is not None:
+            return self._native.parent_session_id
         parent = self._parent
         if parent is None:
             return ""
@@ -234,15 +239,59 @@ class TeamService:
         self._ask = ask
         if usage_sink is not None:
             self._usage_sink = usage_sink
+        self._configured = True
+        if self._native is not None:
+            self._native.configure(**self._native_config())
 
-    def bind_session(self, session: Session) -> None:
-        """Bind the lead session that receives this team's records."""
+    def _native_config(self) -> dict[str, Any]:
+        """The configured lead context, ready to feed the native backend."""
+        return {
+            "cwd": self._cwd,
+            "provider": self._provider,
+            "registry": self._registry,
+            "permission": self._permission,
+            "model": self._model,
+            "context_window": self._context_window,
+            "preset": self._preset,
+            "preset_revision": self._preset_revision,
+            "services": self._services,
+            "ask": self._ask,
+            "usage_sink": self._usage_sink,
+        }
+
+    def bind_session(self, session: Any) -> None:
+        """Bind the lead session that owns this team.
+
+        A native session (or its NativeSessionHandle) routes every operation to
+        NativeTeamManager; a v4 Session keeps the recorder path unchanged.
+        """
+        native, _handle = native_parts(session)
+        if native is not None:
+            if self._native is None:
+                self._native = NativeTeamManager(
+                    agents=self._agents,
+                    sessions=self._sessions,
+                    sandbox=self._sandbox,
+                    team_id=self._explicit_team_id,
+                    max_members=self._max_members,
+                )
+            if self._configured:
+                self._native.configure(**self._native_config())
+            self._native.bind_session(session)
+            return
+        self._native = None
         self._parent = session
         self._restored = False
+
+    def bind_parent(self, session: Any) -> None:
+        """Alias for bind_session used by callers that name the lead session parent."""
+        self.bind_session(session)
 
     def set_ask(self, ask: Any) -> None:
         """Set the approval callback used by child permission gates."""
         self._ask = ask
+        if self._native is not None:
+            self._native.set_ask(ask)
 
     # -- members --------------------------------------------------------
     def spawn(
@@ -256,6 +305,15 @@ class TeamService:
         preset: str | None = None,
     ) -> MemberInfo:
         """Create one child session/agent and start its first turn in the background."""
+        if self._native is not None:
+            return self._native.spawn(
+                name,
+                description,
+                prompt,
+                provider=provider,
+                model=model,
+                preset=preset,
+            )
         member_name = _required_text(name, "name")
         member_description = _text(description)
         first_prompt = _required_text(prompt, "prompt")
@@ -303,9 +361,13 @@ class TeamService:
         return _member_info(member)
 
     def members(self) -> list[MemberInfo]:
+        if self._native is not None:
+            return self._native.members()
         return [_member_info(item) for item in self._members.values()]
 
     def get_member(self, member_id: Any) -> MemberInfo | None:
+        if self._native is not None:
+            return self._native.get_member(member_id)
         member = self._members.get(str(member_id))
         return None if member is None else _member_info(member)
 
@@ -317,6 +379,8 @@ class TeamService:
 
     def send(self, member_id: Any, message: Any) -> str:
         """Deliver a message: return "started" for a new turn or "queued" while busy."""
+        if self._native is not None:
+            return self._native.send(member_id, message)
         member = self._require_member(member_id)
         text = _required_text(message, "message")
         if member.phase in (PHASE_FAILED, PHASE_CANCELLED):
@@ -345,6 +409,8 @@ class TeamService:
 
     async def wait(self, member_id: Any, timeout_s: float | None = None) -> MemberInfo:
         """Wait until the member is idle/completed/failed/cancelled."""
+        if self._native is not None:
+            return await self._native.wait(member_id, timeout_s)
         member = self._require_member(member_id)
         if member.phase not in SETTLED_PHASES:
             try:
@@ -358,6 +424,8 @@ class TeamService:
 
     async def cancel(self, member_id: Any) -> bool:
         """Interrupt a member, drop queued messages and settle it as cancelled."""
+        if self._native is not None:
+            return await self._native.cancel(member_id)
         member = self._members.get(str(member_id))
         if member is None:
             return False
@@ -382,6 +450,9 @@ class TeamService:
 
     async def close(self) -> None:
         """Cancel running members and close their agents (runtime shutdown)."""
+        if self._native is not None:
+            await self._native.close()
+            return
         tasks = [
             member.task
             for member in self._members.values()
@@ -403,6 +474,8 @@ class TeamService:
         queued message resumes it in the background.  Repeated calls return the
         current roster instead of replaying the same records twice.
         """
+        if self._native is not None:
+            return await self._native.restore()
         if self._restored:
             return tuple(_member_info(item) for item in self._members.values())
         parent = self._parent
@@ -765,20 +838,28 @@ class TeamService:
     # -- usage ----------------------------------------------------------
     def runs(self, member_id: Any = None) -> list[MemberRun]:
         """Every measured member turn, oldest first, optionally per member."""
+        if self._native is not None:
+            return self._native.runs(member_id)
         if member_id is None:
             return list(self._runs.values())
         target = str(member_id)
         return [run for run in self._runs.values() if run.member_id == target]
 
     def run(self, run_id: Any) -> MemberRun | None:
+        if self._native is not None:
+            return self._native.run(run_id)
         return self._runs.get(str(run_id))
 
     def run_usage(self, run_id: Any) -> SubagentUsage | None:
+        if self._native is not None:
+            return self._native.run_usage(run_id)
         run = self.run(run_id)
         return None if run is None else run.usage
 
     def usage(self, member_id: Any = None) -> SubagentUsage:
         """Aggregate provider usage of all recorded runs (or one member's)."""
+        if self._native is not None:
+            return self._native.usage(member_id)
         return sum_usages(run.usage for run in self.runs(member_id))
 
     def _member_records(self, member: _Member) -> list[Any]:
@@ -875,9 +956,13 @@ class TeamService:
 
     # -- task board -----------------------------------------------------
     def tasks(self) -> list[TaskInfo]:
+        if self._native is not None:
+            return self._native.tasks()
         return list(self._board.values())
 
     def get_task(self, task_id: Any) -> TaskInfo | None:
+        if self._native is not None:
+            return self._native.get_task(task_id)
         return self._board.get(str(task_id))
 
     def create_task(
@@ -888,6 +973,13 @@ class TeamService:
         blocked_by: Any = (),
         write_scopes: Any = (),
     ) -> TaskInfo:
+        if self._native is not None:
+            return self._native.create_task(
+                subject,
+                description,
+                blocked_by=blocked_by,
+                write_scopes=write_scopes,
+            )
         task_subject = _required_text(subject, "subject")
         task_description = _text(description)
         blockers = _string_list(blocked_by, "blocked_by")
@@ -919,6 +1011,16 @@ class TeamService:
         write_scopes: Any = None,
         owner: str | None = None,
     ) -> TaskInfo:
+        if self._native is not None:
+            return self._native.update_task(
+                task_id,
+                action,
+                subject=subject,
+                description=description,
+                blocked_by=blocked_by,
+                write_scopes=write_scopes,
+                owner=owner,
+            )
         task = self._board.get(str(task_id))
         if task is None:
             raise TeamError(f"unknown team task {task_id!r}")

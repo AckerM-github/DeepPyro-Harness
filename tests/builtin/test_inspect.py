@@ -213,3 +213,122 @@ async def test_plugins_merges_synthetic_mounted_rows(app: App, monkeypatch: pyte
     assert by_id["phantom-row"]["loader_state"] == "failed"
     assert by_id["phantom-row"]["error"] == "boom"
     assert by_id["phantom-row"]["state"] == "configured"
+
+
+SESSION_ID = "session-12345678-1234-1234-1234-123456789abc"
+RUN_ID = "run_" + "1" * 16
+TRACE_ID = "a" * 32
+CALL_ID = "call_" + "4" * 16
+
+
+def _native_root(tmp_path: Path) -> Path:
+    return tmp_path / "sessions"
+
+
+async def test_native_session_reports_header_events_and_tools(app: App, tmp_path: Path) -> None:
+    from tests.session.native_helpers import TITLE, write_native
+
+    root = _native_root(tmp_path)
+    write_native(root)
+
+    report = app.require(InspectPlugin).native_session(SESSION_ID, root=root)
+
+    assert report["mode"] == "native"
+    assert report["sessionId"] == SESSION_ID
+    assert report["readable"] is True
+    assert report["issues"] == []
+    assert report["eventCount"] == 9
+    assert report["title"] == TITLE
+    assert report["archived"] is False
+    assert report["header"] == {
+        "id": SESSION_ID,
+        "createdAt": 1_700_000_000_000,
+        "cwd": str(Path("C:/work/deeppyro").resolve()),
+        "preset": "standard",
+        "parentId": None,
+        "origin": "user",
+        "delegationDepth": 0,
+        "schema": 1,
+    }
+    assert report["counts"]["tool.call"] == 1
+    assert report["counts"]["tool.result"] == 1
+    assert report["counts"]["session.title"] == 1
+    assert report["turns"] == 1
+    assert report["steps"] == 1
+    assert report["runs"] == 1
+    assert report["toolCalls"] == [
+        {
+            "callId": CALL_ID,
+            "name": "read_file",
+            "status": "completed",
+            "seq": 5,
+            "resultSeq": 6,
+            "traceId": TRACE_ID,
+            "errorCode": None,
+        }
+    ]
+    assert report["trace"]["traceIds"] == [TRACE_ID]
+    assert report["trace"]["lastTraceId"] == TRACE_ID
+    assert report["trace"]["runIds"] == [RUN_ID]
+    assert report["trace"]["lastRunId"] == RUN_ID
+
+
+async def test_native_session_trace_path_uses_the_traces_dir(
+    app: App, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.session.native_helpers import write_native
+
+    root = _native_root(tmp_path)
+    write_native(root)
+    monkeypatch.setenv("DEEPPYRO_TRACES_DIR", str(tmp_path / "traces"))
+
+    report = app.require(InspectPlugin).native_session(SESSION_ID, root=root)
+
+    assert report["trace"]["tracePath"] == str(tmp_path / "traces" / f"{RUN_ID}.jsonl")
+
+
+async def test_native_session_reports_archived_and_header_only_logs(app: App, tmp_path: Path) -> None:
+    from deeppyro.session.schema import NativeSession
+    from tests.session.native_helpers import write_native
+
+    root = _native_root(tmp_path)
+    write_native(root / "archived", archived=True)
+    report = app.require(InspectPlugin).native_session(SESSION_ID, root=root / "archived")
+    assert report["archived"] is True
+
+    header_only = root / "header-only" / f"{SESSION_ID}.jsonl"
+    header_only.parent.mkdir(parents=True)
+    with NativeSession.create(header_only, cwd="C:/work/deeppyro"):
+        pass
+    empty = app.require(InspectPlugin).native_session(SESSION_ID, root=header_only.parent)
+    assert empty["eventCount"] == 0
+    assert empty["turns"] == 0
+    assert empty["title"] is None
+    assert empty["trace"]["lastRunId"] is None
+    assert empty["trace"]["tracePath"] is None
+
+
+async def test_native_session_reports_unknown_and_unreadable_logs(app: App, tmp_path: Path) -> None:
+    from tests.session.native_helpers import write_native
+
+    inspect = app.require(InspectPlugin)
+    missing = inspect.native_session(SESSION_ID, root=_native_root(tmp_path))
+    assert missing == {
+        "mode": "native",
+        "sessionId": SESSION_ID,
+        "error": "Native session not found",
+    }
+
+    broken_fold = _native_root(tmp_path) / "broken-fold"
+    write_native(broken_fold, dropped_result=True)
+    report = inspect.native_session(SESSION_ID, root=broken_fold)
+    assert report["readable"] is False
+    assert "ToolPairingError" in report["issues"][0]
+    assert report["eventCount"] == 8
+
+    corrupt = _native_root(tmp_path) / "corrupt"
+    corrupt.mkdir(parents=True)
+    (corrupt / f"{SESSION_ID}.jsonl").write_text("not json\n", encoding="utf-8")
+    unreadable = inspect.native_session(SESSION_ID, root=corrupt)
+    assert unreadable["readable"] is False
+    assert unreadable["issues"]

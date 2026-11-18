@@ -12,6 +12,14 @@ and never mutate the session log.
 
 Callers commit each ProjectionUpdate as a system/message or user/message record
 with the envelope described on the update.
+
+Both projections fold v4 LogRecords through deeppyro.session.derive.fold_surface,
+which requires a surfaceOp envelope on every surface-eligible record. Native
+schema 1 events carry no surfaceOp (append or replace range) and encode
+replacements by message id, so a native append adapter would be lossy and would
+change projection semantics; see the native adapter note in
+deeppyro.projection.registry for the exact blockers. This module therefore stays
+v4-only this wave.
 """
 
 from __future__ import annotations

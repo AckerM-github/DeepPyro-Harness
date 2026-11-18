@@ -4,9 +4,10 @@ One :class:`AgentLoop` executes runs over a schema 1
 :class:`deeppyro.session.schema.NativeSession`. The loop speaks native
 :class:`deeppyro.core.messages.Message` objects end to end, persists native
 session events, calls tools through the existing tool protocol and records
-budgets, checkpoints and traces. The single v4 seam is
-:mod:`deeppyro.agent.native_provider`, which adapts native messages to the
-existing provider protocol; nothing in this module imports `core.wire`.
+budgets, checkpoints and traces. Providers are native
+:class:`deeppyro.core.llm.LlmProvider` objects and each model call talks
+:class:`deeppyro.core.llm.ModelRequest`; nothing in this module imports
+`core.wire` or the v4 provider protocol.
 
 Design notes:
 
@@ -55,16 +56,14 @@ from deeppyro.agent.events import (
     ToolCallStartedEvent,
     TurnStarted,
 )
-from deeppyro.agent.native_provider import (
-    ModelResponse,
-    NativeProviderAdapter,
-    NativeToolCall,
-    build_request,
-)
+from deeppyro.agent.model_call import complete_model_call
+from deeppyro.agent.native_records import UnsupportedRecordTypeError, append_mapped
 from deeppyro.agent.run_state import RunState, RunStatus, ToolCallCheckpoint
+from deeppyro.agent.turn_messages import assistant_message as native_assistant_message
+from deeppyro.agent.turn_messages import tool_message as native_tool_message
+from deeppyro.agent.turn_messages import user_message as native_user_message
 from deeppyro.api.services import ServiceBag
 from deeppyro.core.ids import (
-    new_message_id,
     new_run_id,
     new_span_id,
     new_step_id,
@@ -72,24 +71,22 @@ from deeppyro.core.ids import (
     new_turn_id,
     now_ms,
 )
-from deeppyro.core.messages import (
-    ContentPart,
-    Message,
-    ModelSource,
-    ReasoningPart,
-    TextPart,
-    ToolCallPart,
-    ToolSource,
-    UserSource,
+from deeppyro.core.llm import (
+    LlmProvider as NativeLlmProvider,
 )
+from deeppyro.core.llm import (
+    ModelRequest,
+    ModelResponse,
+    NativeToolCall,
+    Usage,
+)
+from deeppyro.core.messages import Message, MessageSource
 from deeppyro.core.protocols import (
-    LlmProvider,
-    LlmRequest,
     Tool,
     ToolContext,
     ToolResult,
-    Usage,
 )
+from deeppyro.hooks.service import HookService
 from deeppyro.observability.protocols import TraceExportSink, TurnUsage, UsageSink
 from deeppyro.observability.trace import (
     ModelCallRecord,
@@ -132,7 +129,7 @@ class AgentLoop:
 
     Args:
         session: The append-only native session this loop owns (single writer).
-        provider: Existing v4 provider; bridged through the native adapter.
+        provider: Native (core.llm) provider used for every model call.
         model: Provider model id recorded on messages and trace records.
         tools: Tools offered to the model; wrapped in a ToolRegistry.
         cwd: Working directory passed to tool contexts.
@@ -152,7 +149,7 @@ class AgentLoop:
         self,
         *,
         session: NativeSession,
-        provider: LlmProvider,
+        provider: NativeLlmProvider,
         model: str,
         tools: Iterable[Tool] = (),
         cwd: str | Path = ".",
@@ -168,7 +165,7 @@ class AgentLoop:
         services: Mapping[str, Any] | None = None,
     ) -> None:
         self._session = session
-        self._provider = NativeProviderAdapter(provider)
+        self._provider = provider
         self._model = model
         self._registry = ToolRegistry(tuple(tools))
         self._cwd = Path(cwd)
@@ -184,9 +181,11 @@ class AgentLoop:
         self._services: dict[str, Any] = dict(services or {})
         self._usage_sink = ServiceBag(self._services).get(UsageSink)
         self._trace_export = ServiceBag(self._services).get(TraceExportSink)
+        self._hook_service = ServiceBag(self._services).get(HookService)
         self._turn_input_tokens = 0
         self._turn_output_tokens = 0
         self._turn_cached_tokens = 0
+        self._turn_retries = 0
         self._turn_latency_ms = 0
         self._turn_cost = 0.0
         self._cancel = asyncio.Event()
@@ -256,6 +255,7 @@ class AgentLoop:
         prompt: str | None = None,
         *,
         resume: bool = False,
+        source: MessageSource | None = None,
         cancel: asyncio.Event | None = None,
     ) -> RunResult:
         """Execute one run and return its terminal result.
@@ -265,6 +265,8 @@ class AgentLoop:
             resume: Continue a session whose previous run did not finish. The
                 loop repairs any dangling step/turn (schema 10.2) and starts a
                 new run without appending a new user message.
+            source: Message source recorded on the user message; defaults to
+                UserSource() (the host passes a plugin/user source through).
             cancel: Optional external cancellation event; defaults to a fresh
                 event that :meth:`cancel` sets.
 
@@ -292,7 +294,7 @@ class AgentLoop:
         try:
             self._begin(resume)
             try:
-                final_text, finish_reason = await self._drive(prompt, resume)
+                final_text, finish_reason = await self._drive(prompt, resume, source)
             except BudgetExceeded as exc:
                 reason = exc.turn_reason()
                 self._emit_budget_exceeded(exc)
@@ -334,7 +336,7 @@ class AgentLoop:
         self._usage = BudgetUsage()
         if resume:
             self._restore_usage_from_checkpoint()
-            self._repair_unfinished_turn()
+            self.repair_open_turn()
         self._run_id = new_run_id()
         self._trace_id = new_trace_id()
         self._started = now_ms()
@@ -349,6 +351,7 @@ class AgentLoop:
         self._turn_input_tokens = 0
         self._turn_output_tokens = 0
         self._turn_cached_tokens = 0
+        self._turn_retries = 0
         self._turn_latency_ms = 0
         self._turn_cost = 0.0
         view = fold(session.header, session.events)
@@ -379,7 +382,16 @@ class AgentLoop:
         if record.state.status is RunStatus.RUNNING:
             self._usage = BudgetUsage.from_dict(record.state.usage.to_dict())
 
-    def _repair_unfinished_turn(self) -> None:
+    def repair_open_turn(self, cause: Mapping[str, object] | None = None) -> bool:
+        """Close a dangling open turn/step without fabricating content.
+
+        A process disposed while a turn was in flight leaves turn.started (and
+        maybe step.started) without their closing events. Repairing that appends
+        the missing step.ended/turn.ended events with the aborted reason, so the
+        log replays cleanly and no synthetic assistant message is invented.
+        cause defaults to aborted-by-disposed; returns True when a turn was closed.
+        """
+        reason = dict(cause) if cause is not None else {"kind": "aborted", "by": "disposed"}
         session = self._session
         open_turn: str | None = None
         open_step: str | None = None
@@ -401,7 +413,7 @@ class AgentLoop:
             elif event.type == EventKind.STEP_ENDED.value:
                 open_step = None
         if open_turn is None:
-            return
+            return False
         if open_step is not None:
             session.append(
                 EventKind.STEP_ENDED,
@@ -413,15 +425,21 @@ class AgentLoop:
             )
         session.append(
             EventKind.TURN_ENDED,
-            {"reason": {"kind": "aborted", "by": "disposed"}},
+            {"reason": reason},
             run_id=run_id,
             turn_id=open_turn,
             trace_id=trace_id,
         )
+        return True
 
     # ------------------------------------------------------------- main loop
 
-    async def _drive(self, prompt: str | None, resume: bool) -> tuple[str, str]:
+    async def _drive(
+        self,
+        prompt: str | None,
+        resume: bool,
+        source: MessageSource | None = None,
+    ) -> tuple[str, str]:
         if self._cancel.is_set():
             raise RunCancelledError("run cancelled before the turn started")
         self._turn_index = self._turn_number()
@@ -433,7 +451,7 @@ class AgentLoop:
         else:
             if prompt is None:
                 raise ValueError("a fresh run requires a prompt")
-            user_message, user_ts = self._user_message(prompt)
+            user_message, user_ts = self._user_message(prompt, source)
             self._append_turn_event(EventKind.USER_MESSAGE, {"message": user_message.to_dict()}, ts=user_ts)
             self._last_message_id = user_message.id
             self._emit_turn_started(prompt_message_id=user_message.id)
@@ -449,12 +467,14 @@ class AgentLoop:
             self._emit_step_started()
             self._write_checkpoint(RunStatus.RUNNING)
             plan = self._build_plan()
-            request = build_request(
-                plan,
+            request = ModelRequest(
                 provider=self._provider_name,
                 model=self._model,
-                temperature=self._temperature,
+                messages=plan.messages,
+                system=plan.system,
+                tools=plan.tools,
                 max_tokens=self._max_tokens_per_call,
+                temperature=self._temperature,
                 session_id=self._session.header.id,
             )
             payload = self._prompt_payload(request)
@@ -468,6 +488,7 @@ class AgentLoop:
             self._turn_input_tokens += usage.input_tokens
             self._turn_output_tokens += usage.output_tokens
             self._turn_cached_tokens += usage.cached_input_tokens or 0
+            self._turn_retries += response.retries
             self._turn_latency_ms += response.latency_ms
             self._turn_cost += cost
             assistant_message, assistant_ts = self._assistant_message(response)
@@ -495,7 +516,7 @@ class AgentLoop:
 
     # --------------------------------------------------------- model calling
 
-    async def _model_call(self, request: LlmRequest) -> ModelResponse:
+    async def _model_call(self, request: ModelRequest) -> ModelResponse:
         run_id, trace_id, turn_id, step_id = self._require_ids()
         hooks = self._hooks
 
@@ -524,7 +545,8 @@ class AgentLoop:
                 )
 
         return await self._await_cancellable(
-            self._provider.complete(
+            complete_model_call(
+                self._provider,
                 request,
                 cancel=self._cancel,
                 on_text=on_text,
@@ -556,13 +578,16 @@ class AgentLoop:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await monitor
 
-    def _prompt_payload(self, request: LlmRequest) -> dict[str, object]:
+    def _prompt_payload(self, request: ModelRequest) -> dict[str, object]:
+        # Native serialization for the trace prompt_hash. This replaced the v4
+        # model_dump() form in KI-010, so hash *values* change once; the format
+        # (sha256:<64 hex>) and the hashing algorithm are unchanged.
         return {
             "provider": request.provider,
             "model": request.model,
-            "system": request.system,
-            "messages": [message.model_dump(mode="json") for message in request.messages],
-            "tools": [schema.model_dump(mode="json") for schema in request.tools],
+            "system": request.system.to_dict() if request.system is not None else None,
+            "messages": [message.to_dict() for message in request.messages],
+            "tools": [spec.to_dict() for spec in request.tools],
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
         }
@@ -587,6 +612,7 @@ class AgentLoop:
             output_tokens=self._turn_output_tokens,
             cached_tokens=self._turn_cached_tokens,
             latency_ms=self._turn_latency_ms,
+            retries=self._turn_retries,
             stop_reason=stop_reason,
             step=self._step_index or None,
             cost=self._turn_cost,
@@ -623,7 +649,7 @@ class AgentLoop:
             output_tokens=response.usage.output_tokens,
             latency_ms=response.latency_ms,
             finish_reason=response.finish_reason,
-            retry_count=0,
+            retry_count=response.retries,
             ts=now_ms(),
             cached_input_tokens=response.usage.cached_input_tokens,
             reasoning_tokens=response.usage.reasoning_tokens,
@@ -715,6 +741,7 @@ class AgentLoop:
                     request,
                     registry=self._registry,
                     ctx_factory=self._tool_context,
+                    hooks=self._hook_service,
                     turn=self._turn_index,
                     step=self._step_index,
                 )
@@ -736,8 +763,16 @@ class AgentLoop:
         )
 
     def _tool_log(self, message: str, data: dict[str, object]) -> None:
-        """Accept tool log lines; the native loop has no string event bus."""
-        del message, data
+        """Append a tool's v4-shaped log record when the native schema knows it.
+
+        Record types outside RECORD_KIND_MAP are ignored: the native loop has no
+        string event bus, and a browser-only record (deliverables/presented) must
+        never fail the tool that produced it.
+        """
+        try:
+            append_mapped(self._session, message, data)
+        except UnsupportedRecordTypeError:
+            return
 
     def _record_tool_result(self, call: NativeToolCall, outcome: ToolOutcome) -> None:
         result = outcome.result
@@ -821,50 +856,22 @@ class AgentLoop:
 
     # ------------------------------------------------------------- messages
 
-    def _user_message(self, prompt: str) -> tuple[Message, int]:
-        ts = self._next_ts()
-        message = Message(
-            id=new_message_id(),
-            role="user",
-            content=(TextPart(text=prompt),),
-            created_at=ts,
-            source=UserSource(),
-        )
-        return message, ts
+    def _user_message(self, prompt: str, source: MessageSource | None = None) -> tuple[Message, int]:
+        message = native_user_message(prompt, source=source, created_at=self._next_ts())
+        return message, message.created_at
 
     def _assistant_message(self, response: ModelResponse) -> tuple[Message, int]:
-        parts: list[ContentPart] = []
-        if response.reasoning:
-            parts.append(ReasoningPart(text=response.reasoning))
-        if response.text:
-            parts.append(TextPart(text=response.text))
-        for call in response.tool_calls:
-            parts.append(ToolCallPart(id=call.call_id, name=call.name, arguments=call.arguments))
-        if not parts:
-            raise ProviderStreamError("provider returned an empty assistant message")
-        ts = self._next_ts()
-        message = Message(
-            id=new_message_id(),
-            role="assistant",
-            content=tuple(parts),
-            created_at=ts,
-            source=ModelSource(provider=self._provider_name, model=self._model),
+        message = native_assistant_message(
+            response,
+            provider=self._provider_name,
+            model=self._model,
+            created_at=self._next_ts(),
         )
-        return message, ts
+        return message, message.created_at
 
     def _tool_message(self, call_id: str, result: ToolResult) -> tuple[Message, int]:
-        ts = self._next_ts()
-        text = result.text if result.text else " "
-        message = Message(
-            id=new_message_id(),
-            role="tool",
-            content=(TextPart(text=text),),
-            created_at=ts,
-            source=ToolSource(call_id=call_id),
-            tool_call_id=call_id,
-            is_error=result.is_error,
-        )
-        return message, ts
+        message = native_tool_message(call_id, result, created_at=self._next_ts())
+        return message, message.created_at
 
     # --------------------------------------------------------------- events
 

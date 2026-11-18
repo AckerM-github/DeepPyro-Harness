@@ -4,6 +4,12 @@ The TUI turn engine still drives v4 sessions; this module only *reads* native
 schema 1 logs so the session browser can show sessions written by headless runs
 and other native writers. Nothing here attaches to a session, mutates a log or
 imports the wire layer: the TUI receives plain dataclasses.
+
+The schema 1 vocabulary has no archive event kind, so the archive marker lives
+in the plugin event namespace (plugin.session.archived, written by
+session/native_query.py); it is folded into NativeSessionInfo.archived and
+archived sessions are hidden from list_native_sessions unless include_archived
+is true.
 """
 
 from __future__ import annotations
@@ -36,6 +42,9 @@ _TRANSCRIPT_ROLES = frozenset({"user", "assistant", "tool"})
 _USER_MESSAGE = EventKind.USER_MESSAGE.value
 _TURN_STARTED = EventKind.TURN_STARTED.value
 _SESSION_TITLE = EventKind.SESSION_TITLE.value
+#: Archive marker record type. The schema 1 vocabulary has no archive event kind;
+#: the browser writes this plugin-namespace event (valid, unvalidated data).
+ARCHIVE_EVENT = "plugin.session.archived"
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +66,7 @@ class NativeSessionInfo:
     source: str = NATIVE_SOURCE
     readable: bool = True
     read_only: bool = True
+    archived: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,11 +108,15 @@ class _LoadedSession:
     error: str | None
 
 
-def list_native_sessions(root: Path | None = None) -> list[NativeSessionInfo]:
+def list_native_sessions(
+    root: Path | None = None, *, include_archived: bool = False
+) -> list[NativeSessionInfo]:
     """List schema 1 sessions under *root* (default: the sessions dir), newest first.
 
     Files that are not native schema 1 logs, and logs that fail to parse, are
     skipped without raising: a session browser must never fail on one bad file.
+    Sessions carrying a plugin.session.archived marker are hidden unless
+    *include_archived* is true; reading such a session by id still works.
     """
     base = Path(root) if root is not None else Path(sessions_dir())
     found: dict[str, NativeSessionInfo] = {}
@@ -113,7 +127,8 @@ def list_native_sessions(root: Path | None = None) -> list[NativeSessionInfo]:
         current = found.get(info.id)
         if current is None or _precedence(info) > _precedence(current):
             found[info.id] = info
-    return sorted(found.values(), key=lambda info: (info.created_at, info.id), reverse=True)
+    sessions = [info for info in found.values() if include_archived or not info.archived]
+    return sorted(sessions, key=lambda info: (info.created_at, info.id), reverse=True)
 
 
 def read_native_transcript(session_id: str, root: Path | None = None) -> NativeTranscript:
@@ -135,6 +150,20 @@ def read_native_transcript(session_id: str, root: Path | None = None) -> NativeT
         issues=tuple(issues),
         readable=loaded.error is None,
     )
+
+
+def resolve_native_session_path(session_id: str, root: Path | None = None) -> Path:
+    """Return the log path of one native session; raise FileNotFoundError when unknown."""
+    return _resolve_path(session_id, root)
+
+
+def read_native_log(session_id: str, root: Path | None = None) -> SessionLog:
+    """Parse one native session log.
+
+    Unknown ids raise FileNotFoundError; malformed or foreign files raise the
+    schema errors instead of being skipped (callers decide how to report them).
+    """
+    return NativeCodec.read(_resolve_path(session_id, root))
 
 
 # -- discovery -------------------------------------------------------------
@@ -220,6 +249,7 @@ def _session_info(log: SessionLog, view: SessionView | None, *, readable: bool) 
         preview=_preview_text(user_text),
         readable=readable,
         read_only=True,
+        archived=native_session_archived(log.events),
     )
 
 
@@ -241,6 +271,16 @@ def _last_title_event(events: tuple[Event, ...]) -> str | None:
         if isinstance(title, str) and title.strip():
             return title.strip()
     return None
+
+
+def native_session_archived(events: Sequence[Event]) -> bool:
+    """Whether the last archive marker in *events* says the session is archived."""
+    for event in reversed(events):
+        if event.type != ARCHIVE_EVENT:
+            continue
+        data = event.data if isinstance(event.data, dict) else {}
+        return data.get("archived") is True
+    return False
 
 
 def _turn_count(events: tuple[Event, ...]) -> int:
@@ -403,11 +443,15 @@ def _bound_text(text: str) -> str:
 
 
 __all__ = [
+    "ARCHIVE_EVENT",
     "EMPTY_TITLE",
     "NATIVE_SOURCE",
     "NativeSessionInfo",
     "NativeTranscript",
     "NativeTranscriptEntry",
     "list_native_sessions",
+    "native_session_archived",
+    "read_native_log",
     "read_native_transcript",
+    "resolve_native_session_path",
 ]

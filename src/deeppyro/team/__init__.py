@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from deeppyro.team.errors import TeamError
+from deeppyro.team.errors import NativeTeamError, TeamError
 from deeppyro.team.manager import TeamService
+from deeppyro.team.native_manager import NativeTeamManager
 from deeppyro.team.types import (
     LIVE_PHASES,
     MAX_MEMBERS,
@@ -19,6 +20,7 @@ from deeppyro.team.types import (
     MemberInfo,
     MemberRun,
     TaskInfo,
+    TeamPhase,
 )
 
 __all__ = [
@@ -35,7 +37,10 @@ __all__ = [
     "TASK_STATUSES",
     "MemberInfo",
     "MemberRun",
+    "NativeTeamError",
+    "NativeTeamManager",
     "TaskInfo",
     "TeamError",
+    "TeamPhase",
     "TeamService",
 ]

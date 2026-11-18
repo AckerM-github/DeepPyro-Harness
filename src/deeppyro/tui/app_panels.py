@@ -99,6 +99,12 @@ class PanelLayer(GoalLayer):
 
     async def team_command(self, argument: str = "") -> None:
         """Enter/leave team mode or open the roster/task board (/team)."""
+        if getattr(self.runtime, "native", False):
+            self.conversation.add_info(
+                "team mode is not ported to the native TUI runtime yet; "
+                "/team is disabled while DEEPPYRO_TUI_NATIVE=1"
+            )
+            return
         spec = argument.strip().lower()
         if spec in ("on", "enable", "start"):
             await self._team_mode(True)
@@ -173,6 +179,13 @@ class PanelLayer(GoalLayer):
 
     async def hooks_command(self, argument: str = "") -> None:
         """Open the recent hook decisions of the current session (/hooks)."""
+        if getattr(self.runtime, "native", False):
+            self.conversation.add_info(
+                "native sessions do not journal hook calls in the session log; "
+                "/hooks is disabled while DEEPPYRO_TUI_NATIVE=1 "
+                "(the trace store still records spans)"
+            )
+            return
         rows = await self._hook_rows()
         if not rows:
             self.conversation.add_info(HOOK_TRACE_EMPTY_TEXT)
@@ -187,7 +200,11 @@ class PanelLayer(GoalLayer):
         if self._working:
             self.notify("cannot compact during a turn", severity="warning")
             return
-        changed = await self.runtime.compact_now()
+        try:
+            changed = await self.runtime.compact_now()
+        except Exception as exc:  # noqa: BLE001 - compaction absence must be visible
+            self.conversation.add_error(f"compaction failed: {exc}")
+            return
         self.conversation.add_info("session compacted" if changed else "nothing to compact")
         self.refresh_status()
 

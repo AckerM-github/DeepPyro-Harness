@@ -24,6 +24,7 @@ class LlmPlugin(Service):
         cfg = ctx.require(KernelConfig).value
         self._registry = LlmRegistry(cfg)
         self._factories: dict[str, tuple[Callable[[Any], Any], str, str]] = {}
+        self._native_factories: dict[str, tuple[Callable[[Any], Any], str, str]] = {}
 
     @property
     def registry(self) -> LlmRegistry:
@@ -57,13 +58,49 @@ class LlmPlugin(Service):
 
         return remove
 
+    def native_provider(self, name: str) -> Any:
+        """Resolve the native (KI-010) provider for the native agent loop.
+
+        Plugin contributions win over configuration, exactly like provider(). Only
+        OpenAI-compatible endpoints have a native transport: an Anthropic provider raises
+        ConfigError here so the caller can report it and fall back to the v4 loop.
+        """
+        entry = self._native_factories.get(name)
+        if entry is not None:
+            return entry[0](self)
+        return self._registry.native_provider(name)
+
+    def add_native_provider(
+        self,
+        name: str,
+        factory: Callable[[Any], Any],
+        *,
+        plugin_id: str = "",
+        description: str = "",
+    ) -> Callable[[], None]:
+        """Register a native provider factory; the returned callable removes it."""
+        if not name:
+            raise PluginDependencyError("provider name must not be empty")
+        if name in self._native_factories:
+            owner = self._native_factories[name][1]
+            raise PluginDependencyError(f"provider {name!r} is already registered by {owner!r}")
+        self._native_factories[name] = (factory, plugin_id, description)
+
+        def remove() -> None:
+            self._native_factories.pop(name, None)
+
+        return remove
+
     def provider_names(self) -> list[str]:
         names = set(self._registry.providers)
         names.update(self._factories)
+        names.update(self._native_factories)
         return sorted(names)
 
     def descriptions(self) -> dict[str, str]:
-        return {name: entry[2] for name, entry in self._factories.items() if entry[2]}
+        descriptions = {name: entry[2] for name, entry in self._factories.items() if entry[2]}
+        descriptions.update({name: entry[2] for name, entry in self._native_factories.items() if entry[2]})
+        return descriptions
 
     async def list_models(self, provider: str, *, refresh: bool = False) -> list[ModelInfo]:
         """Catalog entries for one provider.

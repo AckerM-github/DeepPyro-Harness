@@ -60,6 +60,15 @@ async def await_maybe(value: Any) -> Any:
     return value
 
 
+def _session_header_id(session: Any) -> str:
+    """Session id from a v4 session or a native handle/session (header id)."""
+    session_id = str(getattr(session, "session_id", "") or "")
+    if session_id:
+        return session_id
+    header = getattr(session, "header", None)
+    return str(getattr(header, "id", "") or "")
+
+
 def _recorded_preset(session: Any) -> tuple[str, int | None, str | None] | None:
     """Last agent-preset/selected record: (preset, revision, previous).
 

@@ -50,9 +50,12 @@ from deeppyro.api.services import contract_path, service_name
 from deeppyro.config import Config, load_config
 from deeppyro.kernel.capabilities import (
     IMPLICIT_SERVICES,
+    BundleSigningKeyError,
     CapabilityRegistry,
     CapabilityReport,
     inspect_bundle_digests,
+    inspect_bundle_signatures,
+    resolve_bundle_signing_key,
 )
 from deeppyro.kernel.composition import (
     Composition,
@@ -663,7 +666,7 @@ def _attach_kernel(app: App) -> None:
         log.exception("kernel runtime service failed to attach to the app")
 
 
-def _bundle_digest_paths(bundle_paths: Iterable[str]) -> list[Path]:
+def _bundle_inspection_paths(bundle_paths: Iterable[str]) -> list[Path]:
     """Every bundle.toml the default composition loads, in load order."""
     ordered: list[Path] = []
 
@@ -736,11 +739,19 @@ async def create_app(
     ctx.attach_capabilities(capabilities)
     capabilities.index_composition(composition)
     if boot_from_bundles:
-        # Record (never rewrite) the sha256 of every bundle.toml this boot loaded.
-        # A declared [bundle].digest is verified against those bytes; an unpinned
-        # bundle is recorded as unverified and keeps booting.  A mismatch is a
-        # fatal issue, caught by the report().ok check below.
-        capabilities.record_bundle_digests(inspect_bundle_digests(_bundle_digest_paths(bundle_path_specs)))
+        # Record (never rewrite) the sha256 and optional HMAC signature of every
+        # bundle.toml this boot loaded.  A declared [bundle].digest/signature is
+        # verified against those bytes; an unpinned/unsigned bundle is recorded as
+        # unverified and keeps booting.  A mismatch, malformed value or a
+        # signature without a configured key is a fatal issue, caught by the
+        # report().ok check below.
+        inspection_paths = _bundle_inspection_paths(bundle_path_specs)
+        capabilities.record_bundle_digests(inspect_bundle_digests(inspection_paths))
+        try:
+            signing_key = resolve_bundle_signing_key()
+        except BundleSigningKeyError as exc:
+            raise KernelBootError(f"cannot configure bundle signing: {exc}") from exc
+        capabilities.record_bundle_signatures(inspect_bundle_signatures(inspection_paths, key=signing_key))
     boot_report = capabilities.report(available_services=IMPLICIT_SERVICES)
     if not boot_report.ok:
         raise KernelBootError(

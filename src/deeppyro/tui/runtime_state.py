@@ -46,6 +46,14 @@ class _RuntimeState:
     agent: Any = None
     last_persist_error: str | None = None
     last_catalog_error: str | None = None
+    # Native-path additions, appended so the v4 field order stays pinned.
+    native: bool = False
+    sessions: Any = None
+    prompt: Any = None
+    compactor: Any = None
+    trace_export: Any = None
+    working_directory_notice: Callable[[str], None] | None = None
+    hooks: Any = None
     _catalog: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
     _schedule_tasks: set[asyncio.Task[Any]] = field(default_factory=set, repr=False)
     _schedule_once: dict[str, str] = field(default_factory=dict, repr=False)

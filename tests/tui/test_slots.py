@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -14,7 +14,9 @@ from deeppyro.tui.slots import (
     SCREEN,
     SETTINGS,
     STATUS,
+    SlotConflict,
     SlotError,
+    SlotOverride,
     SlotRegistry,
     SlotsPlugin,
     accepts_context,
@@ -478,7 +480,7 @@ def test_duplicate_default_ids_from_titles_are_rejected() -> None:
 
 
 def test_clear_is_a_host_reset_not_a_plugin_replace() -> None:
-    """clear() drops every contribution; there is no per-contribution replace."""
+    """clear() drops every contribution; replacement must be explicit."""
     registry = SlotRegistry(plugin_id="host")
     registry.add_status_item(lambda context: "one", id="one", plugin_id="plugin-a")
     registry.add_status_item(lambda context: "two", id="two", plugin_id="plugin-a")
@@ -489,3 +491,233 @@ def test_clear_is_a_host_reset_not_a_plugin_replace() -> None:
     assert len(registry) == 0
     registry.add_status_item(lambda context: "fresh", id="one", plugin_id="plugin-b")
     assert registry.get(STATUS, "one") is not None
+
+
+#: One conflict-aware registrar per slot kind:
+#: (kind, register(registry, plugin_id, policy, order=...)).
+_CONFLICT_REGISTRARS: list[Any] = [
+    (
+        STATUS,
+        lambda registry, plugin_id, policy, order=100: registry.add_status_item(
+            lambda context: "status", order=order, id="shared", plugin_id=plugin_id, on_conflict=policy
+        ),
+    ),
+    (
+        CONVERSATION,
+        lambda registry, plugin_id, policy, order=100: registry.add_conversation_row(
+            lambda event: True,
+            lambda event: "row",
+            order=order,
+            id="shared",
+            plugin_id=plugin_id,
+            on_conflict=policy,
+        ),
+    ),
+    (
+        PANEL,
+        lambda registry, plugin_id, policy, order=100: registry.add_panel(
+            "Shared",
+            lambda context: "panel",
+            order=order,
+            id="shared",
+            plugin_id=plugin_id,
+            on_conflict=policy,
+        ),
+    ),
+    (
+        SETTINGS,
+        lambda registry, plugin_id, policy, order=100: registry.add_settings_page(
+            "Shared",
+            lambda context: "settings",
+            order=order,
+            id="shared",
+            plugin_id=plugin_id,
+            on_conflict=policy,
+        ),
+    ),
+    (
+        SCREEN,
+        lambda registry, plugin_id, policy, order=100: registry.add_screen(
+            "shared",
+            renderer=lambda context: "screen",
+            order=order,
+            plugin_id=plugin_id,
+            on_conflict=policy,
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize(("kind", "register"), _CONFLICT_REGISTRARS)
+def test_same_owner_replace_updates_the_slot(kind: str, register: Any) -> None:
+    """Explicit REPLACE refreshes a plugin's own slot instead of appending."""
+    registry = SlotRegistry()
+    old_dispose = register(registry, "plugin-a", SlotConflict.REPLACE)
+    existing = registry.get(kind, "shared")
+    assert existing is not None
+
+    new_dispose = register(registry, "plugin-a", SlotConflict.REPLACE, order=5)
+
+    updated = registry.get(kind, "shared")
+    assert updated is not None
+    assert updated is not existing
+    assert updated.plugin_id == "plugin-a"
+    assert updated.order == 5
+    assert updated.replaced_plugin_id == ""
+    assert registry.list() == [updated]
+    assert registry.overrides() == ()
+
+    old_dispose()
+    assert registry.get(kind, "shared") is updated
+    new_dispose()
+    assert registry.get(kind, "shared") is None
+
+
+@pytest.mark.parametrize(("kind", "register"), _CONFLICT_REGISTRARS)
+def test_cross_plugin_replace_is_refused(kind: str, register: Any) -> None:
+    """REPLACE never steals another plugin's slot, and names both owners."""
+    registry = SlotRegistry()
+    register(registry, "first-plugin", SlotConflict.REPLACE)
+    existing = registry.get(kind, "shared")
+    assert existing is not None
+
+    with pytest.raises(SlotError) as excinfo:
+        register(registry, "second-plugin", SlotConflict.REPLACE)
+
+    message = str(excinfo.value)
+    assert "refusing to replace" in message
+    assert f"{kind} slot id 'shared'" in message
+    assert "'first-plugin'" in message
+    assert "'second-plugin'" in message
+    assert "SlotConflict.OVERRIDE" in message
+    assert registry.get(kind, "shared") is existing
+    assert registry.overrides() == ()
+
+
+@pytest.mark.parametrize(("kind", "register"), _CONFLICT_REGISTRARS)
+def test_explicit_override_replaces_another_plugins_slot(kind: str, register: Any) -> None:
+    """OVERRIDE is the only explicit way to win a slot owned by another plugin."""
+    registry = SlotRegistry()
+    first_dispose = register(registry, "first-plugin", SlotConflict.REPLACE)
+    first = registry.get(kind, "shared")
+    assert first is not None
+
+    second_dispose = register(registry, "second-plugin", SlotConflict.OVERRIDE, order=10)
+
+    winner = registry.get(kind, "shared")
+    assert winner is not None
+    assert winner is not first
+    assert winner.plugin_id == "second-plugin"
+    assert winner.order == 10
+    assert winner.replaced_plugin_id == "first-plugin"
+    assert registry.overrides() == (
+        SlotOverride(
+            kind=kind,
+            slot_id="shared",
+            plugin_id="second-plugin",
+            replaced_plugin_id="first-plugin",
+        ),
+    )
+
+    first_dispose()
+    assert registry.get(kind, "shared") is winner
+    second_dispose()
+    assert registry.get(kind, "shared") is None
+
+
+def test_replacing_after_an_override_keeps_the_original_owner_visible() -> None:
+    """A same-owner REPLACE keeps the provenance of the earlier override."""
+    registry = SlotRegistry()
+    registry.add_status_item(lambda context: "a", id="shared", plugin_id="plugin-a")
+    registry.add_status_item(
+        lambda context: "b",
+        order=5,
+        id="shared",
+        plugin_id="plugin-b",
+        on_conflict=SlotConflict.OVERRIDE,
+    )
+
+    registry.add_status_item(
+        lambda context: "b2",
+        order=7,
+        id="shared",
+        plugin_id="plugin-b",
+        on_conflict=SlotConflict.REPLACE,
+    )
+
+    winner = registry.get(STATUS, "shared")
+    assert winner is not None
+    assert winner.plugin_id == "plugin-b"
+    assert winner.order == 7
+    assert winner.replaced_plugin_id == "plugin-a"
+    assert len(registry.overrides()) == 1
+
+
+def test_explicit_replace_can_reorder_a_plugin_own_slots() -> None:
+    """Append-only keeps relative order; an explicit replace may change order."""
+    registry = SlotRegistry()
+    registry.add_status_item(lambda context: "a", order=100, id="a", plugin_id="plugin-a")
+    registry.add_status_item(lambda context: "b", order=200, id="b", plugin_id="plugin-a")
+    assert [item.id for item in registry.status_items()] == ["a", "b"]
+
+    registry.add_status_item(
+        lambda context: "b2",
+        order=10,
+        id="b",
+        plugin_id="plugin-a",
+        on_conflict=SlotConflict.REPLACE,
+    )
+
+    assert [item.id for item in registry.status_items()] == ["b", "a"]
+
+
+def test_default_conflict_policy_stays_append_only() -> None:
+    """Omitting on_conflict keeps the historical duplicate error."""
+    registry = SlotRegistry()
+    registry.add_status_item(lambda context: "one", id="shared", plugin_id="plugin-a")
+
+    with pytest.raises(SlotError) as excinfo:
+        registry.add_status_item(lambda context: "two", id="shared", plugin_id="plugin-b")
+
+    assert "duplicate status slot id 'shared'" in str(excinfo.value)
+    assert len(registry) == 1
+    assert registry.overrides() == ()
+
+
+def test_unknown_conflict_policy_is_rejected_before_registration() -> None:
+    registry = SlotRegistry()
+    with pytest.raises(SlotError, match="unknown slot conflict policy"):
+        registry.add_status_item(
+            lambda context: "x",
+            id="x",
+            on_conflict=cast(Any, "bogus"),
+        )
+    assert len(registry) == 0
+
+
+def test_clear_drops_the_override_history() -> None:
+    registry = SlotRegistry()
+    registry.add_status_item(lambda context: "a", id="shared", plugin_id="plugin-a")
+    registry.add_status_item(
+        lambda context: "b",
+        id="shared",
+        plugin_id="plugin-b",
+        on_conflict=SlotConflict.OVERRIDE,
+    )
+    assert len(registry.overrides()) == 1
+
+    registry.clear()
+
+    assert registry.overrides() == ()
+    assert len(registry) == 0
+
+
+def test_slot_override_record_is_frozen() -> None:
+    overridden = SlotOverride(
+        kind=STATUS,
+        slot_id="shared",
+        plugin_id="plugin-b",
+        replaced_plugin_id="plugin-a",
+    )
+    with pytest.raises(AttributeError):
+        overridden.plugin_id = "other"  # type: ignore[misc]

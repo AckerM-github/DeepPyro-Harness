@@ -25,9 +25,11 @@ from deeppyro.core.protocols import LlmProvider
 from deeppyro.core.wire import SessionHeader
 from deeppyro.session.fork import build_fork_seed
 from deeppyro.session.layout import flat_session_path
+from deeppyro.session.schema import NativeSession
 from deeppyro.session.session import Session
 from deeppyro.session.writer import write_new_session
 from deeppyro.subagent.errors import SubagentError
+from deeppyro.subagent.native_manager import NativeSubagentService
 from deeppyro.subagent.types import (
     DEFAULT_CONTEXT_WINDOW,
     MAX_LIVE_RUNS,
@@ -73,6 +75,13 @@ def _activation_mode(mode: Any) -> str:
     if not isinstance(mode, str) or mode not in _ACTIVATION_MODES:
         raise SubagentError(f"unsupported subagent mode: {mode!r}")
     return mode
+
+
+def _is_native_parent(candidate: Any) -> bool:
+    """Whether a bound session or agent belongs to the native runtime."""
+    if isinstance(candidate, NativeSession):
+        return True
+    return isinstance(getattr(candidate, "native_session", None), NativeSession)
 
 
 def filter_child_tools(registry: Any) -> Any:
@@ -133,6 +142,9 @@ class SubagentService:
         self._live = 0
         self._labels = 0
         self._closed = False
+        # The native branch is always constructed; it only does work once a
+        # native parent session or host is bound through bind_session().
+        self._native = NativeSubagentService(agents=agents, sessions=sessions, max_runs=self._max_runs)
 
     # -- configuration --------------------------------------------------
     @property
@@ -141,10 +153,15 @@ class SubagentService:
 
     @property
     def live_runs(self) -> int:
+        if self._native.parent_session_id:
+            return self._native.live_runs
         return self._live
 
     @property
     def parent_session_id(self) -> str:
+        native_id = self._native.parent_session_id
+        if native_id:
+            return native_id
         parent = self._parent
         if parent is None:
             return _ORPHAN
@@ -168,6 +185,7 @@ class SubagentService:
         services: dict[str, Any] | None = None,
         ask: Any = None,
         usage_sink: Any = None,
+        prompt_facts: Any = None,
     ) -> None:
         """Attach the live parent-session context used to spawn children."""
         self._cwd = Path(cwd)
@@ -182,19 +200,64 @@ class SubagentService:
         self._ask = ask
         if usage_sink is not None:
             self._usage_sink = usage_sink
+        self._native.configure(
+            cwd=self._cwd,
+            provider=provider,
+            registry=registry,
+            permission=permission,
+            model=self._model,
+            context_window=self._context_window,
+            preset=self._preset,
+            preset_revision=self._preset_revision,
+            services=self._services,
+            ask=ask,
+            usage_sink=usage_sink,
+            prompt_facts=prompt_facts,
+        )
 
-    def bind_session(self, session: Session | None) -> None:
-        """Bind the parent session that receives subagent catalog/descriptor records."""
+    @property
+    def native(self) -> NativeSubagentService:
+        """The native-runtime branch this service routes to."""
+        return self._native
+
+    def bind_session(self, session: Any) -> None:
+        """Bind the parent session that receives the subagent lifecycle facts.
+
+        A native session (or a native host/handle exposing its native_session)
+        selects the native branch; every other session keeps the v4 path
+        byte-identical.
+        """
+        if session is None:
+            self._parent = None
+            self._parent_agent = None
+            self._native.bind_session(None)
+            return
+        if _is_native_parent(session):
+            self._native.bind_session(session)
+            self._parent = None
+            self._parent_agent = None
+            return
+        self._native.bind_session(None)
         self._parent = session
         self._parent_agent = None
 
     def bind_parent(self, agent: Any) -> None:
         """Bind the parent agent that receives background settlement notices."""
+        if agent is None:
+            self._parent_agent = None
+            self._native.bind_parent(None)
+            return
+        if _is_native_parent(agent):
+            self._native.bind_parent(agent)
+            self._parent_agent = None
+            return
+        self._native.bind_parent(None)
         self._parent_agent = agent
 
     def set_ask(self, ask: Any) -> None:
         """Set the approval callback used by the child permission gate."""
         self._ask = ask
+        self._native.set_ask(ask)
 
     # -- runs -----------------------------------------------------------
     async def run(
@@ -208,6 +271,15 @@ class SubagentService:
         preset: str | None = None,
     ) -> SubagentResult:
         """Run one child agent to completion and return its final reply."""
+        if self._native.parent_session_id:
+            return await self._native.run(
+                prompt,
+                description=description,
+                name=name,
+                provider=provider,
+                model=model,
+                preset=preset,
+            )
         activation = await self._start(
             prompt,
             description=description,
@@ -239,6 +311,16 @@ class SubagentService:
         mode: str = "spawn",
     ) -> SubagentActivation:
         """Start a child agent in the background and return its activation immediately."""
+        if self._native.parent_session_id:
+            return await self._native.start(
+                prompt,
+                description=description,
+                name=name,
+                provider=provider,
+                model=model,
+                preset=preset,
+                mode=mode,
+            )
         return await self._start(
             prompt,
             description=description,
@@ -392,6 +474,8 @@ class SubagentService:
         Returns:
             The measured usage, or None when no run has finished yet.
         """
+        if self._native.parent_session_id:
+            return self._native.usage(child_id)
         if child_id is not None:
             return self._usages.get(child_id)
         if not self._usages:
@@ -490,6 +574,9 @@ class SubagentService:
 
     async def wait_children(self, timeout: float | None = None) -> None:
         """Wait for every background activation task; timeout does not cancel them."""
+        if self._native.parent_session_id:
+            await self._native.wait_children(timeout)
+            return
         current = asyncio.current_task()
         tasks = [task for task in self._tasks.values() if task is not current and not task.done()]
         if not tasks:
@@ -501,6 +588,8 @@ class SubagentService:
 
     async def cancel_all(self) -> int:
         """Cancel every in-flight run and return how many were cancelled."""
+        if self._native.parent_session_id:
+            return await self._native.cancel_all()
         current = asyncio.current_task()
         tasks = [
             task
@@ -526,7 +615,18 @@ class SubagentService:
         """Cancel in-flight runs and refuse new ones (used by runtime shutdown)."""
         self._closed = True
         await self.cancel_all()
+        await self._native.close()
         self._parent_agent = None
+
+    async def restore(self) -> tuple[str, ...]:
+        """Reopen children that started but never finished before a restart.
+
+        Only the native branch keeps child hosts after a restart; the v4 branch
+        records its children as facts and has nothing to repair.
+        """
+        if not self._native.parent_session_id:
+            return ()
+        return await self._native.restore()
 
     # -- readiness ------------------------------------------------------
     def _ensure_ready(self) -> None:

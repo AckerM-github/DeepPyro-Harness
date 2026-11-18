@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -12,8 +14,19 @@ from rich.console import Console
 
 from deeppyro import headless
 from deeppyro.builtin.usage import UsageService
+from deeppyro.core.errors import ConfigError
 from deeppyro.core.ids import new_session_id
-from deeppyro.core.protocols import Finish, TextDelta, ToolCallArgsDelta, ToolCallStart
+from deeppyro.core.llm import (
+    Finish,
+    ModelRequest,
+    StopReason,
+    StreamEvent,
+    TextDelta,
+    ToolCallArgsDelta,
+    ToolCallStart,
+    Usage,
+    UsageEvent,
+)
 from deeppyro.observability.protocols import TraceExportSink
 from deeppyro.observability.trace import ModelCallRecord, RunRecord
 from deeppyro.session.fold import fold
@@ -21,7 +34,48 @@ from deeppyro.session.schema import EventKind, NativeCodec
 from deeppyro.tools.registry import ToolRegistry
 from deeppyro.tui.main import build_parser
 from deeppyro.tui.main import main as cli_main
-from tests.agent.fakes import FakeTool, ScriptedProvider, ScriptedTurn, finish, usage
+from tests.agent.fakes import FakeTool
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptedTurn:
+    """One scripted native provider response."""
+
+    events: tuple[StreamEvent, ...]
+
+
+class ScriptedProvider:
+    """Native LlmProvider double that replays scripted turns and records requests."""
+
+    name = "scripted"
+
+    def __init__(self, script: list[ScriptedTurn]) -> None:
+        self.script = list(script)
+        self.requests: list[ModelRequest] = []
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        turn = self.script.pop(0)
+        for event in turn.events:
+            yield event
+
+    async def aclose(self) -> None:
+        return None
+
+
+def finish(stop_reason: StopReason = StopReason.STOP) -> Finish:
+    return Finish(stop_reason=stop_reason)
+
+
+def usage(input_tokens: int, output_tokens: int, *, cached: int | None = None) -> UsageEvent:
+    return UsageEvent(
+        Usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            cached_input_tokens=cached,
+        )
+    )
 
 
 class FakeNativeRuntime:
@@ -196,8 +250,8 @@ async def test_native_headless_forwards_tool_hooks(native_dirs: Path) -> None:
                 events=[
                     ToolCallStart(call_id="call_provider_1", name="echo", index=0),
                     ToolCallArgsDelta(call_id="call_provider_1", delta='{"value": 1}', index=0),
-                    Finish(kind="tool-calls"),
                     usage(4, 2),
+                    finish(StopReason.TOOL_CALLS),
                 ]
             ),
             ScriptedTurn(events=[TextDelta("done"), finish("stop"), usage(3, 1)]),
@@ -242,8 +296,8 @@ async def test_native_headless_reports_budget_exceeded(native_dirs: Path) -> Non
                 events=[
                     ToolCallStart(call_id="call_provider_1", name="echo", index=0),
                     ToolCallArgsDelta(call_id="call_provider_1", delta="{}", index=0),
-                    Finish(kind="tool-calls"),
                     usage(2, 1),
+                    finish(StopReason.TOOL_CALLS),
                 ]
             ),
             ScriptedTurn(events=[TextDelta("never reached"), finish("stop"), usage(2, 1)]),
@@ -314,6 +368,7 @@ def test_run_once_native_reports_usage_and_trace_export(
         context_window=32768,
         store=None,
         provider=provider,
+        native_provider=provider,
         registry=ToolRegistry(()),
         permission=None,
         agents=None,
@@ -399,3 +454,103 @@ def test_native_tools_prefers_the_scoped_registry() -> None:
     runtime.tools = scoped
     assert headless._native_tools(runtime, "standard") == (tool,)
     assert scoped.calls == [(str(runtime.cwd), "standard", None)]
+
+
+# --------------------------------------------------------------------------
+# native provider resolution at boot (KI-010)
+# --------------------------------------------------------------------------
+
+
+class _ServiceWithoutNativeFactory:
+    """Llm service double from before the native provider existed."""
+
+
+def test_resolve_native_provider_reports_a_missing_factory() -> None:
+    provider, error = headless._resolve_native_provider(
+        _ServiceWithoutNativeFactory(), "local", native_loop=True
+    )
+    assert provider is None
+    assert error is not None
+    assert "native provider factory" in error
+
+
+def test_resolve_native_provider_does_no_work_on_the_legacy_path() -> None:
+    class Service:
+        def native_provider(self, name: str) -> object:
+            raise AssertionError("the legacy path must not construct a native provider")
+
+    assert headless._resolve_native_provider(Service(), "local", native_loop=False) == (None, None)
+
+
+def test_resolve_native_provider_returns_the_provider() -> None:
+    class Service:
+        def native_provider(self, name: str) -> str:
+            assert name == "local"
+            return "native-provider"
+
+    assert headless._resolve_native_provider(Service(), "local", native_loop=True) == (
+        "native-provider",
+        None,
+    )
+
+
+def test_resolve_native_provider_turns_a_config_error_into_a_reason() -> None:
+    class Service:
+        def native_provider(self, name: str) -> object:
+            raise ConfigError("provider 'claude' has no native transport")
+
+    provider, error = headless._resolve_native_provider(Service(), "claude", native_loop=True)
+    assert provider is None
+    assert error == "provider 'claude' has no native transport"
+
+
+def test_native_provider_helper_prefers_the_native_attribute() -> None:
+    provider = ScriptedProvider([])
+    legacy_only = FakeNativeRuntime(provider)
+    assert headless._native_provider(legacy_only) is provider  # type: ignore[arg-type]
+
+    runtime = headless.HeadlessRuntime(
+        cfg=None,
+        cwd=Path.cwd(),
+        kernel_app=None,
+        provider_name="scripted",
+        model="fake-model",
+        context_window=None,
+        store=None,
+        provider=None,
+        native_provider=provider,
+        registry=ToolRegistry(()),
+        permission=None,
+        agents=None,
+        preset="standard",
+    )
+    assert headless._native_provider(runtime) is provider
+
+
+class _LegacyStore:
+    """Store double proving the legacy v4 branch was selected."""
+
+    def create(self, *args: Any, **kwargs: Any) -> object:
+        raise ConfigError("legacy v4 path reached")
+
+
+def test_run_once_warns_and_falls_back_when_no_native_provider_exists(
+    native_dirs: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provider = ScriptedProvider([])
+    runtime = FakeNativeRuntime(provider)
+    runtime.provider = None
+    runtime.store = _LegacyStore()
+
+    async def fake_boot(**kwargs: Any) -> FakeNativeRuntime:
+        return runtime
+
+    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
+    console, _ = _console()
+    code = headless.run_once("say hello", console=console)
+
+    assert code == headless.EXIT_ERROR  # the fake legacy store stops the v4 path
+    captured = capsys.readouterr()
+    assert "native loop unavailable" in captured.err
+    assert "falling back to the legacy v4 loop" in captured.err
+    assert runtime.closed is True

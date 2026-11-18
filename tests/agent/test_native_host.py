@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,15 +26,77 @@ from deeppyro.agent.native_host import (
     NativeSessionHandle,
     UnsupportedRecordTypeError,
 )
-from deeppyro.core.ids import new_session_id
+from deeppyro.core.ids import new_run_id, new_session_id, new_step_id, new_trace_id, new_turn_id
+from deeppyro.core.llm import (
+    Finish,
+    ModelRequest,
+    StopReason,
+    StreamEvent,
+    TextDelta,
+    Usage,
+    UsageEvent,
+)
 from deeppyro.core.messages import PluginSource
-from deeppyro.core.protocols import TextDelta
 from deeppyro.observability.protocols import TurnUsage
 from deeppyro.observability.trace import ModelCallRecord, RunRecord
 from deeppyro.session.errors import SessionLockedError
 from deeppyro.session.fold import fold
 from deeppyro.session.schema import EventKind, NativeSession
-from tests.agent.fakes import ScriptedProvider, ScriptedTurn, finish, usage
+
+_STOP_REASONS = {
+    "stop": StopReason.STOP,
+    "tool_calls": StopReason.TOOL_CALLS,
+    "length": StopReason.LENGTH,
+}
+
+
+@dataclass
+class ScriptedTurn:
+    """One scripted native provider stream: events plus optional mid-stream pause."""
+
+    events: list[StreamEvent]
+    pause: asyncio.Event | None = None
+    pause_after: int = 1
+
+
+class ScriptedProvider:
+    """Deterministic native LlmProvider: one ScriptedTurn per model call."""
+
+    name = "scripted"
+
+    def __init__(self, turns: list[ScriptedTurn]) -> None:
+        self._turns = list(turns)
+        self.requests: list[ModelRequest] = []
+        self.started = asyncio.Event()
+
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+        self.requests.append(request)
+        turn = self._turns.pop(0)
+        self.started.set()
+        for index, event in enumerate(turn.events):
+            if isinstance(event, BaseException):
+                raise event
+            yield event
+            if turn.pause is not None and index + 1 >= turn.pause_after:
+                await turn.pause.wait()
+
+    async def aclose(self) -> None:
+        return None
+
+
+def finish(kind: str) -> Finish:
+    return Finish(stop_reason=_STOP_REASONS[kind])
+
+
+def usage(input_tokens: int, output_tokens: int, *, cached: int | None = None) -> UsageEvent:
+    return UsageEvent(
+        Usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            cached_input_tokens=cached,
+        )
+    )
 
 
 class _HookRecorder(NullAgentHooks):
@@ -368,5 +432,161 @@ async def test_handle_exposes_v4_shaped_read_surface(tmp_path: Path) -> None:
         assert handle.derive_messages() == []
         assert handle.messages() == []
         assert handle.pending_notices == ()
+    finally:
+        handle.aclose()
+
+
+class _StaticPrompt:
+    """PromptSource double: returns its text and records the offered tool names."""
+
+    def __init__(self, text: str = "SYSTEM V1") -> None:
+        self.text = text
+        self.tools: list[str] = []
+        self.sessions: list[str] = []
+
+    def render(self, session: Any, tools: Any) -> str:
+        self.sessions.append(session.id)
+        self.tools = [tool.name for tool in tools]
+        return self.text
+
+
+async def test_system_prompt_is_persisted_refreshed_and_last_wins(tmp_path: Path) -> None:
+    prompt = _StaticPrompt()
+    provider = ScriptedProvider([ScriptedTurn(events=[TextDelta("ok"), finish("stop"), usage(2, 1)])])
+    host = _host(tmp_path, provider)
+    try:
+        assert host.attach_prompt(prompt) is True
+        view = fold(host.native_session.header, host.native_session.events)
+        assert view.system is not None
+        assert view.system.text() == "SYSTEM V1"
+        assert prompt.sessions == [host.native_session.header.id]
+
+        def system_events() -> list[Any]:
+            return [
+                event for event in host.native_session.events if event.type == EventKind.SYSTEM_MESSAGE.value
+            ]
+
+        assert len(system_events()) == 1
+        assert host.refresh_prompt() is False
+        prompt.text = "SYSTEM V2"
+        assert host.refresh_prompt() is True
+        assert len(system_events()) == 2
+        folded = fold(host.native_session.header, host.native_session.events)
+        assert folded.system is not None
+        assert folded.system.text() == "SYSTEM V2"
+
+        await host.send("hi")
+        assert len(system_events()) == 2
+        assert prompt.tools == []
+    finally:
+        await host.aclose()
+
+
+async def test_deliver_appends_when_idle_and_queues_when_busy(tmp_path: Path) -> None:
+    paused = asyncio.Event()
+    provider = ScriptedProvider(
+        [
+            ScriptedTurn(events=[TextDelta("partial")], pause=paused, pause_after=1),
+            ScriptedTurn(events=[TextDelta("done"), finish("stop"), usage(2, 1)]),
+        ]
+    )
+    host = _host(tmp_path, provider)
+    try:
+        host.deliver("idle text")
+        messages = host.derive_messages()
+        assert messages[-1].role == "user"
+        assert messages[-1].text() == "idle text"
+        assert host.turn_count() == 0
+
+        pending: list[int] = []
+        host.on_pending(lambda: pending.append(1))
+        task = asyncio.create_task(host.send("first prompt"))
+        await provider.started.wait()
+        assert host.deliver("queued text", source=PluginSource(plugin="scheduler")) is True
+        notices = host.handle.pending_notices
+        assert len(notices) == 1
+        assert notices[0].text == "queued text"
+        assert pending == [1]
+        assert host.busy is True
+
+        assert await host.interrupt() is True
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert host.busy is False
+
+        await host.send("second prompt")
+        user_texts = [message.text() for message in host.derive_messages() if message.role == "user"]
+        assert "queued text" in user_texts
+        assert host.turn_count() == 2
+        assert host.last_assistant_text() == "done"
+    finally:
+        await host.aclose()
+
+
+async def test_wait_for_idle_waits_for_the_current_run(tmp_path: Path) -> None:
+    paused = asyncio.Event()
+    provider = ScriptedProvider([ScriptedTurn(events=[TextDelta("x")], pause=paused, pause_after=1)])
+    host = _host(tmp_path, provider)
+    try:
+        await host.wait_for_idle()
+        task = asyncio.create_task(host.send("hi"))
+        await provider.started.wait()
+        waiter = asyncio.create_task(host.wait_for_idle())
+        await asyncio.sleep(0)
+        assert waiter.done() is False
+        assert await host.interrupt() is True
+        await waiter
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        await host.aclose()
+
+
+async def test_restore_closes_an_interrupted_open_turn(tmp_path: Path) -> None:
+    session = _session(tmp_path)
+    run_id = new_run_id()
+    trace_id = new_trace_id()
+    turn_id = new_turn_id()
+    step_id = new_step_id()
+    session.append(EventKind.TURN_STARTED, {}, run_id=run_id, turn_id=turn_id, trace_id=trace_id)
+    session.append(
+        EventKind.STEP_STARTED,
+        {},
+        run_id=run_id,
+        turn_id=turn_id,
+        step_id=step_id,
+        trace_id=trace_id,
+    )
+    host = NativeAgentHost(
+        session=session,
+        provider=ScriptedProvider([]),
+        model="fake-model",
+        cwd=tmp_path,
+    )
+    try:
+        assert host.restore() is True
+        types = [event.type for event in session.events]
+        assert types[-2:] == [EventKind.STEP_ENDED.value, EventKind.TURN_ENDED.value]
+        assert session.events[-1].data["reason"] == {"kind": "aborted", "by": "disposed"}
+        assert fold(session.header, session.events).issues == ()
+        assert host.restore() is False
+    finally:
+        await host.aclose()
+
+
+def test_handle_folds_and_appends_native_events(tmp_path: Path) -> None:
+    session = _session(tmp_path)
+    handle = NativeSessionHandle(session)
+    try:
+        assert handle.events == ()
+        handle.append("model/selection", {"provider": "p", "model": "m"})
+        view = handle.fold()
+        assert view.state.model is not None
+        assert view.state.model.provider == "p"
+        assert handle.fold() is view
+        handle.append_native(EventKind.SESSION_TITLE, {"title": "T", "source": "user"})
+        assert handle.fold() is not view
+        assert handle.fold().state.title == "T"
+        assert len(handle.events) == 2
     finally:
         handle.aclose()

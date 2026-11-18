@@ -7,6 +7,8 @@ import contextlib
 from pathlib import Path
 from typing import Any
 
+from deeppyro.agent.native_factory import AgentBuild
+from deeppyro.agent.native_host import NativeSessionHandle
 from deeppyro.api import DEFAULT_PRESET_ID
 from deeppyro.api.services import service_name
 from deeppyro.attachments.store import AttachmentStore
@@ -18,19 +20,22 @@ from deeppyro.builtin.sandbox import SandboxPlugin
 from deeppyro.builtin.schedule import SchedulePlugin
 from deeppyro.builtin.settings import SettingsPlugin
 from deeppyro.builtin.tools import ToolsPlugin
+from deeppyro.core.errors import DeeppyroError
 from deeppyro.hooks import HookService
 from deeppyro.jobs.manager import JobsService
 from deeppyro.llm.retry import RetryPolicy
 from deeppyro.memory.service import MemoryService
+from deeppyro.observability.protocols import TraceExportSink, UsageSink
 from deeppyro.ptc.runtime import PtcRuntime
 from deeppyro.sandbox.approval import ApprovalService
 from deeppyro.sandbox.permission import PermissionPresetsService
 from deeppyro.sandbox.policy import SandboxPolicyService
+from deeppyro.session.native_control import NewSession
 from deeppyro.subagent.manager import SubagentService
 from deeppyro.team.manager import TeamService
 from deeppyro.tui.runtime_schedule_host import _ScheduleSink
 from deeppyro.tui.runtime_services import ServiceLayer
-from deeppyro.tui.runtime_support import await_maybe
+from deeppyro.tui.runtime_support import await_maybe, logger
 from deeppyro.user_questions.service import UserQuestionsService
 from deeppyro.working_directory.service import WorkingDirectoryService
 
@@ -62,6 +67,8 @@ class ScheduleLayer(ServiceLayer):
 
     async def create_schedule_session(self, spec: Any, preset: str) -> Any:
         """Create a fresh session for a schedule delivery."""
+        if self.native:
+            return await self._create_native_schedule_session(spec, preset)
         directory = str(getattr(spec, "cwd", "") or "")
         cwd = self.cwd
         if directory:
@@ -77,9 +84,46 @@ class ScheduleLayer(ServiceLayer):
         await self._session_created(session, cwd=str(cwd), preset=preset)
         return session
 
+    async def _create_native_schedule_session(self, spec: Any, preset: str) -> Any:
+        """Create a schema 1 headless session for a schedule delivery."""
+        directory = str(getattr(spec, "cwd", "") or "")
+        cwd = self.cwd
+        if directory:
+            candidate = Path(directory).expanduser()
+            try:
+                candidate = candidate.resolve()
+            except OSError:
+                candidate = self.cwd
+            if candidate.is_dir():
+                cwd = candidate
+        handle = NativeSessionHandle(
+            self.sessions.native_create(NewSession(cwd=Path(cwd), preset=preset, origin="headless"))
+        )
+        self._pin_permission(handle)
+        await self._session_created(handle, cwd=str(cwd), preset=preset)
+        return handle
+
     async def create_schedule_agent(self, session: Any, *, preset: str) -> Any:
         """Build a silent agent for a scheduled turn."""
         await self._ensure_preset(preset, None)
+        if self.native:
+            handle = (
+                session
+                if getattr(session, "native_session", None) is not None
+                else NativeSessionHandle(session)
+            )
+            build = AgentBuild(
+                provider=self.provider_name,
+                model=self.model,
+                cwd=Path(self.cwd),
+                preset=preset,
+                permission=self.permission,
+                hooks=None,
+                prompt_facts=self._prompt_facts(handle),
+                services=self._plugin_services(),
+                context_window=self.context_window,
+            )
+            return self.agents.host(handle.native_session, build)
         options = self.agents.options(model=self.model, context_window=self.context_window)
         return self.agents.create(
             session=session,
@@ -102,6 +146,8 @@ class ScheduleLayer(ServiceLayer):
     async def _finish_schedule_agent(self, session: Any, agent: Any) -> None:
         try:
             wait = getattr(session, "wait_for_idle", None)
+            if not callable(wait):
+                wait = getattr(agent, "wait_for_idle", None)
             if callable(wait):
                 await await_maybe(wait())
         except Exception:  # noqa: BLE001 - background cleanup is best effort
@@ -156,7 +202,28 @@ class ScheduleLayer(ServiceLayer):
             service = self._service(contract)
             if service is not None:
                 services[service_name(contract)] = service
+        if self.native:
+            for contract in (TraceExportSink, UsageSink):
+                service = self._service(contract)
+                if service is not None:
+                    services[service_name(contract)] = service
         return services
+
+    def start_schedule_send(self, agent: Any, message: str, source: dict[str, Any]) -> None:
+        """Send a scheduled message through a native agent in the background."""
+        send = getattr(agent, "send", None)
+        if not callable(send):
+            raise DeeppyroError("native schedule agent cannot send messages")
+
+        async def _send() -> None:
+            try:
+                await await_maybe(send(message, source=source))
+            except Exception:  # noqa: BLE001 - background delivery must not crash the TUI
+                logger.warning("scheduled native turn failed", exc_info=True)
+
+        task = asyncio.create_task(_send())
+        self._schedule_tasks.add(task)
+        task.add_done_callback(self._schedule_tasks.discard)
 
     def _scoped_registry(self, workspace: Any) -> Any:
         """Tools registry narrowed to contributions visible to the preset."""

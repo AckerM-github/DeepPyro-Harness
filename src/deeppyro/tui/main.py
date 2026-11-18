@@ -44,6 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="approval policy for this run: ask or never",
     )
     parser.add_argument("--cwd", default=None, help="workspace directory")
+    parser.add_argument(
+        "--resume",
+        default=None,
+        metavar="SESSION_ID",
+        help="resume a native session by id (requires DEEPPYRO_TUI_NATIVE=1)",
+    )
     parser.add_argument("--max-steps", type=int, default=None, help="tool steps per turn")
     backend = parser.add_mutually_exclusive_group()
     backend.add_argument(
@@ -160,16 +166,32 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     headless = bool(args.headless or args.prompt)
     if not headless:
-        if native_loop is not None:
+        from deeppyro.tui.native_mode import tui_native_enabled
+
+        native_tui = tui_native_enabled()
+        if native_loop is not None and not native_tui:
             print(
                 "note: the TUI still runs the v4 path; --legacy-v4/--native-loop only affect --headless",
                 file=sys.stderr,
             )
+        if args.resume and not native_tui:
+            print(
+                "note: --resume needs DEEPPYRO_TUI_NATIVE=1; starting a new session",
+                file=sys.stderr,
+            )
         from deeppyro.tui.app import DeepPyroApp
 
-        app = DeepPyroApp(cwd=args.cwd, provider=args.provider, model=args.model)
+        app = DeepPyroApp(
+            cwd=args.cwd,
+            provider=args.provider,
+            model=args.model,
+            resume=args.resume if native_tui else None,
+        )
         app.run()
         return 0
+
+    if args.resume:
+        print("note: --resume only applies to the TUI; ignoring it for --headless", file=sys.stderr)
 
     from deeppyro.headless import read_stdin_prompt, run_once
 

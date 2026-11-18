@@ -363,3 +363,103 @@ def test_write_classifies_live_and_restart_fields(tmp_path: Path, monkeypatch: p
     assert restart["volatile_changed"] == []
     specs = read_manifest(manifest)
     assert specs[0].config == {"log_level": "debug", "model": "other"}
+
+
+# -- group children ------------------------------------------------------
+
+
+def _write_group_bundle(tmp_path: Path, body: str) -> Path:
+    bundle_path = tmp_path / "bundles" / "groups" / "bundle.toml"
+    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    header = '[bundle]\nid = "groups"\nname = "Groups"\nversion = "0.1.0"\n\n'
+    bundle_path.write_bytes((header + body).encode("utf-8"))
+    return bundle_path
+
+
+def _group_child_body() -> str:
+    return (
+        "# keep me: the group comment lives in the bundle\n"
+        '[[plugins]]\nid = "group-a"\n\n'
+        '[[plugins.rows]]\nid = "demo"\nplugin = "' + TARGET + '"\nconfig = { apiKey = "hunter2" }\n'
+    )
+
+
+def test_write_patches_a_group_child_without_rewriting_the_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEEPPYRO_HOME", str(tmp_path / "home"))
+    bundle_path = _write_group_bundle(tmp_path, _group_child_body())
+    bundle_bytes = bundle_path.read_bytes()
+    manifest = tmp_path / "plugins.toml"
+    manifest.write_text(
+        '# user manifest header\n\n[[plugins]]\nid = "other"\nname = "pkg:Other"\n',
+        encoding="utf-8",
+    )
+    store = SettingsStore(manifest_path=manifest, bundle_paths=[str(bundle_path)])
+
+    # A plain child id resolves while it is unique in the composition.
+    described = store.describe("demo")
+    assert described["plugin_id"] == "demo"
+    assert described["target"] == TARGET
+    assert described["config_source"] == "bundle"
+    assert described["values"]["apiKey"] == MASKED_VALUE
+    assert described["error"] == ""
+    assert store.describe("group-a/demo")["target"] == TARGET
+
+    written = store.write("demo", {"model": "group-model"}, store.revision)
+    assert "model" in written["changed"]
+    assert written["plugin_id"] == "demo"
+
+    # The bundle owning the group table is never rewritten.
+    assert bundle_path.read_bytes() == bundle_bytes
+    # The user manifest keeps its header and gains one patch row addressed
+    # with the qualified child id.
+    text = manifest.read_text(encoding="utf-8")
+    assert text.startswith("# user manifest header")
+    specs = read_manifest(manifest)
+    assert [(spec.id, spec.config) for spec in specs] == [
+        ("other", {}),
+        ("group-a/demo", {"apiKey": "hunter2", "model": "group-model"}),
+    ]
+    assert store.effective_config("demo") == {"apiKey": "hunter2", "model": "group-model"}
+
+
+def test_writing_the_same_group_child_config_is_a_byte_stable_no_op(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEEPPYRO_HOME", str(tmp_path / "home"))
+    bundle_path = _write_group_bundle(tmp_path, _group_child_body())
+    manifest = tmp_path / "plugins.toml"
+    store = SettingsStore(manifest_path=manifest, bundle_paths=[str(bundle_path)])
+    store.write("demo", {"model": "group-model"}, store.revision)
+
+    first = manifest.read_bytes()
+    next_store = SettingsStore(manifest_path=manifest, bundle_paths=[str(bundle_path)])
+    result = next_store.write("demo", {"model": "group-model"}, next_store.revision)
+
+    assert result["changed"] == []
+    assert manifest.read_bytes() == first
+
+
+def test_ambiguous_group_child_ids_need_the_qualified_address(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEEPPYRO_HOME", str(tmp_path / "home"))
+    body = _group_child_body() + (
+        '\n[[plugins]]\nid = "group-b"\n\n'
+        '[[plugins.rows]]\nid = "demo"\nplugin = "' + TARGET + '"\nconfig = { apiKey = "other" }\n'
+    )
+    bundle_path = _write_group_bundle(tmp_path, body)
+    manifest = tmp_path / "plugins.toml"
+    store = SettingsStore(manifest_path=manifest, bundle_paths=[str(bundle_path)])
+
+    with pytest.raises(PluginNotFoundError, match="unknown plugin 'demo'"):
+        store.describe("demo")
+
+    assert store.describe("group-a/demo")["values"]["apiKey"] == MASKED_VALUE
+    store.write("group-b/demo", {"model": "b-model"}, store.revision)
+    assert store.effective_config("group-b/demo")["model"] == "b-model"
+    assert store.effective_config("group-a/demo") == {"apiKey": "hunter2"}

@@ -15,7 +15,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, ClassVar
 
 from deeppyro.core.errors import ToolError
@@ -60,6 +60,10 @@ def _session_id(session: Any) -> str:
         value = getattr(session, "session_id", None)
         if value is None:
             value = getattr(session, "sessionId", None)
+    if not value and not isinstance(session, (str, Mapping)):
+        header = getattr(session, "header", None)
+        if header is not None:
+            value = getattr(header, "id", None)
     if not value:
         raise ToolError("goal: session has no session_id")
     return str(value)
@@ -95,6 +99,79 @@ def _change_payload(change: SnapshotChange | ClearedChange) -> dict[str, Any]:
         "ref": {"id": cleared.id, "revision": cleared.revision},
         "goal": None,
     }
+
+
+_GOAL_CHANGED_EVENT = "goal.changed"
+
+
+def _is_native_session(session: Any) -> bool:
+    """Whether the session is a schema 1 NativeSession (a durable event log)."""
+    if isinstance(session, (str, Mapping)):
+        return False
+    if not (hasattr(session, "events") and hasattr(session, "header") and hasattr(session, "append")):
+        return False
+    # Local import: deeppyro.session.fold imports deeppyro.goal.types, so a
+    # module-scope session import would close a package cycle.
+    from deeppyro.session.schema import NativeSession
+
+    return isinstance(session, NativeSession)
+
+
+def _native_goal_fact(goal: GoalSnapshot | None) -> dict[str, Any] | None:
+    """One goal snapshot in the native goal.changed snake_case shape."""
+    if goal is None:
+        return None
+    fact: dict[str, Any] = {
+        "id": goal.id,
+        "revision": goal.revision,
+        "objective": goal.objective,
+        "phase": goal.phase,
+        "max_goal_rounds": goal.max_goal_rounds,
+    }
+    if goal.phase == "blocked" and goal.blocked_reason is not None:
+        fact["blocked_reason"] = {
+            "code": goal.blocked_reason.code,
+            "message": goal.blocked_reason.message,
+        }
+    return fact
+
+
+def _native_goal_state(events: Iterable[Any], goal: GoalSnapshot | None, rounds_started: int) -> GoalState:
+    """Adapt one folded native session to the v4 goal state shape.
+
+    The fold owns goal/rounds_started (last fact wins). created_at, updated_at,
+    last_revision and seen_ids are reconstructed from the goal.changed facts so
+    the v4 verbs keep their revision-CAS behaviour on native sessions.
+    """
+    created_at = 0
+    updated_at = 0
+    last_revision = 0
+    seen: set[str] = set()
+    for event in events:
+        if event.type != _GOAL_CHANGED_EVENT:
+            continue
+        data = event.data or {}
+        timestamp = int(event.ts)
+        updated_at = timestamp
+        raw = data.get("goal")
+        if raw is None:
+            created_at = 0
+            last_revision = 0
+            continue
+        if created_at == 0:
+            created_at = timestamp
+        seen.add(str(raw["id"]))
+        last_revision = int(raw["revision"])
+    if goal is not None and goal.id not in seen:
+        seen.add(goal.id)
+    return GoalState(
+        goal=goal,
+        rounds_started=rounds_started,
+        created_at=created_at,
+        updated_at=updated_at,
+        last_revision=last_revision if goal is not None else 0,
+        seen_ids=frozenset(seen),
+    )
 
 
 class GoalService:
@@ -170,6 +247,8 @@ class GoalService:
     # -- reads ---------------------------------------------------------
     def state(self, session: Any) -> GoalState:
         """The folded goal state, refolded whenever the log has grown."""
+        if _is_native_session(session):
+            return self._native_state(session)
         session_id = _session_id(session)
         records = self._load_records(session)
         cached = self._states.get(session_id)
@@ -181,6 +260,25 @@ class GoalService:
             raise GoalError(str(exc), "GOAL_REPLAY_FAILED") from exc
         self._states[session_id] = folded
         self._folded_at[session_id] = len(records)
+        return folded
+
+    def _native_state(self, session: Any) -> GoalState:
+        """Fold the schema 1 event log into the v4 goal state shape."""
+        session_id = _session_id(session)
+        events = tuple(session.events)
+        cached = self._states.get(session_id)
+        if cached is not None and self._folded_at.get(session_id) == len(events):
+            return cached
+        try:
+            # Local import: session.fold imports deeppyro.goal.types.
+            from deeppyro.session.fold import fold as fold_session
+
+            view = fold_session(session.header, events)
+        except Exception as exc:
+            raise GoalError(f"goal replay failed: {exc}", "GOAL_REPLAY_FAILED") from exc
+        folded = _native_goal_state(events, view.state.goal, view.state.rounds_started)
+        self._states[session_id] = folded
+        self._folded_at[session_id] = len(events)
         return folded
 
     def _load_records(self, session: Any) -> list[Any]:
@@ -344,6 +442,50 @@ class GoalService:
         )
         self._commit(session, session_id, change, activation="disarmed")
 
+    def admit_round(self, session: Any, ref: GoalRef, round: int) -> GoalSnapshot:
+        """Start one goal round on a native session: the only rounds_started writer.
+
+        Reads the fold, verifies the goal is still the same active snapshot and
+        that this is exactly the next round, then appends one goal.changed fact
+        carrying the unchanged snapshot and the new rounds_started. Returns the
+        pre-round snapshot so the caller renders the prompt from what it hoped
+        to drive, not from a re-read. A concurrent caller loses with
+        GOAL_INVALID_TRANSITION.
+        """
+        if not _is_native_session(session):
+            raise ToolError("goal: admit_round requires a native session")
+        if isinstance(round, bool) or not isinstance(round, int) or round <= 0:
+            raise GoalError("goal round must be a positive integer", GOAL_INVALID_TRANSITION)
+        state = self.state(session)
+        current = state.goal
+        if current is None:
+            raise GoalError("no goal is set for this session", GOAL_NOT_FOUND)
+        self._check_ref(current, state, ref)
+        if current.phase != "active":
+            raise GoalError(
+                f'cannot start goal round {round} of goal "{current.id}" from phase '
+                f'"{current.phase}"; expected "active"',
+                GOAL_INVALID_TRANSITION,
+            )
+        expected = state.rounds_started + 1
+        if round != expected:
+            raise GoalError(
+                f"goal round {round} cannot start after {state.rounds_started} rounds",
+                GOAL_INVALID_TRANSITION,
+            )
+        if round > current.max_goal_rounds:
+            raise GoalError(
+                f"goal round {round} exceeds the configured limit of {current.max_goal_rounds} rounds",
+                GOAL_INVALID_TRANSITION,
+            )
+        session.append(
+            _GOAL_CHANGED_EVENT,
+            {"goal": _native_goal_fact(current), "rounds_started": round},
+        )
+        self.invalidate(session)
+        self.state(session)  # refresh the cache from the durable fact
+        return current
+
     async def _transition(
         self,
         session: Any,
@@ -395,6 +537,8 @@ class GoalService:
         *,
         activation: Activation | None,
     ) -> GoalView | None:
+        if _is_native_session(session):
+            return self._commit_native(session, session_id, change, activation=activation)
         record = self._record_for(session_id)
         record(GOAL_EVENT, change.to_dict())
         current = self._states.get(session_id)
@@ -410,6 +554,37 @@ class GoalService:
             self._set_activation(session_id, activation)
         self._publish(session_id, change, updated)
         return goal_replay.view(updated, self.activation(session_id))
+
+    def _commit_native(
+        self,
+        session: Any,
+        session_id: str,
+        change: SnapshotChange | ClearedChange,
+        *,
+        activation: Activation | None,
+    ) -> GoalView | None:
+        """Append one native goal.changed fact and re-fold it.
+
+        Native sessions store one last-wins fact per change, so the v4
+        goal/change envelope (kind, version, createdAt, ...) is not written;
+        only the schema 1 goal.changed payload is.
+        """
+        if isinstance(change, SnapshotChange):
+            goal: GoalSnapshot | None = change.goal
+            rounds_started = change.rounds_started
+        else:
+            goal = None
+            rounds_started = 0
+        session.append(
+            _GOAL_CHANGED_EVENT,
+            {"goal": _native_goal_fact(goal), "rounds_started": rounds_started},
+        )
+        self.invalidate(session)
+        state = self.state(session)
+        if activation is not None:
+            self._set_activation(session_id, activation)
+        self._publish(session_id, change, state)
+        return goal_replay.view(state, self.activation(session_id))
 
     def _require(self, session: Any, state: GoalState, ref: GoalRef) -> GoalSnapshot:
         current = state.goal

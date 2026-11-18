@@ -29,18 +29,19 @@ from deeppyro.agent.events import (
 from deeppyro.agent.loop import AgentLoop
 from deeppyro.agent.run_state import RunStatus
 from deeppyro.core.ids import new_session_id
-from deeppyro.core.messages import TOOL_CALL_ID_RE
-from deeppyro.core.protocols import (
+from deeppyro.core.llm import (
     Finish,
-    LlmRequest,
+    ModelRequest,
+    StopReason,
     StreamEvent,
     TextDelta,
     ToolCallArgsDelta,
     ToolCallStart,
-    ToolContext,
-    ToolResult,
     Usage,
+    UsageEvent,
 )
+from deeppyro.core.messages import TOOL_CALL_ID_RE
+from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.observability.trace import (
     ModelCallRecord,
     RunRecord,
@@ -63,8 +64,8 @@ def _session(tmp_path) -> NativeSession:
 def _simple_response(text: str, *, usage: Usage | None = None) -> tuple[StreamEvent, ...]:
     return (
         TextDelta(text=text),
-        Finish(kind="stop"),
-        usage if usage is not None else Usage(input_tokens=3, output_tokens=2, total_tokens=5),
+        UsageEvent(usage if usage is not None else Usage(input_tokens=3, output_tokens=2, total_tokens=5)),
+        Finish(stop_reason=StopReason.STOP),
     )
 
 
@@ -75,8 +76,10 @@ def _tool_response(
     for index, (provider_id, name, arguments) in enumerate(calls):
         events.append(ToolCallStart(call_id=provider_id, name=name, index=index))
         events.append(ToolCallArgsDelta(call_id=provider_id, delta=arguments, index=index))
-    events.append(Finish(kind="tool-calls"))
-    events.append(usage if usage is not None else Usage(input_tokens=4, output_tokens=1, total_tokens=5))
+    events.append(
+        UsageEvent(usage if usage is not None else Usage(input_tokens=4, output_tokens=1, total_tokens=5))
+    )
+    events.append(Finish(stop_reason=StopReason.TOOL_CALLS))
     return tuple(events)
 
 
@@ -85,9 +88,9 @@ class _ScriptedProvider:
 
     def __init__(self, script: list[Any]) -> None:
         self.script = list(script)
-        self.requests: list[LlmRequest] = []
+        self.requests: list[ModelRequest] = []
 
-    async def stream(self, request: LlmRequest) -> AsyncIterator[StreamEvent]:
+    async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         self.requests.append(request)
         item = self.script.pop(0)
         if isinstance(item, BaseException):
@@ -406,8 +409,8 @@ async def test_budget_max_tokens_aborts_before_assistant_message(tmp_path) -> No
         [
             (
                 TextDelta(text="long answer"),
-                Finish(kind="stop"),
-                Usage(input_tokens=1, output_tokens=50, total_tokens=51),
+                UsageEvent(Usage(input_tokens=1, output_tokens=50, total_tokens=51)),
+                Finish(stop_reason=StopReason.STOP),
             ),
         ]
     )
@@ -438,12 +441,12 @@ async def test_cooperative_cancel_stops_run_without_leaking_tasks(tmp_path) -> N
         name = "hanging"
         calls = 0
 
-        async def stream(self, request: LlmRequest) -> AsyncIterator[StreamEvent]:
+        async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
             _HangingProvider.calls += 1
             if _HangingProvider.calls == 1:
                 yield ToolCallStart(call_id="call_provider_1", name="echo")
                 yield ToolCallArgsDelta(call_id="call_provider_1", delta='{"value": 1}')
-                yield Finish(kind="tool-calls")
+                yield Finish(stop_reason=StopReason.TOOL_CALLS)
                 return
             started.set()
             await asyncio.Event().wait()
@@ -484,7 +487,7 @@ async def test_outer_task_cancellation_propagates_after_persisting_abort(tmp_pat
     class _HangingProvider:
         name = "hanging"
 
-        async def stream(self, request: LlmRequest) -> AsyncIterator[StreamEvent]:
+        async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
             started.set()
             await asyncio.Event().wait()
             yield TextDelta(text="never")

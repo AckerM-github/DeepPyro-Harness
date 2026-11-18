@@ -19,6 +19,33 @@ Design rules (mirrored from DSH session projection):
   Session.append), so a missed notification self-heals on the next one.
 * Reads (snapshot, state_of) materialize cells to the session cursor but never
   notify; only notify drives the change feed.
+
+Native (schema 1) append adapter: not implemented, blocked by vocabulary, not
+by plumbing.  src/deeppyro/session/native_fork.py and native_query.py keep the
+native log wire-free, and the projection registry cannot consume it directly:
+
+* A facade exposing session_id, header, records and last_seq is easy to build,
+  but notify() requires a deeppyro.core.wire.LogRecord instance (it raises
+  ProjectionError for anything else) and _build_cell/_advance read
+  session.records as wire LogRecords and session.header as a wire SessionHeader.
+* Native events carry only type/seq/ts/data plus run/turn/step/trace ids; they
+  have no surfaceOp or sourceEventSeqs envelope field.  deeppyro.session.derive
+  fold_surface requires a surfaceOp on every surface-eligible record (append vs
+  ReplaceOp), and the v4 projections read v4 data shapes such as
+  user/message data["content"]/["source"] and system/message data["message"].
+* Native replacements are encoded by message id, not by surface range:
+  message.replaced {message_id, message} and compaction.done
+  {compaction_id, covers, message}.  Mapping either to a wire ReplaceOp would
+  have to invent startSeq/endSeq ranges and sourceEventSeqs references that the
+  native log does not contain, and fold_surface asserts those references, so the
+  facade would change projection semantics instead of translating them.
+
+An append-only native log could be exposed through a narrow adapter that
+translates events to wire records with surfaceOp "append" and rejects
+message.replaced/compaction.done with a clear error, but that is a new lossy
+contract (wire Message part/source shapes do not round-trip either), so it is
+deferred until the TUI attaches projections to native appends.  Blockers are
+recorded here instead of shipped as an adapter this wave.
 """
 
 from __future__ import annotations

@@ -25,6 +25,7 @@ from deeppyro.builtin.agents import AgentsPlugin
 from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.builtin.presets import PresetsPlugin
 from deeppyro.builtin.projections import ProjectionsService
+from deeppyro.builtin.prompt_service import PromptPlugin
 from deeppyro.builtin.sandbox import SandboxPlugin
 from deeppyro.builtin.schedule import SchedulePlugin
 from deeppyro.builtin.sessions import SessionsPlugin
@@ -32,10 +33,13 @@ from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, load_config, save_agent_selection
 from deeppyro.core.errors import ConfigError, DeeppyroError
 from deeppyro.jobs.manager import JobsService
+from deeppyro.observability.protocols import TraceExportSink
 from deeppyro.sandbox.permission import PermissionPresetsService
 from deeppyro.subagent.manager import SubagentService
 from deeppyro.team.manager import TeamService
 from deeppyro.team.types import LIVE_PHASES
+from deeppyro.tui.native_hooks import TuiAgentHooks
+from deeppyro.tui.native_mode import tui_native_enabled
 from deeppyro.tui.runtime_schedule_host import _now_rfc3339 as _now_rfc3339
 from deeppyro.tui.runtime_schedule_host import _ScheduleSink as _ScheduleSink
 from deeppyro.tui.runtime_schedule_host import _TuiScheduleHost as _TuiScheduleHost
@@ -53,6 +57,26 @@ from deeppyro.user_questions.service import UserQuestionsService
 from deeppyro.working_directory.service import WorkingDirectoryService
 
 
+def _native_compactor(kernel_app: Any, provider: Any, model: str) -> Any:
+    """Best-effort native compactor built from the optional compact plugin."""
+    try:
+        from deeppyro.compact.native_service import NativeCompactPlugin
+    except Exception:  # noqa: BLE001 - the optional module may be absent
+        return None
+    try:
+        plugin = kernel_app.get(NativeCompactPlugin)
+    except Exception:  # noqa: BLE001 - an optional service must not break boot
+        return None
+    attach = getattr(plugin, "attach", None)
+    if not callable(attach):
+        return None
+    try:
+        return attach(provider=provider, model=model)
+    except Exception:  # noqa: BLE001 - compaction is optional
+        logger.debug("native compactor unavailable", exc_info=True)
+        return None
+
+
 @dataclass
 class TuiRuntime(StatusLayer):
     """Booted kernel plus the live session/agent pair for the TUI."""
@@ -67,10 +91,19 @@ class TuiRuntime(StatusLayer):
         provider: str | None = None,
         model: str | None = None,
         config: Config | None = None,
+        resume: str | None = None,
+        native: bool | None = None,
     ) -> TuiRuntime:
-        """Boot the kernel bundle and resolve the TUI runtime."""
+        """Boot the kernel bundle and resolve the TUI runtime.
+
+        When DEEPPYRO_TUI_NATIVE is enabled (or native=True is passed) the
+        runtime is assembled from the schema 1 control plane: SessionsPlugin
+        native APIs, AgentsPlugin.host and the native agent factory. The v4
+        path stays byte-for-byte unchanged when the flag is off.
+        """
         from deeppyro.kernel import boot
 
+        native_mode = tui_native_enabled(native)
         cfg = config if config is not None else load_config()
         workspace = resolve_workspace(cwd)
         provider_name = provider or cfg.agent.provider
@@ -85,7 +118,12 @@ class TuiRuntime(StatusLayer):
             sandbox_service = kernel_app.require(SandboxPlugin)
             tools_service = kernel_app.require(ToolsPlugin)
             agents_service = kernel_app.require(AgentsPlugin)
-            llm_provider = llm_service.provider(provider_name)
+            if native_mode:
+                prompt_service = kernel_app.require(PromptPlugin)
+                llm_provider = llm_service.native_provider(provider_name)
+            else:
+                prompt_service = None
+                llm_provider = llm_service.provider(provider_name)
             registry = tools_service.registry_for(workspace)
             permission = sandbox_service.gate(workspace, ask=ask)
         except BaseException:
@@ -99,6 +137,16 @@ class TuiRuntime(StatusLayer):
         user_questions = kernel_app.get(UserQuestionsService)
         projections = kernel_app.get(ProjectionsService)
         schedule = kernel_app.get(SchedulePlugin)
+        native_extra: dict[str, Any] = {}
+        if native_mode:
+            native_extra = {
+                "native": True,
+                "sessions": sessions_service,
+                "prompt": prompt_service,
+                "trace_export": kernel_app.get(TraceExportSink),
+                "compactor": _native_compactor(kernel_app, llm_provider, model_id),
+                "hooks": TuiAgentHooks(sink),
+            }
         runtime = cls(
             cfg=cfg,
             cwd=workspace,
@@ -106,7 +154,7 @@ class TuiRuntime(StatusLayer):
             provider_name=provider_name,
             model=model_id,
             context_window=_context_window(provider_cfg, model_id),
-            store=sessions_service.store,
+            store=None if native_mode else sessions_service.store,
             provider=llm_provider,
             registry=registry,
             permission=permission,
@@ -119,14 +167,18 @@ class TuiRuntime(StatusLayer):
             subagent=subagent,
             working_directory=working_directory,
             user_questions=user_questions,
-            projections=projections,
+            projections=None if native_mode else projections,
             schedule=schedule,
             llm=llm_service,
+            **native_extra,
         )
         await runtime.ensure_presets()
         runtime._configure_team(None)
         runtime._configure_subagent(None)
-        await runtime.new_session()
+        if native_mode and resume:
+            await runtime.open_session(resume)
+        else:
+            await runtime.new_session()
         return runtime
 
     async def start_schedule(self) -> None:
@@ -165,6 +217,11 @@ class TuiRuntime(StatusLayer):
         active before team mode so /team off can restore it; leaving refuses
         while any team member is still live.
         """
+        if self.native:
+            raise DeeppyroError(
+                "team mode is not ported to the native TUI runtime yet; "
+                "/team is disabled while DEEPPYRO_TUI_NATIVE=1"
+            )
         service = self._service(PresetsPlugin)
         if service is None:
             raise DeeppyroError("agent presets are not available in this bundle")
@@ -323,6 +380,8 @@ class TuiRuntime(StatusLayer):
         if self._closed:
             return
         self._closed = True
+        if self.native:
+            await self._detach()
         await self._dispose_sessions()
         await self.stop_schedule()
         self._save_projections()
@@ -349,6 +408,35 @@ class TuiRuntime(StatusLayer):
             # shutdown must never mask an exception
             with contextlib.suppress(Exception):
                 await await_maybe(kernel_app.stop())
+
+    async def resume_session(self, session_id: str) -> Any:
+        """Reopen an existing session, restoring its conversation and agent."""
+        return await self.open_session(session_id)
+
+    async def name_session_title(self) -> str | None:
+        """Name the native session from its first exchange (best effort)."""
+        if not self.native or self.session is None:
+            return None
+        kernel_app = self.kernel_app
+        native_session = getattr(self.session, "native_session", None)
+        if kernel_app is None or native_session is None:
+            return None
+        mount = getattr(kernel_app, "mount_record", None)
+        record = mount("session-title") if callable(mount) else None
+        plugin = getattr(record, "instance", None)
+        options = getattr(plugin, "options", None)
+        if options is not None and not bool(getattr(options, "enabled", True)):
+            return None
+        namer = getattr(plugin, "name_native_session", None)
+        if not callable(namer):
+            return None
+        try:
+            return await await_maybe(
+                namer(native_session, provider_name=self.provider_name, model=self.model)
+            )
+        except Exception:  # noqa: BLE001 - titling is a nicety, never fatal
+            logger.warning("native session title failed", exc_info=True)
+            return None
 
 
 __all__ = ["DEFAULT_CONTEXT_WINDOW", "TuiRuntime", "await_maybe", "resolve_workspace"]

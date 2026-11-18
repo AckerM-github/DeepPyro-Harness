@@ -21,6 +21,15 @@ Rows may be containers:
   relative to the declaring file and splices it in place. A group row with
   include appends the included rows to its children instead.
 
+Patch layers may address one child of a loaded group without rewriting the whole
+group: the patch row id is a dotted address "group-id/child-id" (repeat the
+segment for nested groups). Such a patch replaces the child's
+config/disabled/critical/isolation like a top-level patch, but the group
+structure -- children, order and plugin class -- stays owned by the bundle that
+declared it; structural changes and unresolvable addresses raise
+CompositionError. An exact top-level id always wins over child lookup, and a
+plain child id is resolved only when it is unique.
+
 Bundles may depend on other bundles:
 
     [bundle]
@@ -518,6 +527,21 @@ def resolve_row(row: PluginRow) -> type:
     return _resolve_target(row.plugin, row.base)
 
 
+def _same_plugin_class(left: type, right: type) -> bool:
+    """True when two resolutions denote the same plugin class.
+
+    Identity is the normal case.  Module and qualname equality additionally
+    covers a module reloaded between two resolutions (test isolation, or an
+    explicit importlib.reload): the same source still names the same class, so
+    a patch row has not changed the plugin class.
+    """
+    if left is right:
+        return True
+    return getattr(left, "__module__", None) == getattr(right, "__module__", None) and getattr(
+        left, "__qualname__", None
+    ) == getattr(right, "__qualname__", None)
+
+
 def rows_from_specs(specs: Any, *, origin: str = "manifest") -> list[PluginRow]:
     """Convert legacy PluginSpec entries into composition rows."""
     result: list[PluginRow] = []
@@ -553,6 +577,75 @@ def row_to_spec(row: PluginRow) -> PluginSpec:
     )
 
 
+_CHILD_SEPARATOR = "/"
+
+
+def _child_parts(address: str) -> tuple[str, ...]:
+    """Split a dotted group-child address; () means "not a child address"."""
+    if _CHILD_SEPARATOR not in address:
+        return ()
+    parts = tuple(address.split(_CHILD_SEPARATOR))
+    return parts if all(parts) else ()
+
+
+def _child_by_id(group: PluginRow, child_id: str) -> PluginRow | None:
+    for child in group.children:
+        if child.id == child_id:
+            return child
+    return None
+
+
+def _descend(row: PluginRow, parts: tuple[str, ...]) -> PluginRow | None:
+    current = row
+    for part in parts:
+        child = _child_by_id(current, part)
+        if child is None:
+            return None
+        current = child
+    return current
+
+
+def _patched_child(current: PluginRow, patch: PluginRow) -> PluginRow:
+    """Merge a patch row into one existing group child.
+
+    The group structure stays owned by the bundle that declared it: a patch may
+    change config/disabled/critical/isolation, but not the child's plugin class,
+    its children or its position.  These are the same merge rules as for a
+    top-level row, minus everything structural.
+    """
+    origin = patch.origin or "patch"
+    if patch.group and not current.group:
+        raise CompositionError(f"{origin}: group child {patch.id!r} cannot become a group from a patch row")
+    if patch.children:
+        raise CompositionError(
+            f"{origin}: group child {patch.id!r} is static: a patch row cannot add or replace child rows"
+        )
+    if patch.before is not None or patch.after is not None:
+        raise CompositionError(
+            f"{origin}: group child {patch.id!r} cannot be reordered from a patch row (before/after)"
+        )
+    if patch.plugin:
+        if not current.plugin:
+            raise CompositionError(
+                f"{origin}: group child {patch.id!r} cannot gain a plugin target from a patch row"
+            )
+        if not _same_plugin_class(_resolve_target(patch.plugin, patch.base), resolve_row(current)):
+            raise CompositionError(
+                f"{origin}: group child {patch.id!r} cannot change class ({current.plugin} -> {patch.plugin})"
+            )
+    return replace(
+        current,
+        config=patch.config if patch.config is not None else current.config,
+        disabled=patch.disabled if patch.disabled is not None else current.disabled,
+        critical=patch.critical if patch.critical is not None else current.critical,
+        origin=_merge_origin(current.origin, patch.origin),
+        name=patch.name or current.name,
+        isolate=patch.isolate or current.isolate,
+        intercept={**current.intercept, **patch.intercept},
+        overridden=current.overridden or patch.config is not None or patch.disabled is not None,
+    )
+
+
 class Composition:
     """Ordered plugin rows merged from bundles and patches."""
 
@@ -580,7 +673,52 @@ class Composition:
         return result
 
     def get(self, plugin_id: str) -> PluginRow | None:
-        return self._rows.get(plugin_id)
+        """Resolve an exact top-level id, then a dotted group-child address."""
+        row = self._rows.get(plugin_id)
+        if row is not None:
+            return row
+        parts = _child_parts(plugin_id)
+        if len(parts) < 2:
+            return None
+        top = self._rows.get(parts[0])
+        if top is None:
+            return None
+        return _descend(top, parts[1:])
+
+    def find(self, plugin_id: str) -> tuple[str, PluginRow] | None:
+        """Resolve an id to (address, row) for settings-style lookups.
+
+        An exact top-level id wins; a dotted address resolves a group child at
+        any depth; a plain id resolves only when exactly one group child carries
+        it, so callers can keep using the short id from the runtime row state.
+        Ambiguous plain ids return None instead of guessing.
+        """
+        row = self._rows.get(plugin_id)
+        if row is not None:
+            return plugin_id, row
+        parts = _child_parts(plugin_id)
+        if len(parts) >= 2:
+            row = self.get(plugin_id)
+            return None if row is None else (plugin_id, row)
+        if not parts:
+            matches = self._child_matches(plugin_id)
+            if len(matches) == 1:
+                return matches[0]
+        return None
+
+    def _child_matches(self, child_id: str) -> list[tuple[str, PluginRow]]:
+        """Every (qualified address, child) pair whose leaf id matches."""
+        result: list[tuple[str, PluginRow]] = []
+
+        def walk(prefix: str, rows: Any) -> None:
+            for child in rows:
+                address = f"{prefix}{_CHILD_SEPARATOR}{child.id}" if prefix else child.id
+                if child.id == child_id:
+                    result.append((address, child))
+                walk(address, child.children)
+
+        walk("", self.rows())
+        return result
 
     def enabled(self) -> list[PluginRow]:
         return [row for row in self.rows() if row.disabled is not True]
@@ -600,6 +738,12 @@ class Composition:
                 row = replace(row, critical=critical)
             current = self._rows.get(row.id)
             if current is None:
+                parts = _child_parts(row.id)
+                if len(parts) >= 2:
+                    top = self._rows.get(parts[0])
+                    if top is not None:
+                        self._rows[top.id] = self._patch_group_child(top, parts[1:], row)
+                        continue
                 if not row.plugin and not row.group:
                     raise CompositionError(
                         f"{row.origin or origin}: unknown plugin id {row.id!r} and no plugin target was given"
@@ -610,7 +754,7 @@ class Composition:
             if row.plugin:
                 if not current.plugin:
                     raise CompositionError(f"plugin {row.id!r} cannot gain a plugin target from a patch row")
-                if resolve_row(row) is not resolve_row(current):
+                if not _same_plugin_class(resolve_row(row), resolve_row(current)):
                     raise CompositionError(
                         f"plugin {row.id!r} cannot change class ({current.plugin} -> {row.plugin})"
                     )
@@ -629,6 +773,34 @@ class Composition:
                 overridden=current.overridden or row.config is not None or row.disabled is not None,
             )
             self._rows[row.id] = merged
+
+    def _patch_group_child(
+        self,
+        group: PluginRow,
+        parts: tuple[str, ...],
+        patch: PluginRow,
+    ) -> PluginRow:
+        """Return the group with one addressed child patched; structure intact."""
+        if not group.group:
+            raise CompositionError(
+                f"{patch.origin or 'patch'}: group child address {patch.id!r} does not resolve: "
+                f"row {group.id!r} is not a group"
+            )
+        child = _child_by_id(group, parts[0])
+        if child is None:
+            raise CompositionError(
+                f"{patch.origin or 'patch'}: group child address {patch.id!r} does not resolve: "
+                f"group {group.id!r} has no child {parts[0]!r}"
+            )
+        updated = (
+            self._patch_group_child(child, parts[1:], patch)
+            if len(parts) > 1
+            else _patched_child(child, patch)
+        )
+        return replace(
+            group,
+            children=tuple(updated if item.id == updated.id else item for item in group.children),
+        )
 
     def _insert(self, row: PluginRow) -> None:
         if row.before is not None:

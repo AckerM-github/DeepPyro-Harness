@@ -188,7 +188,7 @@ v3 已实现 `src/deeppyro/api/capabilities.py`。每个 `api.Plugin` 都有 `ca
 
 其它能力通道：
 
-- **UI slots**：经 `ui` service 贡献 STATUS / CONVERSATION / PANEL / SETTINGS 内容；0.2.0 仅 append-only。
+- **UI slots**：经 `ui` service 贡献 STATUS / CONVERSATION / PANEL / SETTINGS 内容；默认 append-only，显式替换/覆盖见 §7。
 - **运行时自扩展**：`plugin_manager` 服务与 `settings`（CAS）服务；内置 `/plugins` 命令与相关工具见
   `docs/spec/plugins.md` / `docs/spec/plugin-settings.md`。
 - **hooks / events**：`ctx.on(...)` 订阅 catalogued 事件（`hook/*` 等），走 kernel 的 `EventBus` / `HookService`；
@@ -247,6 +247,15 @@ plugin = "greet.py:GreetPlugin"
   显式 `boot(bundle_paths=[...])` → 用户 patch manifest `~/.dpro/plugins.toml`。core 永远第一。
 - **patch 语义**：同 `id` 的行覆盖：`config` **整体替换**（不做深合并）、`disabled`/`critical` 覆盖、
   `isolate`/`intercept` 合并、插件类不可更换；被覆盖行标 `overridden`。
+- **group 子行 patch**：组的结构由声明它的 bundle 拥有；patch 层用**限定地址**改单个子行——把行 `id` 写成
+  `"<group-id>/<child-id>"`，嵌套组继续用 `/` 分段（如 `"outer/inner/deep"`）。子行 patch 只允许改 `config`
+  （整体替换）、`disabled`、`critical`，以及沿用的 `name`/`isolate`/`intercept` 合并规则；不能新增/删除/重排
+  子行、不能把子行变成组、不能带 `before`/`after`、不能更换插件类，地址解析不到也抛 `CompositionError`。
+  顶层 id 精确匹配优先，所以顶层 id 本身含 `/` 时仍按顶层行处理。plain 子行 id 只有在整个组合里唯一时才能被
+  settings / 行状态按短 id 找到，重复时必须用限定地址（歧义时按未知插件报错，不会猜）。
+- **group 子行 patch 的落盘位置**：不重写声明组的 `bundle.toml`。settings 写入落到**用户 patch manifest** 的
+  一行 `id = "group/child"`，由 `manifest_store` 的行级编辑保留注释、块顺序与未知键，无变化时字节不变；
+  `~/.dpro/plugins.toml` 因此始终是唯一被改动的文件。
 - **失败分类**：`critical=true` 的 row 挂载失败 → `KernelBootError` 并 dispose 已挂 fiber；
   外部 row 默认非 critical → 记入 `app.failures`、`state=failed`，boot 继续。
 - **requires**：`[bundle.requires]` 或字符串数组，操作符 `>= <= > < == = !=`；缺失/环/不支持 → `CompositionError`。
@@ -293,16 +302,25 @@ await app.dispose()
 - settings 写入在跨进程文件锁内做 CAS+merge（Windows `msvcrt` / POSIX `fcntl`，默认 5s 超时，超时抛 `SettingsLockTimeout`）；
   用户 manifest 采用行级编辑，保留注释、键顺序与未知键（无变化时字节不变）。仍有“需重启才生效”的字段。
   实现见 `src/deeppyro/plugins/file_lock.py` 与 `plugins/manifest_store.py`。
-- `bundle install` 只做结构校验；第三方代码下次 boot 才执行，无签名、无沙箱；移除 bundle 不会停掉已加载插件。
-  可选 `[bundle].digest = "sha256:…"` 可按磁盘字节钉住 bundle，不匹配时拒绝启动（见 `docs/guides/bundle-digest.md`）。
+- `bundle install` 只做结构校验，安装与运行都没有 OS 沙箱；第三方代码下次 boot 才执行；移除 bundle 不会停掉已加载插件。
+  可选 `[bundle].digest = "sha256:…"` 按磁盘原始字节钉住 bundle（见 `docs/guides/bundle-digest.md`）；
+  可选 `[bundle].signature = "hmac-sha256:…"` 用**共享密钥**做 HMAC-SHA256 完整性/真实性校验，
+  密钥来自 `DEEPPYRO_BUNDLE_SIGNING_KEY` 或 `DEEPPYRO_BUNDLE_SIGNING_KEY_FILE`：声明了签名却缺密钥、
+  签名格式非法或字节不匹配都会在 boot 拒绝启动，未声明签名照常启动（见 `docs/guides/bundle-signing.md`）。
+  签名不是身份/PKI，也不是 OS 沙箱，只证明“持有同一共享密钥的某一方签发过这些字节”。
 - 插件进程内运行、加载后即受信，没有 OS 级隔离；插件可以访问同进程服务。
 - `api_version` 是单整数门禁，不是协商协议。
 - live config 更新仅限 volatile，不重启 fiber、不写盘。
 - 普通 host 风格插件类（非 `deeppyro.api.Plugin`）没有 `volatile`/`on_config`，只能 boot 时配置。
 - bundle 仅 TOML（无 YAML / `!!js` 表达式）；include 只 TOML/JSON。
-- group 子行不能被 patch 单独寻址；group 容器加载后静态。
-- TUI slot 贡献 append-only：注册只能追加，重复 `(kind, id)` 抛 `SlotError`（错误文本含双方 plugin id），
-  后注册者不能替换或重排已有贡献；消息渲染后新增的 conversation row 不会被重渲染。
+- group 子行可用限定地址（`parent/child`）patch 单个子行的 `config`/`disabled`/`critical`，但不重写声明组的
+  bundle：不能新增/删除/重排子行、不能换插件类、不能加子行；`include` 展开的行仍不可单独寻址；plain 子行 id
+  在多个组里重复时必须用限定地址。组的挂载点与子行列表在加载后仍然静态。
+- TUI slot 贡献默认 append-only：重复 `(kind, id)` 抛 `SlotError`（错误文本含双方 plugin id）。需要更新或替换
+  已有贡献时必须显式传 `on_conflict`：`SlotConflict.REPLACE` 只允许更新本插件自己的槽（跨插件 `REPLACE`
+  报错并提示改用 `OVERRIDE`）；`SlotConflict.OVERRIDE` 是唯一能替换别的插件贡献的策略，胜出贡献的
+  `replaced_plugin_id` 记录原 owner，`registry.overrides()` 返回跨插件替换历史（`SlotOverride`），
+  `clear()` 同时清空该历史。消息渲染后新增的 conversation row 仍不会被重渲染。
 - 切换 preset 会重建 live agent，但不改写当前会话 header：TUI `SessionLayer` 在应用前后快照并断言 header
   不变（违规抛 `DeeppyroError` 并回滚切换），只有新会话或显式 fork 才写入新的 `agentPreset`。
 - preset 的 `model` 在注册（`add()`）与应用（`resolve()`）时按 `[providers]` 配置校验：默认

@@ -11,6 +11,13 @@ store on top of that:
   effective config in the last user manifest row for the plugin, because the
   kernel replaces a row config wholesale instead of deep-merging it.
 
+A plugin that lives inside a group is a group child: the store resolves the
+short runtime id to its qualified composition address ("group-id/child-id",
+repeated for nested groups) and patches that child through a normal user
+manifest row with the qualified id. The bundle that declared the group is never
+rewritten, so its comments, row order and bytes stay untouched; the patch can
+only change config/disabled/critical, not the group structure.
+
 Secret-looking keys are masked on read. A client that writes the masked
 placeholder back does not overwrite the stored secret; omitting the key keeps
 the current value.
@@ -281,7 +288,7 @@ class SettingsStore:
 
     def describe(self, plugin_id: str) -> dict[str, Any]:
         """Schema, origin, masked values and revision for one plugin config."""
-        row, target, plugin_class, error = self._lookup(plugin_id)
+        row, target, plugin_class, error, _address = self._lookup(plugin_id)
         values = dict(row.config or {}) if row is not None else {}
         return {
             "plugin_id": plugin_id,
@@ -301,7 +308,7 @@ class SettingsStore:
 
     def read(self, plugin_id: str) -> dict[str, Any]:
         """Current masked values plus the revision required by write()."""
-        row, target, plugin_class, error = self._lookup(plugin_id)
+        row, target, plugin_class, error, _address = self._lookup(plugin_id)
         values = dict(row.config or {}) if row is not None else {}
         return {
             "plugin_id": plugin_id,
@@ -344,16 +351,19 @@ class SettingsStore:
                 f"stale settings revision for plugin {plugin_id!r}: "
                 f"expected {expected_revision!r}, current is {actual_revision!r}"
             )
-        row, target, plugin_class, _error = self._lookup(plugin_id)
+        row, target, plugin_class, _error, address = self._lookup(plugin_id)
         current = dict(row.config or {}) if row is not None else {}
         merged = _deep_merge(current, _strip_masked(patch))
         validate_config(plugin_class, merged)
         specs = self._read_specs()
-        index = _last_index(specs, plugin_id)
+        # A group child is patched through its qualified address: the bundle that
+        # declared the group keeps owning the group row, so only the user manifest
+        # gains/replaces one row and the bundle bytes are never rewritten.
+        index = _last_index(specs, address)
         if index is None:
             if not target:
                 raise PluginError(f"cannot persist settings for plugin {plugin_id!r}: no plugin target")
-            specs.append(PluginSpec(id=plugin_id, name=target, config=dict(merged)))
+            specs.append(PluginSpec(id=address, name=target, config=dict(merged)))
         else:
             specs[index] = replace(specs[index], config=dict(merged))
         self._write_specs(specs)
@@ -383,7 +393,7 @@ class SettingsStore:
         This must never be returned by agent tools; settings_read and
         settings_write expose masked values instead.
         """
-        row, _target, _plugin_class, _error = self._lookup(plugin_id)
+        row, _target, _plugin_class, _error, _address = self._lookup(plugin_id)
         return dict(row.config or {}) if row is not None else {}
 
     # -- internals ---------------------------------------------------------
@@ -405,7 +415,17 @@ class SettingsStore:
     def _manifest_paths(self) -> tuple[str, ...]:
         return (str(self._manifest_path),) if self._manifest_path.is_file() else ()
 
-    def _lookup(self, plugin_id: str) -> tuple[PluginRow | None, str, type | None, str]:
+    def _lookup(
+        self,
+        plugin_id: str,
+    ) -> tuple[PluginRow | None, str, type | None, str, str]:
+        """Resolve a plugin id to (row, target, class, error, manifest address).
+
+        The last item is the id used in the user manifest. It differs from the
+        requested id for a group child: writes address it as "parent/child"
+        (repeated for nested groups) so the declaring bundle row -- and
+        therefore the whole group table -- is never rewritten.
+        """
         if self._manifest_path.is_file():
             # Surface a broken user manifest here: load_composition records
             # parse failures as warnings and would report the plugin as unknown.
@@ -414,23 +434,27 @@ class SettingsStore:
             manifest_paths=self._manifest_paths(),
             bundle_paths=self._bundle_paths,
         )
-        row = composition.get(plugin_id)
+        resolved = composition.find(plugin_id)
+        row: PluginRow | None = None
+        address = plugin_id
+        if resolved is not None:
+            address, row = resolved
         if row is not None and row.plugin:
             target = row.plugin
             try:
-                return row, target, resolve_row(row), ""
+                return row, target, resolve_row(row), "", address
             except (CompositionError, ManifestError) as exc:
-                return row, target, None, str(exc)
+                return row, target, None, str(exc), address
         if row is not None:
-            return row, "", None, ""
+            return row, "", None, "", address
         target = self._target_from_manager(plugin_id)
         if target is None:
             raise PluginNotFoundError(f"unknown plugin {plugin_id!r}")
         try:
             plugin_class = resolve_plugin_name(target)
         except ManifestError as exc:
-            return None, target, None, str(exc)
-        return None, target, plugin_class, ""
+            return None, target, None, str(exc), address
+        return None, target, plugin_class, "", address
 
     def _target_from_manager(self, plugin_id: str) -> str | None:
         from .manager import PluginManager

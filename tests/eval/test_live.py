@@ -11,7 +11,7 @@ import pytest
 
 from deeppyro.agent.errors import ProviderStreamError
 from deeppyro.config import Config, ModelCost, ModelProfile
-from deeppyro.core.protocols import Finish, LlmRequest, StreamEvent, TextDelta, Usage
+from deeppyro.core.llm import Finish, ModelRequest, StopReason, StreamEvent, TextDelta, Usage, UsageEvent
 from deeppyro.eval import (
     EvalBudget,
     EvalCase,
@@ -50,10 +50,10 @@ class _ScriptedProvider:
 
     def __init__(self, script: Sequence[Any]) -> None:
         self.script = list(script)
-        self.requests: list[LlmRequest] = []
+        self.requests: list[ModelRequest] = []
         self.closed = False
 
-    async def stream(self, request: LlmRequest) -> Any:
+    async def stream(self, request: ModelRequest) -> Any:
         self.requests.append(request)
         item = self.script.pop(0)
         if isinstance(item, BaseException):
@@ -68,8 +68,8 @@ class _ScriptedProvider:
 def _simple_response(text: str, *, usage: Usage | None = None) -> tuple[StreamEvent, ...]:
     return (
         TextDelta(text=text),
-        Finish(kind="stop"),
-        usage if usage is not None else Usage(input_tokens=3, output_tokens=2, total_tokens=5),
+        UsageEvent(usage if usage is not None else Usage(input_tokens=3, output_tokens=2, total_tokens=5)),
+        Finish(stop_reason=StopReason.STOP),
     )
 
 

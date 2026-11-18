@@ -13,6 +13,8 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import Field
 
+#: Token usage is a wire-free native type; re-exported here so v4 importers keep working.
+from deeppyro.core.llm import Usage
 from deeppyro.core.wire import Message, WireModel
 
 FinishKind = Literal["stop", "tool-calls", "length", "error", "aborted", "content-filter"]
@@ -93,16 +95,6 @@ class ToolCallArgsDelta:
     # the provider repeats the name, so consumers must remember the last value.
     name: str | None = None
     index: int = 0
-
-
-@dataclass(slots=True)
-class Usage:
-    input_tokens: int = 0
-    output_tokens: int = 0
-    total_tokens: int = 0
-    cached_input_tokens: int | None = None
-    cache_write_tokens: int | None = None
-    reasoning_tokens: int | None = None
 
 
 @dataclass(slots=True)

@@ -67,11 +67,13 @@ class DeepPyroApp(PanelLayer):
         model: str | None = None,
         runtime_factory: RuntimeFactory | None = None,
         splash: bool = True,
+        resume: str | None = None,
     ) -> None:
         super().__init__()
         self._cwd = cwd
         self._provider = provider
         self._model = model
+        self._resume = resume
         self._runtime_factory = runtime_factory
         self._splash_enabled = splash
         self.runtime: Any = None
@@ -123,12 +125,15 @@ class DeepPyroApp(PanelLayer):
                     cwd=self._cwd,
                     provider=self._provider,
                     model=self._model,
+                    resume=self._resume,
                 )
         except Exception as exc:  # noqa: BLE001 - a broken boot must stay visible
             self.conversation.add_error(f"failed to start: {type(exc).__name__}: {exc}")
             self._dismiss_splash()
             self.refresh_status()
             return
+        if getattr(self.runtime, "native", False):
+            self._register_native_commands()
         self._configure_user_questions()
         self._configure_schedule()
         await self._start_schedule()
@@ -148,6 +153,22 @@ class DeepPyroApp(PanelLayer):
         # shutdown never raises into Textual
         with contextlib.suppress(Exception):
             await runtime.close()
+
+    def _register_native_commands(self) -> None:
+        """Register TUI-local slash commands that only exist on the native path."""
+        commands = getattr(self.runtime, "commands", None)
+        add = getattr(commands, "add", None)
+        if not callable(add):
+            return
+        # a clashing command from another plugin must not break boot
+        with contextlib.suppress(Exception):
+            add(
+                "fork",
+                self.fork_command,
+                summary="fork the current session into a new native session",
+                usage="/fork [session-id]",
+                plugin_id="tui",
+            )
 
     # -- splash ----------------------------------------------------------
     def _splash_screen(self) -> SplashScreen | None:
@@ -189,13 +210,18 @@ class DeepPyroApp(PanelLayer):
     async def thinking_command(self, argument: str) -> None:
         """Open the full-screen reasoning viewer (/thinking [turns])."""
         session = getattr(self.runtime, "session", None)
+        reasoning = reasoning_from_session
+        if getattr(self.runtime, "native", False):
+            from deeppyro.tui.native_history import reasoning_from_session as native_reasoning
+
+            reasoning = native_reasoning
         turns: list[Any] = []
         if session is not None:
             spec = argument.strip().lower()
             if spec in ("", "current"):
-                turns = list(reasoning_from_session(session, last_turns=1))
+                turns = list(reasoning(session, last_turns=1))
             elif spec in ("all", "*"):
-                turns = list(reasoning_from_session(session, last_turns=None))
+                turns = list(reasoning(session, last_turns=None))
             else:
                 try:
                     count = int(spec)
@@ -205,7 +231,7 @@ class DeepPyroApp(PanelLayer):
                 if count <= 0:
                     self.conversation.add_error("usage: /thinking [number of turns|all]")
                     return
-                turns = list(reasoning_from_session(session, last_turns=count))
+                turns = list(reasoning(session, last_turns=count))
         if not turns:
             current = self.conversation.current_reasoning
             if current is not None and current.has_reasoning:

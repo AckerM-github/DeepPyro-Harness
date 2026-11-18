@@ -220,6 +220,49 @@ async def test_from_policy_policy_drives_run() -> None:
     assert sleeps == pytest.approx([0.525, 1.05])
 
 
+async def test_run_reports_each_retry_before_sleeping() -> None:
+    """KI-010: the native provider turns these callbacks into RetryScheduled events."""
+    policy, sleeps = policy_with_sleeps(base_delay=2.0, jitter=0.1)
+    attempts = 0
+    seen: list[tuple[int, str | None, float, bool]] = []
+
+    async def operation() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise LlmRequestError("transient", code="SERVER", retryable=True)
+        return "ok"
+
+    def on_retry(attempt: int, exc: BaseException, delay: float) -> None:
+        code = getattr(exc, "code", None)
+        seen.append(
+            (attempt, code if isinstance(code, str) else None, delay, isinstance(exc, LlmRequestError))
+        )
+
+    assert await policy.run(operation, on_retry=on_retry) == "ok"
+    assert attempts == 3
+    assert [entry[0] for entry in seen] == [1, 2]
+    assert [entry[1] for entry in seen] == ["SERVER", "SERVER"]
+    assert [entry[2] for entry in seen] == pytest.approx(sleeps)
+    assert sleeps == pytest.approx([2.1, 4.2])
+    assert all(entry[3] for entry in seen)
+
+
+async def test_run_without_retry_does_not_call_on_retry() -> None:
+    policy, sleeps = policy_with_sleeps()
+    seen: list[int] = []
+
+    async def operation() -> str:
+        return "ok"
+
+    def on_retry(attempt: int, exc: BaseException, delay: float) -> None:
+        seen.append(attempt)
+
+    assert await policy.run(operation, on_retry=on_retry) == "ok"
+    assert seen == []
+    assert sleeps == []
+
+
 def test_from_policy_rejects_bad_shapes() -> None:
     with pytest.raises(TypeError):
         RetryPolicy.from_policy({"maxRetries": "5"})

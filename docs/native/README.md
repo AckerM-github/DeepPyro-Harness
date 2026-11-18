@@ -11,6 +11,7 @@ Status: **M0–M4 complete; headless runs native by default in 0.2.0 (2026-11-18
 | [../../fixtures/native/](../../fixtures/native/) | 10 real provider recordings, manifest with checksums, validation report, and the two small files used by the sequential-tool case. |
 | [README.md](README.md) | This implementation, provenance, layout, validation and replay note. |
 | [coverage.md](coverage.md) | What the recorded baseline proves, which surfaces must be synthesized (`tests/fixtures/native/synthetic/`), and how much re-recording costs. |
+| [goal.md](goal.md) | Native goal rounds with no schema change: `goal.changed` round facts, `GoalService.admit_round`, `NativeRoundDriver`, budget/round-limit blocking, restart and remaining limits. |
 | [../../src/deeppyro/core/messages.py](../../src/deeppyro/core/messages.py) | Frozen native `Message`, four content parts and eight sources; strict role/part matrix and JSON round-trip. |
 | [../../src/deeppyro/session/schema.py](../../src/deeppyro/session/schema.py) | Schema 1 header/envelope, 30 core `EventKind`s, `NativeCodec` reader/writer, writer lock and atomic append. |
 | [../../src/deeppyro/session/fold.py](../../src/deeppyro/session/fold.py) | Pure fold to `SessionView`: replacement, compaction, state, approvals, tool pairing and missing-result repair. |

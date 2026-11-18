@@ -16,9 +16,12 @@ from deeppyro.core.messages import (
     UserSource,
 )
 from deeppyro.session.native_index import (
+    ARCHIVE_EVENT,
     NativeSessionInfo,
     list_native_sessions,
+    read_native_log,
     read_native_transcript,
+    resolve_native_session_path,
 )
 from deeppyro.session.schema import EventKind, NativeSession
 
@@ -272,3 +275,32 @@ def test_title_and_preview_are_bounded_when_derived(tmp_path: Path) -> None:
 
     assert info.title == "x" * 23 + "…"
     assert info.preview == "x" * 79 + "…"
+
+
+def test_archived_sessions_are_hidden_by_default(tmp_path: Path) -> None:
+    path = _write_native(tmp_path)
+    session = NativeSession.open(path)
+    try:
+        session.append(ARCHIVE_EVENT, {"archived": True, "source": "user", "at": CREATED_AT + 100})
+    finally:
+        session.close()
+
+    assert list_native_sessions(tmp_path) == []
+    archived = list_native_sessions(tmp_path, include_archived=True)
+    assert len(archived) == 1
+    assert archived[0].archived is True
+
+
+def test_resolve_and_read_native_log(tmp_path: Path) -> None:
+    path = _write_native(tmp_path)
+
+    assert resolve_native_session_path(SESSION_ID, root=tmp_path) == path
+    log = read_native_log(SESSION_ID, root=tmp_path)
+    assert log.header.id == SESSION_ID
+    assert log.events[0].type == EventKind.TURN_STARTED.value
+    assert len(log.events) == 9
+
+
+def test_unknown_resolve_raises_file_not_found(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        resolve_native_session_path(SESSION_ID, root=tmp_path)

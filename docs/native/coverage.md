@@ -32,7 +32,7 @@ captured 2026-11-17 from `deepseek-flash` with `temperature=0`, streaming, and
 | PTC nested dispatch (`tool/ptc-dispatch*`) | no | needs synthetic |
 | subagent catalog / descriptor / child ids | no | needs synthetic |
 | multi-agent handoff | no | native `task.*` facts (synthesized, see §2) |
-| trace side channel (per-call tokens/latency/retries) | no | synthesized where usage is compared |
+| trace side channel (per-call tokens/latency/retries) | no (recordings store provider streams, not trace records) | the native loop derives tokens/latency from the stream and, since KI-010, records real retry counts from `RetryScheduled`; the baseline trace stays synthesized where usage is compared |
 
 The recordings are data only: replay never re-executes a provider request and
 never needs an API key. `scripts/record_replay.py` asserts each recorded request

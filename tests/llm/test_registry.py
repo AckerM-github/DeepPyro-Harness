@@ -10,15 +10,18 @@ import respx
 
 from deeppyro.config import Config, ProviderConfig
 from deeppyro.core.errors import ConfigError
+from deeppyro.core.llm import LlmProvider as NativeLlmProvider
 from deeppyro.core.protocols import LlmProvider
 from deeppyro.llm import (
     AnthropicProvider,
     LlmRegistry,
     ModelInfo,
     OpenAICompatProvider,
+    create_native_provider,
     create_provider,
 )
 from deeppyro.llm.errors import CODE_SERVER
+from deeppyro.llm.native_provider import NativeOpenAICompatProvider
 
 
 def provider_config(**kwargs: object) -> ProviderConfig:
@@ -147,6 +150,30 @@ def test_create_provider_honours_timeout() -> None:
     assert provider.timeout_s == 12.5
 
 
+def test_create_native_provider_builds_a_native_openai_compat_provider() -> None:
+    provider = create_native_provider("local", provider_config(api_key="secret"))
+    assert isinstance(provider, NativeOpenAICompatProvider)
+    assert isinstance(provider, NativeLlmProvider)
+    assert provider.name == "local"
+    assert provider.base_url == "http://127.0.0.1:8000/v1"
+    assert provider.api_key == "secret"
+    assert provider.model_ctx == 32768
+    assert provider.timeout_s == 600.0
+
+
+def test_create_native_provider_accepts_aliases_and_timeout() -> None:
+    provider = create_native_provider("p", provider_config(api="openai"), timeout_s=12.5)
+    assert isinstance(provider, NativeOpenAICompatProvider)
+    assert provider.timeout_s == 12.5
+
+
+def test_create_native_provider_rejects_apis_without_a_native_transport() -> None:
+    with pytest.raises(ConfigError, match="no native"):
+        create_native_provider("claude", anthropic_config())
+    with pytest.raises(ConfigError, match="no native"):
+        create_native_provider("p", provider_config(api="gizmo"))
+
+
 def _config() -> Config:
     return Config(
         providers={
@@ -190,6 +217,55 @@ async def test_registry_aclose_closes_and_forgets() -> None:
     assert registry.providers == {}
     # idempotent
     await registry.aclose()
+
+
+def test_registry_caches_native_provider_instances() -> None:
+    registry = LlmRegistry(_config())
+    first = registry.native_provider("deepseek")
+    second = registry.native_provider("deepseek")
+    assert isinstance(first, NativeOpenAICompatProvider)
+    assert first is second
+    assert set(registry.providers) == set()
+
+
+def test_registry_unknown_native_provider_raises_config_error() -> None:
+    registry = LlmRegistry(_config())
+    with pytest.raises(ConfigError, match="unknown provider"):
+        registry.native_provider("missing")
+
+
+def test_registry_native_provider_reports_a_typed_unsupported_api() -> None:
+    cfg = Config(
+        providers={
+            "claude": ProviderConfig.model_validate(
+                {
+                    "api": "anthropic-messages",
+                    "base_url": "https://api.anthropic.com",
+                    "api_key": "key",
+                    "models": [{"id": "claude-sonnet-4-5"}],
+                }
+            )
+        }
+    )
+    registry = LlmRegistry(cfg)
+    with pytest.raises(ConfigError, match="no native"):
+        registry.native_provider("claude")
+
+
+async def test_registry_aclose_closes_both_layers() -> None:
+    registry = LlmRegistry(_config())
+    legacy = registry.get("local")
+    native = registry.native_provider("local")
+    assert isinstance(legacy, OpenAICompatProvider)
+    assert isinstance(native, NativeOpenAICompatProvider)
+    legacy._ensure_client()
+    native._ensure_client()
+    await registry.aclose()
+    assert legacy._client is None
+    assert legacy._closed is True
+    assert native._client is None
+    assert native._closed is True
+    assert registry.providers == {}
 
 
 async def test_registry_aclose_raises_first_error_after_closing_all(

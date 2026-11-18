@@ -2,25 +2,37 @@
 
 > **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
 
-Status: implemented (owner: llm-dev). Consumed by `agent` via `core.protocols.LlmProvider`.
-Streaming-only; two transports: OpenAI chat-completions (DeepSeek, llama-server, vLLM, ...)
-and Anthropic Messages (P1, section 14).
+Status: implemented (owner: llm-dev). Streaming-only; two transports: OpenAI
+chat-completions (DeepSeek, llama-server, vLLM, ...) and Anthropic Messages (P1, section 14).
+
+The native agent loop (`agent/loop.py`, KI-010) consumes the wire-free
+`core.llm.LlmProvider` contract; the v4 `core.protocols.LlmProvider` still feeds the legacy
+v4 agent/session stack, compact/team/subagent, session titles and live eval (sections 1, 4.1
+and 11).
 
 ## 1. Public API
 
 ```python
 from deeppyro.llm import (
-    AnthropicProvider, LlmRegistry, OpenAICompatProvider, create_provider,
+    AnthropicProvider, LlmRegistry, NativeOpenAICompatProvider, OpenAICompatProvider,
+    create_native_provider, create_provider,
 )
 
 create_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) -> LlmProvider
+create_native_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) -> core.llm.LlmProvider
 registry = LlmRegistry(cfg: Config)      # lazy, cached, one provider per configured name
-registry.get("deepseek")                 # -> LlmProvider; ConfigError when unknown
-await registry.aclose()                  # closes every instantiated provider
+registry.get("deepseek")                 # -> v4 LlmProvider; ConfigError when unknown
+registry.native_provider("deepseek")     # -> native core.llm.LlmProvider (KI-010)
+await registry.aclose()                  # closes every instantiated provider (both layers)
 
 provider = OpenAICompatProvider(
     name, base_url, api_key, *, model_ctx: int | None = None,
     timeout_s: float = 600.0, retry_policy: RetryPolicy | None = None,
+)
+provider = NativeOpenAICompatProvider(   # wire-free mirror used by the native loop
+    name, base_url, api_key, *, model_ctx: int | None = None,
+    timeout_s: float = 600.0, retry_policy: RetryPolicy | None = None,
+    attachments: object | None = None,   # optional image-attachment resolver
 )
 provider = AnthropicProvider(            # when pc.api is "anthropic-messages"/"anthropic"
     name, base_url, api_key, *, model_ctx: int | None = None,
@@ -38,12 +50,20 @@ policy = RetryPolicy.from_policy({"maxRetries": 5, "baseDelayMs": 500, "maxDelay
 `create_provider` reads `ProviderConfig.api`: `openai-completions` (and its aliases) builds
 `OpenAICompatProvider`; `anthropic-messages`/`anthropic_messages`/`anthropic` builds
 `AnthropicProvider` (section 14); anything else raises `ConfigError`.
+`create_native_provider` reads the same `ProviderConfig.api` but builds only the
+OpenAI-compatible native transport (`NativeOpenAICompatProvider`); Anthropic/unknown APIs
+raise `ConfigError` ("no native transport"). `headless.boot_runtime` turns that into an
+explicit stderr warning and falls back to the legacy v4 loop instead of silently downgrading.
 
 Extra helpers (test/debug surface): `deeppyro.llm.sse` (`SseDecoder`, `iter_sse`,
-`decode_sse_text`, `format_sse`), `deeppyro.llm.messages` (`build_chat_payload`,
+`decode_sse_text`, `format_sse`), `deeppyro.llm.messages` (v4 converters: `build_chat_payload`,
 `convert_messages`, `message_to_chat`, `tool_to_json`, `normalize_arguments`),
-`deeppyro.llm.errors` (`LlmRequestError`, `LlmHttpError`, failure `CODE_*` constants),
-`deeppyro.llm.retry` (`RetryPolicy`, `RETRYABLE_CODES`, `RETRYABLE_HTTP_STATUSES`).
+`deeppyro.llm.native_messages` (the KI-010 wire-free mirror of that converter),
+`deeppyro.llm.attachments` (`image_part_url` and the attachment-ref resolver shared by both
+converters), `deeppyro.llm.http` (`build_client`, `headers` — the shared httpx client/timeout
+and SSE header construction), `deeppyro.llm.errors` (`LlmRequestError`, `LlmHttpError`,
+failure `CODE_*` constants), `deeppyro.llm.retry` (`RetryPolicy`, `RETRYABLE_CODES`,
+`RETRYABLE_HTTP_STATUSES`).
 
 ## 2. Request construction
 
@@ -74,13 +94,19 @@ body: {
   raises on further streams instead of silently opening a new socket).
 * No prompt-cache/session affinity headers are sent yet: DSH's `x-session-affinity` /
   `prompt_cache_key` scheme is provider-specific and not required by the contract.
-  `LlmRequest.session_id` is therefore currently unused (kept for a later cache-aware
-  provider). OpenAI-compatible servers treat this as a plain cache miss, not an error.
+  `LlmRequest.session_id` (and its native mirror `ModelRequest.session_id`) is therefore
+  currently unused (kept for a later cache-aware provider). OpenAI-compatible servers treat
+  this as a plain cache miss, not an error.
+* The native provider sends the identical request shape: only the request object differs
+  (`core.llm.ModelRequest` instead of `LlmRequest`), so recorded request bodies replay
+  unchanged.
 
-## 3. Message conversion (core.wire -> chat messages)
+## 3. Message conversion (wire/native -> chat messages)
 
 Input is `core.wire.Message` as recorded in the session log, so the conversion mirrors
-`fixtures/records/by-type/assistant_message.jsonl` / `tool_result.jsonl` shapes.
+`fixtures/records/by-type/assistant_message.jsonl` / `tool_result.jsonl` shapes. The KI-010
+native loop uses `core.messages.Message`; `deeppyro.llm.native_messages` applies the same
+mapping to that model and `deeppyro.llm.attachments` holds the shared image resolver.
 
 | wire Message | chat-completions message |
 | --- | --- |
@@ -104,9 +130,12 @@ Input is `core.wire.Message` as recorded in the session log, so the conversion m
 * DeepSeek reasoning is replayed through `reasoning_content`; this is the same field the
   provider streams, so history round-trips.
 * `ImagePart.attachment` accepted forms: a ready `data:`/`http(s)://` URL, or a dict with
-  `url`, or a dict with `data`/`base64` plus `mimeType`/`mediaType`. A bare attachment
-  id cannot be dereferenced in this layer and is skipped (documented limitation; the log
-  fixtures contain no image parts, so no real behaviour depends on it yet).
+  `url`, or a dict with `data`/`base64` plus `mimeType`/`mediaType`. A bare attachment id is
+  dereferenced only when the converter receives an attachment resolver
+  (`llm.attachments.image_part_url(..., attachments=...)`); the v4 converter and
+  registry-built native providers pass none, so those parts are skipped (documented
+  limitation; the log fixtures contain no bare-id image parts, so no real behaviour depends
+  on it yet).
 * Unsupported/unknown part types and messages that convert to empty content are dropped.
 
 ## 4. Streaming contract (INTERFACES §5.1-5.9)
@@ -134,6 +163,19 @@ Success stream example (plain answer):
 ```
 TextDelta("Hel") TextDelta("lo") Usage(...) Finish(kind="stop")
 ```
+
+### 4.1 Native contract (KI-010)
+
+`core.llm` defines the wire-free mirror of this contract: `StopReason` (StrEnum with
+`stop/tool_calls/length/error/aborted/content_filter`), `Usage`, `ToolSpec`,
+`ModelRequest`, the same delta/usage/finish event dataclasses plus
+`RetryScheduled`, `ModelResponse`, `NativeToolCall` and the `LlmProvider` Protocol.
+Native providers (`NativeOpenAICompatProvider`) emit identical event sequences, with
+`Finish(kind="tool-calls")` becoming `Finish(stop_reason=StopReason.TOOL_CALLS)`.
+`agent/model_call.py` adapts one stream to one `ModelResponse` and preserves every v4
+adapter invariant (finish required, tool-call names, argument joining, forced `tool_calls`,
+empty-message rejection, cancellation and usage last-wins); it also counts
+`RetryScheduled` events into `ModelResponse.retries`.
 
 ## 5. SSE decoding
 
@@ -175,7 +217,12 @@ TextDelta("Hel") TextDelta("lo") Usage(...) Finish(kind="stop")
   wrong value types raise `TypeError` and out-of-range/length/JSON errors raise `ValueError`.
 * 4xx other than 408/409/425/429 are never retried (400/401/403/404/422).
 * `RetryPolicy` is also an async context manager (`async with RetryPolicy(...) as retry`),
-  matching the interface snippet; `run(operation)` owns the loop.
+  matching the interface snippet; `run(operation, *, on_retry=None)` owns the loop.
+  `on_retry(attempt, exception, delay)` is called for every retry that will be slept on, so
+  the native provider can emit `RetryScheduled(attempt, code, delay_s)` before sleeping.
+  `agent/model_call.py` counts those events into `ModelResponse.retries`; the native loop
+  stores the count in `ModelCallRecord.retry_count` and `TurnUsage.retries` (previously
+  hardcoded to 0).
 * Retries stop as soon as content was produced: mid-stream failures never replay the
   request (the consumer has already seen deltas).
 
@@ -268,6 +315,12 @@ client-side bug and fail fast with `LlmRequestError(code="BAD_REQUEST")`. Observ
 
 ## 11. Known deviations / risks
 
+* KI-010 moved the native loop off the v4 wire request: `AgentLoop._prompt_payload` now
+  serializes native `Message.to_dict()` / `ToolSpec.to_dict()` instead of
+  `model_dump(mode="json")`. The `prompt_hash` format (`sha256:<64 hex>`) and the hashing
+  algorithm are unchanged, but the hash **values change once**; traces recorded before and
+  after the port cannot be joined by prompt hash. No fixture pins the value.
+
 * `reasoning_content` is only added when non-empty. DSH's adapter auto-enables
   `requiresReasoningContentOnAssistantMessages` for DeepSeek and then sends the field
   (possibly empty) on *every* replayed assistant message. Sending it only when present is
@@ -314,8 +367,15 @@ client-side bug and fail fast with `LlmRequestError(code="BAD_REQUEST")`. Observ
   byte-for-byte argument preservation, invalid-arguments fast failure, tool schemas, payload
   fields/clamping.
 * `test_retry.py`: backoff arithmetic, jitter, caps, Retry-After, retryability rules,
-  exhaustion, cancellation, context manager, `from_policy` (dict + fixture policyKey +
-  codes-authoritative + bad shapes), and fixture policyKey parity.
+  exhaustion, cancellation, context manager, `on_retry` reporting (attempt/code/delay),
+  `from_policy` (dict + fixture policyKey + codes-authoritative + bad shapes), and fixture
+  policyKey parity.
+* Native transport (KI-010): `test_native_messages.py` (request-body goldens for
+  `core.messages`/`ToolSpec` conversion, image passthrough, argument preservation),
+  `test_native_provider.py` (respx + inline SSE: text/reasoning/fragmented tool calls, both
+  cache-usage fields, finish mapping, mid-stream cuts, retries with `RetryScheduled`,
+  non-SSE content types, 401/400, listing, idempotent close, cancellation) and
+  `tests/agent/test_model_call.py` (one test per adapter invariant).
 * `test_openai_compat.py` (respx-mocked, no network): plain text, reasoning deltas,
   fragmented single/multi tool calls, usage (+DeepSeek cache field), finish mapping,
   [DONE] inference, mid-stream cut, invalid JSON, wrong content-type, 500/429/401/400,

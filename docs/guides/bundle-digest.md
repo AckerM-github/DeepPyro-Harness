@@ -27,6 +27,9 @@ digest = "sha256:5f0c...（64 位小写十六进制）"
 - `digest` 只描述 `bundle.toml` 这一个文件，**不**覆盖 `include` 引入的
   其它文件（见 §5 限制）。
 - 这个字段是内容摘要，不是密码学签名：它证明“文件没变”，不证明“文件来自谁”。
+  需要“持有共享密钥的一方签发且没变”时，使用可选的 `signature`
+  （`hmac-sha256:<64 位小写 hex>`，见 [bundle-signing.md](bundle-signing.md)）；
+  两者可以同时声明，也能互相独立使用。
 
 ## 2. 哈希口径（TOML 规范化）
 
@@ -46,12 +49,20 @@ digest = "sha256:5f0c...（64 位小写十六进制）"
 `sha256:000...0`（`DIGEST_PLACEHOLDER`），再对替换后的字节做 SHA-256。否则
 文件必须包含自己的哈希，永远无法固定。
 
+如果同一个文件还声明了 `signature`，计算 digest 时**也**会把该签名字面量
+（`hmac-sha256:<64 位 hex>`，共 71 字节）替换成等长零占位
+（`SIGNATURE_PLACEHOLDER`）后再哈希：两个自引用声明各自归一化，因此“先钉
+digest 再签名”和“先签名再钉 digest”得到同一个 digest。注意反过来不成立：
+签名计算**不**归一化 digest 值，所以签名会绑定当时的 digest 声明（见
+[bundle-signing.md](bundle-signing.md) §3）。
+
 实现位置：
 
-- `src/deeppyro/kernel/capabilities.py:224-239` —— `bundle_digest_bytes(data, *, declared=None)`；
-- `src/deeppyro/kernel/capabilities.py:242-257` —— `_read_digest_declaration`
-  （去掉 BOM 后 `tomllib` 解析，只读取 `[bundle].id` 与 `[bundle].digest`）；
-- `src/deeppyro/kernel/capabilities.py:260-300` —— `inspect_bundle_digest(s)`。
+- `src/deeppyro/kernel/capabilities.py:285-311` ——
+  `bundle_digest_bytes(data, *, declared=None, signature=None)`；
+- `src/deeppyro/kernel/capabilities.py:314-330` —— `_read_bundle_declarations`
+  （去掉 BOM 后 `tomllib` 解析，读取 `[bundle]` 的 `id`/`digest`/`signature`）；
+- `src/deeppyro/kernel/capabilities.py:333-373` —— `inspect_bundle_digest(s)`。
 
 注意：哈希计算**不**使用 TOML 序列化结果，也**不**去掉 BOM。因为 Windows 上
 文本模式写入会把 `\n` 改写成 `\r\n`，用脚本生成/重钉 digest 时应使用
@@ -109,10 +120,13 @@ print(record.bundle_id, record.state, record.sha256)
 
 默认组合（`create_app` 未显式传 `plugins`/`composition`）会加载 core bundle、
 `bundle_paths`、用户 bundle 与插件提供的 bundle。报告生成前，boot 对每个实际
-加载的 `bundle.toml` 调用 `inspect_bundle_digest` 并记录
-（`src/deeppyro/kernel/app.py:666-682` 的 `_bundle_digest_paths`、
-`:738-743` 的接线；`src/deeppyro/kernel/capabilities.py:542-586` 的
-`CapabilityRegistry.record_bundle_digests`）。
+加载的 `bundle.toml` 调用 `inspect_bundle_digest` 并记录（同一条路径上还会
+验证可选的签名，见 [bundle-signing.md](bundle-signing.md)）：
+`src/deeppyro/kernel/app.py:669-685` 的 `_bundle_inspection_paths`、
+`:746-757` 的接线；`src/deeppyro/kernel/capabilities.py:750-788` 的
+`CapabilityRegistry.record_bundle_digests`。若 `[bundle].signature` 存在，
+同一个 boot 分支还会调用 `record_bundle_signatures`
+（`capabilities.py:790-847`），其 fatal issue 与 digest 相互独立。
 
 | 磁盘状态 | report `state` | boot 结果 |
 | --- | --- | --- |
@@ -158,7 +172,9 @@ report 里的记录形如（`app.capability_dict()["bundles"]`）：
 
 - 只覆盖 `bundle.toml` 本体；`include` 引入的插件行文件没有单独记录，改
   include 文件不会触发 mismatch。后续可以按同样口径扩展。
-- 不是密码学签名：没有密钥、没有来源证明；要防篡改+防替换需要签名机制。
+- 不是密码学签名：没有密钥、没有来源证明；要证明“由持有共享密钥的一方
+  签发”，使用可选的 `signature`（[bundle-signing.md](bundle-signing.md)）。
+  即使签名也不是身份/PKI，更不是 OS 沙箱。
 - schema 与诊断都按平台无关实现；唯一与平台相关的是文件字节（换行符、BOM）。
 - 错误 kind 属于 fatal issue；`FATAL_ISSUES` 在
   `src/deeppyro/kernel/capabilities.py`，capability 校验的总开关仍在
@@ -174,3 +190,8 @@ report 里的记录形如（`app.capability_dict()["bundles"]`）：
 - inspect：`unverified/match/mismatch/invalid` 四种状态与目录解析；
 - 三条端到端：**无 digest 兼容不阻断 / 正确 digest 正常加载 / digest 不匹配
   与格式非法均拒绝启动**（`KernelBootError`）。
+
+签名（`[bundle].signature`）的对应覆盖在
+`tests/kernel/test_bundle_signature.py`：schema、归一化口径、密钥来源、inspect
+五态、以及“签名+digest 同时验证 / 篡改 / 换密钥 / 缺密钥 / 畸形签名 / 密钥
+文件不可读”等端到端场景，见 [bundle-signing.md](bundle-signing.md) §8。

@@ -3,6 +3,7 @@
 Public API (INTERFACES 5):
   LlmRegistry       - build/cache providers from Config, plus the model catalog
   create_provider   - construct one provider from a ProviderConfig
+  create_native_provider - construct the wire-free native (KI-010) provider
   OpenAICompatProvider - streaming chat-completions transport
   AnthropicProvider - streaming Anthropic Messages transport
   RetryPolicy       - exponential backoff for retryable first-token failures
@@ -55,7 +56,7 @@ from deeppyro.llm.messages_anthropic import (
     tool_to_anthropic,
 )
 from deeppyro.llm.openai_compat import OpenAICompatProvider
-from deeppyro.llm.registry import LlmRegistry, create_provider
+from deeppyro.llm.registry import LlmRegistry, create_native_provider, create_provider
 from deeppyro.llm.retry import RetryPolicy
 from deeppyro.llm.sse import SseDecoder, SseEvent, decode_sse_text, iter_sse
 
@@ -92,6 +93,7 @@ __all__ = [
     "catalog_from_config",
     "convert_anthropic_messages",
     "convert_messages",
+    "create_native_provider",
     "create_provider",
     "decode_sse_text",
     "failure_dict",

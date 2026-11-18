@@ -37,7 +37,8 @@ from deeppyro.agent.loop import AgentLoop
 from deeppyro.config import Config, ModelProfile, ProviderConfig, load_config
 from deeppyro.core.errors import ConfigError
 from deeppyro.core.ids import new_session_id
-from deeppyro.core.protocols import LlmProvider, Tool
+from deeppyro.core.llm import LlmProvider
+from deeppyro.core.protocols import Tool
 from deeppyro.eval.errors import EvalFixtureError, EvalValidationError
 from deeppyro.eval.fixture import load_eval_cases
 from deeppyro.eval.runner import EvalRunner
@@ -494,10 +495,10 @@ def _usage_error(message: str) -> int:
 
 
 def _default_provider_factory(name: str, provider_config: ProviderConfig) -> LlmProvider:
-    """Build the real transport; imported lazily to keep offline imports socket-free."""
-    from deeppyro.llm.registry import create_provider
+    """Build the real native transport; imported lazily to keep offline imports socket-free."""
+    from deeppyro.llm.registry import create_native_provider
 
-    return create_provider(name, provider_config)
+    return create_native_provider(name, provider_config)
 
 
 async def _run_live(

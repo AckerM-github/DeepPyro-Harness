@@ -3,9 +3,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from deeppyro.subagent.types import SubagentUsage
+
+
+class TeamPhase(StrEnum):
+    """Lifecycle phase of one team member.
+
+    Native team facts store the phase as one of these values; the PHASE_* string
+    constants below remain the v4 recorder vocabulary (same wire strings).
+    """
+
+    SPAWNING = "spawning"
+    IDLE = "idle"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
 
 #: A member that still occupies one of the limited team slots.
 LIVE_PHASES = ("spawning", "running", "idle")
@@ -48,10 +65,12 @@ class MemberInfo:
 class MemberRun:
     """One measured member turn and the provider usage it consumed.
 
-    The team folds these runs out of the lead session log (record type
-    "team/usage", written as an ignorable fact), so per-run usage survives a
-    cold resume.  A failed or cancelled turn still carries the partial usage
-    that reached the provider before it stopped.
+    The v4 team folds these runs out of the lead session log (record type
+    team/usage, written as an ignorable fact), so per-run usage survives a cold
+    resume. A failed or cancelled turn still carries the partial usage that
+    reached the provider before it stopped. The native team path keeps the same
+    in-memory shape for the live process but never writes usage to a session:
+    tokens and latency belong to traces and the UsageSink only.
     """
 
     run_id: str
@@ -113,6 +132,20 @@ class TaskInfo:
     owner: str = ""
     created_at: int = 0
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to the snake_case payload stored in plugin.team.task facts."""
+        return {
+            "id": self.id,
+            "revision": self.revision,
+            "subject": self.subject,
+            "description": self.description,
+            "status": self.status,
+            "blocked_by": list(self.blocked_by),
+            "write_scopes": list(self.write_scopes),
+            "owner": self.owner,
+            "created_at": self.created_at,
+        }
+
 
 __all__ = [
     "LIVE_PHASES",
@@ -129,4 +162,5 @@ __all__ = [
     "MemberInfo",
     "MemberRun",
     "TaskInfo",
+    "TeamPhase",
 ]

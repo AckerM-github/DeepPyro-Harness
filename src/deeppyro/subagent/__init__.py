@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from deeppyro.subagent.errors import SubagentError
 from deeppyro.subagent.manager import SubagentService, filter_child_tools
+from deeppyro.subagent.native_manager import NativeSubagentService
 from deeppyro.subagent.supervisor import (
     MAX_WORKERS,
+    NativeSubagentServiceWorker,
     SubagentServiceWorker,
     Supervisor,
     SupervisorError,
@@ -31,6 +33,8 @@ from deeppyro.subagent.types import (
 __all__ = [
     "MAX_LIVE_RUNS",
     "MAX_WORKERS",
+    "NativeSubagentService",
+    "NativeSubagentServiceWorker",
     "SubagentActivation",
     "SubagentError",
     "SubagentResult",

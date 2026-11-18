@@ -515,6 +515,8 @@ class HeadlessRuntime:
     registry: Any
     permission: Any
     agents: Any
+    native_provider: Any = None
+    native_provider_error: str | None = None
     jobs: JobsService | None = None
     team: TeamService | None = None
     subagent: SubagentService | None = None
@@ -678,11 +680,40 @@ class HeadlessRuntime:
             # shutdown must not mask an exception
             with contextlib.suppress(Exception):
                 await await_maybe(team.close())
+        native_provider, self.native_provider = self.native_provider, None
+        if native_provider is not None:
+            # shutdown must not mask an exception
+            with contextlib.suppress(Exception):
+                await await_maybe(native_provider.aclose())
         kernel_app, self.kernel_app = self.kernel_app, None
         if kernel_app is not None:
             # shutdown must not mask an exception
             with contextlib.suppress(Exception):
                 await await_maybe(kernel_app.stop())
+
+
+def _resolve_native_provider(
+    llm_service: Any,
+    provider_name: str,
+    *,
+    native_loop: bool,
+) -> tuple[Any | None, str | None]:
+    """Return the native (KI-010) provider for the native loop, if available.
+
+    Plugins construct providers: the builtin llm plugin exposes a native
+    factory registry, so headless never imports a concrete transport class. A
+    configured provider without a native transport (Anthropic during the port)
+    yields a typed reason instead of silently hiding the fallback.
+    """
+    if not native_loop:
+        return None, None
+    resolver = getattr(llm_service, "native_provider", None)
+    if not callable(resolver):
+        return None, "the llm service does not expose a native provider factory"
+    try:
+        return resolver(provider_name), None
+    except ConfigError as exc:
+        return None, str(exc)
 
 
 async def boot_runtime(
@@ -695,6 +726,7 @@ async def boot_runtime(
     permission_mode: str | None = None,
     approval_policy: str | None = None,
     ask: Callable[[Any], Awaitable[bool]] | None = None,
+    native_loop: bool = True,
 ) -> HeadlessRuntime:
     """Boot the kernel bundle and resolve the services needed for one turn.
 
@@ -737,6 +769,11 @@ async def boot_runtime(
         preset_id, preset_spec = _resolve_preset(presets_service, preset)
         if presets_service is not None and preset_spec is not None:
             await await_maybe(presets_service.ensure(preset_spec.id, revision=preset_spec.revision))
+        native_provider, native_provider_error = _resolve_native_provider(
+            llm_service,
+            provider_name,
+            native_loop=native_loop,
+        )
     except BaseException:
         await await_maybe(kernel_app.stop())
         raise
@@ -755,6 +792,8 @@ async def boot_runtime(
         context_window=context_window,
         store=sessions_service.store,
         provider=llm_provider,
+        native_provider=native_provider,
+        native_provider_error=native_provider_error,
         registry=registry,
         permission=permission,
         agents=agents_service,
@@ -931,6 +970,17 @@ class _NativeSinkHooks(NullAgentHooks):
         )
 
 
+def _native_provider(runtime: HeadlessRuntime) -> Any:
+    """Return the provider the native loop should drive.
+
+    A booted runtime carries a dedicated native provider. Test doubles that
+    fake the runtime without that attribute keep using their provider.
+    """
+    if hasattr(runtime, "native_provider"):
+        return runtime.native_provider
+    return getattr(runtime, "provider", None)
+
+
 def _native_tools(runtime: HeadlessRuntime, preset_id: str) -> tuple[Any, ...]:
     """Return the preset-scoped tool tuple offered to the native loop."""
     registry: Iterable[Any] = runtime.registry
@@ -982,7 +1032,7 @@ async def _run_native_async(
             )
         loop = AgentLoop(
             session=session,
-            provider=runtime.provider,
+            provider=_native_provider(runtime),
             model=runtime.model,
             tools=_native_tools(runtime, preset_id),
             cwd=runtime.cwd,
@@ -1060,6 +1110,7 @@ async def _run_async(
             preset=preset,
             permission_mode=permission_mode,
             approval_policy=approval_policy,
+            native_loop=native_loop,
         )
     except UnknownPresetError as exc:
         # A bad --preset is a usage error, not a runtime failure: no traceback,
@@ -1072,6 +1123,14 @@ async def _run_async(
     except DeeppyroError as exc:
         console.print(f"error: {exc}", style="bold red")
         return EXIT_ERROR
+
+    if native_loop and _native_provider(runtime) is None:
+        reason = getattr(runtime, "native_provider_error", None) or "native provider unavailable"
+        print(
+            f"warning: native loop unavailable: {reason}; falling back to the legacy v4 loop",
+            file=sys.stderr,
+        )
+        native_loop = False
 
     sink: Any = JsonLinesSink() if json_output else RichSink(console)
     session_id: str | None = None

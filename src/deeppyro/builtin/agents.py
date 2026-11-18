@@ -10,6 +10,8 @@ from dataclasses import replace
 from typing import Any, ClassVar
 
 from deeppyro.agent import AgentOptions, AgentSession
+from deeppyro.agent.native_factory import AgentBuild, NativeAgentFactory
+from deeppyro.agent.native_host import NativeAgentHost
 from deeppyro.api import (
     AGENT_MODE_DEFAULT,
     AGENT_MODE_TEAM,
@@ -23,11 +25,13 @@ from deeppyro.api import (
     Service,
 )
 from deeppyro.api.services import lookup_service
+from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.builtin.presets import PresetsPlugin
 from deeppyro.builtin.prompt_service import PromptPlugin
 from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.ptc.runtime import PtcRuntime
+from deeppyro.session.schema import NativeSession
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +186,49 @@ class AgentsPlugin(Service):
         agent.preset_spec = spec
         self._register(agent)
         return agent
+
+    # ------------------------------------------------------------ native API
+
+    def host(
+        self,
+        session: NativeSession,
+        build: AgentBuild,
+        *,
+        factory: NativeAgentFactory | None = None,
+    ) -> NativeAgentHost:
+        """Build one native agent host over an existing native session.
+
+        This is the native counterpart of create(): it resolves the preset and
+        its materialized revision, builds the scoped and filtered tool registry,
+        resolves the native provider and prompt source, returns a
+        NativeAgentHost, persists the rendered system prompt and fires the
+        creation observers. The host is remembered in the live set, so
+        live_agents()/is_live() keep working for native hosts too.
+
+        factory is the test seam (and the embedder seam): omit it to use the
+        prompt, preset, tools and llm services this plugin was constructed with.
+        """
+        resolved = factory if factory is not None else self._native_factory()
+        host = resolved.build(session, build)
+        self._register(host)
+        return host
+
+    def _native_factory(self) -> NativeAgentFactory:
+        """Build the default native factory from this plugin's services."""
+        llm = lookup_service(self._ctx, LlmPlugin) if hasattr(self._ctx, "get") else None
+        if llm is None:
+            raise PluginDependencyError(
+                "the agents service needs the llm service to build a native agent host"
+            )
+        return NativeAgentFactory(
+            prompt=self._prompt_service,
+            presets=self._presets,
+            llm=llm,
+            tools=self._tools,
+            default_model=self._agent_config.model,
+            default_max_steps=self._agent_config.max_steps,
+            ptc_mode=self._legacy_ptc_mode,
+        )
 
     def _require_materialized(self, spec: Any) -> None:
         if not getattr(spec, "plugins", ()):
