@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import inspect
 import logging
 import time
@@ -65,6 +66,12 @@ PLUGIN = "subagent"
 
 _ORPHAN = ""
 _ACTIVATION_MODES = ("spawn", "fork")
+#: Set while a child host runs its turn; a nested delegation is refused, not crashed.
+_CHILD_RUN: contextvars.ContextVar[int] = contextvars.ContextVar("deeppyro_native_subagent_depth", default=0)
+NESTED_ERROR = (
+    "nested subagent delegation is not supported on the native runtime; "
+    "a subagent cannot start another subagent"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -459,6 +466,8 @@ class NativeSubagentService:
         notify: bool,
     ) -> SubagentActivation:
         text = _required_text(prompt, "prompt")
+        if _CHILD_RUN.get():
+            raise SubagentError(NESTED_ERROR)
         parent = self._ensure_ready()
         resolved_mode = _activation_mode(mode)
         if self._live >= self._max_runs:
@@ -535,20 +544,24 @@ class NativeSubagentService:
         result: SubagentResult | None = None
         try:
             steps = 0
+            nested_token = _CHILD_RUN.set(_CHILD_RUN.get() + 1)
             try:
-                outcome = await host.send(prompt)
-            except asyncio.CancelledError:
-                raise
-            # boundary: a child host runs the whole native loop; any failure is its result
-            except Exception as exc:  # noqa: BLE001
-                result = self._result_for(
-                    activation,
-                    is_error=True,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
-            else:
-                result = self._result_for(activation, text=_outcome_text(outcome))
-                steps = _outcome_steps(outcome)
+                try:
+                    outcome = await host.send(prompt)
+                except asyncio.CancelledError:
+                    raise
+                # boundary: a child host runs the whole native loop; any failure is its result
+                except Exception as exc:  # noqa: BLE001
+                    result = self._result_for(
+                        activation,
+                        is_error=True,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                else:
+                    result = self._result_for(activation, text=_outcome_text(outcome))
+                    steps = _outcome_steps(outcome)
+            finally:
+                _CHILD_RUN.reset(nested_token)
             usage = self._measure_usage(activation, host, session, started, steps=steps)
             result.usage = usage
             self._publish_usage(activation, usage)

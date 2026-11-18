@@ -406,6 +406,12 @@ class FakeLlmService:
         self.provider_name = name
         return object()
 
+    def native_provider(self, name: str) -> object:
+        # boot_runtime constructs the native (KI-010) transport eagerly; the
+        # fake only needs a non-None transport, not a usable stream here.
+        self.native_provider_name = name
+        return object()
+
     async def model_info(self, provider: str, model_id: str) -> ModelInfo | None:
         self.calls.append((provider, model_id))
         if self.error is not None:

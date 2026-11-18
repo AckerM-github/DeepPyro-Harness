@@ -33,6 +33,7 @@ from typing import Any
 from deeppyro.agent.native_factory import AgentBuild
 from deeppyro.api import DEFAULT_PRESET_ID
 from deeppyro.core.ids import now_ms
+from deeppyro.core.messages import PluginSource
 from deeppyro.observability.protocols import TurnUsage
 from deeppyro.session.fold import fold
 from deeppyro.session.native_control import NewSession
@@ -78,7 +79,9 @@ def native_parts(session: Any) -> tuple[Any, Any]:
     if session is None or hasattr(session, "records"):
         return None, None
     handle = session if callable(getattr(session, "append_native", None)) else None
-    native = getattr(session, "native_session", None) if handle is not None else session
+    native = getattr(session, "native_session", None)
+    if native is None:
+        native = session
     if native is None:
         return None, None
     header = getattr(native, "header", None)
@@ -183,6 +186,52 @@ def _member_info(member: _NativeMember) -> MemberInfo:
     )
 
 
+def _parent_host_of(candidate: Any) -> Any:
+    """Return the live parent host when candidate can receive notices.
+
+    The TUI binds a NativeAgentHost (deliver/inject), a NativeSessionHandle
+    (inject) or a raw native session (no delivery): only the first two can
+    route a member result back to the lead.
+    """
+    if candidate is None:
+        return None
+    if callable(getattr(candidate, "deliver", None)) or callable(getattr(candidate, "inject", None)):
+        return candidate
+    handle = getattr(candidate, "handle", None)
+    if handle is not None and callable(getattr(handle, "inject", None)):
+        return candidate
+    return None
+
+
+def _fold_deliveries(events: Iterable[Any], team_id: str) -> dict[str, dict[str, Any]]:
+    """Fold the queued/delivered message facts into per-member counters."""
+    summary: dict[str, dict[str, Any]] = {}
+    for event in events:
+        kind = getattr(event, "type", None)
+        if kind not in (QUEUED_EVENT, DELIVERED_EVENT):
+            continue
+        data = getattr(event, "data", None)
+        if not isinstance(data, Mapping):
+            continue
+        event_team = _safe_text(data.get("team_id"))
+        if event_team and event_team != team_id:
+            continue
+        member_id = _safe_text(data.get("member_id"))
+        if not member_id:
+            continue
+        row = summary.get(member_id)
+        if row is None:
+            row = {"member_id": member_id, "queued": 0, "delivered": 0, "last": "", "last_state": ""}
+            summary[member_id] = row
+        state = "queued" if kind == QUEUED_EVENT else "delivered"
+        row[state] = int(row[state]) + 1
+        text = _safe_text(data.get("text"))
+        if text:
+            row["last"] = text
+        row["last_state"] = state
+    return summary
+
+
 class _TeamUsageSink:
     """Forward child turn usage to the team ledger with child attribution.
 
@@ -261,10 +310,12 @@ class NativeTeamManager:
         self._usage_sink: Any = None
         self._parent_native: Any = None
         self._parent_handle: Any = None
+        self._parent_host: Any = None
         self._members: dict[str, _NativeMember] = {}
         self._board: dict[str, TaskInfo] = {}
         self._runs: dict[str, MemberRun] = {}
         self._restored = False
+        self._stopping = False
 
     # -- configuration --------------------------------------------------
     @property
@@ -343,9 +394,17 @@ class NativeTeamManager:
         self._parent_handle = handle
         self._restored = False
 
-    def bind_parent(self, session: Any) -> None:
-        """Alias for bind_session: both shared callers use one of the two names."""
-        self.bind_session(session)
+    def bind_parent(self, parent: Any) -> None:
+        """Bind the lead parent, taking either its handle/session or its host.
+
+        The TUI passes the live NativeAgentHost so member results can be routed
+        back to the lead notice queue through host.deliver. A handle or raw
+        session keeps the previous behaviour.
+        """
+        host = _parent_host_of(parent)
+        self._parent_host = host
+        target = getattr(host, "handle", None) if host is not None else None
+        self.bind_session(target if target is not None else parent)
 
     def set_ask(self, ask: Any) -> None:
         self._ask = ask
@@ -512,6 +571,38 @@ class NativeTeamManager:
             self._close_session(member.session)
             member.session = None
 
+    async def stop(self) -> None:
+        """Stop the team for /team off without writing facts to the session log.
+
+        close() already releases member hosts and child sessions without
+        appending anything; the cancellation path in _run skips its cancelled
+        member fact while this flag is set, so stopping the team leaves the
+        parent log byte-identically unchanged. The roster, board and runs are
+        dropped in memory: /team on restores them from the folded facts.
+        """
+        self._stopping = True
+        try:
+            await self.close()
+        finally:
+            with contextlib.suppress(Exception):
+                self._members.clear()
+                self._board.clear()
+                self._runs.clear()
+            self._parent_native = None
+            self._parent_handle = None
+            self._parent_host = None
+            self._restored = True
+            self._stopping = False
+
+    def deliveries(self) -> dict[str, dict[str, Any]]:
+        """Queued/delivered message counters per member from the folded facts."""
+        if self._parent_native is None:
+            return {}
+        try:
+            return _fold_deliveries(self._parent_plugin_events(), self.team_id)
+        except NativeTeamError:
+            return {}
+
     # -- cold restore ---------------------------------------------------
     async def restore(self) -> tuple[MemberInfo, ...]:
         """Rebuild roster, queue and board from the folded parent plugin facts."""
@@ -638,7 +729,8 @@ class NativeTeamManager:
                     return
                 current = member.queue.pop(0)
         except asyncio.CancelledError:
-            if member.phase != PHASE_CANCELLED:
+            # /team off stops the manager without touching the session log
+            if member.phase != PHASE_CANCELLED and not self._stopping:
                 member.phase = PHASE_CANCELLED
                 self._record_member(member)
             raise
@@ -649,6 +741,8 @@ class NativeTeamManager:
         finally:
             member.task = None
             member.rest.set()
+            if not self._stopping:
+                self._notify_parent(member)
 
     async def _send(self, member: _NativeMember, text: str) -> str:
         """Run one member turn on the native host and measure its usage deltas."""
@@ -683,6 +777,34 @@ class NativeTeamManager:
                 error=error,
                 steps=_safe_int(getattr(result, "steps", 0)),
             )
+
+    def _notify_parent(self, member: _NativeMember) -> None:
+        """Route one settled member result to the lead through host.deliver.
+
+        The lead sees the notice on its next turn; a busy lead queues it. A
+        missing host (torn down runtime) or a failed delivery is ignored: the
+        member facts on the log are the durable record.
+        """
+        host = self._parent_host
+        deliver = getattr(host, "deliver", None)
+        if not callable(deliver):
+            return
+        if member.phase == PHASE_FAILED:
+            text = f"team member {member.name} failed: {member.error or 'unknown error'}"
+        elif member.phase == PHASE_CANCELLED:
+            text = f"team member {member.name} was cancelled"
+        elif member.last_reply:
+            text = f"team member {member.name}: {member.last_reply}"
+        else:
+            return
+        text = text if len(text) <= 2000 else text[:1997] + "..."
+        try:
+            deliver(text, source=PluginSource(plugin="team"))
+        except TypeError:
+            with contextlib.suppress(Exception):
+                deliver(text)
+        except Exception:
+            logger.warning("failed to deliver team member result to the lead", exc_info=True)
 
     def _set_phase(self, member: _NativeMember, phase: str) -> None:
         member.phase = phase

@@ -284,8 +284,30 @@ class TeamService:
         self._restored = False
 
     def bind_parent(self, session: Any) -> None:
-        """Alias for bind_session used by callers that name the lead session parent."""
+        """Bind the lead parent session or its live native host.
+
+        The native backend additionally remembers the host so member results
+        can be routed through host.deliver; a v4 session keeps the alias.
+        """
         self.bind_session(session)
+        if self._native is not None:
+            self._native.bind_parent(session)
+
+    async def stop(self) -> None:
+        """Stop the native team for /team off without appending to the log.
+
+        Only the native path can stop a team instance; the v4 recorder path
+        has no running manager to stop, so it is left untouched.
+        """
+        if self._native is not None:
+            await self._native.stop()
+            self._native = None
+
+    def deliveries(self) -> dict[str, dict[str, Any]]:
+        """Queued/delivered message counters per member (native facts only)."""
+        if self._native is not None:
+            return self._native.deliveries()
+        return {}
 
     def set_ask(self, ask: Any) -> None:
         """Set the approval callback used by child permission gates."""

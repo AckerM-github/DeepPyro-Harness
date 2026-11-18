@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from textual import on
@@ -62,6 +63,7 @@ class TurnLayer(ScheduleLayer):
         status, error) exactly once, including interrupt and provider failure.
         """
         sink = self._sink
+        await self._compact_before_send()
         sink.begin_turn()
         agent = self.runtime.agent
         try:
@@ -90,6 +92,44 @@ class TurnLayer(ScheduleLayer):
             self._working = False
             self._phase = "idle"
             self.refresh_status()
+
+    async def _compact_before_send(self) -> None:
+        """Compact the native session first when the context threshold is crossed.
+
+        The native agent loop never compacts by itself (design decision D4): the
+        TUI owns the pre-send check. The compactor appends exactly one
+        compaction.done fact and cuts on tool-pair boundaries only, so the
+        folded transcript replays the summary instead of the covered messages.
+        """
+        compactor = getattr(self.runtime, "compactor", None)
+        session = getattr(self.runtime, "session", None)
+        pre_send = getattr(compactor, "pre_send_compact", None)
+        should = getattr(compactor, "should_compact", None)
+        if compactor is None or session is None or not callable(pre_send) or not callable(should):
+            return
+        view = session.fold() if callable(getattr(session, "fold", None)) else None
+        messages = getattr(view, "messages", None)
+        if messages is None:
+            getter = getattr(session, "messages", None)
+            messages = getter() if callable(getter) else None
+        try:
+            if messages is None or not should(messages):
+                return
+            self._phase = "compacting"
+            self._sink.emit({"type": "status", "phase": "compacting"})
+            self.refresh_status()
+            compact = cast(Callable[..., Awaitable[Any]], pre_send)
+            done = await compact(session, view=view)
+        except Exception as exc:  # noqa: BLE001 - compaction must not kill the turn
+            self._sink.emit({"type": "error", "message": f"compaction failed: {type(exc).__name__}: {exc}"})
+            return
+        finally:
+            if self._phase == "compacting":
+                self._phase = "thinking"
+                self.refresh_status()
+        if done is not None:
+            covered = len(getattr(getattr(done, "region", None), "message_ids", ()) or ())
+            self.conversation.add_info(f"compacted {covered} message(s) into a context summary")
 
     def _emit_native_usage(self, result: Any) -> None:
         """Emit the usage event from the live host counters (turn layer owns it).

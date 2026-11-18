@@ -9,6 +9,8 @@ from typing import Any
 
 from deeppyro.tui.app_goal import GoalLayer
 from deeppyro.tui.app_support import HOOK_TRACE_LIMIT, _hook_rows_from_records, _normalize_hook_rows
+from deeppyro.tui.native_activity import subagent_runs as native_subagent_runs
+from deeppyro.tui.native_hook_trace import UNAVAILABLE_TEXT as HOOKS_UNAVAILABLE_TEXT
 from deeppyro.tui.screens.hook_trace import EMPTY_TEXT as HOOK_TRACE_EMPTY_TEXT
 from deeppyro.tui.screens.hook_trace import HookTraceScreen, hook_trace_line
 from deeppyro.tui.screens.jobs import JobsPanelScreen
@@ -73,10 +75,35 @@ class PanelLayer(GoalLayer):
             team_id = str(getattr(team, "team_id", "") or "")
         return members, tasks, team_id
 
+    def _team_deliveries(self) -> dict[str, Any]:
+        """Queued/delivered member-message state from the team service."""
+        team = getattr(self.runtime, "team", None) if self.runtime is not None else None
+        getter = getattr(team, "deliveries", None)
+        if not callable(getter):
+            return {}
+        with contextlib.suppress(Exception):
+            value = getter()
+            if isinstance(value, dict):
+                return {str(key): item for key, item in value.items()}
+        return {}
+
+    def _native_subagent_runs(self) -> list[Any]:
+        """Native subagent runs (facts + measured usage) for the agents panel."""
+        runtime = self.runtime
+        if runtime is None or not getattr(runtime, "native", False):
+            return []
+        with contextlib.suppress(Exception):
+            return list(
+                native_subagent_runs(getattr(runtime, "session", None), getattr(runtime, "subagent", None))
+            )
+        return []
+
     async def _open_team(self, argument: str = "") -> None:
         """Open the team roster or the shared task board (/team [on|off|board])."""
         members, tasks, team_id = self._team_snapshot()
-        if self._agent_mode() != "team" and not members and not tasks:
+        deliveries = self._team_deliveries()
+        subagents = self._native_subagent_runs()
+        if self._agent_mode() != "team" and not members and not tasks and not subagents:
             self.conversation.add_info("agent team mode is off; use /team on to enable team tools")
             return
         spec = argument.strip().lower()
@@ -90,21 +117,27 @@ class PanelLayer(GoalLayer):
             self.conversation.add_error("usage: /team [on|off|board]")
             return
         try:
-            await self.push_screen_wait(TeamPanelScreen(members, tasks, team_id))
+            await self.push_screen_wait(
+                TeamPanelScreen(members, tasks, team_id, deliveries=deliveries, subagents=subagents)
+            )
         except Exception:  # noqa: BLE001 - outside a worker there is no modal
-            if not members and not tasks:
+            if not members and not tasks and not subagents:
                 self.conversation.add_info("no team members or tasks yet")
                 return
-            self.conversation.add_info(f"team: {len(members)} member(s) · {len(tasks)} task(s)")
+            queued = sum(
+                int(entry.get("queued") or 0) for entry in deliveries.values() if isinstance(entry, dict)
+            )
+            delivered = sum(
+                int(entry.get("delivered") or 0) for entry in deliveries.values() if isinstance(entry, dict)
+            )
+            suffix = f" · {queued} queued · {delivered} delivered" if deliveries else ""
+            summary = f"team: {len(members)} member(s) · {len(tasks)} task(s)"
+            if subagents:
+                summary += f" · {len(subagents)} subagent run(s)"
+            self.conversation.add_info(f"{summary}{suffix}")
 
     async def team_command(self, argument: str = "") -> None:
         """Enter/leave team mode or open the roster/task board (/team)."""
-        if getattr(self.runtime, "native", False):
-            self.conversation.add_info(
-                "team mode is not ported to the native TUI runtime yet; "
-                "/team is disabled while DEEPPYRO_TUI_NATIVE=1"
-            )
-            return
         spec = argument.strip().lower()
         if spec in ("on", "enable", "start"):
             await self._team_mode(True)
@@ -177,14 +210,33 @@ class PanelLayer(GoalLayer):
                 return _normalize_hook_rows(rows)
         return _hook_rows_from_records(session)
 
+    def _native_hook_recorder(self) -> Any:
+        """The native hook recorder built at boot over the live hook service."""
+        runtime = self.runtime
+        return getattr(runtime, "hook_recorder", None) if runtime is not None else None
+
+    async def _native_hooks(self) -> None:
+        """Show the native hook registry plus the decisions the host dispatched."""
+        recorder = self._native_hook_recorder()
+        if recorder is None:
+            self.conversation.add_info(HOOKS_UNAVAILABLE_TEXT)
+            return
+        for line in recorder.registry_lines():
+            self.conversation.add_info(line)
+        rows = recorder.rows(limit=HOOK_TRACE_LIMIT)
+        if not rows:
+            self.conversation.add_info(HOOK_TRACE_EMPTY_TEXT)
+            return
+        try:
+            await self.push_screen_wait(HookTraceScreen(rows))
+        except Exception:  # noqa: BLE001 - outside a worker there is no modal
+            for row in rows:
+                self.conversation.add_info(hook_trace_line(row))
+
     async def hooks_command(self, argument: str = "") -> None:
         """Open the recent hook decisions of the current session (/hooks)."""
         if getattr(self.runtime, "native", False):
-            self.conversation.add_info(
-                "native sessions do not journal hook calls in the session log; "
-                "/hooks is disabled while DEEPPYRO_TUI_NATIVE=1 "
-                "(the trace store still records spans)"
-            )
+            await self._native_hooks()
             return
         rows = await self._hook_rows()
         if not rows:

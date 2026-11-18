@@ -8,9 +8,12 @@ from typing import Any
 
 from deeppyro.agent.native_factory import AgentBuild
 from deeppyro.agent.native_host import NativeSessionHandle
-from deeppyro.api import AGENT_MODE_TEAM, DEFAULT_PRESET_ID
+from deeppyro.api import AGENT_MODE_TEAM, AGENT_PRESENTATION_PTC, DEFAULT_PRESET_ID
 from deeppyro.builtin.presets import PresetsPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.core.errors import DeeppyroError
+from deeppyro.ptc.native_adapter import build_ptc_host
+from deeppyro.ptc.runtime import PtcRuntime
 from deeppyro.session.native_control import NewSession
 from deeppyro.tui.native_facts import native_view
 from deeppyro.tui.runtime_schedule import ScheduleLayer
@@ -142,11 +145,6 @@ class SessionLayer(ScheduleLayer):
         permission switch) rebuilds the host while keeping the log open.
         """
         spec = self._agent_preset_spec()
-        if str(getattr(spec, "mode", "default") or "default") == AGENT_MODE_TEAM:
-            raise DeeppyroError(
-                "team mode is not ported to the native TUI runtime yet; "
-                "/team is disabled while DEEPPYRO_TUI_NATIVE=1"
-            )
         handle = session if getattr(session, "native_session", None) is not None else None
         if handle is None:
             raise DeeppyroError("native attach requires a native session handle")
@@ -162,7 +160,22 @@ class SessionLayer(ScheduleLayer):
             services=self._plugin_services(),
             context_window=self.context_window,
         )
-        host = self.agents.host(handle.native_session, build)
+        ptc = self._service(PtcRuntime)
+        legacy_ptc = ptc is not None and str(getattr(ptc, "mode", "native") or "native") == "ptc"
+        if str(getattr(spec, "presentation", "") or "") == AGENT_PRESENTATION_PTC or legacy_ptc:
+            host = build_ptc_host(
+                handle.native_session,
+                build,
+                prompt=self.prompt,
+                presets=self._service(PresetsPlugin),
+                llm=self.llm,
+                tools=self._service(ToolsPlugin),
+                ptc=ptc,
+                default_model=self.model,
+                default_max_steps=getattr(self.cfg.agent, "max_steps", None),
+            )
+        else:
+            host = self.agents.host(handle.native_session, build)
         old_agent = self.agent
         if old_agent is not None and getattr(old_agent, "native_session", None) is not handle.native_session:
             close_agent = getattr(old_agent, "aclose", None)
@@ -174,6 +187,8 @@ class SessionLayer(ScheduleLayer):
         self._configure_team(host.handle)
         self._configure_subagent(host.handle)
         self._configure_working_directory(host.handle)
+        if self.agent_mode == AGENT_MODE_TEAM:
+            await self._restore_team(host.handle)
 
     def _bound_permission(self, session: Any) -> Any:
         """Bind the shared permission gate to the session's native facts."""
@@ -307,6 +322,10 @@ class SessionLayer(ScheduleLayer):
             bind = getattr(service, "bind_session", None)
             if bind is not None and session is not None:
                 bind(session)
+            if self.native:
+                bind_parent = getattr(service, "bind_parent", None)
+                if bind_parent is not None and self.agent is not None:
+                    bind_parent(self.agent)
 
     def _configure_subagent(self, session: Any) -> None:
         """Keep the subagent service pointed at the live lead session context."""

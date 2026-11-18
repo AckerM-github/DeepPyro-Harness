@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from deeppyro.tui.app_base import AppBase
+from deeppyro.tui.native_activity import refresh_activity as refresh_native_activity
 from deeppyro.tui.slots import build_slot_context
 from deeppyro.tui.widgets.activity_bar import ActivityBar
 from deeppyro.tui.widgets.plugin_slots import PluginStatusBar
@@ -79,6 +80,8 @@ class StatusLayer(AppBase):
         if service is None:
             return None
         try:
+            if getattr(runtime, "native", False):
+                return refresh_native_activity(service, getattr(runtime, "session", None))
             return service.refresh(getattr(runtime, "session", None))
         except Exception:  # noqa: BLE001 - the bar is cosmetic chrome
             return None

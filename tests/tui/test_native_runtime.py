@@ -5,21 +5,19 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from deeppyro.agent.errors import ProviderStreamError
 from deeppyro.agent.native_host import NativeAgentHost, NativeSessionHandle
-from deeppyro.api import DEFAULT_PRESET_ID
+from deeppyro.api import AGENT_MODE_TEAM, DEFAULT_PRESET_ID, TEAM_PRESET_ID
 from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.core.errors import DeeppyroError
 from deeppyro.core.llm import Finish, StopReason, TextDelta, Usage, UsageEvent
 from deeppyro.tui.app import DeepPyroApp
-from deeppyro.tui.app_panels import PanelLayer
 from deeppyro.tui.app_turns import TurnLayer
 from deeppyro.tui.native_mode import tui_native_enabled
 from deeppyro.tui.runtime import TuiRuntime
@@ -85,14 +83,6 @@ class _TurnHost(TurnLayer):
 
     def notify(self, message: str, *, severity: str = "information", **kwargs: Any) -> None:
         self.notes.append((str(message), str(severity)))
-
-
-class _PanelHost:
-    """Minimal host for the command stubs that fail honestly in native mode."""
-
-    def __init__(self) -> None:
-        self.runtime = SimpleNamespace(native=True)
-        self.conversation = _Conversation()
 
 
 async def _ask(request: Any) -> bool:
@@ -395,21 +385,23 @@ async def test_native_title_is_written_through_the_native_path(
         await runtime.close()
 
 
-async def test_native_mode_fails_honestly_for_unported_capabilities(
+async def test_native_mode_enables_team_mode_and_keeps_genuine_absences_explicit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = _ScriptedProvider()
     runtime, _events = await _boot(monkeypatch, tmp_path, provider, native=True)
     try:
-        with pytest.raises(DeeppyroError, match="not ported"):
-            await runtime.set_team_mode(True)
+        # team mode toggles the team preset on the native host and stops the manager
+        # again; it no longer raises the old "not ported" error.
+        assert await runtime.set_team_mode(True) == TEAM_PRESET_ID
+        assert runtime.agent_mode == AGENT_MODE_TEAM
+        assert await runtime.set_team_mode(False) == DEFAULT_PRESET_ID
+        assert runtime.agent_mode != AGENT_MODE_TEAM
+        # the hook recorder observes the same HookService the host dispatches.
+        assert runtime.hook_recorder is not None
+        # a bundle without the native compact plugin keeps an explicit error.
         with pytest.raises(DeeppyroError, match="compaction is not in this bundle"):
             await runtime.compact_now()
-        host = _PanelHost()
-        await PanelLayer.team_command(host, "")
-        assert "not ported" in host.conversation.infos[-1]
-        await PanelLayer.hooks_command(host, "")
-        assert "do not journal hook calls" in host.conversation.infos[-1]
     finally:
         await runtime.close()
 

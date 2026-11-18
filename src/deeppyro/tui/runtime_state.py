@@ -54,6 +54,7 @@ class _RuntimeState:
     trace_export: Any = None
     working_directory_notice: Callable[[str], None] | None = None
     hooks: Any = None
+    hook_recorder: Any = None
     _catalog: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
     _schedule_tasks: set[asyncio.Task[Any]] = field(default_factory=set, repr=False)
     _schedule_once: dict[str, str] = field(default_factory=dict, repr=False)

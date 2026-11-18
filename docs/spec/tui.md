@@ -20,7 +20,9 @@
 > **native TUI 路径（0.2.x 过渡，flag 门控）**：设置 `DEEPPYRO_TUI_NATIVE=1`（也接受 `true`/`yes`/`on`）时，
 > TUI 的 runtime 改由 schema 1 control plane 装配（SessionsPlugin native API + `AgentsPlugin.host` +
 > `NativeAgentFactory`/`PresetPromptSource`），并支持 `--resume SESSION_ID`、native `/sessions`/`/resume`/
-> `/fork`、native rename/archive；未设置该变量时走原 v4 路径且行为逐字节不变。详见 §11。
+> `/fork`、native rename/archive、native `/team on|off`（roster/任务板/queued-delivered 状态/冷恢复）、native
+> `/hooks`（同一 HookService 的 registry + 最近决策）、发送前自动 compaction、PTC preset 与 native subagent
+> 面板；未设置该变量时走原 v4 路径且行为逐字节不变。仍显式失败的 native 能力见 §11.5。详见 §11。
 
 ## 1. 形态与范围
 
@@ -229,7 +231,8 @@ TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasonin
 
 - boot 额外 require PromptPlugin；provider 走 `LlmPlugin.native_provider`（只有 OpenAI-compatible 有 native transport，
   其他 provider 报 no native transport）；context meter 用的 `TraceExportSink` 从 kernel 取出并合并进 host services，
-  host 的 `_ContextTap` 据此把最近一次 ModelCallRecord 的 inputTokens 记为 context_tokens。native-compact 插件装了才有 compactor。
+  host 的 `_ContextTap` 据此把最近一次 ModelCallRecord 的 inputTokens 记为 context_tokens。native-compact 插件装了才有 compactor；
+boot 另从 kernel 取 HookService 建立 `tui/native_hook_trace.py` 的 NativeHookRecorder（`/hooks` 的 observer）。
 - new_session：`sessions.native_create(NewSession(cwd, preset, origin="user"))` → `NativeSessionHandle` →
   `_pin_permission`（写 sandbox/mode、approval/policy 事实）→ SESSION_CREATED hook → `_attach_native`；
   `_attach_native` 用 `AgentBuild(provider, model, cwd, preset, preset_revision, permission, hooks, prompt_facts,
@@ -258,6 +261,12 @@ TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasonin
 - usage/context：native loop 的 RunResult.usage 不累计（token 只在 UsageSink tap 上），所以 usage 事件与
   `session_usage()`/`context_tokens()` 取 host 累计计数器；host 的 trace_export tap 使 context_tokens 反映最近一次
   ModelCallRecord 的 inputTokens。没有 TraceExportSink 时上下文计数不可用（不伪造 0）。
+- 发送前 compaction（native，D4 决策）：`_run_native_turn` 在 `host.send` 之前调用 NativeCompactService 的
+  pre_send_compact；fold 后的 messages 超过 `context_window * threshold`（默认 0.85）才压缩。压缩期间发
+  status(phase="compacting") 并刷新状态栏，成功后对话区提示 "compacted N message(s) into a context summary"。
+  compaction.done 事实只由 NativeCompactor 追加**恰好一条**（covers=被替代的消息 id、message=摘要），切点经
+  select_region/tool_safe_cuts 保证不拆 tool call/result 对；失败发 error("compaction failed: Type: msg") 后照常发送。
+  native loop 自身从不自动压缩。转写重放由 fold/compaction.done 提供，`/resume` 后 transcript 与压缩一致。
 - Ctrl+C：`host.interrupt()` 返回 bool；true → notify("interrupt requested")，false → notify("nothing to interrupt")。
 
 ### 11.4 /sessions、/resume、/fork、/rename、/archive
@@ -274,15 +283,35 @@ TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasonin
   /unarchive 用 `sessions.native_archive(id, archived=False)`（只能对非 live 会话，live 锁会报 locked）。
 - v4 模式保持原行为：/sessions 合并 v4+native 并标 `native · read-only`，/resume 对 native id 只读转录并提示 migrate。
 
-### 11.5 诚实的能力边界（native 模式显式失败/禁用，不静默回退 v4 agents）
+### 11.5 native 能力边界（0.3.0 native-only 目标：不再有 "disabled while native" 分支）
 
-- team / subagent / compact 尚未移植：/team 明确提示 "team mode is not ported to the native TUI runtime yet"；
-  set_team_mode 抛 DeeppyroError；/compact 在 bundle 无 native-compact 时抛
-  "native compaction is not in this bundle; /compact is unavailable"；preset 的 team mode 在 attach 时被拒绝。
-- /hooks：schema 1 不记 hook/invoked 记录，native 模式显示 "native sessions do not journal hook calls ..."（trace store 仍有 span）。
-- PTC preset 在 native factory 被拒绝（"requires the PTC runtime, which the native agent host does not provide yet"）。
-- v4 会话在 native 模式不可见（native 会话在 v4 模式只读）；不做隐式迁移。
-- 上下文米需要 trace_export sink；缺失时显示不可用而不是 0。
+- /team on|off（native）：切换 team preset 并把 NativeTeamManager bind 到当前 NativeAgentHost/session；
+  roster 与任务板从 `plugin.team.*` 事实折叠，TeamPanelScreen 追加 queued/delivered 状态与 native subagent
+  run 行；member 结果/失败通过 `host.deliver` 投递。`/team off` 在有 live 成员时仍拒绝，否则停止 manager
+  （`TeamService.stop()`）且**不改写会话日志**；`/resume` 后冷恢复由 `restore()` 重放 team 事实
+  （running/spawning 归一为 idle，queued 消息重排）。
+- /hooks（native）：不重引入 v4 HookJournal；从 NativeAgentHost 使用的**同一个 HookService** 注册 observer，
+  显示 hook registry（名字/mode/listener 数）与最近决策（invoked/resolved、ok/error、duration ms）。native loop
+  只 dispatch 工具管线（tools/pre-execute、tools/execute、tools/post-execute）与 session 生命周期 hook；v4 turn
+  编排 hook 不会触发，显示 0 次而不是伪造。bundle 无 HookService 时显示
+  "native hook registry: not recorded (the hook service is unavailable in this bundle)"。
+- compaction（native）：发送前自动压缩，见 §11.3；`/compact` 仍可手动触发。bundle 无 native-compact 插件时
+  `/compact`（及 auto-compaction）抛 "native compaction is not in this bundle; /compact is unavailable"。
+- PTC preset（native）：`ptc/native_adapter.py` 在 native host 上装配 PTC——loop 可见面只有 `run_code`，完整
+  registry 留在 tool context 供 nested dispatcher 与 SDK prompt；不静默回退 v4。缺 ptc runtime 时显式抛
+  "preset ... needs the ptc runtime, which this bundle does not provide"；缺 presets 时抛
+  "agent presets are not available in this bundle"。
+- subagent（native）：ActivityBar/TeamPanelScreen 从 `plugin.subagent.*` 事实显示 run 与其 usage；没有 live
+  service（冷恢复）时显示 "usage not recorded"，不估算。嵌套 subagent 被 contextvar 守卫拒绝：
+  "nested subagent delegation is not supported on the native runtime; a subagent cannot start another subagent"
+  （作为 tool error 返回，不崩溃）。
+- 仍然显式暴露的真实边界（不伪造、不回退 v4）：
+  - v4 会话在 native 模式不可见（native 会话在 v4 模式只读）；不做隐式迁移。
+  - 上下文米需要 trace_export sink；缺失时显示不可用而不是 0。
+  - `/hooks` 只能显示 boot 之后观察到的决策；更早的历史显示 "not recorded"（schema 1 没有 hook journal）。
+  - native loop 不运行 v4 turn 编排 hook（agent/pre-step、agent/request、agent/turn-stopping、
+    system-prompt/assemble 等），这些 hook 在 native 上保持 0 次。
+  - team member / subagent 的 usage 不在父会话日志里（trace only）；冷恢复后显示 "usage not recorded"。
 
 ### 11.6 测试
 
@@ -292,4 +321,15 @@ TUI 只渲染 provider 返回的 reasoning 流（OpenAI-compatible 的 `reasonin
 - tests/tui/test_native_runtime.py：flag 关闭保持 v4；flag 开启 native 装配（native session/host、store None、session 事件、
   session id 一致、fold model/preset）；环境变量开关；native 路径不调用 v4 SessionStore（monkeypatch 断言）；
   turn 精确事件序列；截断（finish_reason length）追加 error；provider 异常与普通异常映射；interrupt（运行中 true / 空闲 false）；
-  resume 重建；native 标题写入；未移植能力的显式失败；CLI --resume 与 App 透传。
+  resume 重建；native 标题写入；native 能力开关（/team on|off、hook recorder 存在、无 native-compact 时的显式错误）；
+  CLI --resume 与 App 透传。
+- tests/tui/test_native_team.py：/team on 绑定 native manager；off 停止且不写 plugin.team.* 事实；live 成员时拒绝 off；
+  queued/delivered 事实与面板行；`/resume` 后冷恢复。
+- tests/tui/test_native_hooks_ui.py：HookService observer 配对（invoked/resolved、error、时长、ring 上限）、registry 行与
+  "not recorded" 回退；真实 native turn 的 tools/* hook 决策；`/hooks` 命令渲染。
+- tests/tui/test_native_compaction.py：阈值判定、status(compacting)、恰好一条 compaction.done、covers/tool-pair 安全切点、
+  fold 与重放、失败路径。
+- tests/tui/test_native_ptc.py：PTC preset 切换到 run_code surface（完整 registry 保留在 tool context）、SDK 提示词、
+  切回默认；缺 presets/ptc runtime 的显式错误。
+- tests/tui/test_native_subagent.py：嵌套 subagent 守卫；`plugin.subagent.*` 事实折叠出 run/usage/"usage not recorded"；
+  ActivityService 记录投影；面板行。

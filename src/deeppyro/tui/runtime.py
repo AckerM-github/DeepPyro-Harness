@@ -32,12 +32,14 @@ from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, load_config, save_agent_selection
 from deeppyro.core.errors import ConfigError, DeeppyroError
+from deeppyro.hooks import HookService
 from deeppyro.jobs.manager import JobsService
 from deeppyro.observability.protocols import TraceExportSink
 from deeppyro.sandbox.permission import PermissionPresetsService
 from deeppyro.subagent.manager import SubagentService
 from deeppyro.team.manager import TeamService
 from deeppyro.team.types import LIVE_PHASES
+from deeppyro.tui.native_hook_trace import NativeHookRecorder
 from deeppyro.tui.native_hooks import TuiAgentHooks
 from deeppyro.tui.native_mode import tui_native_enabled
 from deeppyro.tui.runtime_schedule_host import _now_rfc3339 as _now_rfc3339
@@ -55,6 +57,26 @@ from deeppyro.tui.runtime_support import logger as logger
 from deeppyro.tui.runtime_support import resolve_workspace as resolve_workspace
 from deeppyro.user_questions.service import UserQuestionsService
 from deeppyro.working_directory.service import WorkingDirectoryService
+
+
+def _native_hook_recorder(kernel_app: Any) -> Any:
+    """Best-effort recorder over the hook service the native host dispatches.
+
+    /hooks reads this recorder instead of a session hook journal: the native
+    runtime never writes hook records into the log, so the live HookService
+    observer is the only source of recent hook decisions.
+    """
+    try:
+        service = kernel_app.get(HookService)
+    except Exception:  # noqa: BLE001 - an optional service must not break boot
+        return None
+    if service is None:
+        return None
+    try:
+        return NativeHookRecorder(service)
+    except Exception:  # noqa: BLE001 - hook tracing is optional
+        logger.debug("native hook recorder unavailable", exc_info=True)
+        return None
 
 
 def _native_compactor(kernel_app: Any, provider: Any, model: str) -> Any:
@@ -146,6 +168,7 @@ class TuiRuntime(StatusLayer):
                 "trace_export": kernel_app.get(TraceExportSink),
                 "compactor": _native_compactor(kernel_app, llm_provider, model_id),
                 "hooks": TuiAgentHooks(sink),
+                "hook_recorder": _native_hook_recorder(kernel_app),
             }
         runtime = cls(
             cfg=cfg,
@@ -217,11 +240,6 @@ class TuiRuntime(StatusLayer):
         active before team mode so /team off can restore it; leaving refuses
         while any team member is still live.
         """
-        if self.native:
-            raise DeeppyroError(
-                "team mode is not ported to the native TUI runtime yet; "
-                "/team is disabled while DEEPPYRO_TUI_NATIVE=1"
-            )
         service = self._service(PresetsPlugin)
         if service is None:
             raise DeeppyroError("agent presets are not available in this bundle")
@@ -250,6 +268,8 @@ class TuiRuntime(StatusLayer):
                 for member in live
             )
             raise DeeppyroError(f"cannot leave team mode while {len(live)} member(s) are active: {labels}")
+        if self.native:
+            await self._stop_native_team()
         previous = self.team_previous_preset or DEFAULT_PRESET_ID
         try:
             self._resolve_preset(service, previous)
@@ -273,6 +293,28 @@ class TuiRuntime(StatusLayer):
         except Exception:  # noqa: BLE001 - the switch guard must not crash on a store error
             return []
         return [member for member in members if str(getattr(member, "phase", "")) in LIVE_PHASES]
+
+    async def _stop_native_team(self) -> None:
+        """Stop the native team manager for /team off without writing the log.
+
+        The manager cancels member hosts and drops the in-memory roster; the
+        session log keeps the facts recorded while the team was live, so a
+        later /team on or a cold /resume restores the roster from them.
+        """
+        service = self.team
+        if service is None:
+            service = self._service(TeamService)
+        stop = getattr(service, "stop", None)
+        if callable(stop):
+            # boundary: stopping an optional service must not block /team off
+            with contextlib.suppress(Exception):
+                await await_maybe(stop())
+        session = self.session
+        if session is not None:
+            header = getattr(session, "header", None)
+            session_id = str(getattr(header, "id", "") or getattr(session, "session_id", "") or "")
+            if session_id:
+                self._restored_team_sessions.discard(session_id)
 
     async def refresh_models(self, providers: list[str] | None = None, *, refresh: bool = False) -> int:
         """Refresh the remembered catalog for the given providers (best effort).

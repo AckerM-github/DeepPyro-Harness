@@ -111,6 +111,38 @@ class TeamTask:
     revision: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class SubagentRun:
+    """Normalised snapshot of one native subagent run (usage optional)."""
+
+    id: str
+    label: str = ""
+    status: str = ""
+    provider: str = ""
+    model: str = ""
+    mode: str = ""
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_tokens: int | None = None
+
+    @property
+    def usage_recorded(self) -> bool:
+        """True when token counters were measured for this run."""
+        return (
+            self.input_tokens is not None or self.output_tokens is not None or self.cached_tokens is not None
+        )
+
+    @property
+    def usage_text(self) -> str:
+        """Measured usage, or an explicit not-recorded marker."""
+        if not self.usage_recorded:
+            return "usage not recorded"
+        text = f"usage {self.input_tokens or 0} in / {self.output_tokens or 0} out"
+        if self.cached_tokens:
+            text += f" / {self.cached_tokens} cached"
+        return text
+
+
 def _read(row: Any, *names: str, default: Any = "") -> Any:
     """Read the first present attribute or mapping key among *names*."""
     for name in names:
@@ -229,6 +261,85 @@ def summary_text(members: Sequence[AgentInfo], tasks: Sequence[TeamTask]) -> str
     return f"{len(members)} members · {len(tasks)} tasks · {running} running"
 
 
+def _delivery_count(entry: Any, name: str) -> int:
+    value = entry.get(name) if isinstance(entry, Mapping) else getattr(entry, name, 0)
+    return value if type(value) is int and value > 0 else 0
+
+
+def _delivery_text(entry: Any, name: str) -> str:
+    value = entry.get(name) if isinstance(entry, Mapping) else getattr(entry, name, "")
+    return _as_text(value)
+
+
+def delivery_lines(members: Sequence[AgentInfo], deliveries: Mapping[str, Any] | None) -> list[str]:
+    """Render queued/delivered member-message state from native team facts.
+
+    The native team manager records plugin.team.message.queued and
+    plugin.team.message.delivered facts; the panel shows the resulting counts
+    instead of pretending the live queue is always observable.
+    """
+    if not deliveries:
+        return []
+    names = {member.id: member.name or member.id for member in members if member.id}
+    queued = sum(
+        _delivery_count(entry, "queued") for entry in deliveries.values() if isinstance(entry, Mapping)
+    )
+    delivered = sum(
+        _delivery_count(entry, "delivered") for entry in deliveries.values() if isinstance(entry, Mapping)
+    )
+    lines = [f"messages: {queued} queued · {delivered} delivered"]
+    for member_id, entry in deliveries.items():
+        label = names.get(str(member_id)) or str(member_id)
+        last_state = _delivery_text(entry, "last_state") or "not recorded"
+        line = (
+            f"  {label}: queued {_delivery_count(entry, 'queued')} · "
+            f"delivered {_delivery_count(entry, 'delivered')} · last {last_state}"
+        )
+        last = truncate_text(_delivery_text(entry, "last"), DESCRIPTION_LIMIT)
+        lines.append(f"{line}: {last}" if last else line)
+    return lines
+
+
+def _usage_count(usage: Any, *names: str) -> int | None:
+    if usage is None:
+        return None
+    raw = _read(usage, *names, default=None)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_subagent(row: Any) -> SubagentRun:
+    """Normalise one native subagent run object or mapping."""
+    usage = _read(row, "usage", default=None)
+    return SubagentRun(
+        id=_as_text(_read(row, "child_id", "childId", "session_id", "sessionId", "id")),
+        label=_as_text(_read(row, "label", "name")),
+        status=_as_text(_read(row, "status", "phase")),
+        provider=_as_text(_read(row, "provider", "agentProvider")),
+        model=_as_text(_read(row, "model", "agentModel")),
+        mode=_as_text(_read(row, "mode")),
+        input_tokens=_usage_count(usage, "input_tokens", "inputTokens"),
+        output_tokens=_usage_count(usage, "output_tokens", "outputTokens"),
+        cached_tokens=_usage_count(usage, "cached_tokens", "cachedTokens"),
+    )
+
+
+def subagent_lines(runs: Sequence[SubagentRun]) -> list[str]:
+    """Render native subagent runs with measured usage (or not recorded)."""
+    if not runs:
+        return []
+    lines = [f"subagents: {len(runs)} run(s)"]
+    for run in runs:
+        label = run.label or run.id or "subagent"
+        identity = "/".join(part for part in (run.provider, run.model) if part) or "model not recorded"
+        lines.append(f"  {label}: {run.status or 'unknown'} · {identity} · {run.usage_text}")
+    return lines
+
+
 def description_text(value: Any) -> str:
     """Render a member description capped at :data:`DESCRIPTION_LIMIT`."""
     return truncate_text(value, DESCRIPTION_LIMIT) or "-"
@@ -297,6 +408,14 @@ class TeamPanelScreen(ModalScreen[None]):
         max-height: 10;
         margin: 1 0 0 0;
     }
+    #team-deliveries {
+        height: auto;
+        color: $text-muted;
+    }
+    #team-subagents {
+        height: auto;
+        color: $text-muted;
+    }
     #team-empty {
         color: $text-muted;
         margin: 1 0 0 0;
@@ -314,11 +433,15 @@ class TeamPanelScreen(ModalScreen[None]):
         members: Iterable[Any] = (),
         tasks: Iterable[Any] = (),
         team_id: str = "",
+        deliveries: Mapping[str, Any] | None = None,
+        subagents: Iterable[Any] = (),
     ) -> None:
         super().__init__()
         self._members: list[AgentInfo] = [normalize_member(row) for row in members]
         self._tasks: list[TeamTask] = [normalize_task(row) for row in tasks]
         self._team_id = _as_text(team_id)
+        self._deliveries: dict[str, Any] = dict(deliveries or {})
+        self._subagents: list[SubagentRun] = [normalize_subagent(row) for row in subagents]
 
     @property
     def members(self) -> list[AgentInfo]:
@@ -332,8 +455,8 @@ class TeamPanelScreen(ModalScreen[None]):
 
     @property
     def empty(self) -> bool:
-        """Whether both the member and task snapshots are empty."""
-        return not self._members and not self._tasks
+        """Whether the member, task and subagent snapshots are all empty."""
+        return not self._members and not self._tasks and not self._subagents
 
     @property
     def team_id(self) -> str:
@@ -345,10 +468,34 @@ class TeamPanelScreen(ModalScreen[None]):
         """One-line counts: members, tasks and running members."""
         return summary_text(self._members, self._tasks)
 
+    @property
+    def deliveries(self) -> dict[str, Any]:
+        """Queued/delivered member-message state keyed by member id."""
+        return dict(self._deliveries)
+
+    @property
+    def delivery_lines(self) -> list[str]:
+        """Rendered queued/delivered lines (empty when no message was routed)."""
+        return delivery_lines(self._members, self._deliveries)
+
+    @property
+    def subagents(self) -> list[SubagentRun]:
+        """Normalised native subagent runs, in the order supplied."""
+        return list(self._subagents)
+
+    @property
+    def subagent_lines(self) -> list[str]:
+        """Rendered subagent run/usage lines (empty when no run was recorded)."""
+        return subagent_lines(self._subagents)
+
     def compose(self) -> ComposeResult:
         with Vertical(id="team-dialog"):
             yield Static(TITLE, id="team-title", markup=False)
             yield Static(self.summary, id="team-summary", markup=False)
+            if self._deliveries:
+                yield Static("\n".join(self.delivery_lines), id="team-deliveries", markup=False)
+            if self._subagents:
+                yield Static("\n".join(self.subagent_lines), id="team-subagents", markup=False)
             if self.empty:
                 yield Static(EMPTY_TEXT, id="team-empty", markup=False)
             else:
