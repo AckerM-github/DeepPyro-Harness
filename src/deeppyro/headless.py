@@ -702,8 +702,9 @@ def _resolve_native_provider(
 
     Plugins construct providers: the builtin llm plugin exposes a native
     factory registry, so headless never imports a concrete transport class. A
-    configured provider without a native transport (Anthropic during the port)
-    yields a typed reason instead of silently hiding the fallback.
+    construction failure yields a typed reason; boot_runtime turns that reason
+    into a ConfigError when the native loop was requested, so a broken provider
+    fails at startup instead of silently running the v4 loop.
     """
     if not native_loop:
         return None, None
@@ -774,6 +775,12 @@ async def boot_runtime(
             provider_name,
             native_loop=native_loop,
         )
+        if native_loop and native_provider is None:
+            # The native loop is the only supported loop: a provider that cannot be
+            # constructed (missing key, unsupported api, missing factory) is a
+            # configuration error, never a silent downgrade to the v4 path.
+            reason = native_provider_error or "no native transport is available"
+            raise ConfigError(f"native provider unavailable for provider {provider_name!r}: {reason}")
     except BaseException:
         await await_maybe(kernel_app.stop())
         raise
@@ -1125,12 +1132,15 @@ async def _run_async(
         return EXIT_ERROR
 
     if native_loop and _native_provider(runtime) is None:
+        # Defensive: boot_runtime already rejects this state. Never fall back to the
+        # legacy v4 loop, which the 0.3.0 cut deletes.
         reason = getattr(runtime, "native_provider_error", None) or "native provider unavailable"
         print(
-            f"warning: native loop unavailable: {reason}; falling back to the legacy v4 loop",
+            f"error: native loop requested but no native provider is available: {reason}",
             file=sys.stderr,
         )
-        native_loop = False
+        await await_maybe(runtime.aclose())
+        return EXIT_USAGE
 
     sink: Any = JsonLinesSink() if json_output else RichSink(console)
     session_id: str | None = None

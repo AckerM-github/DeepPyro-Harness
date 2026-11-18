@@ -30,6 +30,7 @@ from deeppyro.core.protocols import LlmProvider
 from deeppyro.llm.anthropic import AnthropicProvider
 from deeppyro.llm.catalog import ModelInfo, catalog_from_config, merge_catalogs
 from deeppyro.llm.discovery import DEFAULT_CATALOG_TTL_S, CatalogCache
+from deeppyro.llm.native_anthropic import NativeAnthropicProvider
 from deeppyro.llm.native_provider import NativeOpenAICompatProvider
 from deeppyro.llm.openai_compat import OpenAICompatProvider
 
@@ -96,10 +97,11 @@ def create_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) 
 def create_native_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) -> NativeLlmProvider:
     """Build the native (KI-010) LlmProvider described by one ProviderConfig.
 
-    Only OpenAI-compatible endpoints have a native transport today. Anthropic keeps the
-    v4 provider, so callers get a ConfigError instead of a silent downgrade: the native
-    loop reports "native loop unavailable" rather than pretending the request went
-    through the native provider.
+    Every supported api kind has a native transport: "openai-completions" maps to
+    NativeOpenAICompatProvider and "anthropic-messages" to NativeAnthropicProvider.
+    Misconfiguration (unknown api, Anthropic without an explicit base_url or without an
+    API key) raises ConfigError here so the native loop fails at startup instead of
+    silently downgrading to the v4 loop.
     """
     api = (pc.api or "").strip().lower()
     if api in _OPENAI_COMPAT_APIS:
@@ -110,9 +112,33 @@ def create_native_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 
             model_ctx=_context_window(pc),
             timeout_s=timeout_s,
         )
+    if api in _ANTHROPIC_APIS:
+        if "base_url" not in pc.model_fields_set or not pc.base_url.strip():
+            raise ConfigError(
+                f"provider {name!r} uses api {pc.api!r} but does not set base_url; "
+                "Anthropic providers require an explicit endpoint "
+                f"(for the official API: {_DEFAULT_ANTHROPIC_BASE_URL})"
+            )
+        api_key = pc.resolve_api_key()
+        if not api_key:
+            hint = (
+                f"export {pc.api_key_env}"
+                if pc.api_key_env
+                else "set api_key or api_key_env in the provider config"
+            )
+            raise ConfigError(f"provider {name!r} uses api {pc.api!r} but has no API key; {hint}")
+        return NativeAnthropicProvider(
+            name,
+            pc.base_url,
+            api_key,
+            model_ctx=_context_window(pc),
+            model_max_tokens=_max_tokens(pc),
+            reasoning_effort=_reasoning_effort(pc),
+            timeout_s=timeout_s,
+        )
+    supported = ", ".join(sorted(_OPENAI_COMPAT_APIS | _ANTHROPIC_APIS))
     raise ConfigError(
-        f"provider {name!r} uses api {pc.api!r}, which has no native (KI-010) transport; "
-        "use the legacy v4 loop for this provider"
+        f"provider {name!r} uses unsupported api {pc.api!r}; native transports support: {supported}"
     )
 
 

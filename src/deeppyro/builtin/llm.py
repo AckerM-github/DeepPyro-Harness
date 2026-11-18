@@ -61,9 +61,10 @@ class LlmPlugin(Service):
     def native_provider(self, name: str) -> Any:
         """Resolve the native (KI-010) provider for the native agent loop.
 
-        Plugin contributions win over configuration, exactly like provider(). Only
-        OpenAI-compatible endpoints have a native transport: an Anthropic provider raises
-        ConfigError here so the caller can report it and fall back to the v4 loop.
+        Plugin contributions win over configuration, exactly like provider(). Both
+        configured api kinds now have a native transport (OpenAI-compatible and Anthropic
+        Messages); a construction failure raises ConfigError and propagates to the caller,
+        which fails the native path instead of falling back to the v4 loop.
         """
         entry = self._native_factories.get(name)
         if entry is not None:

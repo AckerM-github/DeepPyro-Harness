@@ -21,6 +21,7 @@ from deeppyro.llm import (
     create_provider,
 )
 from deeppyro.llm.errors import CODE_SERVER
+from deeppyro.llm.native_anthropic import NativeAnthropicProvider
 from deeppyro.llm.native_provider import NativeOpenAICompatProvider
 
 
@@ -167,10 +168,51 @@ def test_create_native_provider_accepts_aliases_and_timeout() -> None:
     assert provider.timeout_s == 12.5
 
 
-def test_create_native_provider_rejects_apis_without_a_native_transport() -> None:
-    with pytest.raises(ConfigError, match="no native"):
-        create_native_provider("claude", anthropic_config())
-    with pytest.raises(ConfigError, match="no native"):
+def test_create_native_provider_builds_a_native_anthropic_provider() -> None:
+    provider = create_native_provider("claude", anthropic_config())
+    assert isinstance(provider, NativeAnthropicProvider)
+    assert isinstance(provider, NativeLlmProvider)
+    assert provider.name == "claude"
+    assert provider.messages_url == "https://api.anthropic.com/v1/messages"
+    assert provider.api_key == "anthropic-key"
+    assert provider.model_ctx == 200000
+    assert provider.model_max_tokens == 64000
+    assert provider.reasoning_effort == "medium"
+    assert provider.timeout_s == 600.0
+
+
+def test_create_native_provider_anthropic_accepts_aliases_and_timeout() -> None:
+    provider = create_native_provider("claude", anthropic_config(api="anthropic"), timeout_s=12.5)
+    assert isinstance(provider, NativeAnthropicProvider)
+    assert provider.timeout_s == 12.5
+
+
+def test_create_native_provider_anthropic_requires_explicit_base_url() -> None:
+    config = ProviderConfig(api="anthropic-messages", api_key="key")
+    with pytest.raises(ConfigError, match="base_url") as info:
+        create_native_provider("claude", config)
+    assert "https://api.anthropic.com" in str(info.value)
+
+
+def test_create_native_provider_anthropic_requires_an_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DEEPPYRO_MISSING_KEY", raising=False)
+    config = anthropic_config(api_key=None, api_key_env="DEEPPYRO_MISSING_KEY")
+    with pytest.raises(ConfigError, match="API key") as info:
+        create_native_provider("claude", config)
+    assert "'claude'" in str(info.value)
+    assert "DEEPPYRO_MISSING_KEY" in str(info.value)
+
+
+def test_create_native_provider_anthropic_reads_api_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEEPPYRO_TEST_ANTHROPIC_KEY", "env-anthropic-key")
+    config = anthropic_config(api_key=None, api_key_env="DEEPPYRO_TEST_ANTHROPIC_KEY")
+    provider = create_native_provider("claude", config)
+    assert isinstance(provider, NativeAnthropicProvider)
+    assert provider.api_key == "env-anthropic-key"
+
+
+def test_create_native_provider_rejects_unknown_api() -> None:
+    with pytest.raises(ConfigError, match="unsupported api"):
         create_native_provider("p", provider_config(api="gizmo"))
 
 
@@ -234,7 +276,7 @@ def test_registry_unknown_native_provider_raises_config_error() -> None:
         registry.native_provider("missing")
 
 
-def test_registry_native_provider_reports_a_typed_unsupported_api() -> None:
+def test_registry_native_provider_builds_an_anthropic_provider() -> None:
     cfg = Config(
         providers={
             "claude": ProviderConfig.model_validate(
@@ -248,8 +290,9 @@ def test_registry_native_provider_reports_a_typed_unsupported_api() -> None:
         }
     )
     registry = LlmRegistry(cfg)
-    with pytest.raises(ConfigError, match="no native"):
-        registry.native_provider("claude")
+    provider = registry.native_provider("claude")
+    assert isinstance(provider, NativeAnthropicProvider)
+    assert provider is registry.native_provider("claude")
 
 
 async def test_registry_aclose_closes_both_layers() -> None:

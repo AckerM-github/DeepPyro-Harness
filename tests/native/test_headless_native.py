@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import io
 import json
 from collections.abc import AsyncIterator
@@ -9,11 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from rich.console import Console
 
 from deeppyro import headless
 from deeppyro.builtin.usage import UsageService
+from deeppyro.config import AgentConfig, Config, ModelConfig, ProviderConfig
 from deeppyro.core.errors import ConfigError
 from deeppyro.core.ids import new_session_id
 from deeppyro.core.llm import (
@@ -27,6 +30,9 @@ from deeppyro.core.llm import (
     Usage,
     UsageEvent,
 )
+from deeppyro.llm import native_anthropic
+from deeppyro.llm import registry as llm_registry
+from deeppyro.llm.registry import LlmRegistry
 from deeppyro.observability.protocols import TraceExportSink
 from deeppyro.observability.trace import ModelCallRecord, RunRecord
 from deeppyro.session.fold import fold
@@ -530,17 +536,22 @@ def test_native_provider_helper_prefers_the_native_attribute() -> None:
 class _LegacyStore:
     """Store double proving the legacy v4 branch was selected."""
 
+    def __init__(self) -> None:
+        self.calls = 0
+
     def create(self, *args: Any, **kwargs: Any) -> object:
+        self.calls += 1
         raise ConfigError("legacy v4 path reached")
 
 
-def test_run_once_warns_and_falls_back_when_no_native_provider_exists(
+def test_run_once_fails_when_no_native_provider_is_available(
     native_dirs: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    provider = ScriptedProvider([])
-    runtime = FakeNativeRuntime(provider)
+    """A missing native provider is a usage error: never a silent v4 fallback."""
+    runtime = FakeNativeRuntime(ScriptedProvider([]))
     runtime.provider = None
-    runtime.store = _LegacyStore()
+    store = _LegacyStore()
+    runtime.store = store
 
     async def fake_boot(**kwargs: Any) -> FakeNativeRuntime:
         return runtime
@@ -549,8 +560,212 @@ def test_run_once_warns_and_falls_back_when_no_native_provider_exists(
     console, _ = _console()
     code = headless.run_once("say hello", console=console)
 
-    assert code == headless.EXIT_ERROR  # the fake legacy store stops the v4 path
+    assert code == headless.EXIT_USAGE
     captured = capsys.readouterr()
-    assert "native loop unavailable" in captured.err
-    assert "falling back to the legacy v4 loop" in captured.err
+    assert "native loop requested but no native provider is available" in captured.err
+    assert "falling back to the legacy v4 loop" not in captured.err
+    assert store.calls == 0
     assert runtime.closed is True
+
+
+# --------------------------------------------------------------------------
+# native anthropic selection (no v4 fallback)
+# --------------------------------------------------------------------------
+
+
+def _anthropic_sse(*deltas: str) -> bytes:
+    """One minimal Anthropic Messages SSE stream emitting text deltas."""
+    events: list[dict[str, Any]] = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-4-5",
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 12, "output_tokens": 1},
+            },
+        },
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+    ]
+    for delta in deltas:
+        events.append(
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": delta}}
+        )
+    events.extend(
+        [
+            {"type": "content_block_stop", "index": 0},
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": 5},
+            },
+            {"type": "message_stop"},
+        ]
+    )
+    return "".join(f"data: {json.dumps(event)}\n\n" for event in events).encode()
+
+
+def test_anthropic_config_selects_the_native_provider_without_a_v4_fallback(
+    native_dirs: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An anthropic config resolves the native transport through the registry."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_anthropic_sse("native ", "answer"),
+        )
+
+    factory = functools.partial(
+        native_anthropic.NativeAnthropicProvider, transport=httpx.MockTransport(handler)
+    )
+    monkeypatch.setattr(llm_registry, "NativeAnthropicProvider", factory)
+    cfg = Config(
+        providers={
+            "claude": ProviderConfig(
+                api="anthropic-messages",
+                base_url="https://api.anthropic.com",
+                api_key="test-key",
+                models=[ModelConfig(id="claude-sonnet-4-5", context_window=200_000)],
+            )
+        },
+        agent=AgentConfig(provider="claude", model="claude-sonnet-4-5"),
+    )
+    registry = LlmRegistry(cfg)
+
+    class _LlmService:
+        def native_provider(self, name: str) -> object:
+            return registry.native_provider(name)
+
+    class _LegacySentinel:
+        """Legacy v4 provider that must never stream when the native one exists."""
+
+        name = "claude"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
+            self.calls += 1
+            raise AssertionError("the legacy v4 provider must not be used")
+            yield  # pragma: no cover
+
+        async def aclose(self) -> None:
+            return None
+
+    legacy = _LegacySentinel()
+    runtime = FakeNativeRuntime(legacy)
+    runtime.native_provider_error = None
+
+    async def fake_boot(**kwargs: Any) -> FakeNativeRuntime:
+        provider, error = headless._resolve_native_provider(
+            _LlmService(), "claude", native_loop=kwargs["native_loop"]
+        )
+        assert provider is not None
+        assert error is None
+        assert isinstance(provider, native_anthropic.NativeAnthropicProvider)
+        runtime.native_provider = provider
+        return runtime
+
+    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
+    console, stream = _console()
+    assert headless.run_once("say hello", console=console) == headless.EXIT_OK
+    output = stream.getvalue()
+    assert "native answer" in output
+    assert "falling back" not in capsys.readouterr().err
+    assert legacy.calls == 0
+    assert runtime.closed is True
+    assert len(seen) == 1
+    assert str(seen[0].url) == "https://api.anthropic.com/v1/messages"
+    assert seen[0].headers["x-api-key"] == "test-key"
+
+
+# --------------------------------------------------------------------------
+# boot_runtime rejects a native-loop provider it cannot construct
+# --------------------------------------------------------------------------
+
+
+class _BootKernelApp:
+    """Kernel app double mapping boot-time contracts by class name."""
+
+    def __init__(self, services: dict[str, Any]) -> None:
+        self._services = services
+        self.stopped = False
+
+    def require(self, contract: type[Any]) -> Any:
+        try:
+            return self._services[contract.__name__]
+        except KeyError:
+            raise LookupError(contract.__name__) from None
+
+    def get(self, contract: type[Any]) -> Any:
+        return self._services.get(contract.__name__)
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+async def test_boot_runtime_rejects_a_provider_without_a_native_transport(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class _LlmService:
+        def provider(self, name: str) -> object:
+            return object()
+
+        def native_provider(self, name: str) -> object:
+            raise ConfigError(
+                f"provider {name!r} uses api 'anthropic-messages' but has no API key; "
+                "export DEEPPYRO_MISSING_ANTHROPIC_KEY"
+            )
+
+    class _Sessions:
+        store = object()
+
+    class _Sandbox:
+        def gate(self, workspace: Path, *, ask: Any) -> object:
+            return object()
+
+    class _Tools:
+        def registry_for(self, workspace: Path) -> ToolRegistry:
+            return ToolRegistry(())
+
+    kernel_app = _BootKernelApp(
+        {
+            "LlmPlugin": _LlmService(),
+            "SessionsPlugin": _Sessions(),
+            "SandboxPlugin": _Sandbox(),
+            "ToolsPlugin": _Tools(),
+            "AgentsPlugin": object(),
+        }
+    )
+
+    import deeppyro.kernel
+
+    async def fake_boot(cfg: Config) -> _BootKernelApp:
+        return kernel_app
+
+    monkeypatch.setattr(deeppyro.kernel, "boot", fake_boot)
+    cfg = Config(
+        providers={
+            "claude": ProviderConfig(
+                api="anthropic-messages",
+                base_url="https://api.anthropic.com",
+                api_key_env="DEEPPYRO_MISSING_ANTHROPIC_KEY",
+                models=[ModelConfig(id="claude-sonnet-4-5", context_window=200_000)],
+            )
+        },
+        agent=AgentConfig(provider="claude", model="claude-sonnet-4-5"),
+    )
+    monkeypatch.delenv("DEEPPYRO_MISSING_ANTHROPIC_KEY", raising=False)
+
+    with pytest.raises(ConfigError, match="native provider unavailable for provider 'claude'") as info:
+        await headless.boot_runtime(config=cfg, cwd=tmp_path)
+    assert "DEEPPYRO_MISSING_ANTHROPIC_KEY" in str(info.value)
+    assert kernel_app.stopped is True

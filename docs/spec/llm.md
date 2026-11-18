@@ -1,6 +1,6 @@
 # LLM provider layer (`deeppyro.llm`)
 
-> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-19
 
 Status: implemented (owner: llm-dev). Streaming-only; two transports: OpenAI
 chat-completions (DeepSeek, llama-server, vLLM, ...) and Anthropic Messages (P1, section 14).
@@ -8,15 +8,18 @@ chat-completions (DeepSeek, llama-server, vLLM, ...) and Anthropic Messages (P1,
 The native agent loop (`agent/loop.py`, KI-010) consumes the wire-free
 `core.llm.LlmProvider` contract; the v4 `core.protocols.LlmProvider` still feeds the legacy
 v4 agent/session stack, compact/team/subagent, session titles and live eval (sections 1, 4.1
-and 11).
+and 11). Since 0.3.0 every supported API family has a native transport and the native loop
+never falls back to the v4 loop (section 14.7).
 
 ## 1. Public API
 
 ```python
 from deeppyro.llm import (
-    AnthropicProvider, LlmRegistry, NativeOpenAICompatProvider, OpenAICompatProvider,
+    AnthropicProvider, LlmRegistry, OpenAICompatProvider,
     create_native_provider, create_provider,
 )
+from deeppyro.llm.native_anthropic import NativeAnthropicProvider
+from deeppyro.llm.native_provider import NativeOpenAICompatProvider
 
 create_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) -> LlmProvider
 create_native_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) -> core.llm.LlmProvider
@@ -40,6 +43,13 @@ provider = AnthropicProvider(            # when pc.api is "anthropic-messages"/"
     timeout_s: float = 600.0, idle_timeout_s: float = 300.0,
     retry_policy: RetryPolicy | None = None,
 )
+provider = NativeAnthropicProvider(      # wire-free mirror used by the native loop
+    name, base_url, api_key, *, model_ctx: int | None = None,
+    model_max_tokens: int | None = None, reasoning_effort: str = "off",
+    timeout_s: float = 600.0, idle_timeout_s: float = 300.0,
+    retry_policy: RetryPolicy | None = None,
+    attachments: object | None = None,   # optional image-attachment resolver
+)
 async for event in provider.stream(req): ...
 await provider.aclose()
 
@@ -50,10 +60,16 @@ policy = RetryPolicy.from_policy({"maxRetries": 5, "baseDelayMs": 500, "maxDelay
 `create_provider` reads `ProviderConfig.api`: `openai-completions` (and its aliases) builds
 `OpenAICompatProvider`; `anthropic-messages`/`anthropic_messages`/`anthropic` builds
 `AnthropicProvider` (section 14); anything else raises `ConfigError`.
-`create_native_provider` reads the same `ProviderConfig.api` but builds only the
-OpenAI-compatible native transport (`NativeOpenAICompatProvider`); Anthropic/unknown APIs
-raise `ConfigError` ("no native transport"). `headless.boot_runtime` turns that into an
-explicit stderr warning and falls back to the legacy v4 loop instead of silently downgrading.
+`create_native_provider` reads the same `ProviderConfig.api` and builds a native
+(`core.llm.LlmProvider`) transport for every supported API:
+`NativeOpenAICompatProvider` for the OpenAI-compatible aliases and
+`NativeAnthropicProvider` for `anthropic-messages`/`anthropic_messages`/`anthropic`
+(section 14.7). Only an unknown API raises `ConfigError` ("unsupported api"); an Anthropic
+provider additionally requires an explicit `base_url` and an API key reachable through
+`ProviderConfig.resolve_api_key()`, and reports a `ConfigError` naming the provider and the
+missing key otherwise. `headless.boot_runtime` treats a native-loop construction failure as a
+startup `ConfigError` (exit 2) and never falls back to the legacy v4 loop, which the 0.3.0 cut
+removes.
 
 Extra helpers (test/debug surface): `deeppyro.llm.sse` (`SseDecoder`, `iter_sse`,
 `decode_sse_text`, `format_sse`), `deeppyro.llm.messages` (v4 converters: `build_chat_payload`,
@@ -97,9 +113,9 @@ body: {
   `LlmRequest.session_id` (and its native mirror `ModelRequest.session_id`) is therefore
   currently unused (kept for a later cache-aware provider). OpenAI-compatible servers treat
   this as a plain cache miss, not an error.
-* The native provider sends the identical request shape: only the request object differs
-  (`core.llm.ModelRequest` instead of `LlmRequest`), so recorded request bodies replay
-  unchanged.
+* The OpenAI-compatible native provider sends the identical request shape: only the request
+  object differs (`core.llm.ModelRequest` instead of `LlmRequest`), so recorded request bodies
+  replay unchanged.
 
 ## 3. Message conversion (wire/native -> chat messages)
 
@@ -170,8 +186,9 @@ TextDelta("Hel") TextDelta("lo") Usage(...) Finish(kind="stop")
 `stop/tool_calls/length/error/aborted/content_filter`), `Usage`, `ToolSpec`,
 `ModelRequest`, the same delta/usage/finish event dataclasses plus
 `RetryScheduled`, `ModelResponse`, `NativeToolCall` and the `LlmProvider` Protocol.
-Native providers (`NativeOpenAICompatProvider`) emit identical event sequences, with
-`Finish(kind="tool-calls")` becoming `Finish(stop_reason=StopReason.TOOL_CALLS)`.
+Native providers (`NativeOpenAICompatProvider`, `NativeAnthropicProvider`) emit identical
+event sequences, with `Finish(kind="tool-calls")` becoming
+`Finish(stop_reason=StopReason.TOOL_CALLS)`.
 `agent/model_call.py` adapts one stream to one `ModelResponse` and preserves every v4
 adapter invariant (finish required, tool-call names, argument joining, forced `tool_calls`,
 empty-message rejection, cancellation and usage last-wins); it also counts
@@ -374,7 +391,10 @@ client-side bug and fail fast with `LlmRequestError(code="BAD_REQUEST")`. Observ
   `core.messages`/`ToolSpec` conversion, image passthrough, argument preservation),
   `test_native_provider.py` (respx + inline SSE: text/reasoning/fragmented tool calls, both
   cache-usage fields, finish mapping, mid-stream cuts, retries with `RetryScheduled`,
-  non-SSE content types, 401/400, listing, idempotent close, cancellation) and
+  non-SSE content types, 401/400, listing, idempotent close, cancellation),
+  `test_native_anthropic.py` (httpx.MockTransport: text/tool/thinking streams, split
+  `input_json_delta` arguments, usage+cache fields, stop-reason mapping, image input, 429
+  retries with `RetryScheduled`, 4xx classification, malformed SSE, cancellation), and
   `tests/agent/test_model_call.py` (one test per adapter invariant).
 * `test_openai_compat.py` (respx-mocked, no network): plain text, reasoning deltas,
   fragmented single/multi tool calls, usage (+DeepSeek cache field), finish mapping,
@@ -382,9 +402,10 @@ client-side bug and fail fast with `LlmRequestError(code="BAD_REQUEST")`. Observ
   stream error frames, empty-response retries, idempotent close, cancellation; plus
   `list_models` listing parsing/headers, 405->[], keyless requests, 401 surfacing, HTML
   payload rejection.
-* `test_registry.py`: provider construction, OpenAI/Anthropic api dispatch, Anthropic
-  `base_url` requirement and `max_tokens`/`reasoning_effort` adapter options, context-window selection,
-  env api keys, caching, unknown provider, close-all ordering/errors; plus catalog discovery:
+* `test_registry.py`: provider construction, OpenAI/Anthropic api dispatch (v4 and native),
+  native Anthropic `base_url`/API-key requirements, `max_tokens`/`reasoning_effort` adapter
+  options, context-window selection, env api keys, caching, unknown provider, close-all
+  ordering/errors; plus catalog discovery:
   configured snapshot, listing merge/precedence, TTL cache, refresh bypass, failure fallback
   with last-known-good, 404 empty means configured, providers without listings, `model_info`,
   aclose clearing the cache.
@@ -629,7 +650,47 @@ HTTP status (an `invalid_request_error` on a 5xx is a user error). Retries use t
 never replays, `CancelledError` propagates untouched, and `Retry-After` (seconds or HTTP
 date) overrides the computed backoff.
 
-### 14.7 Known deviations / risks (Anthropic, P1)
+### 14.7 Native transport (`NativeAnthropicProvider`, KI-010)
+
+The 0.3.0 native-only cut needs the same Anthropic Messages transport behind the wire-free
+`core.llm.LlmProvider` contract (no `core.wire`/`core.protocols` imports).
+`NativeAnthropicProvider` lives in `deeppyro.llm.native_anthropic` and is built by
+`registry.create_native_provider` for the same API aliases; `builtin/llm.LlmPlugin.native_provider`
+exposes it, and `headless.boot_runtime` raises `ConfigError` when it cannot be constructed
+(never downgrades to the legacy v4 loop).
+
+Shared with `AnthropicProvider`: endpoint rule (`messages_url`), headers
+(`anthropic-version`, `x-api-key`, no Bearer), `httpx.Timeout(..., read=idle_timeout_s)`,
+`list_models` (404/405 -> `[]`), request body (section 14.2), message/block conversion semantics
+(section 14.3: system folding, adjacent-role merge, strict `tool_use`/`tool_result` pairing,
+`input_schema`, block-shaped tool input), stream event mapping and stop reasons (section 14.4),
+usage folding (section 14.5) and error classification/retryability (section 14.6).
+
+Differences from the v4 provider:
+
+* Request messages come from `core.messages`: `convert_messages(messages, system, ...)` folds
+  `ModelRequest.system` and history system/developer text into the top-level `system` string;
+  assistant `ToolCallPart` -> `{"type":"tool_use","id","name","input"}`; tool messages ->
+  user `tool_result` blocks using `tool_call_id` + `is_error`; `ImagePart` -> inline base64
+  images resolved via `image_part_url(..., default_media_type=part.media_type)` (bare attachment
+  ids work when an `attachments` resolver is injected, otherwise the image is skipped).
+* Events are `core.llm` types (`TextDelta`, `ReasoningDelta`, `ToolCallStart`,
+  `ToolCallArgsDelta`, `UsageEvent`, `Finish`); a normal stream ends with `UsageEvent` (when
+  the stream reported usage) then `Finish(stop_reason=...)`. A stream that fails after producing
+  content ends with `Finish(StopReason.ERROR, message=..., code=...)`.
+* Empty responses, cut streams and malformed frames use the same retryable
+  `EMPTY_RESPONSE`/`STREAM_CLOSED`/`PROTOCOL` classification as `NativeOpenAICompatProvider`;
+  retries emit `RetryScheduled(attempt, code, delay_s)` before backoff, and only first-event
+  acquisition is retried.
+* Usage maps into `core.llm.Usage` with `cached_input_tokens = cache_read_input_tokens` and
+  `cache_write_tokens = cache_creation_input_tokens` (in addition to the v4 aggregate formula in
+  14.5). `latency_ms` and the retry count stay in the caller (`agent/model_call.py`).
+* `aclose()` is idempotent and closes the lazy `httpx.AsyncClient`; a stream cancelled by the
+  consumer propagates `CancelledError` and closes the response context.
+* Construction requires an explicit `base_url` and an API key (inline or via `api_key_env`);
+  failures name the provider and the missing key and are raised while the kernel boots.
+
+### 14.8 Known deviations / risks (Anthropic, P1)
 
 * **Thinking signatures are not replayed** (Lead decision). With the default
   `reasoning_effort="off"`, history reasoning is dropped and `thinking: {"type":"disabled"}`
