@@ -2,9 +2,9 @@
 
 The system prompt is stable, but some facts belong to the current moment:
 working directory, model, sandbox file policy and approval policy.  They are
-injected as a user message whose source is "runtime-context"; the projection in
-deeppyro.prompt.projection turns repeated identical snapshots into a no-op and
-marks older snapshots as superseded when the values change.
+injected as a user message whose source is "runtime-context"; when a preset
+enables runtime context the prompt service renders one snapshot per turn, and the
+snapshot header marks it as superseding earlier snapshots.
 
 The sandbox and approval paragraphs mirror the reference runtime-context
 contributions, so the model is told the standing policy and the escalation

@@ -24,7 +24,6 @@ from deeppyro.builtin.activity import ActivityService
 from deeppyro.builtin.agents import AgentsPlugin
 from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.builtin.presets import PresetsPlugin
-from deeppyro.builtin.projections import ProjectionsService
 from deeppyro.builtin.prompt_service import PromptPlugin
 from deeppyro.builtin.sandbox import SandboxPlugin
 from deeppyro.builtin.schedule import SchedulePlugin
@@ -41,7 +40,6 @@ from deeppyro.team.manager import TeamService
 from deeppyro.team.types import LIVE_PHASES
 from deeppyro.tui.native_hook_trace import NativeHookRecorder
 from deeppyro.tui.native_hooks import TuiAgentHooks
-from deeppyro.tui.native_mode import tui_native_enabled
 from deeppyro.tui.runtime_schedule_host import _now_rfc3339 as _now_rfc3339
 from deeppyro.tui.runtime_schedule_host import _ScheduleSink as _ScheduleSink
 from deeppyro.tui.runtime_schedule_host import _TuiScheduleHost as _TuiScheduleHost
@@ -49,8 +47,6 @@ from deeppyro.tui.runtime_status import StatusLayer
 from deeppyro.tui.runtime_support import DEFAULT_CONTEXT_WINDOW as DEFAULT_CONTEXT_WINDOW
 from deeppyro.tui.runtime_support import _context_window as _context_window
 from deeppyro.tui.runtime_support import _context_window_for as _context_window_for
-from deeppyro.tui.runtime_support import _recorded_model_selection as _recorded_model_selection
-from deeppyro.tui.runtime_support import _recorded_preset as _recorded_preset
 from deeppyro.tui.runtime_support import _resolve_model as _resolve_model
 from deeppyro.tui.runtime_support import await_maybe as await_maybe
 from deeppyro.tui.runtime_support import logger as logger
@@ -114,18 +110,15 @@ class TuiRuntime(StatusLayer):
         model: str | None = None,
         config: Config | None = None,
         resume: str | None = None,
-        native: bool | None = None,
     ) -> TuiRuntime:
         """Boot the kernel bundle and resolve the TUI runtime.
 
-        When DEEPPYRO_TUI_NATIVE is enabled (or native=True is passed) the
-        runtime is assembled from the schema 1 control plane: SessionsPlugin
-        native APIs, AgentsPlugin.host and the native agent factory. The v4
-        path stays byte-for-byte unchanged when the flag is off.
+        The runtime is assembled from the schema 1 control plane:
+        SessionsPlugin native APIs, AgentsPlugin.host and the native agent
+        factory. Every session the TUI opens or creates is a native session.
         """
         from deeppyro.kernel import boot
 
-        native_mode = tui_native_enabled(native)
         cfg = config if config is not None else load_config()
         workspace = resolve_workspace(cwd)
         provider_name = provider or cfg.agent.provider
@@ -140,12 +133,8 @@ class TuiRuntime(StatusLayer):
             sandbox_service = kernel_app.require(SandboxPlugin)
             tools_service = kernel_app.require(ToolsPlugin)
             agents_service = kernel_app.require(AgentsPlugin)
-            if native_mode:
-                prompt_service = kernel_app.require(PromptPlugin)
-                llm_provider = llm_service.native_provider(provider_name)
-            else:
-                prompt_service = None
-                llm_provider = llm_service.provider(provider_name)
+            prompt_service = kernel_app.require(PromptPlugin)
+            llm_provider = llm_service.native_provider(provider_name)
             registry = tools_service.registry_for(workspace)
             permission = sandbox_service.gate(workspace, ask=ask)
         except BaseException:
@@ -157,19 +146,7 @@ class TuiRuntime(StatusLayer):
         subagent = kernel_app.get(SubagentService)
         working_directory = kernel_app.get(WorkingDirectoryService)
         user_questions = kernel_app.get(UserQuestionsService)
-        projections = kernel_app.get(ProjectionsService)
         schedule = kernel_app.get(SchedulePlugin)
-        native_extra: dict[str, Any] = {}
-        if native_mode:
-            native_extra = {
-                "native": True,
-                "sessions": sessions_service,
-                "prompt": prompt_service,
-                "trace_export": kernel_app.get(TraceExportSink),
-                "compactor": _native_compactor(kernel_app, llm_provider, model_id),
-                "hooks": TuiAgentHooks(sink),
-                "hook_recorder": _native_hook_recorder(kernel_app),
-            }
         runtime = cls(
             cfg=cfg,
             cwd=workspace,
@@ -177,7 +154,6 @@ class TuiRuntime(StatusLayer):
             provider_name=provider_name,
             model=model_id,
             context_window=_context_window(provider_cfg, model_id),
-            store=None if native_mode else sessions_service.store,
             provider=llm_provider,
             registry=registry,
             permission=permission,
@@ -190,15 +166,19 @@ class TuiRuntime(StatusLayer):
             subagent=subagent,
             working_directory=working_directory,
             user_questions=user_questions,
-            projections=None if native_mode else projections,
             schedule=schedule,
             llm=llm_service,
-            **native_extra,
+            sessions=sessions_service,
+            prompt=prompt_service,
+            trace_export=kernel_app.get(TraceExportSink),
+            compactor=_native_compactor(kernel_app, llm_provider, model_id),
+            hooks=TuiAgentHooks(sink),
+            hook_recorder=_native_hook_recorder(kernel_app),
         )
         await runtime.ensure_presets()
         runtime._configure_team(None)
         runtime._configure_subagent(None)
-        if native_mode and resume:
+        if resume:
             await runtime.open_session(resume)
         else:
             await runtime.new_session()
@@ -268,8 +248,7 @@ class TuiRuntime(StatusLayer):
                 for member in live
             )
             raise DeeppyroError(f"cannot leave team mode while {len(live)} member(s) are active: {labels}")
-        if self.native:
-            await self._stop_native_team()
+        await self._stop_native_team()
         previous = self.team_previous_preset or DEFAULT_PRESET_ID
         try:
             self._resolve_preset(service, previous)
@@ -422,11 +401,9 @@ class TuiRuntime(StatusLayer):
         if self._closed:
             return
         self._closed = True
-        if self.native:
-            await self._detach()
+        await self._detach()
         await self._dispose_sessions()
         await self.stop_schedule()
-        self._save_projections()
         jobs = self.jobs
         cancel_all = getattr(jobs, "cancel_all", None)
         if cancel_all is not None:
@@ -457,7 +434,7 @@ class TuiRuntime(StatusLayer):
 
     async def name_session_title(self) -> str | None:
         """Name the native session from its first exchange (best effort)."""
-        if not self.native or self.session is None:
+        if self.session is None:
             return None
         kernel_app = self.kernel_app
         native_session = getattr(self.session, "native_session", None)

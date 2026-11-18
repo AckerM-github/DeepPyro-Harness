@@ -1,6 +1,6 @@
 """Permission presets: named bundles of a sandbox mode and approval policy.
 
-Mirrors dsh-permission-presets. The service owns three DSH base presets
+Mirrors upstream-permission-presets. The service owns three upstream base presets
 (read-only, workspace-write, danger-full-access); "custom" is a derived,
 read-only state shown when the two knobs do not match any preset. Switching a
 preset writes only the knobs that actually change, and a switch back to the
@@ -116,7 +116,7 @@ class PermissionPresetsService:
     def pin_initial(self, session: Any) -> str:
         """Seed a fresh session with the default preset and its knobs.
 
-        DSH pins the initial permission at agent-created time. Sessions that
+        upstream pins the initial permission at agent-created time. Sessions that
         already carry equivalent records keep them; only missing events are
         appended.
         """

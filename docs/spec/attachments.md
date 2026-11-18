@@ -1,15 +1,15 @@
 # Attachments 规格
 
-> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+> **状态**：现行（0.3.0） · **层级**：功能规格 · **最后核对**：2026-11-19
 > 契约入口：[native/schema.md](../native/schema.md)；总入口：[docs/README.md](../README.md)。
 
-本文记录 DeepPyro P1 图片附件的阶段 1：附件引用类型、AttachmentStore（校验 / 归一化 / 持久化 / manifest）、以及 attachments 服务插件。实现参考 DSH 的 dsh-attachment 包与 docs/archive/research/p1-tools-runtime.md §4.4，但按 P1 范围裁剪：只做图片，不做通用 FileBlock、files API、自动删除与 image offload。阶段 2（image offload 预算、session 投影、llm resolver）不在本层，见 §10。
+本文记录 DeepPyro 图片附件的存储层：附件引用类型、AttachmentStore（校验 / 归一化 / 持久化 / manifest）、以及 attachments 服务插件。实现参考 DSH 的 dsh-attachment 包与 docs/archive/research/p1-tools-runtime.md §4.4，但按 P1 范围裁剪：只做图片，不做通用 FileBlock、files API 与自动删除。native 消息里的图片 part 通过附件引用 + [llm/attachments.py](../../src/deeppyro/llm/attachments.py) 的 `image_part_url` 解析为请求 URL；会话日志只存引用，见 [native/schema.md](../native/schema.md)。
 
 ## 1. 范围
 
-- 本层负责：PNG / JPEG / WebP / GIF 图片的校验与错误码、统一归一化为 PNG、持久化到附件目录、manifest.jsonl 记录、`ImageAttachmentRef` / `FileAttachmentRef` 类型与 DSH wire 序列化、`attachments` 服务插件、[attachments] 配置。
-- 本层不负责：TUI 上传 / 剪贴板 / IM 附件输入；通用文件附件与 files API；附件自动删除或 GC；image offload 请求预算、`image/offload` 记录与 `session/derive.py` 投影；`bundle.toml` 行注册；`INTERFACES.md`。
-- 阶段 2 由其他 owner 完成：`src/deeppyro/llm/image_budget.py`、`src/deeppyro/session/derive.py` 的投影解释器、`src/deeppyro/llm/messages.py` 的 resolver 接线。本层只保证这些模块需要的引用数据与读接口稳定。
+- 本层负责：PNG / JPEG / WebP / GIF 图片的校验与错误码、统一归一化为 PNG、持久化到附件目录、manifest.jsonl 记录、`ImageAttachmentRef` / `FileAttachmentRef` 类型与 camelCase 字典序列化（`to_dict` / `from_dict`）、`attachments` 服务插件、[attachments] 配置。
+- 本层不负责：TUI 上传 / 剪贴板 / IM 附件输入；通用文件附件与 files API；附件自动删除或 GC；请求侧图片预算或图片卸载；`bundle.toml` 行注册（已由 core bundle 注册）。
+- 0.2.0 中 v4 agent/session 曾有一层图片卸载/预算/投影（`llm/image_budget.py`、`session/image_projection.py`、`session/derive.py`、`agent/images.py`），0.3.0 随 v4 会话与 agent 栈一并删除；当前代码里没有这些模块，也不存在 `image/offload` 记录。native 请求只做引用 → URL 的内存解析，不持久化 base64。
 
 ## 2. 文件布局
 
@@ -161,13 +161,13 @@ class AttachmentStore:
 class AttachmentsPlugin(Plugin):
     provide = "attachments"
     plugin_id = "attachments"
-    version = "0.2.0"
+    version = "0.3.0"
     inject = ["config"]
 ```
 
 - 构造时解析 config：先取 bundle row config，再用 kernel config 的 `[attachments]` 表覆盖（用户配置优先），然后构造 `AttachmentStore`；`setup()` 调用 `ctx.provide("attachments", store)`。
 - 消费方通过 `ctx.get(AttachmentStore)` / `ctx.has(AttachmentStore)` 取得 store，调用 `save_image` / `read_image_bytes` 等。
-- bundle 行注册（`src/deeppyro/bundles/core/bundle.toml`）由 Lead 负责；行 id 建议为 `attachments`，plugin 目标 `deeppyro.builtin.attachments:AttachmentsPlugin`。
+- 已注册为 core bundle 行：行 id `attachments`，plugin 目标 `deeppyro.builtin.attachments:AttachmentsPlugin`（`src/deeppyro/bundles/core/bundle.toml`）。
 
 ## 8. 测试
 
@@ -186,10 +186,10 @@ class AttachmentsPlugin(Plugin):
 - 存储统一为 PNG，不做 DSH 的 per-request transformed versions / transform identity；`originalDimensions` 只记录 EXIF 前尺寸。
 - `read_image_bytes` 每次整体读取并线性扫描 manifest；P1 单进程规模可接受，后续可加 index。
 - manifest append 与原子写假设单进程（TUI/headless 单实例）；没有跨进程文件锁。
-- 阶段 2 的 image offload 文本占位若需要 read-only path，可使用 `image_host_path`；无 path 版本则不需要本层额外接口。
+- 当前 native 请求路径只把可解析的引用展开成请求 URL（`llm/attachments.py` 的 `image_part_url`）；无法解析的引用按 `None` 降级，不会把 base64 写进日志。没有 v4 的图片卸载/预算机制。
 
-## 10. 接线需求（Lead / 阶段 2 owners）
+## 10. 当前接线状态（0.3.0）
 
-- Lead：在 `src/deeppyro/bundles/core/bundle.toml` 注册 `attachments` 行（插件 `deeppyro.builtin.attachments:AttachmentsPlugin`），并确认 `ctx.get(AttachmentStore)` 在 boot 后可用。
-- llm-dev（阶段 2）：`src/deeppyro/llm/messages.py` 的 `image_part_url` 增加 resolver：裸 attachment id 或 ref dict → store 读 PNG → data URL；文本模型路径保持现状。
-- session-dev（阶段 2）：`src/deeppyro/session/derive.py` 的 `image/offload` 投影解释器；`src/deeppyro/llm/image_budget.py` 预算算法。两者均不在本层写域。
+- `attachments` 已是 core bundle 行；boot 后 `ctx.get(AttachmentStore)` 可用。
+- native 请求侧：`src/deeppyro/llm/attachments.py` 的 `image_part_url(part, attachments=resolver)` 在**内存中**把裸 attachment id 或 ref dict 解析为 data URL；resolver 只需 `read_image_bytes(ref)` 或 `image_host_path(ref)`，可选 `lookup(attachment_id)` 解析裸 id。解析失败返回 `None`，不阻断请求。
+- 不再有 `image/offload` 投影、请求图片预算或 `session/derive.py` resolver 接线（0.2.0 的 v4 机制，0.3.0 已删除）。

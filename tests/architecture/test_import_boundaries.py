@@ -6,11 +6,11 @@ deeppyro.api is the only seam plugins see.  Three gates keep that shape:
 
 1. the vendored tree must not come back;
 2. nothing under src/deeppyro may import it again;
-3. only the kernel package and the two composition entry points may import the
-   runtime modules (kernel.app/container/context/fiber/host).  Domain code
-   reaches the same services through ctx/deeppyro.api, so "everything is a
-   plugin" stays enforceable instead of eroding into direct imports of the
-   framework.
+3. only the kernel package and the process composition entry points
+   (headless.py, tui/runtime.py, web/host.py) may import the runtime modules
+   (kernel.app/container/context/fiber/host).  Domain code reaches the same
+   services through ctx/deeppyro.api, so "everything is a plugin" stays
+   enforceable instead of eroding into direct imports of the framework.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ RUNTIME_MODULES = frozenset({"app", "container", "context", "fiber", "host"})
 
 #: Paths relative to src/deeppyro allowed to import them: the kernel itself and
 #: the two composition entry points (they call boot() to assemble the app).
-RUNTIME_ALLOWED = ("kernel/", "headless.py", "tui/runtime.py")
+RUNTIME_ALLOWED = ("kernel/", "headless.py", "tui/runtime.py", "web/host.py")
 
 
 def _import_targets(node: ast.AST) -> list[str]:
@@ -135,8 +135,8 @@ def test_domain_modules_do_not_import_the_kernel_runtime() -> None:
     offenders = find_runtime_imports()
     assert not offenders, (
         "domain modules must reach services through ctx/deeppyro.api, not by "
-        "importing the kernel runtime; only deeppyro.kernel and the two composition "
-        "entry points (headless.py, tui/runtime.py) may import it:\n" + "\n".join(offenders)
+        "importing the kernel runtime; only deeppyro.kernel and the composition "
+        "entry points (headless.py, tui/runtime.py, web/host.py) may import it:\n" + "\n".join(offenders)
     )
 
 

@@ -25,7 +25,7 @@ from deeppyro.kernel.composition import CompositionError, load_bundle
 from .bundles import validate_bundle_id
 from .errors import PluginError
 
-_BUNDLE_VERSION = "0.2.0"
+_BUNDLE_VERSION = "0.3.0"
 _DEFAULT_ORDER = 500
 _SPLIT = re.compile(r"[^0-9A-Za-z]+")
 
@@ -67,7 +67,7 @@ class SampleGreetingTool(BaseTool):
 
 class __CLASS__(Plugin):
     plugin_id = __PLUGIN_ID__
-    version = "0.2.0"
+    version = "0.3.0"
     api_version = __API_VERSION__
     description = __DESCRIPTION__
     Config = SampleConfig

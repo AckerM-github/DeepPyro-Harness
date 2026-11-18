@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -11,9 +10,6 @@ from typing import Any
 from deeppyro.core.protocols import ToolContext
 from deeppyro.sandbox import PermissionGate
 from deeppyro.sandbox.policy import SandboxPolicy
-
-FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
-SESSIONS = FIXTURES / "sessions"
 
 
 def make_context(
@@ -85,39 +81,3 @@ class ConfiningSandbox:
             runner_failure_rules=self.runner_failure_rules,
             temp_root=self.temp_root,
         )
-
-
-def load_real_tool_calls() -> dict[str, list[dict[str, Any]]]:
-    """Extract real decoded tool-call arguments per tool name from the fixtures."""
-    wanted = {
-        "read",
-        "write",
-        "edit",
-        "glob",
-        "grep",
-        "pwsh",
-        "web_search",
-        "web_fetch",
-        "todo_write",
-        "present",
-    }
-    found: dict[str, list[dict[str, Any]]] = {}
-    if not SESSIONS.is_dir():
-        return found
-    for path in sorted(SESSIONS.glob("*.jsonl")):
-        with path.open(encoding="utf-8") as handle:
-            for line in handle:
-                record = json.loads(line)
-                if record.get("type") != "tool/call":
-                    continue
-                data = record.get("data", {})
-                name = data.get("name")
-                if name not in wanted:
-                    continue
-                try:
-                    args = json.loads(data.get("arguments") or "{}")
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(args, dict):
-                    found.setdefault(name, []).append(args)
-    return found

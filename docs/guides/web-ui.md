@@ -1,28 +1,34 @@
 # Web UI 使用指南（本地回环宿主）
 
-> **状态**：现行（phase 1） · **层级**：操作指南 · **最后核对**：2026-11-18
-> 规格：[spec/web.md](../spec/web.md)。本指南覆盖启动、界面、F1/F2 接线计划、打包与排错。
-> 注意：本任务未修改 `src/deeppyro/tui/`，F1/F2 splash 由 lead 在后续集成步骤接线。
+> **状态**：现行（0.3.0） · **层级**：操作指南 · **最后核对**：2026-11-19
+> 规格：[spec/web.md](../spec/web.md)。本指南覆盖启动（含 TUI splash F1）、界面、打包与排错。
 
 ## 1. 启动
 
 前提：Python 环境已安装（仓库自带 `.venv`），无额外依赖。
 
-    .venv\Scripts\python.exe -m deeppyro.web --port 0 --cwd .
-    # 或指定要恢复的 native 会话：
-    .venv\Scripts\python.exe -m deeppyro.web --port 0 --cwd . --session <id>
+两种进入方式，启动的都是同一个 loopback Web 宿主：
+
+1. **TUI splash**：运行 `dpyro`，splash 提示 `F1 web · F2 terminal`；按 **F1** 后本进程
+   直接转为 Web 宿主，打印带 token 的 URL。**F2 / Enter / Escape** 进入终端 TUI。
+   `dpyro --resume <id>` 配合 F1 时会把该 native 会话挂到 Web 宿主。
+2. **直接 CLI**：
+
+       .venv\Scripts\python.exe -m deeppyro.web --port 0 --cwd .
+       # 或指定要恢复的 native 会话：
+       .venv\Scripts\python.exe -m deeppyro.web --port 0 --cwd . --session <id>
 
 可选 `--provider P --model M` 用于新会话的模型覆盖；`--host` 默认且只允许回环值。
 启动后终端打印（示意）：
 
-    Deeppyro Web 0.1.0
+    Deeppyro Web 0.3.0
     URL: http://127.0.0.1:54321/?token=<随机令牌>
     Localhost only: bound to 127.0.0.1, never exposed on the network.
     Session: <session-id>
     Press Ctrl-C to stop.
 
 把 URL 原样粘贴到本机浏览器（URL 自带 token；不要只打开 `http://127.0.0.1:<port>/`，
-缺 token 会 401）。在页面打开期间保持终端进程运行，Ctrl-C 优雅停止。
+缺 token 会 401）。在页面打开期间保持终端进程运行，Ctrl-C 优雅停止（返回 130）。
 
 ## 2. 界面
 
@@ -44,21 +50,17 @@
 Stop 按钮向宿主发 `POST /interrupt`，由 `NativeAgentHost.interrupt()` 取消当前 turn；
 不会杀 socket。队列里排队的消息会一起丢弃（响应里的 `dropped`）。
 
-## 4. F1 / F2 splash 接线计划（后续集成，不在本任务）
+## 4. TUI splash F1 / F2 接线（已接线）
 
-TUI 启动 splash 现在仍是 “press any key”。目标形态：F1 = Web，F2 = TUI。届时只需在 TUI
-已 boot 好 kernel 的位置加一次调用（TUI 侧改动由 lead 做，本包已提供稳定 API）：
+- `src/deeppyro/tui/screens/splash.py`：`F1 → start_web`、`F2 / Enter / Escape →
+  start_terminal`；提示行为 `F1 web · F2 terminal`。
+- `src/deeppyro/tui/main.py:140-148`：`DeepPyroApp.run()` 返回 `"web"` 时调用
+  `deeppyro.web.launch.launch(cwd=..., session_id=..., provider=..., model=...)`；
+  launcher 启动 `WebHost`、打印 banner、`serve_forever()`，Ctrl-C 返回 130。
+- 同一 `serve()/launch()` 也被 `python -m deeppyro.web` 使用，因此两条入口行为一致。
 
-    from deeppyro.web.host import WebHost
-
-    host = await WebHost.start(kernel_app=self.kernel_app, port=0, cwd=self.cwd)
-    host.print_banner()                 # 打印带 token 的 URL
-    # 可选：webbrowser.open(host.url)
-    # 用户选择 F2 时直接不启动；F1 时直到退出再：
-    await host.stop()
-
-不用传 `config`/`services`（给了 kernel 就会复用同一个插件内核）；`port=0` 自动选空闲
-回环端口。若希望走插件缝（bundle 行由 lead 添加，本任务未改 `bundles/core/bundle.toml`）：
+Web 宿主是宿主外壳，不是第二个 agent：它使用同一个 native 会话与 AgentLoop；core bundle
+**不包含** web 插件行，`WebHostPlugin` 由 launcher/宿主直接构造。若要显式按插件挂载：
 
     [[plugins]]
     id = "web"
@@ -88,12 +90,12 @@ TUI 启动 splash 现在仍是 “press any key”。目标形态：F1 = Web，F
 | 403 unexpected Host/Origin | 用了非回环主机名/端口/其他来源；从打印的 `127.0.0.1:<port>` URL 打开 |
 | 403 cross-site request refused | 浏览器扩展/代理改写了 Origin 或 Sec-Fetch-Site；本机直连 |
 | 409 session is already open | 同一 native 会话被另一个进程（TUI/headless）打开；先关闭它 |
-| 409 team mode is not available | native 运行时尚未移植 team 预设，换单 agent 预设 |
+| 409 team mode is not available | web 运行时拒绝 team 预设（只支持单 agent）；团队请用 TUI/headless |
 | 413 payload too large | 消息超过 100000 字符或 body 超过 1 MiB |
 | 429 turn queue is full | 当前 turn 未结束且已排 8 条；等完成或 Stop |
 | 503 the web session host is not running | 宿主正在关闭/未启动；重启 `python -m deeppyro.web` |
 | Stop 提示 nothing to interrupt | 没有进行中的 turn（正常） |
-| 工具调用被拒绝 | phase 1 没有审批 UI，需要审批的工具一律被拒绝；这是已知限制 |
+| 工具调用被拒绝 | 0.3.0 没有审批 UI，需要审批的工具一律被拒绝；这是已知限制 |
 | 断线后自动重连 | 正常：EventSource 带 `Last-Event-ID`，宿主从 seq 续传；transcript 会补全历史 |
 
 ## 7. 验证

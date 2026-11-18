@@ -1,7 +1,7 @@
 # TUI 输入层：多行输入、补全、历史、命令注册表与模态框
 
-> **状态**：现行（0.2.0 保留） · **层级**：TUI 功能规格 · **最后核对**：2026-11-18
-> 交互 TUI 仍走 v4；native 仅 `run_once`。总入口：[docs/README.md](../README.md)。
+> **状态**：现行（0.3.0） · **层级**：TUI 功能规格 · **最后核对**：2026-11-19
+> 交互 TUI 在 0.3.0 起走 native 运行时（schema 1），没有 v4 路径。总入口：[docs/README.md](../README.md)。
 
 本文件描述 TUI 输入层（task-7）的模块、键位、数据格式与对 app.py 的集成契约。
 范围：src/deeppyro/tui/widgets/prompt_input.py、widgets/prompt_area.py、

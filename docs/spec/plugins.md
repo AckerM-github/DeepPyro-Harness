@@ -1,6 +1,6 @@
 # 插件管理与自扩展规格
 
-> **状态**：现行（API v3） · **层级**：插件规格 · **最后核对**：2026-11-18
+> **状态**：现行（API v3） · **层级**：插件规格 · **最后核对**：2026-11-19
 > 公开插件契约见 [plugin-core.md](plugin-core.md)；插件作者指南见 [docs/plugins/README.md](../plugins/README.md)。
 
 本文件记录 DeepPyro 的插件管理能力：外部插件的发现、启用/禁用、校验与删除，用户 bundle 的安装/卸载，插件设置的读写，运行中插件宿主的检视，以及供 agent 调用的插件管理工具。插件清单与 bundle 的 TOML 格式和合并语义复用 @docs/spec/plugin-core.md 与 [plugin-core.md](plugin-core.md)，本文件不重复定义；设置的详细语义见 @docs/spec/plugin-settings.md。
@@ -38,7 +38,7 @@ TUI：@src/deeppyro/tui/screens/plugins.py 提供 PluginScreen（ModalScreen[str
 (b) 用户插件目录：默认为 ~/.dpro/plugins/（deeppyro.paths.plugins_dir()；DEEPPYRO_PLUGINS_DIR 可覆盖；显式传入 manifest 时默认用 manifest 同级的 plugins/）。每个插件一个子目录 <name>/，必须含 plugin.toml：
 
     name = "Demo Plugin"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "a demo plugin"
     module = "demo_plugin"
     class = "DemoPlugin"
@@ -194,7 +194,7 @@ InspectPlugin（provide = inspect，plugin_id = inspect，version = 0.2.0，inje
 | commands() | [{name, plugin_id, summary, aliases}] |
 | providers() | [{name}]；合并 llm.provider_names() 与 config.value.providers 的键，避免只列已实例化 provider |
 | config_schema(plugin_id) | 委托 SettingsStore.describe，返回 plugin_id、target、schema、revision、apply、volatile_fields |
-| events() | wire 记录类型清单 [{type, kind, surface, projection}]；kind 为类型前缀（斜杠前），surface 表示是否进入会话记录，projection 表示是否为投影类型 |
+| events() | native schema 1 `EventKind` 清单 [{type, kind}] 加上 plugin 事件命名空间（`plugin.<id>.<event>`）；kind 为类型前缀 |
 | slots() | [{kind, id, plugin_id, order, title}]；slots 服务缺失时返回 []，按 kind/order/id 排序 |
 | theme() | {tokens, note}；slots 服务暴露 theme 映射时返回其内容，否则 tokens 为空 dict、note 说明原因 |
 | guide() | Markdown 教学文本：bundle.toml 行格式、Plugin/Config/inject/volatile、register_* 扩展点、plugin_create 与 install/settings 工作流 |
@@ -219,7 +219,7 @@ PluginToolsPlugin：普通 Plugin（不是 Service），plugin_id = plugin-tools
 
 ## 9. 内置 bundle 行与集成点
 
-Layer D 的四个内置插件需要作为 core bundle 的 [[plugins]] 行。截至本层实现完成时 @src/deeppyro/bundles/core/bundle.toml 已包含这些行（由 Lead 维护），目标路径为：
+Layer D 的四个内置插件已作为 core bundle 的 [[plugins]] 行接线（`plugin-manager`、`settings`、`inspect`、`slots` 等，0.3.0 共 41 个插件行 + `[bundle]` 元数据），路径为：
 
 | id | plugin | 依赖 |
 | --- | --- | --- |
@@ -228,9 +228,9 @@ Layer D 的四个内置插件需要作为 core bundle 的 [[plugins]] 行。截�
 | inspect | deeppyro.builtin.inspect:InspectPlugin | 无（方法调用时才取其它服务） |
 | plugin-tools | deeppyro.tools.builtin.plugin_tools:PluginToolsPlugin | tools（必须排在 tools 行之后） |
 
-集成点（由 Lead 接线）：
-- TUI runtime 需要把 plugin_manager、settings、inspect 三个服务实例放进 AgentSession 的 services dict（services 的键就是工具查找用的名字），agents.create 已支持 services 参数。
-- 管理界面：@src/deeppyro/tui/commands.py 的 /plugins 命令由 Lead 改为 push PluginScreen（例如 await app.push_screen(PluginScreen()) 或 push_screen_wait 后忽略 None 结果），本层不修改 app.py/commands.py。
+集成点（0.3.0 已接线；以下为落点说明）：
+- TUI/headless native 宿主把 plugin_manager、settings、inspect 三个服务实例放进 runtime services（键就是工具查找用的名字），由 native host 在构造 `AgentLoop` 时转发。
+- 管理界面：`/plugins` 命令经 `src/deeppyro/tui/app_panels.py` 打开 `PluginScreen`（`tui/screens/plugins.py`）；`/panel <id>` 打开插件面板。本层不修改 app.py/commands.py。ds.py。
 - 目录来源插件的可导入性：PluginManagerPlugin 构造时创建 PluginManager 并 refresh，会把插件目录插入 sys.path。若希望 boot 期间直接导入目录插件，plugin-manager 行应排在依赖它的外部行之前；外部 bundle 的 order 应大于 core 的 0。
 - 自扩展闭环：agent 可用 plugin_create 生成脚手架（默认目标 ~/.dpro/bundles/<id>，下次 boot 由自动发现加载），或用 plugin_manager install 安装任意 bundle；plugin_inspect 的 guide 给出开发指南；settings_write 对 volatile 字段可在运行中 apply（依赖 kernel 服务）。
 

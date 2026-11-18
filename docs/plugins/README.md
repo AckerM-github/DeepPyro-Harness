@@ -1,23 +1,27 @@
 # 插件开发指南
 
-> **状态（0.2.0）**：仓库当前实现的插件 API 是 **v3**（`deeppyro.api.API_VERSION == 3`）。v3 已按 ADR 硬切：
+> **状态（0.3.0）**：仓库当前实现的插件 API 是 **v3**（`deeppyro.api.API_VERSION == 3`）。v3 已按 ADR 硬切：
 > 唯一挂载入口 `RuntimeContext.mount(plugin, config)`、唯一钩子 `setup(self)`、typed `inject`、typed service lookup、
 > 能力清单（CapabilityManifest）、bundle v3 与 entry points。v1/v2 没有任何兼容 shim。
+> 0.3.0 是 native-only 硬切：插件只面对 native schema 1 会话，headless/TUI/Web 三个入口共用同一 runtime；
+> v4 会话栈、四个 0.2.0 回退开关与 `dpyro migrate` 已删除（插件 API 形状本身不变）。
 > 本文描述的是**已落地**的 v3 契约；与代码冲突时以 `src/deeppyro/api/` 为准。
 > 从 v2 迁到 v3 的逐项对照见 [migration-v2-v3.md](migration-v2-v3.md)。
 
-## 0. 0.2.0 对插件作者意味着什么
+## 0. 0.3.0 对插件作者意味着什么
 
-0.2.0 是破坏性版本（0.x 政策允许）。与插件作者直接相关的变更：
+v3 硬切发生在 0.2.0；0.3.0 的破坏面是**会话语义与已删除的 v4 API**，插件 API 形状不变。与插件作者直接相关的变更：
 
 | 变更 | 状态 | 影响 |
 | --- | --- | --- |
-| 插件 API 硬切 v3，无兼容 shim | 已实现（M3） | v1 `setup(ctx, config)`、v2 的写法直接报 `PluginError` |
-| `setup(self)` 成为唯一 mount 形状 | 已实现（M3） | 位置参数形式的 setup 在挂载时拒绝并给出迁移提示 |
-| typed `inject`（契约类）与 zero-string service 查找 | 已实现（M3） | 插件侧 `ctx.get/require/has` 只接受契约类；字符串抛 `TypeError` |
-| `CapabilityManifest` 能力清单 | 已实现（M3） | 插件的 `capability_manifest()` 从类属性派生，见 §4 |
-| 配置键 snake_case（含插件 row config） | 已落地（M3）；0.2.0 起严格 | 属性与输出为 snake_case；camelCase TOML alias 与 schema 未知键抛 `ConfigError`，见 `docs/guides/config-migration.md` |
-| 会话日志格式 | native schema 1 | headless 默认 native（`--legacy-v4` 回退），TUI 交互仍写 v4；插件不得假设只有一种格式 |
+| 插件 API v3 保持不变 | 现行 | v1 `setup(ctx, config)`、v2 的写法仍然直接报 `PluginError` |
+| `setup(self)` 仍是唯一 mount 形状 | 现行（0.2.0 起的 v3 契约） | 位置参数形式的 setup 在挂载时拒绝并给出迁移提示 |
+| typed `inject` 与 zero-string service 查找 | 现行（0.2.0 起的 v3 契约） | 插件侧 `ctx.get/require/has` 只接受契约类；字符串抛 `TypeError` |
+| 配置键 snake_case（含插件 row config） | 现行；自 0.2.0 起严格 | camelCase TOML alias 与 schema 未知键抛 `ConfigError`，见 `docs/guides/config-migration.md` |
+| 会话日志格式 | native schema 1（唯一） | TUI、headless、Web 都只写 native 会话；0.2.0 的 v4 分支与 `--legacy-v4` 回退已删除 |
+| `--legacy-v4` / `--native-loop` / `DEEPPYRO_NATIVE_LOOP` / `DEEPPYRO_TUI_NATIVE` | 已删除 | 这些开关不再是插件可依赖的环境；传入即 CLI 解析错误 |
+| `dpyro migrate` 与会话迁移 | 已删除 | 旧 v4 会话文件不再可读；需要旧数据请在 0.2.x 上导出 |
+| Web 宿主插件 | 可用（非 core bundle 行） | `deeppyro.web.plugin:WebHostPlugin`（provide `web`）由 Web 宿主 / TUI splash 显式构造并 `start()`，不占 core bundle 的 41 个插件行 |
 
 插件包与 bundle 的文件形态（`bundle.toml` + `[[plugins]]` 行）不变。`bundle.api_version` 必须等于 3
 （省略时默认 3）；其它值在加载期直接 `CompositionError`。
@@ -43,7 +47,7 @@ class GreetTool(BaseTool):
 
 class GreetPlugin(Plugin):
     plugin_id = "greet"
-    version = "0.2.0"
+    version = "0.3.0"
     api_version = 3
     inject = ("tools", "prompt", "commands")   # 字符串仍允许；生产插件推荐契约类，见 §3
 
@@ -102,8 +106,9 @@ v3 只有一个 mount 形状：`setup(self)` 唯一，v1/v2 签名已删除（AD
 - **契约类**（`Service` 子类或已 `bind_service_type` 绑定的类，如 `CommandsPlugin`、`EventBus`、`HookService`）。
 
 契约类在挂载时经 `deeppyro.api.inject_names()` 解析为规范服务名（`api.services.service_name()`）；类未绑定服务则
-`CompositionError` 并点名该 row。规范服务名清单在 `src/deeppyro/api/services.py` 维护（当前 36 个，如 `tools`、
-`prompt`、`commands`、`llm`、`sessions`、`session_query`、`hooks`、`bus`、`kernel`、`settings`、`slots`、`subagent`）。
+`CompositionError` 并点名该 row。规范服务名清单在 `src/deeppyro/api/services.py` 维护（以该文件为准；例如 `tools`、
+`prompt`、`commands`、`llm`、`sessions`、`hooks`、`bus`、`kernel`、`settings`、`slots`、`subagent`；0.3.0 已删除
+`session_query` 服务）。
 
 ### 3.2 运行期取服务
 
@@ -138,7 +143,7 @@ class NotesService(Service):
         self.items = []
 ```
 
-- `provide` 是服务名（按仓库约定 snake_case，如 `session_query`）。
+- `provide` 是服务名（按仓库约定 snake_case，如 `user_questions`、`working_directory`）。
 - `__init_subclass__` 会把该子类登记为这个名字的类型化契约，因此其他插件可写 `ctx.require(NotesService)`。
 - `name` 是实例注册名；`intercept_config` 是宿主按层合并后的 intercept 配置（group row / preset realm，最近层优先）。
 - 历史字符串注册方式仍可用：`ctx.provide("name", value, check)` 会同步登记 `type(value) -> name`，让 `ctx.get(Contract)` 也能找到。
@@ -168,8 +173,8 @@ v3 已实现 `src/deeppyro/api/capabilities.py`。每个 `api.Plugin` 都有 `ca
 插件类上的对应声明处为 `risk`、`idempotent`、`permissions`、`sandbox`、`token_cost`、`context_window`；
 工具可用 `BaseTool.risk` / `BaseTool.idempotent` 标注，`tool_capability(tool)` 会折叠为 `ToolCapability`。
 这些治理字段**不进入** model-facing tool schema——43 个内置工具的 schema 快照保持不变。
-`CapabilityManifest.to_dict()` 可供 inspect/工具输出；`UsageService`（`builtin/usage.py`）仍是记账骨架，
-尚未挂入 core bundle。
+`CapabilityManifest.to_dict()` 可供 inspect/工具输出；`UsageService`（`builtin/usage.py`）随 core bundle 的
+`usage` 行挂载，记录每轮用量（native loop 通过 `UsageSink` 调用 `record_turn`）。
 
 ## 5. 扩展点
 
@@ -191,8 +196,10 @@ v3 已实现 `src/deeppyro/api/capabilities.py`。每个 `api.Plugin` 都有 `ca
 - **UI slots**：经 `ui` service 贡献 STATUS / CONVERSATION / PANEL / SETTINGS 内容；默认 append-only，显式替换/覆盖见 §7。
 - **运行时自扩展**：`plugin_manager` 服务与 `settings`（CAS）服务；内置 `/plugins` 命令与相关工具见
   `docs/spec/plugins.md` / `docs/spec/plugin-settings.md`。
-- **hooks / events**：`ctx.on(...)` 订阅 catalogued 事件（`hook/*` 等），走 kernel 的 `EventBus` / `HookService`；
-  具体事件名与 payload 见 `docs/spec/hooks.md`、`docs/spec/events.md`。
+- **hooks / events**：`ctx.on(...)` 订阅 catalogued 事件（如 `tools/pre-execute`、`tools/execute`、
+  `tools/post-execute`、`approval/request`、`command/executed`、`goal/changed`、`session/created`），走 kernel 的
+  `EventBus` / `HookService`；声明清单见 `src/deeppyro/core/events.py`。native loop 自身的生命周期用 typed
+  `AgentHooks` 观察（由宿主构造 `AgentLoop` 时传入，不经过 EventBus）。详见 `docs/spec/hooks.md`、`docs/spec/events.md`。
 
 ## 6. bundle：目录、声明与组合
 
@@ -210,7 +217,7 @@ my-bundle/
 [bundle]
 id = "greet-bundle"
 name = "Greet bundle"
-version = "0.2.0"
+version = "0.3.0"
 api_version = 3          # 必须等于 deeppyro.api.API_VERSION；其它值报 CompositionError
 order = 50               # 同层用户 bundle 按 (order, id) 应用
 critical = false         # 外部 bundle 默认 false：失败只记 app.failures，不中止 boot
@@ -261,7 +268,9 @@ plugin = "greet.py:GreetPlugin"
 - **requires**：`[bundle.requires]` 或字符串数组，操作符 `>= <= > < == = !=`；缺失/环/不支持 → `CompositionError`。
 - **include**：`include = "rows.toml"` 是加载期宏，只支持 TOML/JSON、相对路径、嵌套有上限；展开后行不再可被单独 patch 寻址。
 
-core bundle 当前 42 行。前两行示例（`kernel` 为 critical；`memory` 为非 critical、可缺省）：
+core bundle 当前 **41 个 `[[plugins]]` 行 + `[bundle]` 元数据**（`version = "0.3.0"`；`[bundle]` 不是插件行）。
+Web 宿主插件 `WebHostPlugin`（provide `web`）不在这 41 行内，由 Web 宿主 / TUI splash 显式构造并 `start()`。
+前两行示例（`kernel` 为 critical；`memory` 为非 critical、可缺省）：
 
 ```toml
 [[plugins]]
@@ -294,10 +303,11 @@ await app.dispose()
 再断言工具可调用、prompt 段被渲染、斜杠命令存在、LLM provider 注册成功。外部插件建议照此写集成测试，
 不要只测插件类本身。
 
-## 7. 已知限制（0.2.0 仍适用）
+## 7. 已知限制（0.3.0 仍适用）
 
-摘自 `docs/spec/plugin-core.md` §9，并补充 0.2.0 语境。完整状态见
-[`docs/release/0.2.0-known-issues.md`](../release/0.2.0-known-issues.md)（KI-019/KI-021）：
+摘自 `docs/spec/plugin-core.md` §9，并补充 0.3.0 语境。0.2.0 时代的已知问题（KI-019/KI-021）保留在
+[`docs/release/0.2.0-known-issues.md`](../release/0.2.0-known-issues.md)，仅作历史；当前版本范围与已知问题关闭情况见
+[`docs/release/0.3.0.md`](../release/0.3.0.md)：
 
 - settings 写入在跨进程文件锁内做 CAS+merge（Windows `msvcrt` / POSIX `fcntl`，默认 5s 超时，超时抛 `SettingsLockTimeout`）；
   用户 manifest 采用行级编辑，保留注释、键顺序与未知键（无变化时字节不变）。仍有“需重启才生效”的字段。
@@ -326,14 +336,17 @@ await app.dispose()
 - preset 的 `model` 在注册（`add()`）与应用（`resolve()`）时按 `[providers]` 配置校验：默认
   `ConfigWarning`，`DEEPPYRO_STRICT_CONFIG` 下为 `ConfigError`；未知 provider/model 不再等下一次请求才失败。
   配置加载本身自 0.2.0 起始终严格，这个开关只影响 preset-model 校验。
-- headless 默认写 native schema 1（`--legacy-v4` 回退），TUI 交互仍写 v4；插件不要假设只有一种会话格式。
-  两种格式可用 `dpyro migrate` 转换但不 dual-write、不互读；v4 预计 0.3 移除。
+- 会话只有 native schema 1（`~/.dpro/sessions/<id>.jsonl`）：headless、TUI、Web 共用同一 runtime；旧 v4 会话
+  不再可读，也没有 `dpyro migrate`（需要旧数据请在 0.2.x 上导出）。插件不得导入 `deeppyro.core.wire`、
+  `deeppyro.session.store`、`deeppyro.projections` 等已删除模块。
 
 ## 8. 参考
 
 - `src/deeppyro/api/plugin.py`、`context.py`、`services.py`、`types.py`：本文的代码级事实来源。
 - `src/deeppyro/kernel/composition.py`：bundle/row/patch 的校验与合并实现。
-- `src/deeppyro/bundles/core/bundle.toml`：46 个内置插件行。
+- `src/deeppyro/bundles/core/bundle.toml`：41 个内置插件行 + `[bundle]` 元数据。
 - `docs/spec/plugin-core.md`：组合内核与 v3 契约的完整规格。
 - `docs/spec/plugin-platform.md`：插件包安装单元（`plugin.toml`）与 composer 层序。
-- `docs/plugins/migration-v2-v3.md`：v2 → v3 迁移与 0.2.0 破坏性变更清单。
+- `src/deeppyro/web/plugin.py`：Web 宿主插件（provide `web`，宿主显式 `start()`；不在 core bundle 行内）。
+- `docs/release/0.3.0.md`：0.3.0 native-only 硬切与删除清单。
+- `docs/plugins/migration-v2-v3.md`：v2 → v3 迁移与 0.2.0 破坏性变更清单（历史契约，当前仍适用）。

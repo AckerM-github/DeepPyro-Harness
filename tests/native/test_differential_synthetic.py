@@ -1,32 +1,30 @@
-"""Hand-authored differential cases for the protocol surfaces recordings cannot reach.
+"""Hand-authored native coverage cases for the protocol surfaces recordings cannot reach.
 
-The frozen recordings under fixtures/native only carry real text and tool traffic,
-so image/attachment, approval, compaction, MCP, PTC, subagent and handoff pairs are
-synthesized under tests/fixtures/native/synthetic (KI-011). Each case is written to
-a temporary directory, read back through the production parsers (read_session_file,
-NativeCodec, fold, derive_messages) and compared semantically; nothing here touches
-the network, the 26 MB recorded session corpus, or node.
+The frozen recordings under fixtures/native only carry real text and tool traffic, so
+image/attachment, approval, compaction, MCP, PTC, subagent and handoff cases are
+synthesized under tests/fixtures/native/synthetic (KI-011). Each case is materialized
+into a temporary directory, read back through the production codec (NativeCodec, fold)
+and asserted against the native shape invariants; nothing here touches the network,
+the recorded session corpus, or node.
 
-The handoff case is covered by the task facts both vocabularies express: session v4
-keeps the task plugin payloads as ignorable extension records and native schema 1
-records task.state, task.handoff and task.handoff.result. The one boundary is where
-the per-handoff token snapshot lives (v4 log versus the native trace side channel);
-the case documents it in its limitations.
+The handoff case is covered by schema 1 task facts: task.state, task.handoff and
+task.handoff.result. Per-handoff token usage lives in the trace side channel; the
+case documents that split in its limitations.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
 
 import pytest
 
 from deeppyro.session.schema import EventKind
 from tests.native.synthetic import (
     CAPABILITIES,
+    FIXTURE_ROOT,
     HANDOFF_NATIVE_TYPES,
-    HANDOFF_V4_TYPES,
     DifferentialMismatch,
     MatrixRow,
     SyntheticCase,
@@ -55,8 +53,8 @@ def _params() -> list[object]:
 
 
 @pytest.mark.parametrize("case", _params())
-def test_synthetic_case_is_semantically_equivalent(case: SyntheticCase, tmp_path: Path) -> None:
-    """Native events and session v4 records must agree on the same conversation."""
+def test_synthetic_case_satisfies_native_invariants(case: SyntheticCase, tmp_path: Path) -> None:
+    """A synthetic case must fold into the native message, tool and trace shapes."""
     compare_case(case, tmp_path)
 
 
@@ -72,66 +70,70 @@ def test_matrix_covers_every_protocol_surface() -> None:
     assert covered == {"image", "approval", "compaction", "mcp", "ptc", "subagent", "handoff"}
 
 
-def test_matrix_is_printed_as_a_ci_report(capsys: pytest.CaptureFixture[str]) -> None:
+def test_matrix_is_printed_as_a_ci_report() -> None:
     """The harness renders the covered/uncovered matrix for the CI log."""
-    with capsys.disabled():
-        print(render_matrix(CASES))
     report = render_matrix(CASES)
-    assert report.startswith("native synthetic differential coverage (KI-011)")
+    assert report.startswith("native synthetic coverage matrix (KI-011)")
+    assert "hand-authored" in report
+    assert f"cases: {len(CASES)} hand-authored offline schema-1 sessions" in report
     assert "covered: approval, compaction, handoff, image, mcp, ptc, subagent" in report
     assert "xfail (KI-011): -" in report
-    assert "hand-authored" in report
 
 
-def test_covered_cases_are_offline_pairs() -> None:
-    """A covered case must pair both sides and must not hide metadata gaps."""
+def test_covered_cases_are_offline_fixtures() -> None:
+    """A covered case must carry the native side and a small checked-in fixture."""
     for case in CASES:
         if case.coverage.value != "covered":
             continue
-        assert case.v4 is not None, case.case_id
         assert case.native is not None, case.case_id
         assert case.xfail_reason is None
-        fixture = (
-            Path(__file__).resolve().parents[1] / "fixtures" / "native" / "synthetic" / f"{case.case_id}.json"
-        )
+        fixture = FIXTURE_ROOT / f"{case.case_id}.json"
         assert fixture.is_file()
         assert fixture.stat().st_size < 64 * 1024
 
 
 def test_handoff_case_is_covered_by_task_facts() -> None:
-    """The handoff gap is closed on both sides; no xfail hides a missing vocabulary."""
+    """The handoff case is a real covered case, not an xfail hiding a gap."""
     handoff = next(case for case in CASES if case.capability.value == "handoff")
     handoff.require_representation()
     assert handoff.coverage.value == "covered"
     assert handoff.xfail_reason is None
-    assert handoff.v4 is not None
     assert handoff.native is not None
     kinds = {kind.value for kind in EventKind}
     assert set(HANDOFF_NATIVE_TYPES) <= kinds
-    v4 = cast(Mapping[str, object], handoff.v4)
-    records = cast(Sequence[Mapping[str, object]], v4["records"])
-    types = {record.get("type") for record in records}
-    assert set(HANDOFF_V4_TYPES) <= types
+    raw = json.loads((FIXTURE_ROOT / f"{handoff.case_id}.json").read_text(encoding="utf-8"))
+    events = raw["native"]["events"]
+    types = {event.get("type") for event in events}
+    assert set(HANDOFF_NATIVE_TYPES) <= types
+
+
+def _write_case(tmp_path: Path, payload: Mapping[str, object]) -> Path:
+    path = tmp_path / f"{payload['case_id']}.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
 
 
 def test_unknown_capability_is_rejected(tmp_path: Path) -> None:
     """A typo in a fixture cannot silently drop a capability from the matrix."""
-    (tmp_path / "bogus.json").write_text(
-        '{"case_id": "bogus", "capability": "telepathy", "coverage": "covered",'
-        ' "title": "bogus", "v4": {"header": {}, "records": []},'
-        ' "native": {"session_id": "x", "created_at": 0, "events": []}}',
-        encoding="utf-8",
+    _write_case(
+        tmp_path,
+        {
+            "case_id": "bogus",
+            "capability": "telepathy",
+            "coverage": "covered",
+            "title": "bogus",
+            "native": {"session_id": "s", "created_at": 0, "events": [{"type": "turn.started"}]},
+        },
     )
     with pytest.raises(DifferentialMismatch, match="unknown capability"):
         load_cases(tmp_path)
 
 
 def test_covered_case_without_native_side_is_rejected(tmp_path: Path) -> None:
-    """A covered case must materialize both sides through the production parsers."""
-    (tmp_path / "half.json").write_text(
-        '{"case_id": "half", "capability": "image", "coverage": "covered",'
-        ' "title": "half", "v4": {"header": {}, "records": []}}',
-        encoding="utf-8",
+    """A covered case must materialize the native side through the production codec."""
+    _write_case(
+        tmp_path,
+        {"case_id": "half", "capability": "image", "coverage": "covered", "title": "half"},
     )
     with pytest.raises(DifferentialMismatch, match="covered case needs the native side"):
         load_cases(tmp_path)
@@ -139,10 +141,32 @@ def test_covered_case_without_native_side_is_rejected(tmp_path: Path) -> None:
 
 def test_xfail_without_ki011_reason_is_rejected(tmp_path: Path) -> None:
     """An xfail must cite the known-issues entry so the gap is traceable."""
-    (tmp_path / "quiet.json").write_text(
-        '{"case_id": "quiet", "capability": "handoff", "coverage": "xfail",'
-        ' "title": "quiet", "xfail_reason": "not implemented yet"}',
-        encoding="utf-8",
+    _write_case(
+        tmp_path,
+        {
+            "case_id": "quiet",
+            "capability": "handoff",
+            "coverage": "xfail",
+            "title": "quiet",
+            "xfail_reason": "not implemented yet",
+        },
     )
     with pytest.raises(DifferentialMismatch, match="KI-011"):
+        load_cases(tmp_path)
+
+
+def test_stale_v4_field_is_rejected(tmp_path: Path) -> None:
+    """A fixture that still carries a v4 side must fail loudly, not be ignored."""
+    _write_case(
+        tmp_path,
+        {
+            "case_id": "stale",
+            "capability": "image",
+            "coverage": "covered",
+            "title": "stale",
+            "v4": {"header": {}, "records": []},
+            "native": {"session_id": "s", "created_at": 0, "events": [{"type": "turn.started"}]},
+        },
+    )
+    with pytest.raises(DifferentialMismatch, match="unknown synthetic case field"):
         load_cases(tmp_path)

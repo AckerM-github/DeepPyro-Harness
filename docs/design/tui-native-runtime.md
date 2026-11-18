@@ -1,6 +1,11 @@
 # TUI native runtime — implementation design (0.3.0 hard cut)
 
-Status: proposal. Target: DeepPyro 0.3.0, native-only runtime.
+Status: **implemented (0.3.0)** — proposal delivered. Target was DeepPyro 0.3.0,
+native-only runtime; the TUI now runs the native `AgentLoop` and the splash offers
+F1 Web / F2 terminal. Repository snapshot below (HEAD `7d03ef6` plus in-flight native
+modules) is plan-time: several files listed there were removed or renamed during the
+cut (e.g. `llm/native_provider.py`, v4 session modules). Treat the body as the design
+record; code/tests are authoritative.
 Repository snapshot: HEAD 7d03ef6 plus the in-flight native modules in the working tree
 (`src/deeppyro/core/llm.py`, `src/deeppyro/agent/model_call.py`,
 `src/deeppyro/llm/native_provider.py`, `src/deeppyro/session/native_fork.py`,

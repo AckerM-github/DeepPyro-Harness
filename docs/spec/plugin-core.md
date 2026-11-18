@@ -1,8 +1,8 @@
 # Plugin core: contract, composition, extension points
 
-> **状态**：现行（API v3） · **层级**：功能规格 · **最后核对**：2026-11-18
+> **状态**：现行（API v3） · **层级**：功能规格 · **最后核对**：2026-11-19
 
-Status: plugin API v3 is the current contract (0.2.0); layers A (composition kernel) and B
+Status: plugin API v3 is the current contract (0.3.0); layers A (composition kernel) and B
 (capability registries) are implemented. Everything below is the contract external plugins and
 bundles may rely on. v3 is a hard cut: there is no v1/v2 compatibility shim (ADR 0001 section 7),
 so a plugin or bundle declaring another `api_version` is rejected at load time with a migration
@@ -42,7 +42,7 @@ class MyConfig(BaseModel):
 
 class MyPlugin(Plugin):
     plugin_id = "my-plugin"
-    version = "0.2.0"
+    version = "0.3.0"
     api_version = 3              # must equal deeppyro.api.API_VERSION (3) or the mount is rejected
     inject = ("tools",)          # service names, or contract classes such as CommandsPlugin
     Config = MyConfig            # optional pydantic model; row.config is validated into it
@@ -106,7 +106,7 @@ A bundle is a directory with `bundle.toml`:
 [bundle]
 id = "my-bundle"
 name = "My bundle"
-version = "0.2.0"
+version = "0.3.0"
 api_version = 3     # must equal deeppyro.api.API_VERSION; omitted means 3
 order = 50          # applied after lower order bundles
 critical = false    # default for external bundles
@@ -194,7 +194,7 @@ The `[bundle]` table accepts `requires`, either as tables or as strings:
 ```toml
 [bundle]
 id = "my-bundle"
-version = "0.2.0"
+version = "0.3.0"
 requires = [{ id = "core", version = ">=0.1" }, "other-bundle>=1.0"]
 ```
 
@@ -213,7 +213,7 @@ missing bundle, a dependency cycle or an unsupported constraint raises `Composit
 |---|---|---|
 | `kernel` | `kernel.runtime` | `kernel`: live row states, volatile config updates (6.3) |
 | `llm` | `builtin.llm` | `llm`: providers, `.provider(name)`, `.add_provider` |
-| `sessions` | `builtin.sessions` | `sessions`: `.store` (SessionStore) |
+| `sessions` | `builtin.sessions` | `sessions`: SessionsPlugin（native schema 1 会话的 list/open/fork/archive 等；无 SessionStore） |
 | `sandbox` | `builtin.sandbox` | `sandbox`: `.gate(workspace, ask)` |
 | `tools` | `builtin.tools` | `tools`: contribution registry, `.registry_for(workspace, scope=None)` |
 | `tools-builtin` | `builtin.tools` | eleven built-in tools |

@@ -56,7 +56,7 @@ class PtcPlugin(Plugin):
 
     provide = "ptc"
     plugin_id = "ptc"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "Python programmatic tool calling (run_code)"
     inject: ClassVar[tuple[type[Any], ...]] = (KernelConfig, ToolsPlugin, PromptPlugin)
 

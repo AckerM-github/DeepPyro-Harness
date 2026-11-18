@@ -1,4 +1,4 @@
-"""Shared fakes and helpers for the subagent tests."""
+"""Shared native fakes and builders for the subagent tests."""
 
 from __future__ import annotations
 
@@ -6,269 +6,265 @@ import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, ClassVar
+from typing import Any
 
-from deeppyro.core.protocols import ToolResult
-from deeppyro.session.session import Session
-from deeppyro.session.store import SessionStore
+from deeppyro.api.types import DEFAULT_PRESET_ID
+from deeppyro.session.native_control import NativeSessionControl, NewSession
+from deeppyro.session.schema import NativeSession
 from deeppyro.subagent.manager import SubagentService
-from deeppyro.tools.registry import ToolRegistry
 
 
-class FakeAgent:
-    """Agent double: records prompts, returns a fixed reply and can be gated."""
+class FakeProvider:
+    """LLM provider double: the name is all the subagent service reads."""
+
+    def __init__(self, name: str = "local") -> None:
+        self.name = name
+
+
+class FakeGate:
+    """Permission gate double mirroring the prompt-facts surface."""
+
+    def __init__(self, mode: str = "workspace-write", approval: str = "ask") -> None:
+        self.policy = SimpleNamespace(mode=mode)
+        self.approval = approval
+
+
+class FakeLlm:
+    """LLM plugin double exposing the provider() factory."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def provider(self, name: str) -> Any:
+        self.calls.append(name)
+        if name != "local":
+            raise LookupError(f"unknown provider {name}")
+        return FakeProvider(name)
+
+
+class FakeSessions:
+    """The native control plane a sessions plugin exposes."""
+
+    def __init__(self, root: Path) -> None:
+        self.native = NativeSessionControl(root=root)
+        self.created: list[NewSession] = []
+        self.opened: list[str] = []
+
+    def native_create(self, spec: NewSession) -> NativeSession:
+        self.created.append(spec)
+        return self.native.create(spec)
+
+    def native_open(self, session_id: str) -> NativeSession:
+        self.opened.append(session_id)
+        return self.native.open(session_id)
+
+
+class FakeHost:
+    """A child host: sends one prompt and reports provider usage counters."""
 
     def __init__(
         self,
-        reply: str = "ok",
         *,
-        gate: asyncio.Event | None = None,
+        reply: str = "child reply",
         error: Exception | None = None,
+        gate: asyncio.Event | None = None,
+        usage_map: dict[str, int] | None = None,
+        steps: int = 2,
     ) -> None:
         self.reply = reply
-        self.gate = gate
         self.error = error
+        self.gate = gate
+        self.usage_map = dict(usage_map or {"input": 10, "output": 5, "cached": 2})
+        self.steps = steps
         self.prompts: list[str] = []
         self.closed = False
-        self.close_calls = 0
+        self.restored = 0
 
-    async def send(self, text: str) -> str:
+    async def send(self, text: str) -> Any:
         self.prompts.append(text)
         if self.gate is not None:
             await self.gate.wait()
         if self.error is not None:
             raise self.error
-        return self.reply
+        return SimpleNamespace(final_text=self.reply, steps=self.steps)
+
+    def usage(self) -> dict[str, int]:
+        return dict(self.usage_map)
 
     async def aclose(self) -> None:
-        self.close_calls += 1
         self.closed = True
 
-
-class FakeAgentNoClose(FakeAgent):
-    """Agent double without the optional aclose hook."""
-
-    aclose = None
+    def restore(self) -> bool:
+        self.restored += 1
+        return True
 
 
 class FakeAgents:
-    """Agents service double that records options()/create() calls."""
+    """The agents plugin host() factory: records every AgentBuild."""
 
     def __init__(
         self,
         *,
-        reply: str = "ok",
-        gate: asyncio.Event | None = None,
+        hosts: list[FakeHost] | None = None,
+        reply: str = "child reply",
         error: Exception | None = None,
-        agent_factory: Any = None,
+        gate: asyncio.Event | None = None,
+        usage_map: dict[str, int] | None = None,
+        steps: int = 2,
     ) -> None:
+        self.hosts = list(hosts or [])
         self.reply = reply
-        self.gate = gate
         self.error = error
-        self.agent_factory = agent_factory
-        self.options_calls: list[dict[str, Any]] = []
-        self.created: list[dict[str, Any]] = []
-        self.agents: list[FakeAgent] = []
+        self.gate = gate
+        self.usage_map = usage_map
+        self.steps = steps
+        self.builds: list[Any] = []
+        self.sessions: list[Any] = []
+        self.host_objects: list[FakeHost] = []
 
-    def options(self, **overrides: Any) -> Any:
-        self.options_calls.append(dict(overrides))
-        return SimpleNamespace(**overrides)
-
-    def create(self, **kwargs: Any) -> FakeAgent:
-        if self.agent_factory is not None:
-            agent = self.agent_factory()
+    def host(self, session: Any, build: Any) -> FakeHost:
+        self.builds.append(build)
+        self.sessions.append(session)
+        if self.error is not None:
+            raise self.error
+        if self.hosts:
+            host = self.hosts.pop(0)
         else:
-            agent = FakeAgent(self.reply, gate=self.gate, error=self.error)
-        self.created.append(kwargs)
-        self.agents.append(agent)
-        return agent
+            host = FakeHost(
+                reply=self.reply,
+                gate=self.gate,
+                usage_map=self.usage_map,
+                steps=self.steps,
+            )
+        self.host_objects.append(host)
+        return host
 
 
-class FakeGate:
-    """Permission gate double exposing the mutable preset/approval pair."""
+class FakeParentHost:
+    """The parent native host: owns the parent session and its notice queue."""
 
-    def __init__(self, preset: str | None = None, approval: str | None = None) -> None:
-        self.preset = preset
-        self.approval = approval
+    def __init__(self, session: NativeSession, *, busy: bool = False) -> None:
+        self.native_session = session
+        self.busy = busy
+        self.notices: list[tuple[str, Any]] = []
+        self.deliveries = 0
 
-    @property
-    def policy(self) -> Any:
-        return SimpleNamespace(mode=self.preset)
-
-    def set_preset(self, preset: str) -> None:
-        self.preset = preset
-
-    def set_approval(self, approval: str) -> None:
-        self.approval = approval
-
-
-class FakeSandbox:
-    """Sandbox service double: one fake gate per call."""
-
-    def __init__(self, inherit: FakeGate | None = None) -> None:
-        self.calls: list[dict[str, Any]] = []
-        self.gates: list[FakeGate] = []
-        self.inherit = inherit
-
-    def gate(self, workspace: Any, ask: Any = None, session: Any = None, **kwargs: Any) -> FakeGate:
-        if session is not None and self.inherit is not None:
-            gate = FakeGate(self.inherit.preset, self.inherit.approval)
-        else:
-            gate = FakeGate("workspace-write", "ask")
-        self.calls.append({"workspace": Path(workspace), "ask": ask})
-        self.gates.append(gate)
-        return gate
+    def deliver(self, text: str, *, source: Any = None) -> bool:
+        self.deliveries += 1
+        if self.busy:
+            return True
+        self.notices.append((text, source))
+        return False
 
 
-class FakeSandboxNoAsk(FakeSandbox):
-    """Sandbox double whose gate() does not accept the optional ask keyword."""
+class RecordingUsageSink:
+    """Usage sink double recording every published measurement."""
 
-    def gate(self, workspace: Any, **kwargs: Any) -> FakeGate:
-        if kwargs.get("ask") is not None:
-            raise TypeError("gate() got an unexpected keyword argument 'ask'")
-        return super().gate(workspace)
+    def __init__(self) -> None:
+        self.records: list[dict[str, Any]] = []
 
-
-class FakeLlm:
-    """LLM service double used to resolve named providers."""
-
-    def __init__(self, providers: dict[str, Any] | None = None) -> None:
-        self.providers = dict(providers or {})
-        self.calls: list[str] = []
-
-    def provider(self, name: str) -> Any:
-        self.calls.append(name)
-        try:
-            return self.providers[name]
-        except KeyError as exc:
-            raise LookupError(f"unknown provider {name}") from exc
-
-
-class FakeTool:
-    """Minimal Tool implementation for registry tests."""
-
-    parallel_safe = True
-    description = "fake tool"
-    parameters: ClassVar[dict[str, Any]] = {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": False,
-    }
-
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    async def run(self, args: dict[str, Any], ctx: Any) -> ToolResult:
-        return ToolResult()
-
-
-def make_registry(names: tuple[str, ...] = ("read", "write", "subagent", "team_spawn", "team_wait")) -> Any:
-    """Build a ToolRegistry with the given tool names."""
-    return ToolRegistry([FakeTool(name) for name in names])
-
-
-class FakeWithoutRegistry:
-    """Registry double exposing without(); records the excluded names."""
-
-    def __init__(self, names: tuple[str, ...] = ("read", "write", "subagent", "team_spawn")) -> None:
-        self.tools = [FakeTool(name) for name in names]
-        self.calls: list[tuple[str, ...]] = []
-
-    def without(self, names: Any) -> ToolRegistry:
-        requested = tuple(names)
-        self.calls.append(requested)
-        return ToolRegistry([tool for tool in self.tools if tool.name not in requested])
+    def record(
+        self,
+        *,
+        provider: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int,
+    ) -> None:
+        self.records.append(
+            {
+                "provider": provider,
+                "model": model,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cached_tokens": cached_tokens,
+            }
+        )
 
 
 @dataclass(slots=True)
 class SubagentEnv:
-    """Everything a subagent test needs: configured service plus its doubles."""
+    """One configured service bound to a native parent session."""
 
     service: SubagentService
-    parent: Session
-    store: SessionStore
+    sessions: FakeSessions
     agents: FakeAgents
-    sandbox: Any
+    host: FakeParentHost
     permission: FakeGate
-    provider: SimpleNamespace
-    registry: Any
+    provider: FakeProvider
     llm: FakeLlm
+
+    @property
+    def parent(self) -> NativeSession:
+        """The bound parent native session."""
+        return self.host.native_session
+
+    def open(self, session_id: str) -> NativeSession:
+        """Open a native session by id through the fake sessions service."""
+        return self.sessions.native.open(session_id)
 
 
 def make_subagent(
     tmp_path: Path,
     *,
     agents: FakeAgents | None = None,
-    sandbox: Any = None,
-    permission: FakeGate | None = None,
-    registry: Any = None,
-    services: dict[str, Any] | None = None,
-    preset: str = "default",
-    preset_revision: int | None = 7,
-    model: str = "parent-model",
-    context_window: int = 8192,
-    ask: Any = "ask-callback",
+    reply: str = "child reply",
+    error: Exception | None = None,
+    usage_map: dict[str, int] | None = None,
+    steps: int = 2,
     max_runs: int = 4,
-    configure: bool = True,
+    services: dict[str, Any] | None = None,
+    sandbox: Any = None,
+    bind: bool = True,
 ) -> SubagentEnv:
-    """Build a SubagentService bound to a real temporary parent session."""
-    store = SessionStore(root=tmp_path / "sessions")
-    parent = store.create(tmp_path)
-    agents = agents or FakeAgents()
-    permission = permission or FakeGate("workspace-write", "ask")
-    sandbox = sandbox if sandbox is not None else FakeSandbox(inherit=permission)
-    provider = SimpleNamespace(name="local")
-    llm = FakeLlm({"local": provider, "other": SimpleNamespace(name="other")})
-    registry = registry if registry is not None else make_registry()
-    service = SubagentService(
-        agents=agents,
-        sessions=SimpleNamespace(store=store),
-        sandbox=sandbox,
-        max_runs=max_runs,
+    """Build a native subagent service with a bound parent session."""
+    sessions = FakeSessions(tmp_path)
+    fake_agents = (
+        agents
+        if agents is not None
+        else FakeAgents(reply=reply, error=error, usage_map=usage_map, steps=steps)
     )
-    if configure:
-        service.configure(
-            cwd=tmp_path,
-            provider=provider,
-            registry=registry,
-            permission=permission,
-            model=model,
-            context_window=context_window,
-            preset=preset,
-            preset_revision=preset_revision,
-            services=dict(services or {"llm": llm}),
-            ask=ask,
-        )
-    service.bind_session(parent)
+    llm = FakeLlm()
+    provider = FakeProvider()
+    permission = FakeGate()
+    service = SubagentService(agents=fake_agents, sessions=sessions, sandbox=sandbox, max_runs=max_runs)
+    service.configure(
+        cwd=tmp_path,
+        provider=provider,
+        registry=None,
+        permission=permission,
+        model="parent-model",
+        context_window=4096,
+        preset=DEFAULT_PRESET_ID,
+        services={"llm": llm, "subagent": object()} if services is None else services,
+    )
+    host = FakeParentHost(sessions.native_create(NewSession(cwd=tmp_path)))
+    if bind:
+        service.bind_session(host)
+        service.bind_parent(host)
     return SubagentEnv(
         service=service,
-        parent=parent,
-        store=store,
-        agents=agents,
-        sandbox=sandbox,
+        sessions=sessions,
+        agents=fake_agents,
+        host=host,
         permission=permission,
         provider=provider,
-        registry=registry,
         llm=llm,
     )
 
 
-def records(session: Session, record_type: str) -> list[dict[str, Any]]:
-    """Return the data payloads of one record type in append order."""
-    return [record.data for record in session.records if record.type == record_type]
+def facts(session: NativeSession, event_type: str) -> list[dict[str, Any]]:
+    """Return the data payloads of the events with `event_type`."""
+    payloads: list[dict[str, Any]] = []
+    for event in session.events:
+        if getattr(event, "type", "") == event_type:
+            data = getattr(event, "data", None)
+            if isinstance(data, dict):
+                payloads.append(dict(data))
+    return payloads
 
 
-async def spin(times: int = 3) -> None:
-    """Yield to the event loop so background run tasks can start."""
-    for _ in range(times):
-        await asyncio.sleep(0)
-
-
-async def wait_for(predicate: Any, *, attempts: int = 200) -> None:
-    """Yield until predicate() is truthy."""
-    for _ in range(attempts):
-        if predicate():
-            return
-        await asyncio.sleep(0)
-    raise AssertionError("condition was not reached")
+def types(session: NativeSession) -> list[str]:
+    """Return the event types recorded on a native session."""
+    return [getattr(event, "type", "") for event in session.events]

@@ -8,21 +8,14 @@ both are wired end to end without network access.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
-from deeppyro.agent import AgentOptions, AgentSession
 from deeppyro.builtin.activity import ActivityService
-from deeppyro.builtin.inspect import InspectPlugin
-from deeppyro.builtin.plugin_manager import PluginManagerPlugin
-from deeppyro.builtin.settings import SettingsPlugin
 from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.jobs import JobsService
 from deeppyro.kernel import boot
-from deeppyro.session import SessionStore
 from deeppyro.team.manager import TeamService
 from deeppyro.tui.slots import SlotRegistry
-from tests.integration.fake_provider import Response, ScriptedProvider, tool_response
 
 SLOTS_SOURCE = 'from deeppyro.api import Plugin\nfrom deeppyro.tui.slots import SlotRegistry\n\n\nclass DemoslotsPlugin(Plugin):\n    plugin_id = "demo-slots"\n    version = "0.1.0"\n    inject = ["slots"]\n\n    def setup(self):\n        registry = self.ctx.require(SlotRegistry)\n        registry.add_status_item(lambda context: "demo: on", id="demo-status", plugin_id="demo-slots")\n        registry.add_panel("Demo panel", lambda context: None, id="demo-panel", plugin_id="demo-slots")\n'
 SLOTS_BUNDLE = '[bundle]\nid = "demo-slots-bundle"\nname = "Demo slots bundle"\nversion = "0.1.0"\norder = 60\n\n[[plugins]]\nid = "demo-slots"\nplugin = "demo_slots.py:DemoslotsPlugin"\n'
@@ -35,57 +28,6 @@ def _config() -> Config:
         },
         agent={"provider": "local", "model": "m"},
     )
-
-
-class _Sink:
-    def __init__(self) -> None:
-        self.events: list[dict[str, Any]] = []
-
-    def emit(self, event: dict[str, Any]) -> None:
-        self.events.append(event)
-
-
-async def test_plugin_tools_run_with_kernel_services(tmp_path: Path) -> None:
-    app = await boot(_config())
-    try:
-        registry = app.require(ToolsPlugin).registry_for(tmp_path)
-        for name in ("plugin_manager", "plugin_inspect", "settings_read", "settings_write"):
-            assert name in registry, name
-
-        services = {
-            "plugin_manager": app.require(PluginManagerPlugin),
-            "inspect": app.require(InspectPlugin),
-            "settings": app.require(SettingsPlugin),
-        }
-        store = SessionStore(tmp_path / "sessions")
-        session = store.create(tmp_path)
-        provider = ScriptedProvider(
-            [
-                tool_response("call-1", "plugin_inspect", '{"what":"services"}'),
-                Response(text="done"),
-            ]
-        )
-        agent = AgentSession(
-            session=session,
-            provider=provider,
-            registry=registry,
-            options=AgentOptions(max_steps=4, model="scripted-model"),
-            sink=_Sink(),
-            cwd=tmp_path,
-            services=services,
-        )
-        reply = await agent.send("list the services")
-        assert reply == "done"
-
-        results = [record for record in session.records if record.type == "tool/result"]
-        assert len(results) == 1
-        message = results[0].data["message"]
-        assert message["isError"] is False
-        text = message["content"][0]["text"]
-        assert "plugin_manager" in text
-        assert "slots" in text
-    finally:
-        await app.stop()
 
 
 async def test_runtime_services_expose_manager_objects(tmp_path: Path) -> None:

@@ -19,7 +19,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from deeppyro.agent.budget import BudgetExceeded
 from deeppyro.agent.errors import ProviderStreamError
@@ -91,9 +91,6 @@ from deeppyro.web.wire import (
 )
 from deeppyro.working_directory.service import WorkingDirectoryService
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from deeppyro.kernel.app import App
-
 logger = logging.getLogger("deeppyro.web.service")
 
 #: Context window assumed when the model config does not declare one.
@@ -154,7 +151,7 @@ class HostServices:
     tool_services: Mapping[str, object]
 
 
-def resolve_host_services(app: App) -> HostServices:
+def resolve_host_services(app: Any) -> HostServices:
     """Resolve HostServices from a booted kernel App."""
     return _build_host_services(config=app.config, get=app.get, require=app.require)
 

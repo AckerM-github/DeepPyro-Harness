@@ -1,14 +1,14 @@
 """Fact adapters for schema 1 sessions.
 
-The v4 runtime reads permission, policy and history facts from a session's
-records list: objects exposing a type and a data mapping. Native sessions store
-schema 1 events instead. This module projects events into the record shape the
-existing services already understand, so permission presets, sandbox policy,
-approval policy and the history helpers work unchanged without a second session
-format and without fabricating a v4 session header.
+Services read permission, policy and history facts from a session's records
+list: objects exposing a type and a data mapping. Native sessions store schema 1
+events instead. This module projects events into the record shape those services
+already understand, so permission presets, sandbox policy, approval policy and
+the history helpers work unchanged without a second session format and without
+fabricating a legacy session header.
 
 The adapter is read-mostly: appends delegate to the native handle so supported
-v4 record types keep landing as schema 1 events.
+record types keep landing as schema 1 events.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-#: Schema 1 event type mapped to the v4 record type used by fact readers.
+#: Schema 1 event type mapped to the record type used by fact readers.
 EVENT_RECORD_TYPES: dict[str, str] = {
     "turn.started": "turn/start",
     "turn.ended": "turn/end",
@@ -36,7 +36,7 @@ EVENT_RECORD_TYPES: dict[str, str] = {
 
 
 def record_views(events: Any) -> list[Any]:
-    """Project native events into v4-shaped record views (type plus data)."""
+    """Project native events into record-shaped views (type plus data)."""
     views: list[Any] = []
     for event in events or ():
         record_type = EVENT_RECORD_TYPES.get(str(getattr(event, "type", "") or ""))
@@ -48,7 +48,7 @@ def record_views(events: Any) -> list[Any]:
 
 
 class NativeRecordView:
-    """Read-only v4-shaped session view over one native session handle.
+    """Read-only record-shaped session view over one native session handle.
 
     Services that scan session records (permission presets, sandbox policy,
     approval policy) and the history helpers accept this view. Appends delegate
@@ -91,7 +91,7 @@ class NativeRecordView:
         return record_views(self.events)
 
     def append(self, record_type: str, data: Any = None) -> int:
-        """Append one v4 record type through the native mapping when possible."""
+        """Append one record type through the native mapping when possible."""
         if record_type == "permission/preset":
             # Schema 1 stores the sandbox mode and approval policy instead; the
             # named preset is derived from those facts on every read.
@@ -124,7 +124,7 @@ class NativeRecordView:
 
 
 def native_view(session: Any) -> Any:
-    """Wrap a native session or handle in the record view; v4 sessions pass through."""
+    """Wrap a native session or handle in the record view; record views pass through."""
     if session is None:
         return None
     if isinstance(session, NativeRecordView):

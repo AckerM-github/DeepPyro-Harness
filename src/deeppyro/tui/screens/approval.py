@@ -1,7 +1,7 @@
 """Approval modal with risk highlighting.
 
 The app opens this screen from ask_approval() and waits for one of the two
-decision constants: ALLOW_ONCE or DENY. DSH approvals are allowed at most once,
+decision constants: ALLOW_ONCE or DENY. upstream approvals are allowed at most once,
 so there is no "always allow" decision. The screen shows the request kind, the
 tool involved, a human summary, the command or path detail, and a coloured risk
 badge. Command details that match the dangerous-command patterns from the

@@ -39,7 +39,6 @@ def _config(tmp_path: Path, *, models: list[ModelConfig] | None = None) -> Confi
             )
         },
         agent={"provider": "local", "model": "m"},
-        session_dir=tmp_path / "sessions",
     )
 
 
@@ -98,7 +97,6 @@ async def test_provider_without_models_is_a_wildcard(tmp_path: Path) -> None:
     config = Config(
         providers={"local": ProviderConfig(base_url="http://127.0.0.1:8000/v1", models=[])},
         agent={"provider": "local", "model": "anything"},
-        session_dir=tmp_path / "sessions",
     )
     app = await boot(config, manifest_paths=[])
     try:
@@ -123,7 +121,6 @@ async def test_unknown_provider_warns_and_fails_strict(
         config_service.value = Config(
             providers={},
             agent={"provider": "ghost", "model": "m"},
-            session_dir=tmp_path / "ghost-sessions",
         )
         presets = app.require(PresetsPlugin)
         with pytest.warns(ConfigWarning, match="provider 'ghost' is not configured"):
@@ -156,7 +153,6 @@ async def test_resolve_revalidates_against_the_current_config(
                 )
             },
             agent={"provider": "local", "model": "other"},
-            session_dir=tmp_path / "sessions-2",
         )
         monkeypatch.setenv("DEEPPYRO_STRICT_CONFIG", "1")
         with pytest.raises(ConfigError, match="invalid preset model"):

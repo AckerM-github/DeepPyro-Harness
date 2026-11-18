@@ -1,32 +1,28 @@
 # LLM provider layer (`deeppyro.llm`)
 
-> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-19
+> **状态**：现行（0.3.0） · **层级**：功能规格 · **最后核对**：2026-11-19
 
 Status: implemented (owner: llm-dev). Streaming-only; two transports: OpenAI
 chat-completions (DeepSeek, llama-server, vLLM, ...) and Anthropic Messages (P1, section 14).
 
-The native agent loop (`agent/loop.py`, KI-010) consumes the wire-free
-`core.llm.LlmProvider` contract; the v4 `core.protocols.LlmProvider` still feeds the legacy
-v4 agent/session stack, compact/team/subagent, session titles and live eval (sections 1, 4.1
-and 11). Since 0.3.0 every supported API family has a native transport and the native loop
-never falls back to the v4 loop (section 14.7).
+**0.3.0 native-only:** `deeppyro.llm` ships only the wire-free native providers.
+`create_native_provider` / `LlmRegistry.native_provider` build `core.llm.LlmProvider`
+transports (OpenAI-compatible + native Anthropic) for `agent/model_call.py`; there is no
+second transport layer, no v4 converter module and no v4 loop fallback. Sections below that
+mention `create_provider`, `deeppyro.llm.messages`, `core.wire`, `core.protocols` or
+`AgentSession` are 0.2.0 history — code and tests are authoritative.
 
 ## 1. Public API
 
 ```python
-from deeppyro.llm import (
-    AnthropicProvider, LlmRegistry, OpenAICompatProvider,
-    create_native_provider, create_provider,
-)
+from deeppyro.llm import LlmRegistry, create_native_provider
 from deeppyro.llm.native_anthropic import NativeAnthropicProvider
 from deeppyro.llm.native_provider import NativeOpenAICompatProvider
 
-create_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) -> LlmProvider
 create_native_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) -> core.llm.LlmProvider
-registry = LlmRegistry(cfg: Config)      # lazy, cached, one provider per configured name
-registry.get("deepseek")                 # -> v4 LlmProvider; ConfigError when unknown
-registry.native_provider("deepseek")     # -> native core.llm.LlmProvider (KI-010)
-await registry.aclose()                  # closes every instantiated provider (both layers)
+registry = LlmRegistry(cfg: Config)      # lazy, cached, one native provider per configured name
+registry.native_provider("deepseek")     # -> core.llm.LlmProvider; ConfigError when unknown
+await registry.aclose()                  # closes every instantiated provider
 
 provider = OpenAICompatProvider(
     name, base_url, api_key, *, model_ctx: int | None = None,
@@ -57,24 +53,20 @@ policy = RetryPolicy.from_policy({"maxRetries": 5, "baseDelayMs": 500, "maxDelay
                                   "jitter": 0.1, "codes": ["RATE_LIMIT", "SERVER"]})
 ```
 
-`create_provider` reads `ProviderConfig.api`: `openai-completions` (and its aliases) builds
-`OpenAICompatProvider`; `anthropic-messages`/`anthropic_messages`/`anthropic` builds
-`AnthropicProvider` (section 14); anything else raises `ConfigError`.
-`create_native_provider` reads the same `ProviderConfig.api` and builds a native
+`create_native_provider` reads `ProviderConfig.api` and builds a native
 (`core.llm.LlmProvider`) transport for every supported API:
 `NativeOpenAICompatProvider` for the OpenAI-compatible aliases and
 `NativeAnthropicProvider` for `anthropic-messages`/`anthropic_messages`/`anthropic`
 (section 14.7). Only an unknown API raises `ConfigError` ("unsupported api"); an Anthropic
 provider additionally requires an explicit `base_url` and an API key reachable through
 `ProviderConfig.resolve_api_key()`, and reports a `ConfigError` naming the provider and the
-missing key otherwise. `headless.boot_runtime` treats a native-loop construction failure as a
+missing key otherwise. `headless.boot_runtime` treats a native-provider construction failure as a
 startup `ConfigError` (exit 2) and never falls back to the legacy v4 loop, which the 0.3.0 cut
 removes.
 
 Extra helpers (test/debug surface): `deeppyro.llm.sse` (`SseDecoder`, `iter_sse`,
-`decode_sse_text`, `format_sse`), `deeppyro.llm.messages` (v4 converters: `build_chat_payload`,
-`convert_messages`, `message_to_chat`, `tool_to_json`, `normalize_arguments`),
-`deeppyro.llm.native_messages` (the KI-010 wire-free mirror of that converter),
+`decode_sse_text`, `format_sse`), `deeppyro.llm.native_messages` (the wire-free message
+converter used by the native transport),
 `deeppyro.llm.attachments` (`image_part_url` and the attachment-ref resolver shared by both
 converters), `deeppyro.llm.http` (`build_client`, `headers` — the shared httpx client/timeout
 and SSE header construction), `deeppyro.llm.errors` (`LlmRequestError`, `LlmHttpError`,
@@ -103,7 +95,7 @@ body: {
   `/chat/completions` is used verbatim.
 * `max_tokens = min(req.max_tokens, req.context_window or model_ctx)`. `max_tokens` (not
   `max_completion_tokens`) is what DeepSeek and llama-server accept.
-* `model_ctx` comes from `create_provider`: the largest `contextWindow` among the
+* `model_ctx` comes from the native provider: the largest `contextWindow` among the
   provider's configured models (None when no model declares one).
 * Timeout: `httpx.Timeout(timeout_s, connect=min(30, timeout_s))`; the client is created
   lazily on the first request and closed by `aclose()` (idempotent; a closed provider
@@ -117,12 +109,12 @@ body: {
   object differs (`core.llm.ModelRequest` instead of `LlmRequest`), so recorded request bodies
   replay unchanged.
 
-## 3. Message conversion (wire/native -> chat messages)
+## 3. Message conversion (native -> chat messages)
 
-Input is `core.wire.Message` as recorded in the session log, so the conversion mirrors
-`fixtures/records/by-type/assistant_message.jsonl` / `tool_result.jsonl` shapes. The KI-010
-native loop uses `core.messages.Message`; `deeppyro.llm.native_messages` applies the same
-mapping to that model and `deeppyro.llm.attachments` holds the shared image resolver.
+Input is `core.messages.Message` (schema 1 session log); `deeppyro.llm.native_messages`
+converts it, and `deeppyro.llm.attachments` holds the image resolver. The 0.2.0 v4
+converter (`deeppyro.llm.messages`) and `core.wire.Message` were deleted in 0.3.0; the
+fixture shapes it mirrored are history.
 
 | wire Message | chat-completions message |
 | --- | --- |
@@ -154,7 +146,7 @@ mapping to that model and `deeppyro.llm.attachments` holds the shared image reso
   on it yet).
 * Unsupported/unknown part types and messages that convert to empty content are dropped.
 
-## 4. Streaming contract (INTERFACES §5.1-5.9)
+## 4. Streaming contract (historical: INTERFACES §5.1-5.9, deleted in 0.3.0)
 
 1. `stream()` is an async generator; the last event of a normal stream is always
    `Finish` (the only exception is a failure before any content, which raises instead).
@@ -245,7 +237,8 @@ empty-message rejection, cancellation and usage last-wins); it also counts
 
 ### 6.1 Builtin retry consumer (`deeppyro.builtin.llm_retry`, P0-2)
 
-The retry loop lives in the agent loop (`AgentSession._stream_step`); the builtin
+The retry loop lives in the agent loop (`agent/model_call.py` for native; the 0.2.0
+0.2.0 v4 `AgentSession._stream_step` was deleted); the builtin
 `llm-retry` plugin supplies the policy and the `agent/request-error` decision:
 
     [[plugins]]
@@ -320,7 +313,7 @@ None. (The session log stores camelCase `inputTokens/outputTokens/cacheReadToken
 
 ## 10. Contract interpretation: tool-call arguments stay a JSON string
 
-INTERFACES §5.8 says `ToolCallPart.arguments` (a JSON string) must be `json.loads`-ed into
+The historical INTERFACES §5.8 said `ToolCallPart.arguments` (a JSON string) must be `json.loads`-ed into
 `tool_calls[].function.arguments`. The OpenAI wire format requires `arguments` to remain a
 *string*, and fixtures record it as stringified JSON (fixtures tool/call record), so the
 literal "put an object there" reading would produce a request every OpenAI-compatible server
@@ -353,13 +346,13 @@ client-side bug and fail fast with `LlmRequestError(code="BAD_REQUEST")`. Observ
   (risk R1 in `docs/archive/research/p1-providers.md`); the core `Finish`/`LlmRequest` contract has no
   channel for signatures, so enabling this needs a core extension (deferred).
 * Anthropic providers must configure `base_url` explicitly. `ProviderConfig.base_url` has a
-  DeepSeek-flavoured default, so `create_provider` raises `ConfigError` (with
+  DeepSeek-flavoured default, so provider construction raises `ConfigError` (with
   `https://api.anthropic.com` as the hint) instead of silently calling the wrong host.
 * Anthropic system/developer messages are always folded into the top-level `system` string;
   DSH's in-history system snapshots (`in_history_system`) are not implemented in P1.
 * Anthropic images are converted only when they are inline `data:` URLs; remote URLs and bare
   attachment ids are skipped (no Files API).
-* `create_provider` raises `ConfigError` for an unsupported `api`; `LlmRegistry.get` raises
+* native provider construction raises `ConfigError` for an unsupported `api`; `LlmRegistry.native_provider` raises
   `ConfigError` for unknown provider names, whereas `Config.resolve()` raises `KeyError`.
   The LLM layer normalizes config mistakes to the `core.errors` hierarchy.
 * Non-streaming `complete()` is intentionally not implemented (streaming-only project).
@@ -501,9 +494,9 @@ use the list to offer candidates, and a selected model is written to the session
   names raise `ConfigError` from `list_models`, every other failure degrades;
 * no `models-updated` event is emitted in P1; consumers refresh on demand (e.g. when opening a
   model picker).
-## 14. Anthropic Messages provider (`AnthropicProvider`, P1 B1/B2)
+## 14. Anthropic Messages provider (`NativeAnthropicProvider`, P1 B1/B2)
 
-`create_provider` builds this provider for `ProviderConfig.api` in
+`create_native_provider` builds this provider for `ProviderConfig.api` in
 `{"anthropic-messages", "anthropic_messages", "anthropic"}`. It implements B1/B2 of
 `docs/archive/research/p1-providers.md`; B3/B4 (voice/TUI polish, non-streaming helpers) remain out of
 scope. Lead decisions applied here: thinking signatures are not replayed, `base_url` must be
@@ -553,7 +546,7 @@ pre-checked (the server's context-window error is classified as
 `CONTEXT_WINDOW_EXCEEDED`). No `stream_options`/`[DONE]` sentinel is used: Anthropic streams
 typed events and terminates with `message_stop`.
 
-### 14.3 Message conversion (core.wire -> Anthropic messages)
+### 14.3 Message conversion (native `core.messages` -> Anthropic messages)
 
 | wire Message | Anthropic |
 | --- | --- |
@@ -653,7 +646,7 @@ date) overrides the computed backoff.
 ### 14.7 Native transport (`NativeAnthropicProvider`, KI-010)
 
 The 0.3.0 native-only cut needs the same Anthropic Messages transport behind the wire-free
-`core.llm.LlmProvider` contract (no `core.wire`/`core.protocols` imports).
+`core.llm.LlmProvider` contract (no `core.wire`/`core.protocols` imports — both are deleted).
 `NativeAnthropicProvider` lives in `deeppyro.llm.native_anthropic` and is built by
 `registry.create_native_provider` for the same API aliases; `builtin/llm.LlmPlugin.native_provider`
 exposes it, and `headless.boot_runtime` raises `ConfigError` when it cannot be constructed
@@ -666,7 +659,7 @@ Shared with `AnthropicProvider`: endpoint rule (`messages_url`), headers
 `input_schema`, block-shaped tool input), stream event mapping and stop reasons (section 14.4),
 usage folding (section 14.5) and error classification/retryability (section 14.6).
 
-Differences from the v4 provider:
+Differences from the historical v4 provider:
 
 * Request messages come from `core.messages`: `convert_messages(messages, system, ...)` folds
   `ModelRequest.system` and history system/developer text into the top-level `system` string;

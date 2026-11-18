@@ -185,7 +185,7 @@ class PluginInspectTool(BaseTool):
         "Inspect the running plugin host: what=services lists registered services, "
         "what=plugins lists plugin rows and their live state, what=tools lists contributed "
         "tools, what=prompts lists system prompt sections, what=commands lists slash commands, "
-        "what=providers lists llm providers, what=events lists wire record types, what=slots "
+        "what=providers lists llm providers, what=events lists native session event kinds, what=slots "
         "lists UI slot contributions, what=theme lists theme tokens and what=guide returns the "
         "plugin authoring guide."
     )
@@ -333,7 +333,7 @@ class PluginToolsPlugin(Plugin):
     """Registers the plugin management tools when mounted."""
 
     plugin_id = "plugin-tools"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "agent-facing plugin manager, inspect and settings tools"
     inject: ClassVar[list[str]] = ["tools"]
 

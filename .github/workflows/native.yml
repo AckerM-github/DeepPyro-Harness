@@ -1,9 +1,9 @@
 name: native-replay
 
 # M4/M5 offline track: replay the recorded native fixtures, score the 20 golden
-# evals, and run the synthetic native/v4 differential matrix (KI-011). The job is
-# a real gate: it never contacts a provider and depends only on checked-in
-# fixtures, so fixture drift and coverage gaps must fail the PR here.
+# evals, and run the native synthetic coverage matrix (KI-011). The job is a real
+# gate: it never contacts a provider and depends only on checked-in fixtures, so
+# fixture drift and coverage gaps must fail the PR here.
 on:
   push:
     branches: [main]
@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   offline:
-    name: offline replay + golden eval + differential matrix
+    name: offline replay + golden eval + native coverage matrix
     runs-on: windows-latest
     timeout-minutes: 20
     strategy:
@@ -34,9 +34,9 @@ jobs:
       - run: uv sync --locked
       - name: replay recorded native fixtures and score golden evals
         run: uv run python scripts/record_replay.py --json native-replay-report.json
-      - name: print synthetic native/v4 differential coverage matrix
+      - name: print native synthetic coverage matrix
         run: uv run python scripts/differential_matrix.py --json native-differential-matrix.json
-      - name: eval, replay and native differential tests
+      - name: eval, replay and native capability tests
         run: uv run python -m pytest tests/eval tests/native
       - name: upload offline reports
         if: always()

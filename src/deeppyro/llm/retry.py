@@ -1,10 +1,10 @@
 """Retry policy used for the first byte of a model stream.
 
-The DSH session log pins the retry shape (fixtures/records/by-type/llm_retry.jsonl):
-mode "normal", maxRetries 5, retryable codes [EMPTY_RESPONSE, RATE_LIMIT, SERVER,
-TIMEOUT, TRANSPORT], baseDelayMs 500, maxDelayMs 10000, jitter 0.1 and a measured
-delayMs of 526.2 which is inside base .. base * (1 + jitter).  The Python port keeps the
-same shape; only the totals differ (max_attempts counts attempts, not retries).
+The shipped retry shape is: mode "normal", maxRetries 5, retryable codes
+[EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT], baseDelayMs 500,
+maxDelayMs 10000, jitter 0.1 and a measured delayMs of 526.2 which is inside
+base .. base * (1 + jitter).  The Python port keeps the same shape; only the
+totals differ (max_attempts counts attempts, not retries).
 
 RetryPolicy is usable both directly and as the async context manager required by
 INTERFACES section 5.9::
@@ -12,7 +12,7 @@ INTERFACES section 5.9::
     async with RetryPolicy(max_attempts=3, base_delay=2.0) as retry:
         first_event = await retry.run(fetch_first_event)
 
-For integration/replay tests the recorded DSH policy can be reproduced exactly with
+For replay tests the shipped policy can be reproduced exactly with
 RetryPolicy.from_policy(), which accepts the llm/retry record dict or the raw policyKey.
 """
 
@@ -33,7 +33,7 @@ T = TypeVar("T")
 # HTTP statuses worth retrying: rate limiting, request timeout and transient 5xx.
 RETRYABLE_HTTP_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 
-# Failure codes observed in the DSH retry policy (llm/retry policyKey).
+# Failure codes observed in the upstream retry policy (llm/retry policyKey).
 RETRYABLE_CODES = frozenset({"EMPTY_RESPONSE", "RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT"})
 
 
@@ -51,7 +51,7 @@ class RetryPolicy:
     jitter: float = 0.1
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     rand: Callable[[], float] = random.random
-    # When set (e.g. from a recorded DSH policy), this code set is the authoritative
+    # When set (e.g. from a recorded upstream policy), this code set is the authoritative
     # retryable decision and overrides LlmError.retryable.
     retryable_codes: frozenset[str] | None = None
 
@@ -63,7 +63,7 @@ class RetryPolicy:
 
     @classmethod
     def from_policy(cls, policy: Mapping[str, Any] | Sequence[Any] | str) -> Self:
-        """Rebuild a policy from a recorded DSH llm/retry policy.
+        """Rebuild a policy from a recorded upstream llm/retry policy.
 
         Accepts the dict shape {maxRetries, baseDelayMs, maxDelayMs, jitter, codes}
         (snake_case aliases are tolerated) and the raw policyKey stored in the session log,

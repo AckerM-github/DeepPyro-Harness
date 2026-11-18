@@ -1,8 +1,10 @@
-# 插件 API v2 → v3 迁移（0.2.0）
+# 插件 API v2 → v3 迁移（0.2.0 历史契约，0.3.0 仍适用）
 
 > **状态**：v3 已落地（M3，`deeppyro.api.API_VERSION == 3`），按 ADR
 > `docs/adr/0001-three-track-native-agent.md` D2/D5/D7 **硬切，无兼容 shim**。
 > v1/v2 插件在挂载时直接 `PluginError`；本文是逐项迁移对照。
+> 0.3.0 没有再次硬切插件 API：本文的 v3 契约仍是现行契约，但会话侧已 native-only
+> （v4 会话栈、`dpyro migrate` 与四个回退开关均已删除）。
 > 事实来源：`src/deeppyro/api/`、`src/deeppyro/kernel/`。与文档冲突时以代码为准。
 
 ## 1. 0.2.0 破坏性变更（版本级）
@@ -16,8 +18,8 @@
 | 5 | `CapabilityManifest` 成为插件契约的一部分 | 能力治理、审计、成本 | ✅ M3 已实现 |
 | 6 | `bundle.api_version` 必须为 3 | 所有 bundle | ✅ M3 已实现 |
 | 7 | 配置 canonical 键改 snake_case | `config.toml`、插件 `Config` | ✅ 0.2.0 起严格：camelCase alias 与 schema 未知键抛 `ConfigError`，迁移见 `docs/guides/config-migration.md` |
-| 8 | 会话日志新增 native schema 1；headless 自 0.2.0 起默认 native，TUI 交互仍写 v4 | 读会话的插件 | ⚠️ 两种格式并存、不 dual-write、可用 `dpyro migrate` 转换；v4 预计 0.3 移除 |
-| 9 | 去品牌门禁（`rg -i dsh src` 接近 0） | `src/`、测试 fixtures | ⚠️ 未达标：377 行 / 94 文件（0.3 随 v4 清理） |
+| 8 | 会话日志新增 native schema 1；headless 自 0.2.0 起默认 native，TUI 交互仍写 v4（0.2.0 时点状态） | 读会话的插件 | ✅ 0.3.0 收口：只有 native schema 1，v4 格式、`dpyro migrate` 与回退开关已删除 |
+| 9 | 去品牌门禁（`rg -i dsh src` 接近 0） | `src/`、测试 fixtures | ⚠️ 0.2.0 时点未达标：377 行 / 94 文件（0.3.0 随 v4 清理继续收敛，最终品牌审计由 lead 负责） |
 | 10 | Node/TypeScript fixtures 退役，CI 不安装 Node | 测试、fixtures | ⚠️ 部分完成：合成 fixtures 已入库（46 文件），真实录制基线仍为未跟踪的 26.6MB |
 
 范围澄清：**session schema 不属于插件 API**。v3 只覆盖插件契约
@@ -69,7 +71,7 @@ from deeppyro.builtin.prompt_service import PromptPlugin
 
 class GreetPlugin(Plugin):
     plugin_id = "greet"
-    version = "0.2.0"
+    version = "0.3.0"
     api_version = 3
     inject = (ToolsPlugin, PromptPlugin)
     risk = RiskLevel.LOW
@@ -114,7 +116,7 @@ class GreetPlugin(Plugin):
 
     def capability_manifest(self) -> CapabilityManifest:
         manifest = super().capability_manifest()
-        return replace(manifest, hooks=("hook/step",), tools=(ToolCapability(name="greet"),))
+        return replace(manifest, hooks=("tools/pre-execute",), tools=(ToolCapability(name="greet"),))
 ```
 
 字段全集见 `docs/plugins/README.md` §4。治理字段不进入 model-facing tool schema。
@@ -136,7 +138,7 @@ class GreetPlugin(Plugin):
 
 - 0.2.0 硬切 v3，不为 v2 提供 shim；0.x 版本允许破坏性变更。
 - 不希望迁移的插件可以继续锁定 `deeppyro-harness` 0.1.x；0.2.0 不保证 0.1.x 插件可加载。
-- 0.2.0 已移除 camelCase 配置 alias 并始终严格校验（迁移见 `docs/guides/config-migration.md`）；v4 会话读写路径仍保留，计划在 0.3 随 TUI 迁移退出。
+- 0.2.0 已移除 camelCase 配置 alias 并始终严格校验（迁移见 `docs/guides/config-migration.md`）；v4 会话读写路径在 0.3.0 已删除，当前只有 native schema 1。
 - `UsageService` 已挂入 core bundle（`usage` 行），每轮记账写入 `~/.dpro/usage/usage.jsonl`；能力清单仍可供 inspect/工具读取。
 
 ## 7. 参考

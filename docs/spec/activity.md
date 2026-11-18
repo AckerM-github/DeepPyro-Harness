@@ -1,11 +1,14 @@
 # Activity, jobs and team surfaces
 
-> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+> **状态**：现行（0.3.0） · **层级**：功能规格 · **最后核对**：2026-11-19
 
-Status: M1, M2 and M3 implemented. This document is the contract shared by the
-kernel services, the agent loop and the terminal UI. It covers plan/todo,
-background jobs and the agent team; the same projection populates the activity
-bar above the conversation.
+Status: **current (0.3.0, native-only)**. This document is the contract shared by
+the kernel services, the native agent loop and the terminal UI. It covers
+plan/todo, background jobs and the agent team; the activity bar is fed from
+native session facts and plugin facts. The v4 record vocabulary (`todo/write`,
+`job/registered`, `team/member`, `subagent/descriptor`, ...) shown below is
+0.2.0 history: 0.3.0 folds `EventKind` facts plus `plugin.*` events — code and
+[native/schema.md](../native/schema.md) are authoritative.
 
 ## 1. Design rules
 
@@ -83,7 +86,7 @@ Esc closes, empty state says no plan yet.
 
 ## 4. Agent process (M1)
 
-History helper: src/deeppyro/tui/history.py.
+History helper: src/deeppyro/tui/native_history.py（旧 tui/history.py 已删除）。
 
     ReasoningStep(step: int, text: str)
     TurnReasoning(turn: int, steps: list[ReasoningStep], finished: bool)
@@ -205,7 +208,7 @@ subagent/catalog plus the existing subagent lifecycle. A member's id **is** its
 child session id (DSH's roster identity); the child session header carries
 parentSession/delegationDepth=1/isSeeded and the team/member payload keeps its
 seven keys (id, name, description, provider, context, phase, model). team/task
-also records owner and createdAt. Each member has its own AgentSession; the Lead
+also records owner and createdAt. Each member has its own native session/host; the Lead
 remains the only approver. Nine tools (team_spawn, team_send, team_wait,
 team_cancel / team_task_create, team_task_update, team_task_list, team_members,
 team_tasks) are registered by the team plugin. TeamPanelScreen (/team, clicking
@@ -238,7 +241,7 @@ session is closed with `open_turn_closers(..., {"kind": "interrupted"})`
 new process must be able to resolve that provider name.
 
 `restore()` is idempotent until the next `bind_session`; `bind_session`
-resets it, so a brand-new AgentSession object replays once. It must only run on
+resets it, so a brand-new native host object replays once. It must only run on
 a freshly bound service (it clears the in-memory roster/board); the TUI runtime
 owns that call. Headless always starts a new session, so it never restores a
 team.

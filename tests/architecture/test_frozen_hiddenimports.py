@@ -3,7 +3,7 @@
 ``src/deeppyro/bundles/core/bundle.toml`` names its plugin modules as strings, so
 no static analyser can see them: a bare PyInstaller run drops every plugin that
 is not imported by the entry point, together with the third-party libraries only
-they use (httpx, Pillow, zstandard).  ``packaging/hiddenimports.py`` derives the
+they use (httpx, Pillow).  ``packaging/hiddenimports.py`` derives the
 frozen inputs from that data; these gates keep the derivation honest as bundle
 rows, dynamic imports and data files change.
 """

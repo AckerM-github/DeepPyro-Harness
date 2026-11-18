@@ -36,6 +36,7 @@ WELCOME_LINES = [
         "/model and /provider switch the model; /preset switches the agent preset"
     ),
     "/permission and /cwd change the session settings",
+    "/sessions lists native sessions; /resume attaches one; /fork copies the current one",
     "Type a message. /help lists commands. Ctrl+C interrupts, Ctrl+D quits.",
 ]
 

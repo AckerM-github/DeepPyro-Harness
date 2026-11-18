@@ -1,6 +1,6 @@
 """Discovery of the models a provider advertises (/v1/models).
 
-DSH treats a model listing as *optional evidence*: it is fetched lazily, cached briefly,
+upstream treats a model listing as *optional evidence*: it is fetched lazily, cached briefly,
 and never trusted over the configured ProviderConfig. Any failure (offline gateway, 404,
 HTML login page, oversized payload) must degrade to the configured catalog rather than
 breaking the session; that fallback decision lives in LlmRegistry, while this module
@@ -14,7 +14,7 @@ Design notes (docs/archive/research/p1-providers.md, docs/spec/llm.md section 13
   URL" (e.g. http -> https or a missing /v1) and following it silently could hit a login
   page. The caller reports the HTTP failure and keeps the configured catalog.
 * Payload cap 4 MiB: a gateway returning an unbounded body must not exhaust memory.
-* Cache TTL 600 s: the DSH TUI refreshes on demand; a 10 minute window keeps selection
+* Cache TTL 600 s: the upstream TUI refreshes on demand; a 10 minute window keeps selection
   lists stable without hammering the endpoint. Failed refreshes reuse the last good
   listing (see CatalogCache.store_error) so a flaky gateway does not make the model list
   flicker, and they back off for another TTL.
@@ -81,7 +81,7 @@ def anthropic_listing_url(base_url: str) -> str:
     """Derive the Anthropic models URL from a configured base URL.
 
     Anthropic bases in the wild: "https://api.anthropic.com", ".../v1",
-    ".../v1/messages" (dsh-llm-deepseek style). Normalize all of them to
+    ".../v1/messages" (upstream-llm-deepseek style). Normalize all of them to
     "<origin>/v1/models?limit=1000".
     """
     base = base_url.strip().rstrip("/")

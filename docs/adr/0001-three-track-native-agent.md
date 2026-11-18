@@ -1,11 +1,12 @@
 # ADR 0001 — Three-track native agent: pluginization, Pythonization, AI-nativeness
 
-- **Status:** Accepted; M0–M4 deliverables complete (2026-11-17); M5 documentation/release complete and 0.2.0 RC prepared (2026-11-18, §6.5; untagged); decisions locked in §7.
-- **Date:** 2026-11-17 (updated 2026-11-18 for 0.2.0)
+- **Status:** Accepted; M0–M4 deliverables complete (2026-11-17); M5 documentation/release complete and 0.2.0 RC prepared (2026-11-18, §6.5; untagged); **0.3.0 native-only hard cut delivered (2026-11-19, see the 0.3.0 update below)**; decisions locked in §7.
+- **Date:** 2026-11-17 (updated 2026-11-18 for 0.2.0; updated 2026-11-19 for 0.3.0)
+- **0.3.0 update (2026-11-19, native-only hard cut):** D2 is now delivered end to end. There is **one** runtime and **one** session format: native schema 1 (`~/.dpro/sessions/<id>.jsonl`). The v4 session/agent stack (`core.wire`, v4 reader/writer/derive/events/fork/metadata/store/session, v4 agent loop, `projection`, `session_query`), the four 0.2.0 fallback switches (`--legacy-v4`, `--native-loop`, `DEEPPYRO_NATIVE_LOOP`, `DEEPPYRO_TUI_NATIVE`), `dpyro migrate` and the `zstandard` dependency are deleted; old `session.v4.jsonl` files are not readable and there is no migration command (read old data on 0.2.x). The provider port landed: only `core.llm.LlmProvider` transports (OpenAI-compatible + native Anthropic) feed `agent/model_call.py`, and the temporary `agent/native_provider.py` / `core.wire` seam is gone. TUI, headless and the loopback-only Web UI all drive the native `AgentLoop`; the TUI splash opens Web with F1 and the terminal with F2/Enter. Decisions D2, D4 and D6 are therefore delivered, and the historical import counts / "0.2.0 status" passages below are ADR-time records, not current state.
 - **0.2.0 update (2026-11-18, after the fix round):** headless now defaults to the native loop (`--legacy-v4` to opt out); TUI interaction still runs v4. String service lookup is gone from `App` as well (typed `get`/`require` only), so §1's “deprecated host-level helpers” no longer exist. `core.wire` has **39** importers / 45 imports, all on the v4 path, and is frozen (deprecation note + boundary tests). Capability manifests, settings file locking, bundle digests, `dpyro migrate`, usage ledger, trace/OTLP export, long-term memory tools, live eval and Task/Handoff are wired. Residual scope is tracked in `docs/release/0.2.0-known-issues.md`; the numbers below describe the ADR-time state.
 - **Owners:** Lead (integration), lane P/Y/A owners as assigned in §6
-- **Supersedes:** the implicit "DSH-compatible port" direction recorded in `docs/spec/INTERFACES.md` §0
-- **Related:** external research report `deeppyro-native-python-agent-research.md` (three-track revision), `docs/native/schema.md` (native schema 1, M0), `docs/release/0.2.0-known-issues.md` (0.2.0 residual index)
+- **Supersedes:** the implicit "DSH-compatible port" direction recorded in the former `docs/spec/INTERFACES.md` §0 (that v4 interface spec was deleted in 0.3.0)
+- **Related:** external research report `deeppyro-native-python-agent-research.md` (three-track revision), `docs/native/schema.md` (native schema 1, M0), `docs/release/0.2.0-known-issues.md` (0.2.0 residual index), `docs/release/0.3.0.md` (0.3.0 native-only cut)
 
 ## 1. Context
 
@@ -13,7 +14,7 @@ DeepPyro started as a Python port of DeepSeek Harness (DSH). The plugin kernel i
 
 - `src/deeppyro/core/wire.py` defines DSH v4 message and record models with camelCase fields.
 - `src/deeppyro/session/events.py` validates 62 DSH record types; `surfaceOp` and `sourceEventSeqs` encode interval-based surface rewriting.
-- `src/deeppyro/core/events.py` declares 115 event names, 91 of which are reserved and never produced; `core/event_catalog.py` mirrors 94 DSH bus events and asar call sites.
+- `src/deeppyro/core/events.py` declared 115 event names, 91 of which are reserved and never produced; `core/event_catalog.py` mirrored 94 DSH bus events and asar call sites. (ADR-time inventory; the v4 modules and the external DSH event catalog were deleted in 0.3.0, and `core/events.py` is now a native-only kernel bus catalog.)
 - 39 source files import `deeppyro.core.wire` (45 import statements; 37 at M0 plus the one documented M2 provider adapter, §6.2); string service lookup is gone from the plugin contract (M3) and the deprecated host-level helpers were removed in 0.2.0 (KI-035); the config model emits snake_case (its camelCase input aliases were removed in 0.2.0, KI-013).
 - The agent turn/step loop in `src/deeppyro/agent/session_turn.py` still infers phases from record sequences and uses a collaborative `asyncio.Event` for cancellation.
 
@@ -361,14 +362,14 @@ All eight decisions below are closed; the recommendation is the decision. Detail
 | 7 | Fork | Copy records, renumber `seq` from 1, keep `ts` and `message.created_at` verbatim, set `parent_id`; no lazy parent references. | The child is self-contained and fold-identical at the fork point; the source can change independently. |
 | 8 | API v3 break | Hard cut in 0.2.0 with a migration note; no compatibility shim. Session schema is not part of API v3. | 0.x policy permits the break; a shim would keep the string/service bridge this ADR removes. |
 
-No open decision blocks 0.3 work. Residual 0.2.0 items are tracked in `docs/release/0.2.0-known-issues.md`.
+0.3.0 has since delivered the native-only cut described in the update at the top of this ADR. Residual 0.2.0 items are tracked in `docs/release/0.2.0-known-issues.md` (historical).
 
 ## 8. References
 
 - Research report: external `deeppyro-native-python-agent-research.md` (three-track revision, especially §2.6, §5.3, §9.3–§9.5).
 - Native schema 1 (M0): `docs/native/schema.md`.
-- v4 DSH-shaped contracts (still the 0.2.0 default): `src/deeppyro/core/wire.py`, `src/deeppyro/session/events.py`, `src/deeppyro/session/derive.py`, `src/deeppyro/core/events.py`, `src/deeppyro/config.py`.
-- v4 loop: `src/deeppyro/agent/session_turn.py`.
-- Frozen v4 interface spec: `docs/spec/INTERFACES.md` §0; native schema 1 supersedes it and it is removed with v4 in 0.3.
+- v4 DSH-shaped contracts (0.2.0 default; **deleted in 0.3.0**): `src/deeppyro/core/wire.py`, `src/deeppyro/session/events.py`, `src/deeppyro/session/derive.py`; `src/deeppyro/core/events.py` now carries the native-only bus catalog, `src/deeppyro/config.py` is the current config model.
+- v4 loop (**deleted in 0.3.0**): `src/deeppyro/agent/session_turn.py`; the current loop is `src/deeppyro/agent/loop.py`.
+- Frozen v4 interface spec: `docs/spec/INTERFACES.md` §0; native schema 1 supersedes it and it was deleted in 0.3.0 (see `docs/native/schema.md`).
 - Documentation map and 0.2.0 residual index: `docs/README.md`, `docs/release/0.2.0-known-issues.md`.
 - Zero-compat scope and milestone table: report §5.3–§5.5.

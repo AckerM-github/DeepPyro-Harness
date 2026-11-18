@@ -17,7 +17,7 @@ NoticeFn = Callable[[str], Any]
 class WorkingDirectoryState:
     """Committed working-directory projection for one session.
 
-    The recovered flag is reserved for the future DSH recovery path.  P1 never
+    The recovered flag is reserved for the future upstream recovery path.  P1 never
     recovers a vanished directory, so it is normally false.
     """
 

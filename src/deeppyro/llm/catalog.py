@@ -1,20 +1,20 @@
 """Model catalog values shared by discovery, providers and the UI layer.
 
-DSH splits model metadata in two layers (see docs/archive/research/p1-providers.md and
+upstream splits model metadata in two layers (see docs/archive/research/p1-providers.md and
 docs/spec/llm.md section 13):
 
 * a catalog entry answers "which models may a client offer/select?" and carries only
   {provider, id, name, description?, inputModalities?, badge?}. contextWindow /
   default output limit / reasoning efforts belong to resolveModelInfo, not listModels.
 * discovery (GET /models) is one source of catalog entries; the configured
-  ProviderConfig.models list is the always-available floor, because DSH keeps
+  ProviderConfig.models list is the always-available floor, because upstream keeps
   configured-but-unlisted model ids routable.
 
 ModelInfo below is the Python value object for one catalog entry. It is a superset of
-the DSH catalog entry (context_window/max_tokens are optional) so the TUI can show a
+the upstream catalog entry (context_window/max_tokens are optional) so the TUI can show a
 context window without a second resolve call; nothing in the streaming path requires it.
 
-parse_model_listing() accepts the two shapes DSH probes (pi-ai readListing):
+parse_model_listing() accepts the two shapes upstream probes (pi-ai readListing):
   - OpenAI /v1/models and Anthropic /v1/models: {"data": [{id, ...}, ...]}
   - some gateways: {"models": {"<id>": {...}, ...}} (pi-ai "models object" form)
 plus a bare JSON list for lenient local servers. Invalid entries are dropped rather than
@@ -32,7 +32,7 @@ from deeppyro.llm.errors import CODE_PROTOCOL, LlmRequestError
 
 BadgeTone = Literal["neutral", "info", "success", "warning"]
 
-#: Badge tones DSH allows (dsh-llm-deepseek lib/index.js BADGE_TONES). Unknown tones are
+#: Badge tones upstream allows (upstream-llm-deepseek lib/index.js BADGE_TONES). Unknown tones are
 #: normalized to "neutral" instead of failing the listing.
 BADGE_TONES: tuple[BadgeTone, ...] = ("neutral", "info", "success", "warning")
 
@@ -67,7 +67,7 @@ class ModelBadge:
     """Optional display badge for one catalog entry.
 
     text is either a single label or a mapping of lower-case language id -> label
-    (DSH requires the map to contain "en"). This port does not translate; label()
+    (upstream requires the map to contain "en"). This port does not translate; label()
     resolves the requested language for callers that want one.
     """
 
@@ -175,7 +175,7 @@ def parse_model_listing(provider: str, payload: Any, *, source: str = "") -> lis
 
 
 def merge_catalogs(base: Sequence[ModelInfo], overlay: Sequence[ModelInfo]) -> list[ModelInfo]:
-    """Layer a discovered listing over the configured catalog (DSH resolveListedCatalog).
+    """Layer a discovered listing over the configured catalog (upstream resolveListedCatalog).
 
     Configured models stay visible; a discovered entry with the same id overrides display
     metadata but keeps the configured context window / output limit when the listing does

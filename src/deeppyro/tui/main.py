@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import warnings
 from collections.abc import Sequence
 
 from deeppyro.runtime_env import INTERNAL_PTC_WORKER, INTERNAL_SANDBOX_RUNNER
@@ -48,20 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume",
         default=None,
         metavar="SESSION_ID",
-        help="resume a native session by id (requires DEEPPYRO_TUI_NATIVE=1)",
+        help="resume a native session by id",
     )
     parser.add_argument("--max-steps", type=int, default=None, help="tool steps per turn")
-    backend = parser.add_mutually_exclusive_group()
-    backend.add_argument(
-        "--legacy-v4",
-        action="store_true",
-        help="run the one-shot prompt through the legacy v4 path (the native loop is the default)",
-    )
-    backend.add_argument(
-        "--native-loop",
-        action="store_true",
-        help="deprecated alias: the native loop is the default (use --legacy-v4 for the v4 path)",
-    )
     # Hidden: frozen-build self re-entry (see deeppyro.runtime_env).  REMAINDER
     # passes the payload -- runner options, or nothing for the PTC worker --
     # through untouched.  They are dispatched before argparse in most cases.
@@ -125,12 +113,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         from deeppyro.plugins.cli import main as plugin_main
 
         return plugin_main(raw[1:])
-    # `dpyro migrate ...` is likewise a management subcommand; it converts
-    # session logs on disk and must not boot the runtime or a model provider.
-    if raw and raw[0] == "migrate":
-        from deeppyro.session.migrate_cli import main as migrate_main
-
-        return migrate_main(raw[1:])
     parser = build_parser()
     args = parser.parse_args(raw)
     internal = _parsed_internal(args)
@@ -140,54 +122,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"deeppyro-harness {_version()}")
         return 0
 
+    from deeppyro.config import migrate_legacy_config
     from deeppyro.paths import migrate_legacy_layout
 
-    migrate_legacy_layout()
-
-    # Backend selection: the native loop is the default.  --legacy-v4 pins the
-    # frozen v4 path (KI-010); --native-loop is a deprecated alias that pins
-    # native explicitly, kept until the v4 path is retired.
-    native_loop: bool | None = None
-    if args.native_loop:
-        warnings.warn(
-            "--native-loop is deprecated: the native loop is the headless default; "
-            "use --legacy-v4 to run the legacy v4 path",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+    migration = migrate_legacy_config()
+    if migration.changed:
         print(
-            "warning: --native-loop is deprecated; the native loop is the default. "
-            "Use --legacy-v4 for the legacy v4 path.",
+            f"config: migrated {migration.path} to the 0.3 schema (backup: {migration.backup})",
             file=sys.stderr,
         )
-        native_loop = True
-    elif args.legacy_v4:
-        native_loop = False
+    migrate_legacy_layout()
 
     headless = bool(args.headless or args.prompt)
     if not headless:
-        from deeppyro.tui.native_mode import tui_native_enabled
-
-        native_tui = tui_native_enabled()
-        if native_loop is not None and not native_tui:
-            print(
-                "note: the TUI still runs the v4 path; --legacy-v4/--native-loop only affect --headless",
-                file=sys.stderr,
-            )
-        if args.resume and not native_tui:
-            print(
-                "note: --resume needs DEEPPYRO_TUI_NATIVE=1; starting a new session",
-                file=sys.stderr,
-            )
         from deeppyro.tui.app import DeepPyroApp
 
         app = DeepPyroApp(
             cwd=args.cwd,
             provider=args.provider,
             model=args.model,
-            resume=args.resume if native_tui else None,
+            resume=args.resume,
         )
-        app.run()
+        result = app.run()
+        if result == "web":
+            from deeppyro.web.launch import launch
+
+            return launch(
+                cwd=args.cwd,
+                session_id=args.resume,
+                provider=args.provider,
+                model=args.model,
+            )
         return 0
 
     if args.resume:
@@ -209,7 +174,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         json_output=bool(args.json),
         cwd=args.cwd,
         max_steps=args.max_steps,
-        native_loop=native_loop,
     )
 
 

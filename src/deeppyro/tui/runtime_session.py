@@ -19,75 +19,12 @@ from deeppyro.tui.native_facts import native_view
 from deeppyro.tui.runtime_schedule import ScheduleLayer
 from deeppyro.tui.runtime_support import await_maybe, logger
 
-#: Session header fields that preset application must never rewrite. The v4
-#: wire header has no model/system field, but a host header may grow one, so
-#: the snapshot covers every field whose presence would change session meaning.
-_HEADER_FIELDS = (
-    "id",
-    "createdAt",
-    "cwd",
-    "isSeeded",
-    "delegationDepth",
-    "agentPreset",
-    "parentSession",
-    "origin",
-    "model",
-    "system",
-)
-
-
-def _session_header_snapshot(session: Any) -> tuple[Any, dict[str, Any]]:
-    """Capture the header object and the fields a preset must leave untouched."""
-    header = getattr(session, "header", None)
-    return header, {name: getattr(header, name, None) for name in _HEADER_FIELDS}
-
-
-def _assert_session_header_unchanged(
-    session: Any,
-    snapshot: tuple[Any, dict[str, Any]],
-    *,
-    preset: str | None,
-) -> None:
-    """Reject a preset application that rewrote an existing session header.
-
-    The header records what the session was created as: preset application may
-    rebuild the live agent, but changing cwd/model/system (or the preset id in
-    the header) is reserved for creating a new session or an explicit fork.
-    """
-    header, values = snapshot
-    current = getattr(session, "header", None)
-    changed = [name for name, value in values.items() if getattr(current, name, None) != value]
-    if current is not header:
-        changed.insert(0, "header")
-    if changed:
-        raise DeeppyroError(
-            f"agent preset {preset!r} rewrote the session header ({', '.join(changed)}); "
-            "applying a preset must not change an existing session header — "
-            "create a new session or fork to change cwd/model/system"
-        )
-
 
 class SessionLayer(ScheduleLayer):
     """Layer 3 of the TUI runtime: team/workspace setup, records, and new sessions."""
 
     async def new_session(self) -> Any:
-        """Create a fresh durable session and rebuild the agent."""
-        if self.native:
-            return await self._new_native_session()
-        self._save_projections()
-        preset = self._canonical_preset(self.agent_preset) or DEFAULT_PRESET_ID
-        self.agent_preset = preset
-        self.preset_revision = None
-        session = self.store.create(str(self.cwd), agent_preset=preset)
-        self._pin_permission(session)
-        await self._session_created(session, cwd=str(self.cwd), preset=preset)
-        await self._attach(session)
-        self._record_model_selection()
-        self._record_preset()
-        return session
-
-    async def _new_native_session(self) -> Any:
-        """Create a schema 1 session and build the native agent host around it."""
+        """Create a fresh native session and rebuild the agent host."""
         preset = self._canonical_preset(self.agent_preset) or DEFAULT_PRESET_ID
         self.agent_preset = preset
         self.preset_revision = None
@@ -96,48 +33,13 @@ class SessionLayer(ScheduleLayer):
         )
         self._pin_permission(handle)
         await self._session_created(handle, cwd=str(self.cwd), preset=preset)
-        await self._attach_native(handle)
+        await self._attach(handle)
         self._record_model_selection()
         self._record_preset()
         self._emit_session_event(handle)
         return handle
 
     async def _attach(self, session: Any) -> None:
-        if self.native:
-            await self._attach_native(session)
-            return
-        header_snapshot = _session_header_snapshot(session)
-        options = self.agents.options(
-            model=self.model,
-            context_window=self.context_window,
-        )
-        agent = self.agents.create(
-            session=session,
-            provider=self.provider,
-            registry=self._scoped_registry(self.cwd),
-            options=options,
-            sink=self.sink,
-            permission=self.permission,
-            cwd=str(self.cwd),
-            services=self._plugin_services(),
-            preset=self.agent_preset,
-            preset_revision=self.preset_revision,
-        )
-        _assert_session_header_unchanged(session, header_snapshot, preset=self.agent_preset)
-        close_agent = getattr(self.agent, "aclose", None)
-        if close_agent is not None:
-            await await_maybe(close_agent())
-        self.session = session
-        self.agent = agent
-        self.preset_revision = getattr(agent, "preset_revision", None)
-        self._configure_team(session)
-        self._configure_subagent(session)
-        self._configure_working_directory(session)
-        self._restore_projections(session)
-        if self.agent_mode == AGENT_MODE_TEAM:
-            await self._restore_team(session)
-
-    async def _attach_native(self, session: Any) -> None:
         """Build the native agent host for a schema 1 session handle.
 
         Only the native seam is touched here: no v4 header snapshot, no session
@@ -147,7 +49,7 @@ class SessionLayer(ScheduleLayer):
         spec = self._agent_preset_spec()
         handle = session if getattr(session, "native_session", None) is not None else None
         if handle is None:
-            raise DeeppyroError("native attach requires a native session handle")
+            raise DeeppyroError("attach requires a native session handle")
         build = AgentBuild(
             provider=self.provider_name,
             model=self.model,
@@ -230,39 +132,6 @@ class SessionLayer(ScheduleLayer):
         if callable(emit):
             emit({"type": "session", "sessionId": session_id})
 
-    def _save_projections(self) -> None:
-        """Write the live session's projection sidecar and stop observing it."""
-        if self.native:
-            return
-        service = self.projections
-        session = self.session
-        if service is None or session is None:
-            return
-        save = getattr(service, "save", None)
-        detach = getattr(service, "detach", None)
-        # an optional service must not break a session
-        with contextlib.suppress(Exception):
-            if save is not None:
-                save(session)
-        # an optional service must not break a session
-        with contextlib.suppress(Exception):
-            if detach is not None:
-                detach(session)
-
-    def _restore_projections(self, session: Any) -> None:
-        """Restore the session's projection sidecar and start observing appends."""
-        if self.native:
-            return
-        service = self.projections
-        if service is None or session is None:
-            return
-        attach = getattr(service, "attach", None)
-        if attach is None:
-            return
-        # an optional service must not break a session
-        with contextlib.suppress(Exception):
-            attach(session)
-
     def _configure_working_directory(self, session: Any) -> None:
         """Bind the live session so cd records and notices reach its log."""
         service = self.working_directory
@@ -273,29 +142,19 @@ class SessionLayer(ScheduleLayer):
             return
         header = getattr(session, "header", None)
         session_cwd = getattr(header, "cwd", None) or self.cwd
-        if self.native:
-            view = native_view(session)
-            state = view.fold().state if view is not None else None
-            session_cwd = getattr(state, "cwd", None) or session_cwd
-            notice = self.working_directory_notice
-            # an optional service must not break a session
-            with contextlib.suppress(Exception):
-                bind(
-                    session,
-                    cwd=session_cwd,
-                    record=session.append,
-                    inject_notice=notice
-                    if notice is not None
-                    else lambda text: session.inject(text, source={"kind": "working-directory"}),
-                )
-            return
+        view = native_view(session)
+        state = view.fold().state if view is not None else None
+        session_cwd = getattr(state, "cwd", None) or session_cwd
+        notice = self.working_directory_notice
         # an optional service must not break a session
         with contextlib.suppress(Exception):
             bind(
                 session,
                 cwd=session_cwd,
                 record=session.append,
-                inject_notice=lambda text: session.inject(text, source={"kind": "working-directory"}),
+                inject_notice=notice
+                if notice is not None
+                else lambda text: session.inject(text, source={"kind": "working-directory"}),
             )
 
     def _configure_team(self, session: Any) -> None:
@@ -322,10 +181,9 @@ class SessionLayer(ScheduleLayer):
             bind = getattr(service, "bind_session", None)
             if bind is not None and session is not None:
                 bind(session)
-            if self.native:
-                bind_parent = getattr(service, "bind_parent", None)
-                if bind_parent is not None and self.agent is not None:
-                    bind_parent(self.agent)
+            bind_parent = getattr(service, "bind_parent", None)
+            if bind_parent is not None and self.agent is not None:
+                bind_parent(self.agent)
 
     def _configure_subagent(self, session: Any) -> None:
         """Keep the subagent service pointed at the live lead session context."""

@@ -43,14 +43,12 @@ tends to miss; they are ordinary services like the others:
     permissionPresets(!) PermissionPresetsService builtin/sandbox.py
     plugin_manager      PluginManagerPlugin     builtin/plugin_manager.py
     presets             PresetsPlugin           builtin/presets.py
-    projections         ProjectionsService      builtin/projections.py
     prompt              PromptPlugin            builtin/prompt_service.py
     ptc                 PtcRuntime              builtin/ptc.py
-    retryPolicy(!)      RetryPolicy or dict     builtin/llm_retry.py
+    retryPolicy(!)      RetryPolicy or dict     llm/retry.py
     sandbox             SandboxPlugin           builtin/sandbox.py
     sandboxPolicy(!)    SandboxPolicyService    builtin/sandbox.py
     schedule            SchedulePlugin          builtin/schedule.py
-    session_query       SessionQueryPlugin      builtin/session_query.py
     sessions            SessionsPlugin          builtin/sessions.py
     settings            SettingsPlugin          builtin/settings.py
     skills              SkillsPlugin            builtin/skills.py
@@ -281,8 +279,8 @@ def require_service(ctx: object, service: str | type[Any], *, owner: str = "plug
 class ServiceBag:
     """Typed view over a legacy dict[str, Any] service bag.
 
-    Tool contexts and hosts still carry a plain dict of services;
-    AgentSession wraps it once and asks for contract classes through this view
+    Tool contexts and hosts still carry a plain dict of services; the native
+    agent host wraps it once and asks for contract classes through this view
     while keeping the dict itself intact for the tools pipeline.
     """
 

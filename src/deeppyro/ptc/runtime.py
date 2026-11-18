@@ -7,7 +7,7 @@ The worker speaks a line-delimited JSON protocol on stdin/stdout; program print
 output is forwarded as log frames.  Tool bindings are dispatched on the host
 through the callables supplied by the run_code tool.
 
-This is deliberately a very small implementation of the DSH PTC contract.  It
+This is deliberately a very small implementation of the upstream PTC contract.  It
 is not an operating-system sandbox: the subprocess can read and write whatever
 the current user can.  The PermissionGate in front of run_code is the only
 policy boundary.
@@ -143,7 +143,7 @@ class PtcRuntime:
 
     @property
     def timeout(self) -> dict[str, int]:
-        """The DSH-shaped timeout descriptor."""
+        """The upstream-shaped timeout descriptor."""
         return self.config.timeout
 
     @property

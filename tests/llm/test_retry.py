@@ -3,21 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
-from pathlib import Path
 
 import pytest
 
 from deeppyro.core.errors import LlmError
 from deeppyro.llm.errors import LlmRequestError
 from deeppyro.llm.retry import RETRYABLE_CODES, RetryPolicy
-
-FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
-
-requires_fixtures = pytest.mark.skipif(
-    not FIXTURES.is_dir(),
-    reason="privacy: real-session fixtures are not committed; run node tools/gen_fixtures.mjs",
-)
 
 
 def policy_with_sleeps(**kwargs: object) -> tuple[RetryPolicy, list[float]]:
@@ -171,22 +162,6 @@ def test_from_policy_maps_recorded_shape() -> None:
     assert policy.retryable_codes == RETRYABLE_CODES
 
 
-@requires_fixtures
-def test_from_policy_reads_fixture_policy_key() -> None:
-    record = json.loads(
-        (FIXTURES / "records" / "by-type" / "llm_retry.jsonl").read_text("utf-8").splitlines()[0]
-    )
-    raw_key = record["data"]["policyKey"]
-    from_string = RetryPolicy.from_policy(raw_key)
-    from_sequence = RetryPolicy.from_policy(json.loads(raw_key))
-    for policy in (from_string, from_sequence):
-        assert policy.max_attempts == 6  # maxRetries 5 -> 6 total attempts
-        assert policy.base_delay == 0.5
-        assert policy.max_delay == 10.0
-        assert policy.jitter == 0.1
-        assert policy.retryable_codes == RETRYABLE_CODES
-
-
 def test_from_policy_codes_are_authoritative_for_retry() -> None:
     policy = RetryPolicy(retryable_codes=frozenset({"SERVER"}))
     assert policy.should_retry(LlmRequestError("boom", code="SERVER", retryable=False)) is True
@@ -276,19 +251,3 @@ def test_from_policy_rejects_bad_shapes() -> None:
         RetryPolicy.from_policy(["normal", 5])
     with pytest.raises(ValueError):
         RetryPolicy.from_policy("{not json}")
-
-
-@requires_fixtures
-def test_retryable_codes_match_fixture_policy_key() -> None:
-    """fixtures pin the retry policy key of the DSH log; our code set must agree."""
-    record = json.loads(
-        (FIXTURES / "records" / "by-type" / "llm_retry.jsonl").read_text("utf-8").splitlines()[0]
-    )
-    policy_key = json.loads(record["data"]["policyKey"])
-    mode, max_retries, codes, base_ms, max_ms, jitter = policy_key
-    assert mode == "normal"
-    assert max_retries == 5
-    assert set(codes) == set(RETRYABLE_CODES)
-    assert (base_ms, max_ms, jitter) == (500, 10000, 0.1)
-    delay_ms = record["data"]["delayMs"]
-    assert 500 <= delay_ms <= 500 * 1.1

@@ -1,13 +1,13 @@
-"""Approval service: DSH user-approval policy and answerers.
+"""Approval service: upstream user-approval policy and answerers.
 
-Mirrors dsh-user-approval. The policy is ask or never; "never" rejects before
+Mirrors upstream-user-approval. The policy is ask or never; "never" rejects before
 the approval/request waterfall, so an approval plugin cannot bypass it. When
 the policy is ask, the waterfall decides first and an interactive answerer is
 the fallback; a missing answerer fails closed (unavailable), it never silently
 allows.
 
 Every decision is one-shot (allowed-once) and is audited with log-only
-approval/asked and approval/decided records, exactly like DSH.
+approval/asked and approval/decided records, exactly like upstream.
 """
 
 from __future__ import annotations
@@ -100,12 +100,12 @@ class ApprovalService:
         agent: Any | None = None,
         signal: Any | None = None,
     ) -> str:
-        """Resolve one approval request into a DSH outcome string."""
+        """Resolve one approval request into a upstream outcome string."""
         if _is_set(signal):
             return "cancelled"
         policy = self.effective_policy(session)
         if policy == "never":
-            # DSH rejects before the waterfall: a prepended listener must not be
+            # upstream rejects before the waterfall: a prepended listener must not be
             # able to approve while approval prompts are disabled.
             return "rejected"
         approval_id = uuid.uuid4().hex
@@ -118,7 +118,7 @@ class ApprovalService:
         reason = request.reason or request.summary
         if reason:
             asked["reason"] = reason
-        # DSH records both halves of an approval; it does not dispatch them on
+        # upstream records both halves of an approval; it does not dispatch them on
         # the bus. The record is the audit trail the sandbox policy promises.
         _record(session, APPROVAL_ASKED_EVENT, asked)
         outcome = await self._decide(
@@ -184,7 +184,7 @@ class ApprovalService:
             return None
         mapped = _OUTCOME_ALIASES.get(raw) if isinstance(raw, str) else None
         if mapped is None:
-            # DSH turns an unknown listener result into unavailable, not an error.
+            # upstream turns an unknown listener result into unavailable, not an error.
             return "unavailable"
         return mapped
 

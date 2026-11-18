@@ -1,7 +1,6 @@
 """Native goal round driver: advance goal rounds over a schema 1 session.
 
-Contract: 'docs/native/goal.md'; the v4 driver in
-:mod:deeppyro.goal.round_driver is the behaviour reference.
+Contract: 'docs/native/goal.md'.
 
 The native runtime has no inbox and no pre-step fence: one
 NativeAgentHost owns one durable session and accepts one turn at a time, so
@@ -21,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -29,7 +29,6 @@ from typing import Any, Protocol, cast
 from deeppyro.agent.budget import BudgetExceeded
 from deeppyro.agent.run_state import RunStatus
 from deeppyro.core.messages import GoalSource, MessageSource
-from deeppyro.goal.round_driver import ROUND_LIMIT_CODE, render_goal_round_prompt
 from deeppyro.goal.types import (
     GOAL_BUS_EVENT,
     Activation,
@@ -43,6 +42,9 @@ from deeppyro.hooks.service import HookService
 from deeppyro.session.schema import EventKind
 
 logger = logging.getLogger(__name__)
+
+#: Blocked-reason code used when a goal exhausts its round budget.
+ROUND_LIMIT_CODE = "round-limit"
 
 #: Budget kinds map onto lower-kebab blocked-reason codes.
 _BUDGET_CODES = {
@@ -126,6 +128,25 @@ def _unfinished_run(session: Any) -> bool:
         elif event.type == EventKind.RUN_FINISHED.value:
             open_runs.discard(run_id)
     return bool(open_runs)
+
+
+def render_goal_round_prompt(goal: GoalSnapshot, round: int) -> str:
+    """The exact ``<goal_round>`` prompt a round queues."""
+    objective = json.dumps(goal.objective, ensure_ascii=False)
+    return (
+        "<goal_round>\n"
+        f"Objective: {objective}\n"
+        f"Round: {round}/{goal.max_goal_rounds}\n"
+        "\n"
+        "Continue working toward the objective in this same session. Treat the current "
+        "workspace, tool results, and durable session state as authoritative; inspect them "
+        "instead of assuming earlier narration is still current. Make concrete progress and "
+        "verify the result. Before claiming completion, gather evidence that the whole "
+        "objective is achieved, read the current goal, and mark it complete. If work remains, "
+        "leave the goal active for the next round. Follow the configured goal-tool policy "
+        "before reporting a blocker.\n"
+        "</goal_round>"
+    )
 
 
 class NativeRoundDriver:

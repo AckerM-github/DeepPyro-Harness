@@ -301,7 +301,7 @@ class PluginContext:
         """Subscribe to an event and return an idempotent disposer.
 
         Domain events (anything in `deeppyro.core.events.EVENT_SPECS`) live on
-        the kernel bus, exactly like DSH, so a plugin may subscribe with
+        the kernel bus, exactly like upstream, so a plugin may subscribe with
         `ctx.on("tools/pre-execute", ...)` and observe the real dispatch. The
         handler signature follows the event mode: `handler(payload)` for emit
         events, `handler(payload, next_step)` for waterfall events. Any other

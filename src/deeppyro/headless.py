@@ -8,8 +8,8 @@ without duplicating the terminal UI. Two output modes exist:
   the model streams, followed by a compact footer;
 * --json: one compact JSON object per line (NDJSON) on stdout, nothing else.
 
-The default backend is the native agent loop (schema 1 sessions); the legacy
-v4 backend is still selectable with --legacy-v4 or DEEPPYRO_NATIVE_LOOP=0.
+The backend is the native agent loop (schema 1 sessions); the legacy v4
+headless path has been removed.
 
 Exit codes are part of the contract:
 
@@ -30,7 +30,6 @@ import contextlib
 import inspect
 import json
 import logging
-import os
 import sys
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -58,10 +57,8 @@ from deeppyro.builtin.inspect import InspectPlugin
 from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.builtin.plugin_manager import PluginManagerPlugin
 from deeppyro.builtin.presets import PresetsPlugin
-from deeppyro.builtin.projections import ProjectionsService
 from deeppyro.builtin.sandbox import SandboxPlugin
 from deeppyro.builtin.schedule import SchedulePlugin
-from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.builtin.settings import SettingsPlugin
 from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.builtin.usage import UsageService
@@ -96,13 +93,6 @@ DEFAULT_CONTEXT_WINDOW = 32768
 THINKING_MARKER = "· thinking"
 USAGE_KEYS = ("input", "output", "cached")
 
-#: Path switch for the M2 native loop. The native loop is the default since
-#: the 0.2.0 default flip; a falsy value selects the legacy v4 path and mirrors
-#: the deprecated --native-loop alias (the reverse switch is --legacy-v4).
-NATIVE_LOOP_ENV = "DEEPPYRO_NATIVE_LOOP"
-NATIVE_LOOP_TRUTHY = frozenset({"1", "true", "yes", "on"})
-NATIVE_LOOP_FALSY = frozenset({"0", "false", "no", "off"})
-
 
 class UnknownPresetError(ConfigError):
     """A requested agent preset id is not registered in this build."""
@@ -124,26 +114,6 @@ def read_stdin_prompt() -> str:
         return stream.read()
     except OSError:  # pragma: no cover - defensive, stdin may be closed
         return ""
-
-
-def native_loop_enabled(flag: bool | None = None) -> bool:
-    """Return whether the M2 native loop replaces the v4 headless path.
-
-    The native loop is the default since the 0.2.0 default flip. Precedence:
-
-    1. an explicit ``flag`` wins — ``False`` pins the legacy v4 path
-       (``--legacy-v4`` and library callers), ``True`` pins native;
-    2. otherwise ``DEEPPYRO_NATIVE_LOOP`` selects the path: ``1/true/yes/on``
-       native, ``0/false/no/off`` the legacy v4 path;
-    3. an unset or unrecognized env value keeps the native default.
-    """
-    if flag is not None:
-        return flag
-    value = os.environ.get(NATIVE_LOOP_ENV, "")
-    value = value.strip().lower()
-    if value in NATIVE_LOOP_TRUTHY:
-        return True
-    return value not in NATIVE_LOOP_FALSY
 
 
 def compact_text(text: str, *, max_lines: int = 3, max_chars: int = 300) -> str:
@@ -510,125 +480,21 @@ class HeadlessRuntime:
     provider_name: str
     model: str
     context_window: int
-    store: Any
-    provider: Any
     registry: Any
     permission: Any
     agents: Any
     native_provider: Any = None
-    native_provider_error: str | None = None
     jobs: JobsService | None = None
     team: TeamService | None = None
     subagent: SubagentService | None = None
     working_directory: Any = None
     user_questions: Any = None
-    projections: Any = None
     tools: Any = None
     preset: str | None = None
     preset_spec: PresetSpec | None = None
     permission_mode: str | None = None
     approval_policy: str | None = None
     _closed: bool = field(default=False, repr=False)
-
-    def create_agent(self, session: Any, sink: Any, *, max_steps: int | None = None) -> Any:
-        overrides: dict[str, Any] = {
-            "model": self.model,
-            "context_window": self.context_window,
-        }
-        if max_steps is not None:
-            overrides["max_steps"] = max_steps
-        options = self.agents.options(**overrides)
-        preset_id = self.preset or DEFAULT_PRESET_ID
-        revision = self.preset_spec.revision if self.preset_spec is not None else None
-        registry = self.registry
-        scoped = getattr(self.tools, "registry_for", None)
-        if callable(scoped):
-            registry = scoped(str(self.cwd), scope=preset_id, revision=revision)
-        agent = self.agents.create(
-            session=session,
-            provider=self.provider,
-            registry=registry,
-            options=options,
-            sink=sink,
-            permission=self.permission,
-            cwd=str(self.cwd),
-            preset=preset_id,
-            preset_revision=revision,
-            services=self._plugin_services(),
-        )
-        if self.subagent is not None:
-            # the optional subagent service must not break headless
-            with contextlib.suppress(Exception):
-                self.subagent.bind_parent(agent)
-        return agent
-
-    def pin_permission(self, session: Any) -> None:
-        """Record the standing sandbox mode, approval policy and preset on a new session."""
-        app = self.kernel_app
-        if app is None or session is None:
-            return
-        permission_presets = app.get(PermissionPresetsService)
-        if permission_presets is None:
-            return
-        pin = getattr(permission_presets, "pin_initial", None)
-        if pin is None:
-            return
-        # optional service must not break headless
-        with contextlib.suppress(Exception):
-            pin(session)
-        if self.permission_mode is not None:
-            # optional service must not break headless
-            with contextlib.suppress(Exception):
-                permission_presets.apply(session, self.permission_mode)
-        if self.approval_policy is not None:
-            approval = app.get(ApprovalService)
-            # optional service must not break headless
-            with contextlib.suppress(Exception):
-                if approval is not None:
-                    approval.set_policy(session, self.approval_policy)
-
-    def bind_session(self, session: Any) -> None:
-        """Bind per-session callbacks for services that record into the log."""
-        if session is None:
-            return
-        service = self.working_directory
-        bind = getattr(service, "bind", None)
-        if bind is not None:
-            # optional service must not break headless
-            with contextlib.suppress(Exception):
-                bind(
-                    session,
-                    cwd=self.cwd,
-                    record=session.append,
-                    inject_notice=lambda text: session.inject(text, source={"kind": "working-directory"}),
-                )
-        self._restore_projections(session)
-
-    def _restore_projections(self, session: Any) -> None:
-        """Restore the projection sidecar and observe appends for this session."""
-        service = self.projections
-        attach = getattr(service, "attach", None)
-        if attach is None:
-            return
-        # optional service must not break headless
-        with contextlib.suppress(Exception):
-            attach(session)
-
-    def save_projections(self, session: Any) -> None:
-        """Write the projection sidecar and stop observing the session."""
-        service = self.projections
-        if service is None or session is None:
-            return
-        save = getattr(service, "save", None)
-        detach = getattr(service, "detach", None)
-        if save is not None:
-            # optional service must not break headless
-            with contextlib.suppress(Exception):
-                save(session)
-        if detach is not None:
-            # optional service must not break headless
-            with contextlib.suppress(Exception):
-                detach(session)
 
     def _plugin_services(self) -> dict[str, Any]:
         """Plugin services the agent tools read from ToolContext.services."""
@@ -692,29 +558,21 @@ class HeadlessRuntime:
                 await await_maybe(kernel_app.stop())
 
 
-def _resolve_native_provider(
-    llm_service: Any,
-    provider_name: str,
-    *,
-    native_loop: bool,
-) -> tuple[Any | None, str | None]:
-    """Return the native (KI-010) provider for the native loop, if available.
+def _resolve_native_provider(llm_service: Any, provider_name: str) -> Any:
+    """Return the native (KI-010) provider the headless loop must drive.
 
     Plugins construct providers: the builtin llm plugin exposes a native
     factory registry, so headless never imports a concrete transport class. A
-    construction failure yields a typed reason; boot_runtime turns that reason
-    into a ConfigError when the native loop was requested, so a broken provider
-    fails at startup instead of silently running the v4 loop.
+    construction failure (missing key, unsupported api, missing factory) is a
+    configuration error, never a silent downgrade to another loop.
     """
-    if not native_loop:
-        return None, None
     resolver = getattr(llm_service, "native_provider", None)
     if not callable(resolver):
-        return None, "the llm service does not expose a native provider factory"
+        raise ConfigError("the llm service does not expose a native provider factory")
     try:
-        return resolver(provider_name), None
+        return resolver(provider_name)
     except ConfigError as exc:
-        return None, str(exc)
+        raise ConfigError(f"native provider unavailable for provider {provider_name!r}: {exc}") from exc
 
 
 async def boot_runtime(
@@ -727,7 +585,6 @@ async def boot_runtime(
     permission_mode: str | None = None,
     approval_policy: str | None = None,
     ask: Callable[[Any], Awaitable[bool]] | None = None,
-    native_loop: bool = True,
 ) -> HeadlessRuntime:
     """Boot the kernel bundle and resolve the services needed for one turn.
 
@@ -752,7 +609,6 @@ async def boot_runtime(
     kernel_app = await boot(cfg)
     try:
         llm_service = kernel_app.require(LlmPlugin)
-        sessions_service = kernel_app.require(SessionsPlugin)
         sandbox_service = kernel_app.require(SandboxPlugin)
         tools_service = kernel_app.require(ToolsPlugin)
         agents_service = kernel_app.require(AgentsPlugin)
@@ -770,17 +626,10 @@ async def boot_runtime(
         preset_id, preset_spec = _resolve_preset(presets_service, preset)
         if presets_service is not None and preset_spec is not None:
             await await_maybe(presets_service.ensure(preset_spec.id, revision=preset_spec.revision))
-        native_provider, native_provider_error = _resolve_native_provider(
-            llm_service,
-            provider_name,
-            native_loop=native_loop,
-        )
-        if native_loop and native_provider is None:
-            # The native loop is the only supported loop: a provider that cannot be
-            # constructed (missing key, unsupported api, missing factory) is a
-            # configuration error, never a silent downgrade to the v4 path.
-            reason = native_provider_error or "no native transport is available"
-            raise ConfigError(f"native provider unavailable for provider {provider_name!r}: {reason}")
+        # The native loop is the only supported loop: a provider that cannot be
+        # constructed (missing key, unsupported api, missing factory) fails the
+        # boot instead of silently downgrading.
+        native_provider = _resolve_native_provider(llm_service, provider_name)
     except BaseException:
         await await_maybe(kernel_app.stop())
         raise
@@ -789,7 +638,6 @@ async def boot_runtime(
     subagent = kernel_app.get(SubagentService)
     working_directory = kernel_app.get(WorkingDirectoryService)
     user_questions = kernel_app.get(UserQuestionsService)
-    projections = kernel_app.get(ProjectionsService)
     runtime = HeadlessRuntime(
         cfg=cfg,
         cwd=workspace,
@@ -797,10 +645,7 @@ async def boot_runtime(
         provider_name=provider_name,
         model=model_id,
         context_window=context_window,
-        store=sessions_service.store,
-        provider=llm_provider,
         native_provider=native_provider,
-        native_provider_error=native_provider_error,
         registry=registry,
         permission=permission,
         agents=agents_service,
@@ -809,7 +654,6 @@ async def boot_runtime(
         subagent=subagent,
         working_directory=working_directory,
         user_questions=user_questions,
-        projections=projections,
         tools=tools_service,
         preset=preset_id,
         preset_spec=preset_spec,
@@ -861,19 +705,10 @@ def run_once(
     json_output: bool = False,
     cwd: str | None = None,
     max_steps: int | None = None,
-    native_loop: bool | None = None,
     config: Config | None = None,
     console: Console | None = None,
 ) -> int:
-    """Run one turn and return the documented exit code.
-
-    Args:
-        native_loop: Path selection. ``None`` (the default) runs the native
-            loop unless ``DEEPPYRO_NATIVE_LOOP`` selects the legacy v4 path;
-            ``True`` pins the native loop and ``False`` pins v4. The CLI maps
-            ``--legacy-v4`` to ``False`` and the deprecated ``--native-loop``
-            alias to ``True``.
-    """
+    """Run one turn through the native loop and return the documented exit code."""
     ui = console or Console()
     if max_steps is not None and max_steps < 1:
         ui.print("error: --max-steps must be at least 1", style="bold red")
@@ -894,7 +729,6 @@ def run_once(
                 json_output=json_output,
                 cwd=cwd,
                 max_steps=max_steps,
-                native_loop=native_loop_enabled(native_loop),
                 config=config,
                 console=ui,
             )
@@ -978,14 +812,8 @@ class _NativeSinkHooks(NullAgentHooks):
 
 
 def _native_provider(runtime: HeadlessRuntime) -> Any:
-    """Return the provider the native loop should drive.
-
-    A booted runtime carries a dedicated native provider. Test doubles that
-    fake the runtime without that attribute keep using their provider.
-    """
-    if hasattr(runtime, "native_provider"):
-        return runtime.native_provider
-    return getattr(runtime, "provider", None)
+    """Return the native provider the headless loop drives."""
+    return runtime.native_provider
 
 
 def _native_tools(runtime: HeadlessRuntime, preset_id: str) -> tuple[Any, ...]:
@@ -1016,11 +844,10 @@ async def _run_native_async(
     max_steps: int | None,
     preset_id: str,
 ) -> int:
-    """Run one turn through the M2 native loop and return an exit code.
+    """Run one turn through the native agent loop and return an exit code.
 
-    The native path currently maps only --max-steps onto the run budget and
-    leaves v4 session-service bindings alone; see docs/adr/0001 section 6.2
-    for the remaining migration work.
+    --max-steps maps onto the run budget; the one-shot run owns its schema 1
+    session file and its sinks, and it cancels the background jobs it started.
     """
     session: NativeSession | None = None
     try:
@@ -1104,7 +931,6 @@ async def _run_async(
     json_output: bool,
     cwd: str | None,
     max_steps: int | None,
-    native_loop: bool,
     config: Config | None,
     console: Console,
 ) -> int:
@@ -1117,7 +943,6 @@ async def _run_async(
             preset=preset,
             permission_mode=permission_mode,
             approval_policy=approval_policy,
-            native_loop=native_loop,
         )
     except UnknownPresetError as exc:
         # A bad --preset is a usage error, not a runtime failure: no traceback,
@@ -1131,103 +956,25 @@ async def _run_async(
         console.print(f"error: {exc}", style="bold red")
         return EXIT_ERROR
 
-    if native_loop and _native_provider(runtime) is None:
-        # Defensive: boot_runtime already rejects this state. Never fall back to the
-        # legacy v4 loop, which the 0.3.0 cut deletes.
-        reason = getattr(runtime, "native_provider_error", None) or "native provider unavailable"
-        print(
-            f"error: native loop requested but no native provider is available: {reason}",
-            file=sys.stderr,
-        )
-        await await_maybe(runtime.aclose())
-        return EXIT_USAGE
-
     sink: Any = JsonLinesSink() if json_output else RichSink(console)
-    session_id: str | None = None
+    session_id = new_session_id()
     preset_id = runtime.preset or DEFAULT_PRESET_ID
     try:
-        if native_loop:
-            session_id = new_session_id()
-            return await _run_native_async(
-                text,
-                runtime=runtime,
-                console=console,
-                sink=sink,
-                session_id=session_id,
-                json_output=json_output,
-                max_steps=max_steps,
-                preset_id=preset_id,
-            )
-        session = runtime.store.create(str(runtime.cwd), agent_preset=preset_id)
-        runtime.pin_permission(session)
-        session_id = str(session.session_id or "")
-        if session_id:
-            await _emit_hook(
-                runtime,
-                SESSION_CREATED,
-                {"sessionId": session_id, "cwd": str(runtime.cwd), "preset": preset_id},
-            )
-        session_label = session_id.removeprefix("session-")[:8]
-        sink.emit({"type": "session", "sessionId": session_id})
-        if not json_output:
-            console.print(
-                f"session {session_label}  {runtime.provider_name}/{runtime.model}  cwd {runtime.cwd}",
-                style="dim",
-            )
-        if runtime.team is not None:
-            runtime.team.bind_session(session)
-        subagent = getattr(runtime, "subagent", None)
-        bind_subagent = getattr(subagent, "bind_session", None)
-        if bind_subagent is not None:
-            bind_subagent(session)
-        bind_working_directory = getattr(runtime, "bind_session", None)
-        if bind_working_directory is not None:
-            bind_working_directory(session)
-        agent = runtime.create_agent(session, sink, max_steps=max_steps)
-        sink.begin_turn()
-        try:
-            await await_maybe(agent.send(text))
-        except KeyboardInterrupt:
-            # interruption is best effort
-            with contextlib.suppress(Exception):
-                await await_maybe(agent.interrupt())
-            sink.end_turn()
-            console.print("interrupted", style="yellow")
-            return EXIT_INTERRUPTED
-        except DeeppyroError as exc:
-            sink.end_turn()
-            console.print(f"error: {exc}", style="bold red")
-            return EXIT_ERROR
-        finally:
-            close_agent = getattr(agent, "aclose", None)
-            if close_agent is not None:
-                await await_maybe(close_agent())
-            save_projections = getattr(runtime, "save_projections", None)
-            if save_projections is not None:
-                save_projections(session)
-            await _cancel_jobs(runtime, session_id)
-        sink.end_turn()
-        if not json_output:
-            usage = getattr(sink, "usage", None) or {}
-            parts = [f"session {session_label}"]
-            if usage:
-                parts.append(
-                    "tokens in={input} out={output} cached={cached}".format(
-                        input=usage.get("input", 0),
-                        output=usage.get("output", 0),
-                        cached=usage.get("cached", 0),
-                    )
-                )
-            console.print(" · ".join(parts), style="dim")
-        if getattr(sink, "saw_error", False):
-            return EXIT_ERROR
-        return EXIT_OK
+        return await _run_native_async(
+            text,
+            runtime=runtime,
+            console=console,
+            sink=sink,
+            session_id=session_id,
+            json_output=json_output,
+            max_steps=max_steps,
+            preset_id=preset_id,
+        )
     except (DeeppyroError, OSError) as exc:
         console.print(f"error: {exc}", style="bold red")
         return EXIT_ERROR
     finally:
-        if session_id:
-            await _emit_hook(runtime, SESSION_DISPOSED, {"sessionId": session_id})
+        await _emit_hook(runtime, SESSION_DISPOSED, {"sessionId": session_id})
         await runtime.aclose()
 
 
@@ -1236,14 +983,12 @@ __all__ = [
     "EXIT_INTERRUPTED",
     "EXIT_OK",
     "EXIT_USAGE",
-    "NATIVE_LOOP_ENV",
     "HeadlessRuntime",
     "JsonLinesSink",
     "RichSink",
     "UnknownPresetError",
     "boot_runtime",
     "compact_text",
-    "native_loop_enabled",
     "read_stdin_prompt",
     "resolve_workspace",
     "run_once",

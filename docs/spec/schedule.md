@@ -1,6 +1,6 @@
 # Schedule 规格
 
-> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+> **状态**：现行（0.3.0） · **层级**：功能规格 · **最后核对**：2026-11-19
 > 契约入口：[native/schema.md](../native/schema.md)；总入口：[docs/README.md](../README.md)。
 
 本文记录 DeepPyro P1 的 schedule 能力：七种 timing 的建模、单文件持久化、单 asyncio timer 的到期投递、`schedule` 工具（四动作）与 `schedule` 服务插件。实现参考 DSH 的 `packages/schedule/**`（schedule / tool-schedule / util-time），但按 DeepPyro 的单进程 TUI/headless 形态做了裁剪；与参考实现的差异集中在第 11 节，接线需求集中在第 12 节。
@@ -8,7 +8,7 @@
 ## 1. 范围
 
 - 本层负责：任务目录（create/list/update/delete/pause/resume）、持久化与恢复、到期计算、单 timer 调度、投递回执记录。
-- 本层不负责：宿主 session 的创建/唤醒与消息写入（由 TUI/headless 的 `ScheduleHost` 实现负责）、bundle 行注册、`INTERFACES.md`。
+- 本层不负责：宿主 session 的创建/唤醒与消息写入（由 TUI/headless 的 `ScheduleHost` 实现负责）、bundle 行注册。
 - cron 只做「类型建模 + 校验」，不可执行：create 时返回 `ScheduleInputError(code="unsupported_timing")` 并提示改用 rrule（见 §11）。
 - 本层不改 `agent/session.py`、`tui/**`、`api/**`、`bundle.toml`。
 
@@ -135,7 +135,7 @@
 
 - `SchedulePlugin(Service)`：`provide = "schedule"`、`plugin_id = "schedule"`、`inject = ["config"]`；构造时用 `[schedule]` 配置（或行内 config）建 `ScheduleManager`，`setup()` 注册 `schedule_tools()` 与 `tool:schedule` prompt section；`schedule_manager` 属性暴露 manager 供 runtime 接线。
 - 不启动 timer：`start()/stop()` 由 runtime/headless 接线（见 §12）。
-- 不注册 inspect/TUI 面；bundle 行由 Lead 添加（建议 `schedule` 在 sessions 之后、tools 之前或之后均可，`schedule-tools` 可合并进本插件，见 §12）。
+- 不注册 inspect/TUI 面；core bundle 的 `schedule` 行已接线（0.3.0 共 41 个插件行 + `[bundle]` 元数据）。
 
 ## 10. 测试
 
@@ -164,7 +164,7 @@
 1. ✅ `src/deeppyro/bundles/core/bundle.toml`：`schedule` 行已加（critical=false），紧跟 `compress`；工具注册在 SchedulePlugin 内，无独立 `schedule-tools` 行。
 2. ✅ TUI：`src/deeppyro/tui/runtime.py` 的 `start_schedule()` 在 boot 后 `configure_host(_TuiScheduleHost(self))` 并 `await start()`；`app.on_mount` 调用；`runtime.close()` 先 `stop_schedule()`（stop + 取消后台 agent 任务）。headless 为一次性进程，P1 不启动 timer：schedule 工具可创建任务并存盘，但不自动投递（timer 在 TUI 进程下次启动后恢复）。
 3. ✅ `_TuiScheduleHost`：`session_exists` 认当前会话或 store.open 成功；`delegation_depth` 恒 0；`deliver` 对 SessionTarget 当前会话走 `schedule_notice` + `session.followup(source={kind:"schedule",taskId,occurrence})`，其它会话打开后建静默 agent 投递并跟踪关闭；NewOnce 复用首次创建的会话，New 每次新建；回执 `target_session_id` 为实际会话。
-4. ✅ `AgentSession.followup(text, *, source=...)` 已存在，用于投递（空闲时自动起 turn）。
+4. ✅ native 宿主 `NativeAgentHost.followup(...)` 提供投递（空闲时自动起 turn）。
 5. ✅ `CHILD_DISABLED_TOOLS` 已含 `schedule`。
-6. ✅ `docs/spec/INTERFACES.md` §11.4 已登记 `schedule` 服务与工具。
+6. ✅ `schedule` 服务与工具已随 core bundle 的 `schedule` 行接线。
 7. ⏸ `paths.py` 未新增 `schedules_path()`：`DefaultScheduleStore` 已用 `default_schedules_path()`，暂无其它调用方，暂不公开。

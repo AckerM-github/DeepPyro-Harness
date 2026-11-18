@@ -1,7 +1,7 @@
 """Conversion from native core.messages to the OpenAI chat-completions payload.
 
-The native mirror of :mod:`deeppyro.llm.messages` (KI-010): same semantics, but it
-consumes :class:`deeppyro.core.messages.Message` and
+The wire-free converter (KI-010): it consumes
+:class:`deeppyro.core.messages.Message` and
 :class:`deeppyro.core.llm.ToolSpec` instead of wire models, so the native provider
 never imports `core.wire` or `core.protocols`.
 

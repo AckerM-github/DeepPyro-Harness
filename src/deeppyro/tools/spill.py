@@ -1,6 +1,6 @@
 """Truncation and spill-to-file handling for tool output.
 
-DSH keeps full tool output out of the model context: the model gets a
+upstream keeps full tool output out of the model context: the model gets a
 head/tail window plus a marker, and the complete text is saved to a spill file
 so it can be retrieved later. Spill failures are non-fatal - a successful tool
 call must never become an error only because its output could not be saved.

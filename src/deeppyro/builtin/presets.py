@@ -136,7 +136,7 @@ class PresetsPlugin(Service):
 
     provide = "presets"
     plugin_id = "presets"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "agent preset revision registry with per-preset plugin realms"
 
     def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:

@@ -1,6 +1,6 @@
 """Goal domain types: snapshots, state, views and the error codes.
 
-Mirrors the DSH contract frozen in ``docs/spec/goal.md`` (sections 2-4).
+Mirrors the upstream contract frozen in ``docs/spec/goal.md`` (sections 2-4).
 Every persisted change is a full snapshot; the log is the only authority and
 ``fold`` rebuilds the same state from it.
 """
@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from deeppyro.core.errors import ToolError
 
-#: Durable record type; the value is frozen by the DSH record vocabulary.
+#: Durable record type; the value is frozen by the upstream record vocabulary.
 GOAL_EVENT = "goal/change"
 #: Bus event published after a successful commit (payload shape lands in M3b).
 GOAL_BUS_EVENT = "goal/changed"
@@ -36,12 +36,12 @@ GOAL_INVALID_TRANSITION = "GOAL_INVALID_TRANSITION"
 GOAL_NOT_FOUND = "GOAL_NOT_FOUND"
 GOAL_STALE_REVISION = "GOAL_STALE_REVISION"
 GOAL_AGENT_NOT_LIVE = "GOAL_AGENT_NOT_LIVE"
-#: deeppyro-only: the log could not be folded (see ``goal/replay.py``).
+#: deeppyro-only: the goal state could not be read from the session log.
 GOAL_REPLAY_FAILED = "GOAL_REPLAY_FAILED"
 
 
 class GoalError(ToolError):
-    """A goal operation refused by the contract, carrying its DSH code."""
+    """A goal operation refused by the contract, carrying its upstream code."""
 
     def __init__(self, message: str, code: str) -> None:
         super().__init__(message)
@@ -148,6 +148,58 @@ class GoalView:
         return data
 
 
+@dataclass(frozen=True, slots=True)
+class SnapshotChange:
+    operation: str
+    goal: GoalSnapshot
+    rounds_started: int
+    created_at: int
+    updated_at: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": GOAL_CHANGE_KIND,
+            "version": GOAL_CHANGE_VERSION,
+            "operation": self.operation,
+            "goal": self.goal.to_dict(),
+            "roundsStarted": self.rounds_started,
+            "createdAt": self.created_at,
+            "updatedAt": self.updated_at,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ClearedChange:
+    cleared: GoalRef
+    cleared_at: int
+    operation: Literal["clear"] = "clear"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": GOAL_CHANGE_KIND,
+            "version": GOAL_CHANGE_VERSION,
+            "operation": "clear",
+            "cleared": self.cleared.to_dict(),
+            "clearedAt": self.cleared_at,
+        }
+
+
+GoalChange = SnapshotChange | ClearedChange
+
+
+def view(state: GoalState, activation: Activation) -> GoalView | None:
+    """Project a folded state for tools, commands and the TUI."""
+    if state.goal is None:
+        return None
+    return GoalView(
+        goal=state.goal,
+        rounds_started=state.rounds_started,
+        created_at=state.created_at,
+        updated_at=state.updated_at,
+        activation=activation,
+    )
+
+
 __all__ = [
     "DEFAULT_MAX_GOAL_ROUNDS",
     "GOAL_AGENT_NOT_LIVE",
@@ -168,10 +220,14 @@ __all__ = [
     "SNAPSHOT_OPERATIONS",
     "Activation",
     "BlockedReason",
+    "ClearedChange",
+    "GoalChange",
     "GoalError",
     "GoalRef",
     "GoalSnapshot",
     "GoalState",
     "GoalView",
     "Phase",
+    "SnapshotChange",
+    "view",
 ]

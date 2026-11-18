@@ -7,11 +7,11 @@ section; agents created with that preset see them, everyone else does not.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from deeppyro.api import PresetPluginRow, PresetSpec
+from deeppyro.agent.native_factory import AgentBuild, PromptFacts
+from deeppyro.api import DEFAULT_PRESET_ID, PresetPluginRow, PresetSpec
 from deeppyro.builtin.agents import AgentsPlugin
 from deeppyro.builtin.presets import PresetsPlugin
 from deeppyro.builtin.prompt_service import PromptPlugin
@@ -21,6 +21,9 @@ from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.core.errors import DeeppyroError
 from deeppyro.kernel import boot
 from deeppyro.prompt import PromptContext
+from deeppyro.session.fold import fold
+from deeppyro.session.native_control import NewSession
+from deeppyro.session.schema import NativeSession
 
 PLUGIN_SOURCE = (
     "from deeppyro.api import Plugin, PresetSpec\n"
@@ -76,9 +79,10 @@ BUNDLE_TOML = (
 )
 
 
-class DummySink:
-    def emit(self, event: dict[str, Any]) -> None:
-        pass
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep user bundles, manifests and sessions out of the test run."""
+    monkeypatch.setenv("DEEPPYRO_HOME", str(tmp_path / "home"))
 
 
 def _config(tmp_path: Path) -> Config:
@@ -87,7 +91,15 @@ def _config(tmp_path: Path) -> Config:
             "local": ProviderConfig(base_url="http://127.0.0.1:8000/v1", models=[ModelConfig(id="m")])
         },
         agent={"provider": "local", "model": "m"},
-        session_dir=tmp_path / "sessions",
+    )
+
+
+def _facts(tmp_path: Path) -> PromptFacts:
+    return PromptFacts(
+        cwd=tmp_path,
+        model="m",
+        permission_preset="workspace-write",
+        approval_policy="ask",
     )
 
 
@@ -101,6 +113,12 @@ def _prompt_context(tmp_path: Path) -> PromptContext:
         approval_policy="ask",
         model="m",
     )
+
+
+def _system_prompt(session: NativeSession) -> str:
+    view = fold(session.header, session.events)
+    assert view.system is not None
+    return view.system.text()
 
 
 async def test_preset_scopes_tools_and_prompt_sections(tmp_path: Path) -> None:
@@ -149,41 +167,64 @@ async def test_agents_apply_the_selected_preset(tmp_path: Path) -> None:
     (bundle_dir / "preset_plugin.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
     app = await boot(_config(tmp_path), bundle_paths=[str(bundle_dir)])
     try:
+        presets = app.require(PresetsPlugin)
+        reviewer = presets.resolve("reviewer")
+        assert reviewer.instructions == ("Review only.",)
+        assert reviewer.model == "reviewer-model"
+
         sessions = app.require(SessionsPlugin)
-        session = sessions.create(str(tmp_path), agent_preset="reviewer")
-        assert session.header.agentPreset == "reviewer"
-
         agents = app.require(AgentsPlugin)
-        options = agents.options()
-        assert options.model == ""
-        registry = app.require(ToolsPlugin).registry_for(tmp_path, scope="reviewer")
-        agent = agents.create(
-            session=session,
-            provider=object(),
-            registry=registry,
-            options=options,
-            sink=DummySink(),
-            cwd=str(tmp_path),
-            preset="reviewer",
-        )
-        assert agent._options.model == "reviewer-model"
-        assert agent._options.instructions == ["Review only."]
-        prompt = agent._prompt_builder([], _prompt_context(tmp_path))
-        assert "## Review mode" in prompt
-        assert "Do not edit files." in prompt
+        session = sessions.native_create(NewSession(cwd=tmp_path, preset="reviewer"))
+        assert session.header.preset == "reviewer"
+        try:
+            # An empty build model falls back to the preset's model override.
+            host = agents.host(
+                session,
+                AgentBuild(
+                    provider="local",
+                    model="",
+                    cwd=tmp_path,
+                    preset="reviewer",
+                    prompt_facts=_facts(tmp_path),
+                ),
+            )
+            try:
+                assert host._loop._model == "reviewer-model"
+                names = {tool.name for tool in host._tools}
+                assert "review_note" in names
+                assert "shared_ping" in names
+                prompt = _system_prompt(session)
+                assert "## Review mode" in prompt
+                assert "Do not edit files." in prompt
+                assert "Review only." in prompt
+            finally:
+                await host.aclose()
+        finally:
+            session.close()
 
-        default_session = sessions.create(str(tmp_path))
-        assert not default_session.header.agentPreset
-        default_agent = agents.create(
-            session=default_session,
-            provider=object(),
-            registry=app.require(ToolsPlugin).registry_for(tmp_path),
-            options=agents.options(),
-            sink=DummySink(),
-            cwd=str(tmp_path),
-        )
-        assert default_agent._options.instructions == []
-        assert "## Review mode" not in default_agent._prompt_builder([], _prompt_context(tmp_path))
+        default_session = sessions.native_create(NewSession(cwd=tmp_path))
+        assert default_session.header.preset == DEFAULT_PRESET_ID
+        try:
+            assert presets.resolve(DEFAULT_PRESET_ID).instructions == ()
+            default_host = agents.host(
+                default_session,
+                AgentBuild(
+                    provider="local",
+                    model="",
+                    cwd=tmp_path,
+                    preset=DEFAULT_PRESET_ID,
+                    prompt_facts=_facts(tmp_path),
+                ),
+            )
+            try:
+                default_prompt = _system_prompt(default_session)
+                assert "## Review mode" not in default_prompt
+                assert "Review only." not in default_prompt
+                assert "review_note" not in {tool.name for tool in default_host._tools}
+            finally:
+                await default_host.aclose()
+        finally:
+            default_session.close()
     finally:
         await app.stop()
 
@@ -208,28 +249,36 @@ async def test_preset_realm_activates_and_live_agent_keeps_its_revision(tmp_path
         await presets.ensure_all()
         writer = presets.resolve("realm-writer")
         assert writer.revision == presets.revision_of("realm-writer")
-        failures = presets.realm_failures("realm-writer")
-        assert failures == []
+        assert presets.realm_failures("realm-writer") == []
 
         sessions = app.require(SessionsPlugin)
         agents = app.require(AgentsPlugin)
-        session = sessions.create(str(tmp_path), agent_preset="realm-writer")
-        agent = agents.create(
-            session=session,
-            provider=object(),
-            options=agents.options(),
-            sink=DummySink(),
-            cwd=str(tmp_path),
-            preset="realm-writer",
-        )
-        assert agent.preset == "realm-writer"
-        assert agent.preset_revision == writer.revision
-        assert "realm_note" in agent._registry
-        assert "realm_note_v2" not in agent._registry
-        assert "## Realm mode" in agent._prompt_builder([], _prompt_context(tmp_path))
+        session = sessions.native_create(NewSession(cwd=tmp_path, preset="realm-writer"))
+        assert session.header.preset == "realm-writer"
+        try:
+            host = agents.host(
+                session,
+                AgentBuild(
+                    provider="local",
+                    model="",
+                    cwd=tmp_path,
+                    preset="realm-writer",
+                    prompt_facts=_facts(tmp_path),
+                ),
+            )
+            try:
+                assert host._loop._model == "realm-model"
+                names = {tool.name for tool in host._tools}
+                assert "realm_note" in names
+                assert "realm_note_v2" not in names
+                assert "## Realm mode" in _system_prompt(session)
+            finally:
+                await host.aclose()
+        finally:
+            session.close()
 
         # Editing the preset creates a new immutable revision; the live agent
-        # keeps the snapshot it was created with.
+        # above keeps the snapshot it was created with.
         (bundle_dir / "realm_plugin_v2.py").write_text(REALM_PLUGIN_V2_SOURCE, encoding="utf-8")
         presets.add(
             PresetSpec(
@@ -244,24 +293,28 @@ async def test_preset_realm_activates_and_live_agent_keeps_its_revision(tmp_path
         )
         await presets.ensure("realm-writer")
         new_revision = presets.revision_of("realm-writer")
-        assert new_revision == agent.preset_revision + 1
+        assert new_revision == writer.revision + 1
 
-        new_session = sessions.create(str(tmp_path), agent_preset="realm-writer")
-        new_agent = agents.create(
-            session=new_session,
-            provider=object(),
-            options=agents.options(),
-            sink=DummySink(),
-            cwd=str(tmp_path),
-            preset="realm-writer",
-        )
-        assert new_agent.preset_revision == new_revision
-        assert "realm_note_v2" in new_agent._registry
-        assert "realm_note" not in new_agent._registry
-
-        # The earlier agent keeps its frozen revision snapshot.
-        assert agent.preset_revision < new_revision
-        assert "realm_note" in agent._registry
-        assert "realm_note_v2" not in agent._registry
+        new_session = sessions.native_create(NewSession(cwd=tmp_path, preset="realm-writer"))
+        try:
+            new_host = agents.host(
+                new_session,
+                AgentBuild(
+                    provider="local",
+                    model="",
+                    cwd=tmp_path,
+                    preset="realm-writer",
+                    prompt_facts=_facts(tmp_path),
+                ),
+            )
+            try:
+                assert presets.resolve("realm-writer").revision == new_revision
+                new_names = {tool.name for tool in new_host._tools}
+                assert "realm_note_v2" in new_names
+                assert "realm_note" not in new_names
+            finally:
+                await new_host.aclose()
+        finally:
+            new_session.close()
     finally:
         await app.stop()

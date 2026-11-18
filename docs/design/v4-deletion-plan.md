@@ -1,6 +1,12 @@
 # v4 Deletion Plan — native-only hard cut for deeppyro 0.3.0
 
-**Status:** design proposal, analysis only. No source file was modified, moved, or deleted to produce it.
+**Status (2026-11-19): historical design/plan — executed.** This document was the
+analysis-only proposal for the 0.3.0 hard cut; the deletion has since landed (v4
+session/agent stack, `core.wire`, `projection`, `session_query`, the four fallback
+flags, `dpyro migrate` and `zstandard` are gone; TUI/headless/Web are native-only).
+The plan-time text below is kept for traceability and is **not** current state: it
+still describes flags, a migration command and v4 modules as existing. Current
+contract: `docs/native/schema.md` and `docs/release/0.3.0.md`.
 
 **Baseline:** repo `D:/code/deeppyro`, HEAD `7d03ef6` ("feat: close the remaining 0.2.0 known-issue items") plus the uncommitted wave-1 work (46 modified + 21 untracked files, 1 deleted file). `pyproject.toml` says version `0.2.0`; this plan targets `0.3.0` as the release that removes the v4 stack outright.
 

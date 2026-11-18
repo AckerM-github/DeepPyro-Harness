@@ -1,522 +1,432 @@
-# Agent loop, prompt, hooks, and compaction (`deeppyro.agent`, `deeppyro.prompt`, `deeppyro.compact`)
+# Native agent loop
 
-> **状态**：现行（过渡：v4 待移除） · **层级**：v4 loop 规格 · **最后核对**：2026-11-18
-> 本文只描述 v4 loop，它现在仅服务 TUI 交互路径与 `--legacy-v4`；headless 默认已走 native `AgentLoop`
-> （见 [native/schema.md §5.5](../native/schema.md)）。v4 退出后重写。
+> **状态**：现行（0.3.0 native-only） · **层级**：AgentLoop 规格 · **唯一实现**：`src/deeppyro/agent/loop.py`
+> **关联契约**：[native/schema.md](../native/schema.md)（schema 1 会话、事件顺序、run 事件与 trace）、[hooks.md](hooks.md)（typed `AgentHooks` 与领域总线）、[events.md](events.md)（总线目录）
+> **最后核对**：2026-11-19
 
-Status: implemented (owner: loop-dev). Consumes only `core.protocols` / `core.errors` /
-`core.wire`; writes durable records through `SessionLogLike.append` and emits UI events
-through `EventSink.emit`. The loop knows nothing about the concrete `Session` implementation
-and is exercised in tests with a surface-folding fake session.
+This document is the contract for the one native agent loop. It replaces the
+deleted v4 loop specification: there is no `AgentSession`, no projection
+layer, no hook journal, and no second loop implementation in 0.3.0. The session
+log is the source of truth; the loop only appends schema 1 events through
+`NativeSession.append` and never writes messages or state through another path.
 
-Modules:
+## 1. Position
 
-| module | contents |
-| --- | --- |
-| `src/deeppyro/agent/options.py` | `AgentOptions` |
-| `src/deeppyro/agent/session.py` | `AgentSession`, `StreamAccumulator`, `ToolCallDraft` |
-| `src/deeppyro/agent/inbox.py` | `Inbox` (durable next-turn / next-step queues) |
-| `src/deeppyro/agent/request.py` | header planning, tool-change messages, runtime context payloads |
-| `src/deeppyro/agent/stream.py` | `AssistantStreamAccumulator` (merged stream snapshots) |
-| `src/deeppyro/agent/retry.py` | `decide_retry` (pure retry decision + record payloads) |
-| `src/deeppyro/prompt/prompt.py` | `PromptContext`, `build_system_prompt`, `collect_instructions` |
-| `src/deeppyro/prompt/projection.py` | system prompt + runtime-context projection |
-| `src/deeppyro/prompt/runtime_context.py` | runtime-context sections/rendering |
-| `src/deeppyro/hooks/` | `HookService`, hook names/modes (see `docs/spec/hooks.md`) |
-| `src/deeppyro/compact/` | token accounting, prompts, surface fold, `Compactor` |
+`AgentLoop` (`src/deeppyro/agent/loop.py:127`) executes **one run at a time**
+against a `NativeSession` (`src/deeppyro/session/schema.py`). Everything the
+model sees and everything the model produces is a native `Message` from
+`src/deeppyro/core/messages.py`. The loop owns:
 
-## 1. Public API
+* run/turn/step lifecycle and the corresponding session events;
+* context assembly (fold + `ContextPlan`) for each model step;
+* one provider call per step through `core.llm.LlmProvider`;
+* tool dispatch through the existing tool pipeline (`src/deeppyro/tools/pipeline.py`);
+* run budgets, checkpoints, traces and usage reporting;
+* typed `AgentHooks` notifications for observers (TUI, headless sink, tests).
+
+The loop does **not** own session creation, session locking, compaction,
+approval interaction, goal rounds, team/subagent orchestration or the web UI.
+Those are host responsibilities (see [headless.md](headless.md),
+[tui.md](tui.md), [goal.md](goal.md)).
+
+## 2. Public API
+
+### 2.1 Constructor
 
 ```python
-from deeppyro.agent import AgentOptions, AgentSession
-from deeppyro.agent.images import ImageRequestPlan, plan_request_images
-from deeppyro.prompt import PromptContext, build_system_prompt, collect_instructions
-from deeppyro.compact import Compactor
-
-AgentSession(
-    *, session: SessionLogLike, provider: LlmProvider, registry: ToolRegistry,
-    options: AgentOptions, sink: EventSink, cwd: Path,
-    permission: PermissionGate | None = None,   # additive, optional
-    services: dict[str, Any] | None = None,     # hooks / retryPolicy / tool services
-    compactor: Compactor | None = None,         # additive, mainly for tests
-    prompt_builder: Callable | None = None,     # additive, tests/custom prompts
+AgentLoop(
+    *,
+    session: NativeSession,
+    provider: NativeLlmProvider,
+    model: str,
+    tools: Iterable[Tool] = (),
+    cwd: str | Path = ".",
+    hooks: AgentHooks | None = None,
+    budget: BudgetLimits | None = None,
+    checkpoint_store: CheckpointStore | None = None,
+    trace_store: TraceStore | None = None,
+    temperature: float | None = None,
+    max_tokens_per_call: int | None = None,
+    provider_name: str | None = None,
+    cost_per_million_tokens: float | None = None,
+    permission: Any | None = None,
+    services: Mapping[str, Any] | None = None,
 )
-
-await agent.send(text) -> str        # queue next-turn text, drive until idle, return final text
-agent.followup(text, *, source=None) -> None   # queue next-turn text and wake an idle driver
-agent.steer(text, *, source=None) -> None      # queue next-step text and wake the driver
-agent.inject(text, *, source=None) -> None     # queue next-step text without waking the driver
-await agent.wait_for_idle() -> None  # wait for every turn the driver was woken for
-await agent.interrupt(*, clear_inbox=True) -> None
-agent.busy, agent.model, agent.turn, agent.step, agent.inbox
-agent.last_compaction_error          # last tolerated auto-compaction failure
-
-Compactor(*, provider, model, keep_recent_tokens=8000, context_window=32768,
-          threshold=0.85, max_tokens: int | None = None)
-compactor.should_compact(messages) -> bool
-await compactor.compact(session, messages=None, *, source_command_id=None) -> bool
 ```
 
-`AgentOptions` (`@dataclass(slots=True)`) — frozen fields first, then additive ones:
+* `hooks` defaults to `NullAgentHooks()`; a broken observer can never abort a run
+  (every hook dispatch is wrapped in `contextlib.suppress(Exception)`).
+* `provider_name` defaults to `provider.name`; it is recorded in the session
+  trace and in usage records.
+* `services` is a plain mapping read once at construction for
+  `UsageSink`, `TraceExportSink` and `HookService` (`src/deeppyro/agent/loop.py:182-184`).
+  The `HookService` is only forwarded to the tool pipeline; the loop itself
+  dispatches typed hooks, not string-keyed bus events.
+* `budget` defaults to `BudgetLimits()` (all limits `None` = unlimited).
+* `checkpoint_store` is optional. When `None`, `run.checkpoint` events are
+  still appended to the session (they are authoritative); only the sidecar file
+  is skipped.
+
+### 2.2 `run()`
 
 ```python
-max_steps: int = 100
-max_tokens: int | None = None
-temperature: float | None = None
-compact_threshold: float = 0.85
-context_window: int = 32768
-model: str = ""                     # additive: overrides provider model for requests
-permission_preset: str | None = None  # additive: override for the system prompt
-approval_policy: str | None = None    # additive: override for the system prompt
-instructions: list[str] = field(default_factory=list)  # additive: extra instruction blocks
+result = await loop.run(
+    prompt=None,        # required for a fresh run; None when resuming
+    *,
+    resume=False,       # continue an unfinished run on the same session
+    source=None,        # MessageSource for the user message, default UserSource()
+    cancel=None,        # optional asyncio.Event for external cancellation
+)
 ```
 
-## 2. Driver, inbox, and turn/step state machine
+Guards (`src/deeppyro/agent/loop.py:253-293`):
 
-One `AgentSession` owns one durable inbox. All user input is queued there; the driver
-claims it turn by turn:
+| Condition | Result |
+|---|---|
+| a run is already in flight on this loop | `RuntimeError("agent loop already has a run in flight")` |
+| the session is closed | `ValueError("session is closed")` |
+| fresh run with a missing/blank prompt | `ValueError("a fresh run requires a non-empty prompt")` |
+| resume with a prompt supplied | `ValueError("a resumed run does not accept a new prompt")` |
 
-* `send(text)` pushes a next-turn message. If the driver is idle it runs every pending
-  turn and returns the last assistant text; if a driver is already running, `send` returns
-  `""` immediately and the message is consumed by the running driver. It never raises
-  `SessionError("busy")` anymore.
-* `followup` queues a next-turn message and wakes an idle driver.
-* `steer` queues a next-step message and wakes the driver; `inject` queues a next-step
-  message without waking an idle driver.
-* The driver loop is `while not interrupted and inbox.has_pending: turn = _run_turn()`.
-  `_drive` always publishes `running` then `idle` through the `agent/status` emit hook.
+One `AgentLoop` instance therefore consumes exactly one run; calling `run()`
+again after success starts a **new** run (new `run_id`/`trace_id`,
+`run.started` appended) on the same session. Hosts that need a second turn
+create a new `AgentLoop`.
 
-Each turn:
+### 2.3 `RunResult`
 
-1. claim every pending **next-turn** message (`Inbox.claim`) — the turn runs even when the
-   claim became empty, and then closes as `completed` with no request;
-2. append `turn/start {"turn": n}` where `n = #turn/start records + 1`;
-3. run the `agent/pre-step` waterfall; a `{"kind": "reject"}` result writes
-   `turn/end {"kind":"blocked","reason":{"kind":"pre-step",...}}` without a step, and an
-   `{"kind": "enter", "messages": [...]}` result may replace the admitted user messages and
-   set `startsRequestSeries`;
-4. run steps until the turn closes.
+`RunResult` (`src/deeppyro/agent/loop.py:110`) is a frozen slots dataclass:
 
-One step:
+| Field | Meaning |
+|---|---|
+| `run_id`, `trace_id`, `session_id` | ids of the completed run |
+| `status` | `RunStatus.completed` for the success path |
+| `final_text` | text of the last assistant message |
+| `finish_reason` | provider finish reason of the last model call |
+| `steps`, `tool_calls` | counters accumulated by the budget tracker |
+| `usage` | `BudgetUsage` snapshot (input/output tokens, cost, tool calls, wall ms) |
+| `last_message_id` | id of the last persisted message |
+| `checkpoint_path` | last sidecar path when a `CheckpointStore` is configured, else `None` |
+| `cached_input_tokens` | cached prompt tokens reported by the provider |
 
-1. abort on a pending interrupt;
-2. close with `max-steps` when `step >= options.max_steps`;
-3. append `step/start` and emit the UI-only `step` event;
-4. claim next-step inbox messages (except step 1, which uses the turn claim);
-5. commit the system prompt projection and `user/message` records for the claimed messages;
-6. commit the runtime-context projection (only when its rendered text changes);
-7. write `request/header` when needed, a `developer/message` tool-change diff when the tool
-   catalog changed, and `request/context` only when provider/model/context window changed;
-8. emit `status thinking`, run auto-compaction, build and derive the request;
-9. run the `agent/request` waterfall (controls or `LlmRequest`; provider/model may not change);
-10. stream, append `assistant/message` and run tools, then close the step.
+Failure paths raise instead of returning a `RunResult` (see §9).
 
-Turn end reasons (`turn/end {"turn", "reason"}`):
+### 2.4 Other surface
 
-| reason | when |
-| --- | --- |
-| `{"kind": "completed"}` | model answered without tool calls, or no admitted messages |
-| `{"kind": "max-steps"}` | `max_steps` exhausted |
-| `{"kind": "max-tokens"}` | provider `Finish(kind="length")`; unexecuted tool calls are dropped |
-| `{"kind": "blocked", "reason": {"kind": "pre-step", ...}}` | pre-step rejected the turn |
-| `{"kind": "aborted", "reason": {"kind": "user"}}` | `interrupt()` |
-| `{"kind": "aborted", "reason": {"kind": "provider"}}` | provider `Finish(kind="aborted")` |
-| `{"kind": "aborted", "reason": {"kind": "disposed"}}` | external task cancellation |
-| `{"kind": "error", "error": {"message", "code"?}}` | provider failure / unexpected exception |
+* `cancel()` sets the cooperative cancellation event (`src/deeppyro/agent/loop.py:224`).
+* Properties `session`, `run_id`, `trace_id`.
+* `repair_open_turn(cause=None) -> bool` may also be called by a host before
+  resuming; it closes a dangling turn/step without fabricating content (§10).
+* `AgentLoop` and `RunResult` are the module's `__all__`.
 
-## 3. Hooks at the loop boundary
+## 3. Run / turn / step lifecycle
 
-The loop reads `services["hooks"]` (a `HookService`); without the service every hook is a
-no-op. The nine names are fixed and documented in `docs/spec/hooks.md`. Loop call sites:
+`_begin` (`src/deeppyro/agent/loop.py:334-373`) starts every run:
 
-| hook | where | payload / result |
-| --- | --- | --- |
-| `agent/pre-step` | once per turn, before step 1 | `{messages, turn, step, signal, modelSelection, tools, agent}`; waterfall returns `{"kind":"enter","messages"}` or `{"kind":"reject","reason"}` (fallback `{"kind":"enter","messages":claimed}`) |
-| `agent/request` | after the request is built | `{request, turn, step, signal, agent}`; waterfall fallback is the controls dict (`provider/model/reasoningEffort/maxTokens/temperature/contextWindow`); returns `LlmRequest` or controls, provider/model/reasoningEffort are immutable |
-| `agent/request-error` | after a failed stream attempt | `{turn, step, provider, failure, retryPolicy, signal, agent}`; returning `{"kind":"retry"}` enables `decide_retry` and `llm/retry` / `llm/retry-started` records, otherwise the failure propagates as `LlmError` |
-| `agent/turn-stopping` | serial, before closing a completed turn | `{turn, signal, agent}`; a listener may steer the loop |
-| `agent/assistant-stream` | emit, for each transient stream frame | `{frame}` (`start`, `chunk`, `end`) |
-| `agent/status` | emit, on phase changes | `{"status": "running"|"idle"}` |
-| `tools/pre-execute`, `tools/execute`, `tools/post-execute` | inside `run_tool_batch` | see `docs/spec/hooks.md` §5 |
+1. reset per-run usage and turn counters; on resume restore usage from the
+   checkpoint sidecar when its status is `running`, then call `repair_open_turn()`;
+2. allocate `run_id` and `trace_id`; record `started_at`;
+3. create the `BudgetTracker`;
+4. make the `RunRecord` and hand it to the trace store / `TraceExportSink`;
+5. append `run.started` (`{}`) and emit `RunStarted(resumed=…)`.
 
-The provider keeps its own low-level `RetryPolicy` wrapper; the loop-level retry only runs
-when a plugin registers an `agent/request-error` listener that answers `{"kind":"retry"}`.
-The core bundle mounts the `llm-retry` plugin, which provides the `retryPolicy` service from
-the `[retry]` config table and answers retry for retryable failures (normal mode) or every
-failure (always mode), so a default runtime does emit `llm/retry` records. Disabling that
-plugin (or a bundle without it) leaves the payload policy empty, no listener answers, and the
-failure propagates as before.
+`_drive` (`src/deeppyro/agent/loop.py:437-511`) executes exactly one turn:
 
-The listener receives `{agent, turn, step, provider, failure, retryPolicy, signal}` and only
-the `{"kind":"retry"}` answer starts the loop; the delay and the record pair come from
-`deeppyro.agent.retry.decide_retry` (`llm/retry`, then `llm/retry-started` after the delay),
-and the same request is streamed again without new request/header or request/context records.
-See `docs/spec/llm.md` §6.1 for the plugin and its config table.
+1. fail with `RunCancelledError("run cancelled before the turn started")` if
+   cancellation was already requested;
+2. compute the 1-based turn index from existing `turn.started` events and
+   allocate `turn_id`; append `turn.started`, emit `TurnStarted`;
+3. fresh run: build the native user message via `native_user_message` with
+   `MessageSource`, append `user.message`, then emit `TurnStarted(prompt_message_id=…)`;
+   resume: append no user message and emit `TurnStarted(prompt_message_id=None)`;
+4. per step, in a `while True` loop:
+   * fail with `RunCancelledError("run cancelled between steps")` if cancelled;
+   * `tracker.start_step()`; allocate `step_id`; append `step.started`; emit `StepStarted`;
+   * write a `run.checkpoint` with status `running`;
+   * `_build_plan()` = `fold(header, events)` + `build_context_plan(...)`;
+   * build the `ModelRequest` (`provider`, `model`, `messages`, `system`,
+     `tools`, per-call `max_tokens`, `temperature`, `session_id`);
+   * call `complete_model_call` under `_await_cancellable`;
+   * `finish_reason == "aborted"` becomes `RunCancelledError("provider aborted the model call")`;
+   * compute cost, append the model trace record, update the budget tracker and
+     turn counters (`retries`, `latency_ms`, `cached_input_tokens`, `cost`);
+   * build the assistant message from the response, append
+     `assistant.message {message, finish_reason}`, emit `AssistantMessage`;
+   * if the response has tool calls: `_dispatch_tool_calls(...)`, append
+     `step.ended`, continue with the next step;
+   * otherwise append `step.ended` and return `(assistant_text, finish_reason)`.
 
-## 4. Records written by the loop
+On success `_finalize_success` (`src/deeppyro/agent/loop.py:1063-1074`):
+report usage, close an open step, append `turn.ended` with
+`{"reason": {"kind": "completed"}}`, write a `completed` checkpoint, append
+`run.finished {status: "completed", reason: {"kind": "completed"}}`, emit
+`RunFinished`.
 
-| record | `data` | envelope |
-| --- | --- | --- |
-| `turn/start` | `{turn}` | — |
-| `turn/end` | `{turn, reason}` | — |
-| `step/start` / `step/end` | `{turn, step}` | — |
-| `system/message` | `{turn, step, message}` (source `{"kind":"system-prompt"}`) | `surfaceOp="append"` or a replace projection |
-| `user/message` | the wire `Message` directly (`role, content, id, source`) | `surfaceOp="append"` or a replace projection (runtime-context) |
-| `developer/message` | tool-change message from `tool_change_data` | `surfaceOp="append"` |
-| `request/header` | `{header: {config, adapterDefaults, tools}, reason[, startsSeries: true]}` — no turn/step; `reason` is `initial` (first header of a new session), `resume` (first header after a restart with an existing baseline), `change` (header differs from the latest one) or `series` (unchanged header that merely starts a new request series). `startsSeries` appears on initial/resume/change records only. | — |
-| `request/context` | `{provider, model[, contextWindow][, systemPromptUpdate]}` — no turn/step; optional fields are omitted rather than null, and the record is written only when one of the four tracked fields changed (missing counts as different from null). | — |
-| `assistant/message` | `{turn, step, message, usage?, stream: [], interrupted?}` | `surfaceOp="append"` |
-| `assistant/attempt` | `{turn, step, stream: [merged chunks]}` | — |
-| `tool/call` | `{turn, step, callId, name, arguments}` (`arguments` is a JSON string) | — |
-| `tool/result` | `{turn, step, message, meta?, error?}` (`message.role="tool"`, `source.kind="tool"`); `error` is `{name, code}` and only present for failures that carry error info | `surfaceOp="append"`, `sourceEventSeqs=[tool/call seq]` when known |
-| `llm/retry`, `llm/retry-started` | retry record pair from `decide_retry` | — |
-| `compaction/start`, `compaction/summary`, checkpoint `user/message`, `compaction/end` | section 9 | checkpoint replace envelope |
-| `agent/inbox/spliced` | inbox mutation from `Inbox` | — |
-| `image/offload` | `{targets: [{seq, imageIndexes}]}` — durable request-image offload decision (not a surface event; consumed by `derive_messages`) | — |
+Typical log order for one run (see native schema §5.5):
 
-Cancellation while tools are in flight mirrors the reference pipeline: a call that was already
-dispatched records `Error: tool call aborted` with `error={"name":"AbortError","code":"ABORTED"}`;
-a call that had not been dispatched records `Error: tool call aborted before dispatch` with
-`error={"name":"AbortError","code":"ABORTED_BEFORE_DISPATCH"}`, after the loop appends its own
-`tool/call` so the pair stays valid. Both results carry `sourceEventSeqs=[tool/call seq]`.
-A failure is written with `message.isError == true`; `error` is omitted when the tool result has
-no error info (the session validator requires that pairing).
-
-`usage` on `assistant/message` is camelCase like the fixtures:
-`{"inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens"}`;
-`reasoningTokens` is added only when the provider reports reasoning token usage.
-
-The envelope is passed only when the session's `append` accepts `**kwargs`; the loop probes
-this once with `inspect.signature`. A minimal `SessionLogLike` without envelope support still
-works, it just records events without surface information.
-
-### 4.1 Request-side image planning
-
-The durable log only ever stores attachment references, never image bytes. Before building a
-provider request, each step runs `deeppyro.agent.images.plan_request_images` over the current
-records:
-
-1. fold the surface into `(record seq, Message)` pairs and apply the existing
-   `image/offload` projection (so already-omitted occurrences are placeholder text);
-2. resolve the remaining attachment references to inline `data:` URLs **in memory** through the
-   `attachments` service; unresolvable refs stay as refs;
-3. measure every occurrence (base64 length for inline data URLs) against the route
-   `ImageBudget`; when the request exceeds it, select the oldest occurrences and return both the
-   updated messages and the targets of a new `image/offload` record.
-
-When `record_data()` is non-empty the loop appends exactly one `image/offload` record (before
-`assistant/message`, after the step preamble) and then builds the request from the planned
-messages, so the durable log and the wire request agree. Without an `attachments` service the
-planner degrades to the pre-offload behaviour: derived messages unchanged, nothing written.
-See `docs/spec/image-request.md` for the pipeline and `docs/spec/image-offload.md` for the
-placeholder text.
-
-## 5. Prompt and runtime context projections
-
-The system prompt is a recorded `system/message`, never a request-level field. At every step
-the loop renders `build_system_prompt(registry.schemas(), prompt_context)` and feeds it to
-`SystemPromptProjection.project(rendered, in_history=True, starts_series=...)`:
-
-* append a new head system node when there is none;
-* replace the current head system node when the rendered text changed at a series start;
-* otherwise leave the existing node untouched (a later step reuses the same prompt).
-
-The runtime context is a second, append/replace stream of `user/message` records with
-`source.kind="runtime-context"`. `RuntimeContextProjection` retains the newest snapshot and
-projects the newly rendered text; when it changes, it replaces the retained snapshot so old
-runtime-context records disappear from the derived history. `PromptContext` carries cwd,
-platform, session id, start time, permission preset, approval policy, model, and instructions;
-`collect_instructions(cwd)` walks `cwd` and its parents to the filesystem root, dedupes by
-resolved path, reads `AGENTS.md` from root-most to deepest, and truncates each file at
-`DEFAULT_MAX_INSTRUCTION_CHARS = 20000`.
-
-## 6. Assistant stream snapshots and retries
-
-`AssistantStreamAccumulator` merges provider deltas into the DSH-shaped `stream` array stored
-on `assistant/message` / `assistant/attempt`: text and reasoning chunks, tool-call chunks with
-`index/id/name/argumentsDelta`, block boundaries (`{"type":"block-start","index","blockType"}`
-and `{"type":"block-end","index","block"}`), usage and finish chunks, each with `time`/`dt`.
-Deltas carry their provider block `index` (text/reasoning no longer assume index 0), so a future
-Anthropic-style adapter can interleave blocks without changing the record format. Usage chunks
-may include `cacheWriteTokens` and `reasoningTokens`; a finish chunk carries
-`reason.replayState` when the provider returned replay state. Adjacent fragments of the same
-kind merge while their gap is at most `MAX_MERGE_GAP_MS = 60000`; `expand_stream` is the
-inverse used by tests and tooling. On a failed attempt the snapshot is written to
-`assistant/attempt` before `agent/request-error` runs.
-
-`decide_retry` is pure: given the sanitized failure, `retryPolicy`, previous retry, provider,
-turn, and step it returns a `RetryDecision` with `retry`/`retryId`/`delay_ms`/`mode`/
-`policy_key` plus the two durable payloads. Normal mode retries only known retryable codes
-within `maxRetries`; `always` ignores the budget; `providerRetryAfterMs` wins over local
-backoff when the policy allows it; the retry id is reused per provider+policy chain. The loop
-appends `llm/retry`, waits `delayMs`, appends `llm/retry-started`, and re-runs the step.
-
-## 7. Events and ordering guarantees
-
-Event shapes are the frozen ones from INTERFACES §7:
-
-```text
-{"type": "session", "sessionId"}
-{"type": "step", "turn", "step"}
-{"type": "status", "phase": "thinking" | "tool" | "done"}
-{"type": "text", "text"}
-{"type": "thinking", "text"}
-{"type": "tool_call", "callId", "name", "arguments"}
-{"type": "tool_result", "callId", "isError", "text"}
-{"type": "usage", "input", "output", "cached"}
-{"type": "final", "text"}
-{"type": "error", "message"}
+```
+run.started
+turn.started
+user.message
+  step.started
+  run.checkpoint (running)
+  assistant.message
+  tool.call xN
+  run.checkpoint (running, calls pending)
+  tool.result xN
+  run.checkpoint (running, calls completed/failed)
+  step.ended
+  ...
+turn.ended
+run.checkpoint (completed|failed|cancelled)
+run.finished
 ```
 
-Ordering rules implemented here:
+## 4. Session log writes
 
-* `step` is a UI-only hint emitted immediately after the `step/start` record and before the
-  model stream; the durable `step/start` record remains the only step bookkeeping.
-* `session` is a frontend event: the headless runner emits it once before the first
-  `turn/start`; `AgentSession` never emits it, so JSON consumers see it exactly once.
-* `status thinking` is emitted after the step preamble records and before compaction /
-  the provider request; `status tool` after the assistant record and before the first
-  `tool/call`.
-* `text` / `thinking` deltas are emitted **while the provider stream is running**, i.e. before
-  the `assistant/message` record exists. A live UI cannot wait for the record; every other
-  event mirrors a record and is emitted only after that record was appended:
-  `usage` after `assistant/message`, `tool_call` after `tool/call`, `tool_result` after
-  `tool/result`, `error` after the assistant message/attempt + before `turn/end`.
-* `final` is emitted only for successful turn ends (completed, max-tokens, max-steps) and
-  never for errors/aborts.
-* `status done` is emitted at the end of every turn, after `turn/end`.
-* Concrete sinks live in `deeppyro/headless.py` and `deeppyro/tui/sink.py`; the agent package
-  only defines the `EventSink` protocol usage.
+The loop writes only these event kinds (`git grep EventKind` in
+`src/deeppyro/agent/loop.py`): `run.started`, `run.checkpoint`,
+`run.finished`, `turn.started`, `turn.ended`, `user.message`,
+`step.started`, `step.ended`, `assistant.message`, `tool.call`,
+`tool.result`.
 
-## 8. Tool execution
+* Run events carry `run_id` + `trace_id` and no turn/step envelope; turn and
+  step events carry the corresponding ids; fold skips `run.*`.
+* Event timestamps are monotonically non-decreasing:
+  `_next_ts() = max(now_ms(), session.last_ts)` (`src/deeppyro/agent/loop.py:244-245`).
+* Streaming text is not persisted: exactly one `assistant.message` is written
+  per step, after the provider stream ends and with the provider finish reason.
+* `tool.call` is appended for **all** provider tool calls before any tool
+  executes; each `tool.result` is appended after its tool returns.
+* The loop never appends `model.selected`, `preset.selected`,
+  `message.replaced`, `compaction.done` or approval events; hosts and services
+  own those.
 
-Calls returned by one stream are grouped in provider order: consecutive `parallel_safe`
-tools form one concurrent group (an unknown tool is treated as parallel-safe), and every
-barrier tool gets its own group. Per group the loop:
+## 5. Context planning
 
-1. lets `run_tool_batch` append all `tool/call` records through its `log` callback before any
-   pre-execute hook runs;
-2. executes through `deeppyro.tools.run_tool_batch(..., registry, ctx_factory, hooks=...,
-   turn=..., step=..., log=...)`, with `ToolContext(cwd, session_id, turn, step, call_id,
-   cancel=async Event, log=session.append, permission, services)`;
-3. appends one `tool/result` per call in request order (then emits `tool_result`), carrying
-   `ToolResult.meta` and `ToolOutcome.call_seq` as `sourceEventSeqs`.
+Each step folds the session once (`src/deeppyro/agent/loop.py:513-515`) and
+builds a pure `ContextPlan` (`src/deeppyro/agent/context_plan.py`):
 
-So parallel groups log `call, call, result, result` while barrier tools log
-`call, result, call, result`. Unknown tools, malformed JSON arguments, `PermissionDenied`,
-`ToolError`, hook failures, and unexpected tool exceptions become
-`ToolResult(is_error=True, text="Error: ...")`; only `CancelledError` propagates. The
-assistant message is always appended before any `tool/call` record.
+* `messages`: folded conversation messages in session order;
+* `system`: folded system message (last `system.message` wins in the fold);
+* `tools`: `ToolSpec` schemas in registry order;
+* `estimated_tokens`: deterministic estimate (4 chars/token, 256 tokens per
+  image, 4 tokens message overhead, 8 tokens tool overhead);
+* `source_message_ids`: ids covered by the request, recorded on the model trace
+  record as `context_message_ids`.
 
-## 9. Compaction
+The loop never compacts on its own. Compaction is a host concern (the TUI
+pre-send compactor, a plugin, or an explicit `/compact`); it writes
+`message.replaced` / `compaction.done` events that the next fold consumes.
 
-### 9.1 Token accounting
+## 6. Model call
 
-`estimate_message_tokens` = `(len(text) + len(reasoning) + len(tool-call name) +
-len(tool-call arguments)) / 3.5 + 4`; `CHARS_PER_TOKEN = 3.5`, `MESSAGE_OVERHEAD = 4.0`.
-`should_compact(messages)` is `estimate_messages_tokens(messages) > threshold *
-context_window` (`context_window <= 0` disables it).
+`core.llm.LlmProvider` is the only provider interface (`src/deeppyro/core/llm.py`).
+`complete_model_call` (`src/deeppyro/agent/model_call.py`) consumes one
+`provider.stream(request)` and normalizes it into `ModelResponse`:
 
-### 9.2 Surface fold
+* a `Finish` event is mandatory; a stream without one, or one carrying
+  `StopReason.ERROR`, is a `ProviderStreamError`;
+* tool calls must have a name; argument fragments are joined and default to
+  `"{}"`;
+* `finish_reason` is forced to `tool_calls` when the response carries calls,
+  and a `tool_calls` finish without calls is an error;
+* an assistant message with no text, reasoning or tool calls is an error;
+* usage is last-wins; latency is measured around the whole call;
+* provider-scheduled transport retries (`RetryScheduled`) are counted into
+  `ModelResponse.retries` and the model trace record.
 
-The durable log is append-only; visible context is a *surface* of system/developer/user/
-assistant messages and tool results. Each such record carries `surfaceOp`:
+The loop wraps the call with `_await_cancellable` so the cancellation event can
+win at any time; text and reasoning deltas are forwarded to
+`hooks.text_delta` / `hooks.reasoning_delta` as they arrive and are not
+persisted. `_model_call` fails with
+`RunCancelledError("run cancelled")` when the cancel event wins.
 
-* `"append"` (or missing) pushes one node `(seq, type, data)`;
-* `{"op": "replace", "startSeq", "endSeq"}` splices the node at the first replaced position.
+For tracing the request is serialized with native `to_dict()` values
+(`_prompt_payload`, `src/deeppyro/agent/loop.py:581-593`) and hashed into
+`prompt_hash`. This replaced the v4 `model_dump()` serialization in KI-010:
+hash **values** changed once, the `sha256:<64 hex>` format did not.
 
-`fold_surface` validates replacements exactly like the session writer: `startSeq/endSeq`
-must be present on the surface and earlier than the event seq, `sourceEventSeqs` must be
-non-empty, unique, all earlier, and include every shadowed node, a `system/message` head may
-only be replaced by that same single system node, and a negative tool-call balance is
-rejected. The fold accepts both pydantic `ReplaceOp` objects and plain dicts, so folding a
-real `Session` twice cannot fail on its own record type.
+## 7. Tool dispatch
 
-### 9.3 Region selection
+`_dispatch_tool_calls` (`src/deeppyro/agent/loop.py:667-709`):
 
-`select_region(records, retain_tokens)` folds the surface, never shadows a head system
-message, accumulates node token estimates from the tail until `retain_tokens` is reached,
-moves the cut older while the cut would split an assistant tool-call from its result, and
-returns the contiguous region `[first_index, keep_from-1]` with its shadowed seqs and
-estimated tokens. It returns `None` when nothing safe can be shadowed; `compact` then
-returns `False` without writing anything.
+1. compute a `ToolCallCheckpoint` (`state="pending"`, idempotency key) for every
+   call;
+2. append `tool.call {call_id, name, arguments}` and emit `ToolCallStarted`
+   for every call **before** executing anything;
+3. write a `run.checkpoint` with the pending calls;
+4. split calls into batches with `_batches`: consecutive calls whose tool
+   declares `parallel_safe` (default `True`) form one parallel batch; any other
+   call is its own batch;
+5. run each batch through the tool pipeline
+   (`run_tool_call`, `src/deeppyro/tools/pipeline.py:464`). A batch with one
+   call awaits it directly; larger batches use `asyncio.TaskGroup`. The tool
+   context carries `cwd`, `session_id`, `turn`, `step`, `call_id`, the cancel
+   event, the tool log callback, `permission` and `services`;
+   the `HookService` is passed through so the pipeline dispatches
+   `tools/pre-execute`, `tools/execute`, `tools/post-execute` and
+   `approval/request`;
+6. after each batch: append one `tool.result {call_id, message, error_code?}`
+   per outcome (native tool message, `is_error` derived from `ToolResult`),
+   emit `ToolCallFinished`, append the tool trace record, write a
+   `run.checkpoint` with `completed`/`failed` per call, check the wall budget,
+   and fail with `RunCancelledError("run cancelled during tool execution")` if
+   cancellation arrived;
+7. return the outcomes. Cancellation inside `_await_cancellable` turns into
+   `RunCancelledError` (or `None` for the single-call path).
 
-`entry_state(records)` recovers the open turn (`turn/start` without `turn/end`), the latest
-`session/end-seed` seq, and an unmatched `compaction/start` (same `compactionId` with no
-`compaction/end`). An unmatched start older than the latest end-seed is ignored; otherwise
-it means another compaction is running and `compact` raises `SessionError`.
+Tool log records go through `append_mapped` (`src/deeppyro/agent/loop.py:765-775`):
+records whose type maps to a native event are appended; unsupported record types
+are ignored on purpose, so a browser-only record (for example a presented
+deliverable) can never fail the tool that produced it.
 
-### 9.4 Summarization call
+## 8. Budgets
 
-`compact` replays the surface *before* the region (`[system/message?, ...region messages]`)
-and appends one final user message with the DSH `COMPACTION_INSTRUCTION` (structured Markdown
-checkpoint, merge-prior-checkpoint rule). The request uses the loop model/provider, the tools
-advertised by the latest `request/header`, `max_tokens` from the compactor, and the session
-id. The stream is consumed for `TextDelta`; `Finish(kind="error")` → `LlmError`,
-`aborted` → `AbortedError`, `length` → `LlmError("summarization truncated at the token cap
-(incomplete checkpoint)")`, `content-filter` → `LlmError`, empty text → `LlmError`.
-The checkpoint is `role="user"` with the preamble + `<compacted-summary>` framing,
-`source={"kind": "compact-checkpoint", "compactionId": ...}`, and a fresh message id.
-Before committing, the framed checkpoint must estimate strictly smaller than the shadowed
-region; otherwise `LlmError("summary is not smaller than the shadowed content ...")`.
+`BudgetLimits` (`src/deeppyro/agent/budget.py:50`) has four optional cumulative
+limits: `max_steps`, `max_tokens`, `max_wall_seconds`, `max_cost`.
+`BudgetTracker` raises `BudgetExceeded` as soon as a limit is crossed:
 
-### 9.5 The four-record transaction
+| Kind | Turn reason on abort |
+|---|---|
+| `max_steps` | `{"kind": "max_steps", "limit": N}` |
+| `max_tokens` | `{"kind": "max_tokens", "limit": N}` |
+| `max_wall_seconds`, `max_cost` | `{"kind": "error", "message": ..., "code": "budget_exceeded"}` |
 
-A successful compaction appends, in order, with no yields between the commitments:
+The loop catches `BudgetExceeded`, emits `BudgetExceeded`, persists a
+`failed` run checkpoint + `run.finished {status: "failed", reason: ...}` and
+re-raises. Budget usage is also the `budgets` object of every
+`run.checkpoint` (`input_tokens`, `output_tokens`, `cost_usd`, `tool_calls`,
+`wall_ms`).
 
-1. `compaction/start {"compactionId", "sourceCommandId"?, "turn"?}` — `turn` only when a turn
-   is open (auto compaction); it is the durable lock;
-2. `compaction/summary {"compactionId", "sourceCommandId"?, "summary": [text block],
-   "rawOutput": [text block], "llmStreamCall": true, "shadowedRange": {"start","end"},
-   "shadowedSeqs": [...], "shadowedTokenCount", "provider", "model", "maxTokens"?, "usage"?}`;
-3. checkpoint `user/message` whose `data` is the checkpoint `Message`, envelope
-   `surfaceOp={"op":"replace","startSeq","endSeq"}` and
-   `sourceEventSeqs=[start seq, summary seq, ...shadowedSeqs]` — this removes the old span;
-4. `compaction/end {"compactionId", "sourceCommandId"?, "turn"?}`.
+## 9. Cancellation and failures
 
-`sourceCommandId` is copied from the `source_command_id` keyword and omitted when absent.
-The surface must still contain the selected start/end after summarization (stability check).
-After the transaction the compactor calls `session.derive_messages()` and verifies the
-checkpoint id is present, raising `SessionError` otherwise. Any failure after the start
-record is answered with a single `compaction/end` carrying
-`error={message, name, code?}`, and the original exception is re-raised (the record-write
-failure itself is logged, never masking the original error).
+`run()` persists the terminal run state **before** re-raising
+(`src/deeppyro/agent/loop.py:294-332`):
 
-### 9.6 Integration with the loop
+| Raised | Persisted run status | Turn reason |
+|---|---|---|
+| `BudgetExceeded` | `failed` | budget-kind mapping above |
+| `ProviderStreamError` | `failed` | `{"kind": "error", "message": ..., "code": "provider_error"}` |
+| `RunCancelledError` | `cancelled` | `{"kind": "aborted", "by": "user"}` |
+| `asyncio.CancelledError` | `cancelled` | `{"kind": "aborted", "by": "user"}` |
 
-Auto-compaction runs inside the open turn, once per step, after `status thinking` and before
-deriving the request messages. Failures other than `CancelledError` are logged and stored on
-`AgentSession.last_compaction_error`; the turn continues. A `Compactor` passed to
-`AgentSession` overrides the default construction (`keep_recent_tokens=8000`,
-`context_window=options.context_window`, `threshold=options.compact_threshold`).
-`compact(session, messages)` ignores `messages` (kept for the frozen signature) and selects
-the region from `session.records`, so seqs remain authoritative.
+Abort finalization (`_finalize_abort`) is defensive: closing the open step, the
+checkpoint write and the trace write are individually suppressed so the original
+exception always propagates. A provider finish reason of `"aborted"` is treated
+as cancellation, not as a normal stop.
 
-## 10. Cancellation and failures
+Guard errors (`ValueError`, `RuntimeError`) are raised before any event is
+appended, so they leave no trace in the log.
 
-`interrupt()` sets the interrupt flag and `ToolContext.cancel`, clears the inbox by default,
-cancels the driver task when called from another task, and waits up to 5 s for the turn to
-record its abort. The resulting records are: a partial `assistant/message` when any
-reasoning/text/tool-call content arrived (tool-call parts are dropped because they never ran),
-synthetic `tool/result` records with `text="Error: interrupted"` for calls that were announced
-but not finished, `step/end`, and `turn/end {"kind":"aborted","reason":{"kind":"user"}}`.
-`send` returns the partial assistant text; no `final`/error event is emitted.
+## 10. Checkpoints and resume
 
-Other failure paths:
+The session log is authoritative; a checkpoint is a cache/scaffold for resume.
 
-* provider `Finish(kind="aborted")` → same shape but reason `provider`;
-* provider `Finish(kind="error")` or a stream that ends without `Finish` → append a partial
-  `assistant/message` when content exists, otherwise `assistant/attempt`; emit `error`,
-  `step/end`, `turn/end error`; re-raise `LlmError`;
-* `Finish(kind="length")` → partial assistant message without tool calls, `step/end`,
-  `turn/end {"kind":"max-tokens"}`, `error` event naming the dropped tool calls;
-* an unexpected exception follows the provider-error path and is re-raised;
-* external `CancelledError` records `{"kind":"aborted","reason":{"kind":"disposed"}}` and
-  re-raises.
+* Every step start, every tool dispatch and every finalize appends
+  `run.checkpoint` with the status `running`/`completed`/`failed`/`cancelled`
+  and the closed payload of native schema §5.5. The event is always appended;
+  the sidecar is optional.
+* With a `CheckpointStore`, the loop writes `~/.dpro/checkpoints/<session_id>.json`
+  (override `DEEPPYRO_CHECKPOINTS_DIR`) atomically; the record wraps the same
+  state and must match the appended payload. `_write_checkpoint` asserts that
+  the predicted `last_seq` equals the appended event's `seq` and raises
+  `AgentLoopError("checkpoint prediction does not match the appended event")`
+  on drift (`src/deeppyro/agent/loop.py:1034-1036`).
+* Tool call entries record `state` `pending`/`running`/`completed`/`failed`
+  plus the idempotency key `idem:sha256(session_id\ncall_id\nargs_hash)`
+  (native schema §10.3). A resuming host can use those keys to avoid replaying
+  side-effectful calls.
+* `run(resume=True)` requires the session lock and an unfinished run. Before
+  the new run starts, `repair_open_turn()` closes any dangling turn/step with
+  `{"kind": "aborted", "by": "disposed"}`; no synthetic assistant message is
+  invented (native schema §7.4 also derives a synthetic tool result for missing
+  tool results at fold time).
+* Restoring usage happens only when the sidecar status is `running`; a
+  completed/failed/cancelled checkpoint does not restore counters.
+* A mismatch between checkpoint and session raises `SessionMismatchError`.
 
-## 11. Known deviations / risks
+## 11. Typed hooks
 
-1. **Streaming event order.** `text`/`thinking` deltas necessarily precede the
-   `assistant/message` append. All record-mirroring events follow their record.
-2. **Interrupt tool results lack `sourceEventSeqs`.** Synthetic `Error: interrupted` results
-   are appended without the original `tool/call` seq (the abort path does not retain it).
-   Fold validation tolerates this; a later improvement should carry the seq.
-3. **Idle `inject` is consumed at step 2.** A next-step message injected while idle is not
-   claimed by step 1 of the next turn (step 1 consumes the turn claim); it lands at the next
-   step boundary. This is intentional queue semantics but differs from a fully synchronous
-   "inject before step 1" reading.
-4. **Loop-level retry needs a listener.** `agent/request-error` retry records appear only when
-   a plugin registers a listener returning `{"kind":"retry"}`; the provider's own
-   `RetryPolicy` retries transparently before that point.
-5. **Header reason heuristic.** The loop infers `initial` / `series` / `resume` from the
-   previous `turn/end`; it does not see RPC resume semantics.
-6. **Heuristic token estimate.** `len/3.5 + 4` per message is frozen by INTERFACES and is
-   used both for pressure and for region sizing.
-7. **Checkpoint shape.** The summary is stored as one text block (`rawOutput` mirrors it);
-   DSH may retain multiple output blocks. `errorChain` is simplified to
-   `{message, name, code?}`.
-8. **No loop-level `sourceCommandId`.** `Compactor.compact` accepts and writes it, but the
-   agent loop does not pass one yet (there is no command/job id in the turn context).
-9. **Session dependency.** Envelopes require the real `Session.append(type, data, **envelope)`.
-   The loop probes this; a reduced `SessionLogLike` cannot record surface ops and thus cannot
-   support compaction. `Compactor` requires `session.records`.
-10. **Additive options/kwargs.** `model`, `permission_preset`, `approval_policy`,
-    `instructions`, `permission=None`, `services`, `compactor`, and `prompt_builder` are
-    additions beyond INTERFACES §7; all have defaults, so the frozen constructor holds.
-11. **Prompt content is DeepPyro-specific** (not DSH's runtime prompt), and it never embeds
-    host memory protocols.
-12. **Image offload is proactive only.** The loop budgets before the request and writes
-    `image/offload`; it does not implement DSH's `IMAGE_OFFLOAD_REQUIRED` error/retry path.
-    P1 sends inline base64 only (no files route, no normalized-path placeholder variant), and
-    `http(s)` image URLs are forwarded while counting zero represented bytes.
+`AgentHooks` (`src/deeppyro/agent/events.py`) is a Protocol with eleven
+methods. `NullAgentHooks` implements all of them as no-ops and is the default.
+The loop dispatches, in order:
 
-## 12. Test coverage
+| Method | Event | When |
+|---|---|---|
+| `run_started` | `RunStarted(run_id, trace_id, session_id, resumed)` | `_begin` after `run.started` |
+| `turn_started` | `TurnStarted(…, turn_id, prompt_message_id)` | after `turn.started` (and `user.message` on a fresh run) |
+| `step_started` | `StepStarted(…, step_id, step)` | after `step.started` |
+| `text_delta` | `TextDeltaEvent(…, text)` | per streamed text fragment |
+| `reasoning_delta` | `ReasoningDeltaEvent(…, text)` | per streamed reasoning fragment |
+| `assistant_message` | `AssistantMessageEvent(…, message, finish_reason)` | after `assistant.message` |
+| `tool_call_started` | `ToolCallStartedEvent(…, call_id, name, arguments, idempotency_key)` | after each `tool.call`, before execution |
+| `tool_call_finished` | `ToolCallFinishedEvent(…, call_id, name, result, duration_ms)` | after each `tool.result` |
+| `checkpoint_written` | `CheckpointWrittenEvent(…, path, last_seq, status)` | only when a sidecar file was written |
+| `budget_exceeded` | `BudgetExceededEvent(…, kind, limit, actual)` | immediately before the failed-run abort |
+| `run_finished` | `RunFinishedEvent(…, session_id, status, reason)` | after `run.finished` |
 
-`uv run pytest -o addopts= -q tests/agent tests/hooks tests/prompt tests/tools/test_pipeline_hooks.py`
-covers the loop, inbox, stream, retry, projection, hooks, image planning, and pipeline
-integration. The full suite at the P1 close was 2224 passed.
+Event dataclasses are frozen; every dispatch suppresses observer exceptions.
+The loop never dispatches string-keyed bus events. It passes the plugin
+`HookService` only to the tool pipeline, which owns the domain hooks
+(`tools/*`, `approval/request`, `session/*`, etc.). See [hooks.md](hooks.md).
 
-* `tests/agent/fakes.py` — `FakeSessionLog` (real `LogRecord` + strict canonical surface fold),
-  `ScriptedProvider`, `FakeTool`/`FakeRegistry`, `RecordingSink`, `FakePermission`.
-* loop: exact record/event sequences; header reasons; system + runtime-context projections;
-  parallel and barrier tool ordering; tool hooks; error/unknown tools; interrupt mid-stream;
-  queued sends/followup/steer/inject; busy driver semantics; max-steps; length finish with
-  dropped tool calls; provider error → `assistant/attempt` + `turn/end error`;
-  auto-compaction inside the turn; tolerated compaction failure; failed attempt then retry.
-* inbox: replay of `agent/inbox/spliced`, claim order, clear, splice/remove/replace, id
-  uniqueness, no-op mutations.
-* stream: merge gaps, snapshot deep copy, `expand_stream` inverse, tool-call deltas.
-* retry: normal/always modes, retryable codes, provider Retry-After, jitter bounds, retry-id
-  reuse, record key order.
-* projection: append/replace rules, retained runtime-context snapshot, cleared text.
-* hooks: waterfall/serial/emit semantics, unknown names, disposal, plugin row.
-* compaction: unchanged from the pre-P0 suite plus `sourceCommandId` on all four records.
-* images: `tests/agent/test_images.py` covers surface-seq pairing, existing-offload projection,
-  attachment expansion (copy-on-write, dedup, bare ids, unresolvable refs), budget-triggered
-  oldest-prefix selection and placeholder merging; `tests/agent/test_agent_images.py` covers
-  the loop wiring (one `image/offload` per step before the request, refs-only durable log).
+## 12. Traces and usage
 
-Lint: `uv run ruff check src tests` and `uv run ruff format --check src tests` are clean.
+* With a `TraceStore` the run creates `~/.dpro/traces/<run_id>.jsonl`
+  (native schema §8) and appends `run`, `model_call` and `tool_call` records.
+  `context_message_ids` on the model record is `plan.source_message_ids`;
+  `retry_count` is the provider retry count; `cost_usd` is set when a
+  per-million-token price is configured.
+* A `TraceExportSink` in `services` receives the same records; hosts use it
+  for the context meter (TUI) and for usage accounting.
+* A `UsageSink` in `services` receives one `TurnUsage` per turn:
+  provider/model/session/turn/step, input/output/cached tokens, latency,
+  retries, stop reason, cost, `run_id`, `trace_id`, `source="native"`.
+* Cost is `total_tokens / 1_000_000 * cost_per_million_tokens`, or `0.0`
+  when no price is configured.
 
-## 13. Goal round driver (opt-in)
+## 13. Determinism and replay
 
-The driver turns an active, armed goal into successive turns without a human in
-the loop. It is off by default: set `[goal] driver = true` in `config.toml` to
-load `deeppyro.builtin.goal_round_driver:GoalRoundDriverPlugin`. With the flag
-off the plugin registers no listener and publishes nothing, so a session's
-records are identical to a run without goals.
+* Fold and `ContextPlan` are pure functions of the event log; the same log
+  yields the same request context.
+* Timestamps never go backwards; no wall-clock values leak into message content.
+* One `assistant.message` per step, written after the stream; deltas are
+  observer-only.
+* Failed and cancelled runs leave a complete, replayable log (open step/turn
+  closed, terminal checkpoint and `run.finished` present).
+* `repair_open_turn` is idempotent: with no open turn it returns `False` and
+  appends nothing.
 
-Invariants (`docs/spec/goal.md` section 7):
+## 14. Known boundaries
 
-1. `drivable` means the goal is `active` **and** armed in this process.
-2. `readyToDrive` also needs the agent to be live, idle, not stopping, and no
-   competing human message already queued for the next turn.
-3. Every round appends one `user/message` whose source is
-   `{kind: "goal", goalId, revision, round}`; the round number is
-   `roundsStarted + 1`, and `roundsStarted` only advances when that message is
-   admitted by the fold.
-4. Exhausting `maxGoalRounds` blocks the goal with the `round-limit` reason
-   instead of queueing another round.
-5. A failed `followup` blocks with `queue-failed`, but only if the same goal
-   revision is still active and armed.
-6. A human message for the next turn makes the queued attempt stale; a message
-   that is itself the round is not competing.
-7. `turn/end` with `max-tokens` disarms; `aborted` cancels a claimed round, and
-   a `disposed` abort disarms outright.
-8. Detaching interrupts a running round with `clear_inbox=False`, so the
-   remaining inbox survives.
+* The loop does not compact, summarize or prune messages; a host or plugin must
+  append compaction events before the next step if the context is too large.
+* Approval UI is not in the loop; the tool pipeline's permission gate and the
+  host's `ApprovalService` handle `approval/request`, and their facts are
+  persisted by the services, not by the loop.
+* Goal rounds are driven externally (`src/deeppyro/goal/native_driver.py`
+  calls the loop; `goal.changed` facts drive round counts).
+* Team/subagent children are separate sessions and loops; the loop only runs
+  the session it was constructed with.
+* Checkpoints are a resume aid, not a durability guarantee; the session log is
+  the record that must be preserved.
+* Only `core.llm.LlmProvider` transports are accepted; the deleted v4 adapters
+  and `core.wire` are not a compatibility surface.
 
-The pre-step fence (section 7.5) is the safety net: before a step enters, the
-driver re-validates the reservation. If the goal moved on, the round message was
-discarded, or another message was claimed alongside it, the driver restores the
-other claimed messages onto `next-step`, marks the attempt stale, returns
-`{"kind": "reject"}`, and re-drives. A rejection that happens after the fence
-allowed the step blocks the goal with `prompt-rejected`, and only when the same
-goal revision is still current.
+## 15. Tests
 
-Documented divergences from DSH: there is no `currentInitiator` (the driver only
-interrupts the agent it drives), no `subagents.waitForChildren` gate, no
-`sessions.flush` (appends are already durable), no `agent/created|disposed`
-producers (the driver uses `AgentsPlugin.on_created`/`live_agents`), and the
-wrap-up text after `complete`/`blocked` closes the turn instead of injecting an
-extra context message.
+Primary coverage lives in:
+
+* `tests/native/test_loop.py` — run/turn/step behavior, event order, tools,
+  failures;
+* `tests/native/test_budget.py` — limits and abort persistence;
+* `tests/native/test_checkpoint_resume.py` — checkpoint payloads, resume,
+  open-turn repair;
+* `tests/native/test_context_plan.py` — deterministic planning and estimates;
+* `tests/native/test_headless_native.py` — the loop behind the headless entry;
+* `tests/agent/test_model_call.py` — provider stream assembly rules;
+* `tests/agent/test_native_host.py`, `tests/agent/test_loop_usage.py` — host
+  wiring and usage reporting.
+
+Where this document and the code disagree, the code and tests win.

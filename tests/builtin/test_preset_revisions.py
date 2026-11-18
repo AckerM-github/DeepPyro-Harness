@@ -19,17 +19,13 @@ from deeppyro.api import (
     AGENT_MODE_TEAM,
     AGENT_PRESENTATION_NATIVE,
     PLUGIN_AUTHORING_TOOL_NAMES,
-    SUBAGENT_TOOL_NAMES,
     TEAM_PRESET_ID,
-    TEAM_TOOL_NAMES,
     PluginDependencyError,
     PresetPluginRow,
     PresetSpec,
 )
-from deeppyro.builtin.agents import AgentsPlugin
 from deeppyro.builtin.presets import PresetsPlugin
 from deeppyro.builtin.prompt_service import PromptPlugin
-from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.core.errors import DeeppyroError
@@ -37,7 +33,6 @@ from deeppyro.kernel.app import App
 from deeppyro.kernel.bundle import boot
 from deeppyro.prompt import PromptContext
 from deeppyro.tools.base import BaseTool
-from deeppyro.tools.registry import ToolRegistry
 
 BUNDLE_TOML = (
     '[bundle]\nid = "{bundle_id}"\nname = "Preset revisions"\nversion = "0.1.0"\norder = 50\n'
@@ -245,7 +240,6 @@ def _config(tmp_path: Path) -> Config:
             "local": ProviderConfig(base_url="http://127.0.0.1:8000/v1", models=[ModelConfig(id="m")])
         },
         agent={"provider": "local", "model": "m"},
-        session_dir=tmp_path / "sessions",
     )
 
 
@@ -279,20 +273,6 @@ def _write_bundle(
 
 async def _boot(tmp_path: Path, bundle_dir: Path) -> App:
     return await boot(_config(tmp_path), bundle_paths=[str(bundle_dir)])
-
-
-def _make_agent(app: App, tmp_path: Path, preset: str | None = None) -> Any:
-    sessions = app.require(SessionsPlugin)
-    session = sessions.create(str(tmp_path), agent_preset=preset)
-    agents = app.require(AgentsPlugin)
-    return agents.create(
-        session=session,
-        provider=object(),
-        options=agents.options(),
-        sink=DummySink(),
-        cwd=str(tmp_path),
-        preset=preset,
-    )
 
 
 async def test_preset_revisions_are_immutable(tmp_path: Path) -> None:
@@ -381,55 +361,6 @@ async def test_scope_and_revision_filtering(tmp_path: Path) -> None:
         assert "## Writer mode" in pinned
         assert "## Realm hint" not in prompt_service.build([], context, scope="writer")
         assert "## Realm hint" not in prompt_service.build([], context)
-    finally:
-        await app.stop()
-
-
-async def test_live_agent_keeps_its_revision(tmp_path: Path) -> None:
-    bundle_dir = _write_bundle(
-        tmp_path,
-        "writer",
-        PRESET_PLUGIN,
-        {"realm_plugin.py": REALM_PLUGIN},
-    )
-    app = await _boot(tmp_path, bundle_dir)
-    try:
-        presets = app.require(PresetsPlugin)
-        await presets.ensure_all()
-        first_revision = presets.resolve("writer").revision
-        first = _make_agent(app, tmp_path, preset="writer")
-        assert first.preset == "writer"
-        assert first.preset_revision == first_revision
-        assert first.preset_spec.revision == first_revision
-        assert first._options.model == "writer-model"
-        assert first._options.instructions == ["Write clearly."]
-        assert {"writer_note", "realm_note"} <= set(first._registry.names())
-        assert "## Realm hint" in first._prompt_builder([], _prompt_context(tmp_path))
-
-        (bundle_dir / "realm_plugin_v2.py").write_text(REALM_PLUGIN_V2, encoding="utf-8")
-        presets.add(
-            PresetSpec(
-                id="writer",
-                name="Writer",
-                model="writer-model-v2",
-                order=30,
-                plugins=(PresetPluginRow(id="writer-realm-v2", plugin="realm_plugin_v2.py:RealmPlugin"),),
-                base=bundle_dir,
-            )
-        )
-        await presets.ensure("writer")
-        second = _make_agent(app, tmp_path, preset="writer")
-        assert second.preset_revision == first_revision + 1
-        assert second._options.model == "writer-model-v2"
-        assert "realm_note_v2" in second._registry.names()
-        assert "realm_note" not in second._registry.names()
-        assert "## Realm v2" in second._prompt_builder([], _prompt_context(tmp_path))
-
-        # The live agent still has the composition it was created with.
-        assert "realm_note" in first._registry.names()
-        assert "realm_note_v2" not in first._registry.names()
-        assert "## Realm v2" not in first._prompt_builder([], _prompt_context(tmp_path))
-        assert presets.is_materialized("writer", first_revision)
     finally:
         await app.stop()
 
@@ -563,45 +494,5 @@ async def test_builtin_presets_offer_standard_and_explicit_team_mode(tmp_path: P
         assert TEAM_PRESET_ID not in visible_ids
         assert presets.resolve("team").mode == AGENT_MODE_TEAM
         assert [spec.id for spec in presets.all()][-1] == TEAM_PRESET_ID
-    finally:
-        await app.stop()
-
-
-async def test_agent_mode_filters_delegation_tools(tmp_path: Path) -> None:
-    bundle_dir = _write_bundle(
-        tmp_path,
-        "writer",
-        PRESET_PLUGIN,
-        {"realm_plugin.py": REALM_PLUGIN},
-    )
-    app = await _boot(tmp_path, bundle_dir)
-    try:
-        sessions = app.require(SessionsPlugin)
-        agents = app.require(AgentsPlugin)
-        all_names = [*TEAM_TOOL_NAMES, *SUBAGENT_TOOL_NAMES, "read"]
-        registry = ToolRegistry([_named_tool(name) for name in all_names])
-
-        def make_agent(preset: str | None) -> Any:
-            session = sessions.create(str(tmp_path), agent_preset=preset)
-            return agents.create(
-                session=session,
-                provider=object(),
-                registry=registry,
-                options=agents.options(),
-                sink=DummySink(),
-                cwd=str(tmp_path),
-                preset=preset,
-            )
-
-        team_agent = make_agent(TEAM_PRESET_ID)
-        assert set(team_agent._registry.names()) == {*TEAM_TOOL_NAMES, "read"}
-        assert "subagent" not in team_agent._registry
-
-        default_agent = make_agent(None)
-        assert set(default_agent._registry.names()) == {*SUBAGENT_TOOL_NAMES, "read"}
-        assert not set(TEAM_TOOL_NAMES) & set(default_agent._registry.names())
-
-        # Filtering never mutates the caller's registry.
-        assert registry.names() == all_names
     finally:
         await app.stop()

@@ -1,9 +1,9 @@
 # tools 与 sandbox 规格
 
-> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
-> 公开插件/工具契约见 [plugin-core.md](plugin-core.md)；`INTERFACES.md` 仅作 v4 迁移参考。总入口：[docs/README.md](../README.md)。
+> **状态**：现行（0.3.0） · **层级**：功能规格 · **最后核对**：2026-11-19
+> 公开插件/工具契约见 [plugin-core.md](plugin-core.md)；公开契约以 [plugin-core.md](plugin-core.md) 为准。总入口：[docs/README.md](../README.md)。
 
-本文件记录 @src/deeppyro/tools 与 @src/deeppyro/sandbox 的语义、契约实现、从 fixtures 逆向出的行为，以及与 DSH（DeepSeek Harness）的已知差异。公开插件/工具契约见 [plugin-core.md](plugin-core.md)；`INTERFACES.md` 第 6 节仅作 v4 迁移参考。本文件不重复签名，只解释行为与取舍。
+本文件记录 @src/deeppyro/tools 与 @src/deeppyro/sandbox 的语义、契约实现、从 fixtures 逆向出的行为，以及与 DSH（DeepSeek Harness）的已知差异。公开插件/工具契约见 [plugin-core.md](plugin-core.md)；公开契约以 [plugin-core.md](plugin-core.md) 为准。本文件不重复签名，只解释行为与取舍。
 
 ## 1. 文件布局
 
@@ -51,7 +51,7 @@
 
 构造：@PermissionGate(preset="workspace-write", approval="ask", workspace=None, ask=None, *, hooks=None, policy_service=None, approval_service=None, permission_presets=None, session=None)。非法 preset/approval 抛 ConfigError；@approval 只剩 ask / never（DSH 没有 always）。
 
-- @bind_session(session) / @bind_hooks(hooks) / @bind_answerer(ask)：由 AgentSession、SandboxPlugin 调用；gate 每次 check 都从会话日志动态解析当前两个旋钮。
+- @bind_session(session) / @bind_hooks(hooks) / @bind_answerer(ask)：由 native 宿主（`NativeAgentHost`/TUI runtime）与 SandboxPlugin 调用；gate 每次 check 都从会话日志动态解析当前两个旋钮。
 - @preset：优先 permissionPresets.current(session)（custom 时回退 policy.mode）；@approval：approval_service.effective_policy(session)。
 - check_read：恒 True（与 DSH 一致；读不受 fs fence 限制）。
 - check_write：@danger-full-access → True；@read-only → False；@workspace-write → canonicalize 后位于 writable_roots（workspace + additional roots + temp）才 True。拒绝不弹审批；消息由 tools 层拼 denial marker 与 escalation hint。

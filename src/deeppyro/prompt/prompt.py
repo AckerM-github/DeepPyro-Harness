@@ -38,7 +38,7 @@ class PromptContext:
     permission_preset: str
     approval_policy: str
     model: str
-    #: DSH sandbox/approval rubrics. They belong to the runtime snapshot, not
+    #: upstream sandbox/approval rubrics. They belong to the runtime snapshot, not
     #: the stable system prompt, so the defaults keep the environment section
     #: untouched for callers that do not build a runtime snapshot.
     sandbox_policy_text: str = ""

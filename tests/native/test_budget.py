@@ -15,7 +15,7 @@ from deeppyro.agent.budget import (
     BudgetUsage,
     idempotency_key,
 )
-from deeppyro.core.protocols import Usage
+from deeppyro.core.llm import Usage
 
 FROZEN_KEY = "idem:" + hashlib.sha256(b"session-a\ncall_0123456789abcdef\nsha256:abc").hexdigest()
 

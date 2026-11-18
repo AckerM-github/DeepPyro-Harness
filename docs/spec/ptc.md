@@ -1,6 +1,6 @@
 # tools/spec/ptc.md — Python PTC（run_code 呈现模式）
 
-> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+> **状态**：现行（0.3.0） · **层级**：功能规格 · **最后核对**：2026-11-19
 >
 > 实现范围：与 DSH 的 PTC 架构对齐（呈现模式 `native`/`ptc`、自动 Python SDK、`run_code` 保留工具、
 > 内层工具走完整流水线、执行器并发与额度、runtime seam、失败分类）。默认是 `native` 呈现，
@@ -121,15 +121,15 @@ maxSubCallsPerMinute = 1024
 
 `ptc` 模式只收窄**模型直接可见的 surface**，不改变以下三处的全量工具来源：
 
-1. `AgentsPlugin.create` 构造 `AgentSession` 时传 `surface_registry`：
+1. native host 构造 `AgentLoop` 时按 ptc 模式选择工具 surface（v4 的 `AgentSession`/`surface_registry` 已删除；native seam 见 `ptc/native_adapter.py`）：
    - 主条件：agent preset 的 `presentation == "ptc"`（即内置 `ptc` preset）；此时 registry 必须含
      `run_code`，否则抛 `PluginDependencyError`。
    - 兼容条件（旧全局开关）：`ptc` 服务 `mode == "ptc"`、preset 的 `mode == default`、registry 里
      有 `run_code`。
    - 结果：`registry.without([除 run_code 外的全部工具])`；否则为 `None`（= 原生 surface）。
    - Team mode 永远保持原生 surface（Lead 必须能直接调用 `team_*` 编排成员）。
-2. `AgentSession` 用 surface 构建：`LlmRequest.tools`、`tool/call` 分组、`run_tool_batch` 的 registry、
-   request header 的 `tools`，以及 `_prompt_context().direct_tool_names`。
+2. 该 surface 决定模型可见工具集：`ContextPlan.tools`、`run_code` 内部 dispatch 的 registry，
+   以及 `PromptContext.direct_tool_names`。
 3. `PromptContext.direct_tool_names` 只影响核心 `## Tools` 段（order 40）的列表；
    `tools:sdk` 段仍拿到**全量** schema（SDK 要声明所有可编程工具）。
 
@@ -281,8 +281,8 @@ async def __ptc_main__():
 - `tool/ptc-dispatch-start`：`{rootCallId, parentCallId, subCallId, name, arguments}`。
 - `tool/ptc-dispatch`：同一组字段 + `isError` + `content:[{"type":"text","text":...}]`，
   有 `meta` 时附带 `meta`，失败时附带 `error:{name, code, reason}`。
-- 两个 type 都在 `core.wire.RECORD_TYPES` 内、且不在 `SURFACE_EVENTS`，所以只进日志、
-  不会出现在 `derive_messages()` 里（模型看不到内层调用）。
+- 这两个 name 属于 native 会话/plugin 事实（0.2.0 的 `core.wire.RECORD_TYPES` 已删除），
+  不进入对话消息流，因此模型看不到内层调用（见 [../native/schema.md](../native/schema.md)）。
 - 参数不是 JSON 时抛 `PtcBindingError(name, "INVALID_ARGUMENTS", ...)`；工具错误码取
   `ToolResult.meta.code`（缺省 `TOOL_ERROR`），reason 去掉 `"Error: "` 前缀。
 
@@ -300,12 +300,11 @@ async def __ptc_main__():
 ### 8.4 图片结果
 
 内层工具返回的 `parts` 中 `type == "image"` 的项被收集到 `dispatcher.deferred_parts`，
-由 `run_code` 放进自己的 `ToolResult.parts`。`AgentSession._append_tool_result_images` 在
-`tool/result` 之后追加一条 `source={"kind": "ptc-mode"}` 的 user 消息承载这些图片：
+由 `run_code` 放进自己的 `ToolResult.parts`；native loop 在 `tool.result` 之后追加一条
+`source={"kind": "ptc-mode"}` 的 user message 承载这些图片（schema 1）：
 
 - 模型在下一步能看到图片内容；
-- 该消息不是用户输入：TUI 历史回放与实时渲染都会跳过它，但 turn 计数仍与记录对齐
-  （见 `tui/history.py` 的 `is_ptc_mode_message`）。
+- 该消息不是用户输入：TUI 历史回放与实时渲染都会跳过它（见 `tui/native_history.py`）。
 
 ## 9. 失败 kind
 
@@ -346,11 +345,11 @@ def setup(self) -> None:
 1. core bundle 在 `prompt-core` 之后有 `ptc` 行（`critical = false`，默认 `mode = "native"`，
    不注册任何工具/prompt 段）。位置必须在 `prompt`/`prompt-core` 之后：`ptc` 模式启动时
    要 `register_prompt_section`，早于提示词服务会因 `requires service 'prompt'` 加载失败。
-2. `AgentSession` 接受 `surface_registry`（keyword-only）并按它构建请求、dispatch 与 header。
-3. `AgentsPlugin.create` 依据 `ptc.mode`、preset mode 与 `run_code` 是否存在选择 surface。
+2. native host 按 `ptc.mode`、preset mode 与 `run_code` 是否存在为 `AgentLoop` 选择工具 surface。
+3. `AgentsPlugin` 依据同样的条件判定 surface。
 4. `TUI`：`run_code` 的折叠行显示 `description`（80 字符）；展开时显示完整 description、
    `code (N lines):` 与前 20 行，剩余行数省略；`ptc-mode` user 消息在实时与历史回放中都不显示。
-5. `headless` 与 TUI 共用同一 `AgentSession` 装配，无需额外开关。
+5. `headless` 与 TUI 共用同一 native host 装配，无需额外开关。
 
 切换方式：改 `~/.dpro/config.toml` 的 `[ptc].mode` 后重启；改变配置不改会话历史格式。
 

@@ -1,8 +1,8 @@
 """Readable session rows shared by ``/sessions`` and ``/resume``.
 
-The store exposes facts; this module decides how much of them a person needs to
-recognise a conversation without opening it: title, how long ago it moved, how
-many turns it holds, and a one-line preview of the first message.
+The native session index exposes facts; this module decides how much of them a
+person needs to recognise a conversation without opening it: title, how long ago
+it moved, how many turns it holds, and a one-line preview of the first message.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import time
 from collections.abc import Sequence
 from typing import Any
 
-from deeppyro.session.metadata import EMPTY_TITLE
+from deeppyro.session.native_index import EMPTY_TITLE
 from deeppyro.tui.format import short_session_id
 
 _DAY = 86400

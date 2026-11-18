@@ -1,10 +1,9 @@
-"""Integration checks for the P2 bus (hook journaling and its in-tree consumers).
+"""Integration checks for the remaining in-tree hook consumers.
 
-P2 turns the hook runtime observable: HookService notifies registered observers
-and the hook-journal plugin writes hook/invoked + hook/result into the executing
-agent's session log. These tests drive a real AgentSession over the in-memory
-fakes to prove the wiring is end-to-end and that hot streaming hooks stay off
-the bus.
+The hook journal and the hook-based retry policy were removed with the v4
+runtime, so this module exercises what is still mounted: prompt-extension
+appends to the assembled system prompt and approval-policy answers the
+permission gate from [approval].
 """
 
 from __future__ import annotations
@@ -13,19 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from deeppyro.builtin.approval_policy import ApprovalPolicyPlugin
-from deeppyro.builtin.hook_journal import HookJournalPlugin
 from deeppyro.builtin.prompt_extension import PromptExtensionPlugin
-from deeppyro.hooks import (
-    AGENT_ASSISTANT_STREAM,
-    AGENT_PRE_STEP,
-    AGENT_TURN_STOPPING,
-    LLM_STREAM,
-    SYSTEM_PROMPT_ASSEMBLE,
-    HookService,
-)
+from deeppyro.hooks import HookService
 from deeppyro.sandbox import ApprovalRequest, PermissionGate
-from tests.agent.fakes import RecordingSink
-from tests.integration.test_p1_bus import _stop_turn, make_agent
 from tests.service_doubles import service_lookup, service_require
 
 
@@ -60,49 +49,6 @@ class FakeCtx:
         self.emitted.append((args, kwargs))
 
 
-def _journal(hooks: HookService) -> tuple[HookJournalPlugin, FakeCtx]:
-    ctx = FakeCtx({"hooks": hooks})
-    plugin = HookJournalPlugin(ctx, None)
-    plugin.setup()
-    return plugin, ctx
-
-
-async def test_agent_turn_journals_hook_records_without_hot_hooks(tmp_path: Path) -> None:
-    """A real turn writes paired hook/invoked and hook/result records to the session."""
-    hooks = HookService()
-    sink = RecordingSink()
-    session, _provider, agent = make_agent(tmp_path, [_stop_turn()], hooks=hooks, sink=sink)
-    sink.session = session
-    journal, _ctx = _journal(hooks)
-
-    assert await agent.send("hello") == "ok"
-
-    invoked = session.records_of("hook/invoked")
-    results = session.records_of("hook/result")
-    assert invoked and results
-    assert len(invoked) == len(results)
-    assert journal.records_written == len(invoked) + len(results)
-
-    names = {record.data["hook"] for record in invoked}
-    assert {AGENT_PRE_STEP, SYSTEM_PROMPT_ASSEMBLE, AGENT_TURN_STOPPING} <= names
-    assert LLM_STREAM not in names
-    assert AGENT_ASSISTANT_STREAM not in names
-    assert all(record.data.get("scope", {}).get("session") == session.session_id for record in invoked)
-
-    # Every invoked record is answered by a later result record for the same hook.
-    for record in invoked:
-        matching = [
-            other for other in results if other.data["hook"] == record.data["hook"] and other.seq > record.seq
-        ]
-        assert matching, record.data["hook"]
-
-    for record in results:
-        assert isinstance(record.data["ok"], bool)
-        assert record.data["mode"] in {"waterfall", "serial", "emit", "bail", "parallel"}
-
-    assert all(event["type"] != "error" for event in sink.events)
-
-
 class FakeConfigService:
     """Minimal config service exposing a plain mapping as .value."""
 
@@ -122,20 +68,6 @@ def _approval_policy(hooks: HookService, **section: Any) -> tuple[Any, FakeCtx]:
     plugin = ApprovalPolicyPlugin(ctx, None)
     plugin.setup()
     return plugin, ctx
-
-
-async def test_prompt_extension_appends_text_to_the_assembled_prompt(tmp_path: Path) -> None:
-    """The P2 post-order consumer appends [prompt].extension to the real prompt."""
-    hooks = HookService()
-    _plugin, _ctx = _prompt_extension(hooks, "EXTRA-RULES-FOR-THE-AGENT")
-    _session, provider, agent = make_agent(tmp_path, [_stop_turn()], hooks=hooks)
-
-    assert await agent.send("hello") == "ok"
-
-    system = "\n".join(
-        message.text() for message in provider.requests[0].messages if message.role == "system"
-    )
-    assert system.rstrip().endswith("EXTRA-RULES-FOR-THE-AGENT")
 
 
 async def test_approval_policy_plugin_answers_the_gate(tmp_path: Path) -> None:

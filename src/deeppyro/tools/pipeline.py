@@ -11,7 +11,7 @@ Semantics (frozen by docs/spec/INTERFACES.md section 6, extended by task-29):
   cancellation propagates.
 
 The optional hooks object is duck-typed: when it exposes an async
-waterfall(name, payload, fallback) method, the pipeline calls the DSH events
+waterfall(name, payload, fallback) method, the pipeline calls the upstream events
 tools/pre-execute, tools/execute, and tools/post-execute. Hook failures are
 normalized like tool failures, except cancellation. The optional log callback
 is invoked once per request, in request order, before any pre-execute hook, so
@@ -40,7 +40,9 @@ from pathlib import Path
 from typing import Any, cast
 
 from deeppyro.core.errors import AbortedError, PermissionDenied, ToolError
-from deeppyro.core.payloads import (
+from deeppyro.core.protocols import ToolContext, ToolResult
+from deeppyro.hooks import TOOLS_EXECUTE, TOOLS_POST_EXECUTE, TOOLS_PRE_EXECUTE
+from deeppyro.hooks.payloads import (
     AnyToolHookPayload,
     ExecuteDecision,
     ExecuteHookPayload,
@@ -52,8 +54,6 @@ from deeppyro.core.payloads import (
     ToolCallPayload,
     ToolHookContext,
 )
-from deeppyro.core.protocols import ToolContext, ToolResult
-from deeppyro.hooks import TOOLS_EXECUTE, TOOLS_POST_EXECUTE, TOOLS_PRE_EXECUTE
 from deeppyro.tools.registry import ToolRegistry
 from deeppyro.tools.spill import (
     default_spill_dir,
@@ -403,7 +403,7 @@ async def _run_hooked(
     agent: Any | None = None,
     tool_set: Sequence[str] | None = None,
 ) -> ToolResult:
-    """Run pre/execute/post around one tool, applying DSH decision semantics."""
+    """Run pre/execute/post around one tool, applying upstream decision semantics."""
     try:
         denied = await _pre_execute(hooks, request, call, turn, step, agent=agent, tool_set=tool_set)
         if denied is not None:

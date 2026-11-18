@@ -16,7 +16,7 @@ class TeamPlugin(Plugin):
     """Provide the team service and register the agent-facing team tools."""
 
     plugin_id = "team"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "agent team: child members, messaging and the shared task board"
     inject: ClassVar[list[str]] = ["agents", "sessions", "sandbox", "tools"]
 

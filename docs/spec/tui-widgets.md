@@ -1,6 +1,6 @@
 # TUI 对话渲染、活动栏与状态栏规格（widgets）
 
-> **状态**：现行（0.2.0 保留） · **层级**：TUI 功能规格 · **最后核对**：2026-11-18
+> **状态**：现行（0.3.0） · **层级**：TUI 功能规格 · **最后核对**：2026-11-19
 >
 > 实现状态：M1/M2/M3 已实现；对话流按 user turn 组织，思考与工具合并为每 turn 一个可折叠 AgentProcess
 > （默认收起为一行摘要，展开按时间顺序显示 step 行与工具行），全屏查看器查看完整 reasoning；
@@ -8,7 +8,7 @@
 
 本文件描述 `src/deeppyro/tui/widgets/` 与相关 screens 的**渲染语义**，以及从 fixtures 事件与终端
 截图逆向出的取舍。总体形态、键位与启动流程见 `docs/spec/tui.md`；跨模块事件字段以
-`docs/spec/INTERFACES.md` §7 为准。
+[tui.md](tui.md) 与 native `AgentHooks` 事件定义为准。
 
 ## 1. 负责文件
 
@@ -17,7 +17,7 @@
 | `widgets/conversation.py` | `ConversationView`：user/assistant/system 块、流式文本、同 turn 标签去重、每 turn 一个 AgentProcess |
 | `widgets/agent_process.py` | `AgentProcess` / `ToolProcessLine`：思考 step 行与工具行按时间顺序融合、默认收起、展开详情、点击 step 打开查看器 |
 | `screens/thinking.py` | `ThinkingScreen`：全屏按 Turn/Step 查看完整 reasoning |
-| `tui/history.py` | `ReasoningStep`/`TurnReasoning`/`TurnProcess`/`processes_from_session`/`process_map`：从 durable 日志重建每个 turn 的思考与工具过程 |
+| `tui/native_history.py` | 从 schema 1 会话日志 fold 出每个 turn 的思考与工具过程（`ReasoningStep`/`TurnReasoning`/`TurnProcess` 等；旧 `tui/history.py` 已删除） |
 | `widgets/activity_bar.py` | `ActivityBar`：plan/jobs/agents 三段活动栏（空段隐藏，点击发事件） |
 | `screens/plan.py` | `PlanScreen`：待办按 in_progress / pending / completed 分组 |
 | `screens/jobs.py` / `screens/team.py` | `JobsPanelScreen` / `TeamPanelScreen` / `TaskBoardScreen`：只读快照 |
@@ -91,7 +91,7 @@
 - 历史回放：`process_map(session)` 从 `turn/start` + `assistant/message`（reasoning/tool-call parts）
   + `tool/result` 重建每个 turn 的有序 entries；`_render_history` 在 user 消息后
   `add_history_process(turn_process)` 挂一条已收起的块，可点击展开 / 点击 step 查看。
-- 完整 reasoning 已由 AgentSession 持久化在 `assistant/message`，查看器不新增存储格式。
+- 完整 reasoning 已由 native loop 持久化在 `assistant.message`（schema 1），查看器不新增存储格式。
 
 ## 5. 过程内的工具行（ToolProcessLine）
 

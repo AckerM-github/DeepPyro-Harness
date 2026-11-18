@@ -14,7 +14,6 @@ from deeppyro.core.errors import ConfigError
 ALIAS_CASES = [
     ({"agent": {"maxTokens": 1024}}, "agent.maxTokens", "agent.max_tokens"),
     ({"agent": {"maxSteps": 3}}, "agent.maxSteps", "agent.max_steps"),
-    ({"sessionDir": "sessions"}, "sessionDir", "session_dir"),
     (
         {"providers": {"local": {"baseURL": "http://127.0.0.1:1/v1"}}},
         "providers.local.baseURL",
@@ -41,6 +40,22 @@ ALIAS_CASES = [
 @pytest.fixture(autouse=True)
 def _clear_strict_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DEEPPYRO_STRICT_CONFIG", raising=False)
+
+
+@pytest.mark.parametrize("key", ["sessionDir", "session_dir"])
+def test_removed_session_dir_key_is_rejected(key: str) -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        Config.model_validate({key: "sessions"})
+
+    message = str(excinfo.value)
+    assert key in message
+    assert "not supported" in message
+    assert "DEEPPYRO_SESSION_DIR" in message
+
+    messages = lint_config({key: "sessions"})
+    assert len(messages) == 1
+    assert key in messages[0]
+    assert "DEEPPYRO_SESSION_DIR" in messages[0]
 
 
 @pytest.mark.parametrize(("document", "path", "replacement"), ALIAS_CASES)

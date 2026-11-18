@@ -6,37 +6,24 @@ from typing import Any, cast
 
 from deeppyro.agent.native_host import NativeSessionHandle
 from deeppyro.session.errors import SessionLockedError
-from deeppyro.session.metadata import record_archive, record_title
 from deeppyro.session.native_index import (
     ARCHIVE_EVENT,
     NativeSessionInfo,
     NativeTranscript,
     read_native_transcript,
 )
-from deeppyro.tui import native_history
 from deeppyro.tui.app_policy import PolicyLayer
 from deeppyro.tui.commands import help_text, live_commands
 from deeppyro.tui.format import short_session_id
-from deeppyro.tui.history import is_ptc_mode_message, process_map
-from deeppyro.tui.session_view import (
-    listing_lines,
-    matches,
-    picker_items,
-    preview_of,
-    relative_time,
-    title_of,
-)
+from deeppyro.tui.native_history import is_ptc_mode_message, process_map
+from deeppyro.tui.session_view import matches, preview_of, relative_time, title_of
 
 
 class SessionLayer(PolicyLayer):
     """Session lifecycle and transcript rendering layer."""
 
-    # Native schema 1 sessions are visible but read-only: the TUI turn engine
-    # still runs on v4, so /resume on a native id only renders its transcript.
-    NATIVE_LABEL = "native · read-only"
-    NATIVE_HINT = "use /resume <index|id|text> to open a v4 session or read a native one (read-only)"
+    NATIVE_LABEL = "native"
     NATIVE_ATTACH_HINT = "use /resume <index|id|text> to attach a native session; /fork [id] copies one"
-    SESSION_HINT = "use /resume <index|id|text> to open one"
 
     # -- session rendering ----------------------------------------------
     def _render_welcome(self) -> None:
@@ -50,10 +37,9 @@ class SessionLayer(PolicyLayer):
             "/model and /provider switch the model; /preset switches the agent preset"
         )
         conversation.add_info("/permission and /cwd change the session settings")
-        if self._native_engine():
-            conversation.add_info(
-                "/sessions lists native sessions; /resume attaches one; /fork copies the current one"
-            )
+        conversation.add_info(
+            "/sessions lists native sessions; /resume attaches one; /fork copies the current one"
+        )
         conversation.add_info("Type a message. /help lists commands. Ctrl+C interrupts, Ctrl+D quits.")
 
     def _render_history(self) -> None:
@@ -67,7 +53,7 @@ class SessionLayer(PolicyLayer):
         except Exception as exc:  # noqa: BLE001 - a bad log must not brick the UI
             conversation.add_error(f"cannot derive session history: {exc}")
             return
-        processes = native_history.process_map(session) if self._native_engine() else process_map(session)
+        processes = process_map(session)
         turn_number = 0
         for message in messages:
             role = str(getattr(message, "role", "") or "")
@@ -111,16 +97,13 @@ class SessionLayer(PolicyLayer):
         self.refresh_status()
 
     def _session_items(self, sessions: list[Any]) -> list[tuple[str, str, str]]:
-        if not self._has_native(sessions):
-            return picker_items(sessions)
         items: list[tuple[str, str, str]] = []
         for info in sessions:
             label = f"{title_of(info)}  ·  {relative_time(self._session_stamp(info))}"
             turns = getattr(info, "turns", 0)
             if turns:
                 label += f"  ·  {turns}t"
-            if isinstance(info, NativeSessionInfo):
-                label += f"  ·  {'native' if self._native_engine() else self.NATIVE_LABEL}"
+            label += f"  ·  {self.NATIVE_LABEL}"
             note = "  ".join(part for part in (preview_of(info), str(getattr(info, "cwd", "") or "")) if part)
             items.append((str(getattr(info, "id", "") or ""), label, note))
         return items
@@ -133,50 +116,13 @@ class SessionLayer(PolicyLayer):
                 return float(value)
         return 0.0
 
-    @staticmethod
-    def _has_native(sessions: list[Any]) -> bool:
-        return any(isinstance(info, NativeSessionInfo) for info in sessions)
-
-    def _native_engine(self) -> bool:
-        """Whether this runtime is the native (schema 1) turn engine."""
-        return bool(getattr(self.runtime, "native", False))
-
     def _session_catalogue(self, *, include_archived: bool = False) -> list[Any]:
-        """Sessions for the browser: native rows in native mode, merged rows otherwise."""
+        """Native sessions for the browser, newest first."""
         if include_archived:
-            sessions = list(self.runtime.recent_sessions(limit=50, include_archived=True))
-        else:
-            sessions = list(self.runtime.recent_sessions(limit=50))
-        if self._native_engine():
-            return sessions
-        return self._merged_sessions(sessions)
-
-    def _native_sessions(self, limit: int = 50) -> list[NativeSessionInfo]:
-        lister = getattr(self.runtime, "native_sessions", None)
-        if not callable(lister) or limit <= 0:
-            return []
-        try:
-            listed = lister(limit)
-        except Exception:  # noqa: BLE001 - a native listing must never break the TUI
-            return []
-        if not isinstance(listed, list):
-            return []
-        return [info for info in listed if isinstance(info, NativeSessionInfo)][:limit]
-
-    def _merged_sessions(self, sessions: list[Any]) -> list[Any]:
-        native = self._native_sessions()
-        if not native:
-            return list(sessions)
-        merged: dict[str, Any] = {}
-        for info in sessions:
-            merged.setdefault(str(getattr(info, "id", "") or ""), info)
-        for info in native:
-            merged.setdefault(info.id, info)
-        return sorted(merged.values(), key=self._session_stamp, reverse=True)
+            return list(self.runtime.recent_sessions(limit=50, include_archived=True))
+        return list(self.runtime.recent_sessions(limit=50))
 
     def _listing_rows(self, sessions: list[Any]) -> list[str]:
-        if not self._has_native(sessions):
-            return listing_lines(sessions)
         lines: list[str] = []
         workspace = ""
         for index, info in enumerate(sessions, start=1):
@@ -194,8 +140,7 @@ class SessionLayer(PolicyLayer):
                 parts.append(f"{turns}t")
             if getattr(info, "archived", False):
                 parts.append("archived")
-            if isinstance(info, NativeSessionInfo):
-                parts.append("native" if self._native_engine() else self.NATIVE_LABEL)
+            parts.append(self.NATIVE_LABEL)
             line = "  ".join(parts)
             preview = preview_of(info)
             if preview:
@@ -203,19 +148,11 @@ class SessionLayer(PolicyLayer):
             lines.append(line)
         return lines
 
-    def _resume_hint(self, sessions: list[Any]) -> str:
-        if self._native_engine():
-            return self.NATIVE_ATTACH_HINT
-        return self.NATIVE_HINT if self._has_native(sessions) else "use /resume <index|id|text>"
-
     def _show_native_session(self, info: NativeSessionInfo, *, note: str | None = None) -> None:
-        """Render a read-only native transcript (locked, damaged or v4 mode)."""
+        """Render a read-only transcript of a session the TUI cannot attach."""
         conversation = self.conversation
         short = short_session_id(info.id)
-        if self._native_engine():
-            conversation.add_info(f"native session {short} — schema 1")
-        else:
-            conversation.add_info(f"native session {short} — schema 1, read-only in the TUI")
+        conversation.add_info(f"native session {short} — schema 1")
         conversation.add_info(
             f"title: {title_of(info)}  ·  workspace: {info.cwd or '(unknown)'}  ·  "
             f"turns: {info.turns}  ·  events: {info.event_count}  ·  "
@@ -230,13 +167,8 @@ class SessionLayer(PolicyLayer):
             self._render_native_transcript(transcript)
         if note:
             conversation.add_info(note)
-        elif self._native_engine():
-            conversation.add_info("this session was not attached; /resume <id> tries again")
         else:
-            conversation.add_info(
-                "native sessions are read-only in the TUI until the turn engine migrates; "
-                f"to continue, run: dpyro migrate --to v4 --session {info.id}"
-            )
+            conversation.add_info("this session was not attached; /resume <id> tries again")
         live = getattr(self.runtime, "session", None)
         live_id = str(getattr(live, "session_id", "") or "")
         if live_id:
@@ -277,7 +209,7 @@ class SessionLayer(PolicyLayer):
                 self.conversation.add_info("recent sessions:")
                 for line in self._listing_rows(sessions):
                     self.conversation.add_info(line)
-                self.conversation.add_info(self._resume_hint(sessions))
+                self.conversation.add_info(self.NATIVE_ATTACH_HINT)
                 return
             argument = choice
         target = None
@@ -305,36 +237,30 @@ class SessionLayer(PolicyLayer):
         if target is None:
             self.conversation.add_error(f"session not found: {argument}")
             return
-        if isinstance(target, NativeSessionInfo):
-            session_id = str(getattr(target, "id", "") or "")
-            if not self._native_engine():
-                # Read-only: never attach a schema 1 session to the live v4 runtime.
-                self._show_native_session(target)
-                return
-            if not getattr(target, "readable", True):
-                self._show_native_session(
-                    target,
-                    note="this session log did not fold cleanly; showing a read-only transcript",
-                )
-                return
-            try:
-                await self.runtime.open_session(session_id)
-            except SessionLockedError:
-                self._show_native_session(
-                    target,
-                    note="another process owns this session; showing a read-only transcript",
-                )
-                return
-            except Exception as exc:  # noqa: BLE001 - a bad log must stay readable
-                self._show_native_session(
-                    target,
-                    note=f"cannot attach this session: {exc}; showing a read-only transcript",
-                )
-                return
-            self._show_resumed(session_id)
+        if not isinstance(target, NativeSessionInfo):
+            self.conversation.add_error(f"not a native session: {argument}")
             return
         session_id = str(getattr(target, "id", "") or "")
-        await self.runtime.open_session(session_id)
+        if not getattr(target, "readable", True):
+            self._show_native_session(
+                target,
+                note="this session log did not fold cleanly; showing a read-only transcript",
+            )
+            return
+        try:
+            await self.runtime.open_session(session_id)
+        except SessionLockedError:
+            self._show_native_session(
+                target,
+                note="another process owns this session; showing a read-only transcript",
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - a bad log must stay readable
+            self._show_native_session(
+                target,
+                note=f"cannot attach this session: {exc}; showing a read-only transcript",
+            )
+            return
         self._show_resumed(session_id)
 
     def _show_resumed(self, session_id: str) -> None:
@@ -365,11 +291,7 @@ class SessionLayer(PolicyLayer):
         self.conversation.add_info(f"{header} ({len(sessions)}):")
         for line in self._listing_rows(sessions):
             self.conversation.add_info(line)
-        if self._native_engine():
-            self.conversation.add_info(self.NATIVE_ATTACH_HINT)
-        else:
-            hint = self.NATIVE_HINT if self._has_native(sessions) else self.SESSION_HINT
-            self.conversation.add_info(hint)
+        self.conversation.add_info(self.NATIVE_ATTACH_HINT)
 
     def rename_command(self, argument: str = "") -> None:
         """Give the current session a title that survives reload and /resume."""
@@ -381,23 +303,14 @@ class SessionLayer(PolicyLayer):
         if session is None:
             self.conversation.add_error("no active session")
             return
-        if self._native_engine():
-            append = getattr(session, "append", None)
-            if not callable(append):
-                self.conversation.add_error("this native session cannot record a title")
-                return
-            try:
-                append("session/title", {"title": title})
-                view = session.fold()
-                stored = str(getattr(view.state, "title", "") or title)
-            except Exception as exc:  # noqa: BLE001 - a rename must not break the UI
-                self.conversation.add_error(f"could not rename: {exc}")
-                return
-            self.conversation.add_info(f"renamed this session to {stored!r}")
-            self.refresh_status()
+        append = getattr(session, "append", None)
+        if not callable(append):
+            self.conversation.add_error("this native session cannot record a title")
             return
         try:
-            stored = record_title(session, title)
+            append("session/title", {"title": title})
+            view = session.fold()
+            stored = str(getattr(view.state, "title", "") or title)
         except Exception as exc:  # noqa: BLE001 - a rename must not break the UI
             self.conversation.add_error(f"could not rename: {exc}")
             return
@@ -414,23 +327,13 @@ class SessionLayer(PolicyLayer):
             self.conversation.add_error("no active session")
             return
         session_id = short_session_id(str(getattr(session, "session_id", "") or ""))
-        if self._native_engine():
-            native_session = getattr(session, "native_session", None)
-            appender = getattr(native_session, "append", None)
-            if not callable(appender):
-                self.conversation.add_error("this native session cannot be archived")
-                return
-            try:
-                appender(ARCHIVE_EVENT, {"archived": True, "source": "user"})
-            except Exception as exc:  # noqa: BLE001 - archiving must not break the UI
-                self.conversation.add_error(f"could not archive: {exc}")
-                return
-            await self.new_session()
-            self.conversation.add_info(f"archived {session_id}; started a new session")
-            self.conversation.add_info("use /sessions --all to see archived sessions, /unarchive to restore")
+        native_session = getattr(session, "native_session", None)
+        appender = getattr(native_session, "append", None)
+        if not callable(appender):
+            self.conversation.add_error("this native session cannot be archived")
             return
         try:
-            record_archive(session, True)
+            appender(ARCHIVE_EVENT, {"archived": True, "source": "user"})
         except Exception as exc:  # noqa: BLE001 - archiving must not break the UI
             self.conversation.add_error(f"could not archive: {exc}")
             return
@@ -462,29 +365,17 @@ class SessionLayer(PolicyLayer):
                 target = candidates[0]
         if target is None:
             self.conversation.add_info("archived sessions:")
-            rows = self._listing_rows(archived) if self._native_engine() else listing_lines(archived)
-            for line in rows:
+            for line in self._listing_rows(archived):
                 self.conversation.add_info(line)
             self.conversation.add_info("use /unarchive <index|id|text>")
             return
         session_id = str(getattr(target, "id", "") or "")
-        if self._native_engine():
-            archiver = getattr(getattr(self.runtime, "sessions", None), "native_archive", None)
-            if not callable(archiver):
-                self.conversation.add_error("unarchiving is not available in this runtime")
-                return
-            try:
-                archiver(session_id, archived=False)
-            except Exception as exc:  # noqa: BLE001 - unarchiving must not break the UI
-                self.conversation.add_error(f"could not unarchive: {exc}")
-                return
-            self.conversation.add_info(
-                f"restored {short_session_id(session_id)}; use /resume {session_id} to open it"
-            )
+        archiver = getattr(getattr(self.runtime, "sessions", None), "native_archive", None)
+        if not callable(archiver):
+            self.conversation.add_error("unarchiving is not available in this runtime")
             return
         try:
-            session = self.runtime.store.open(session_id)
-            record_archive(session, False)
+            archiver(session_id, archived=False)
         except Exception as exc:  # noqa: BLE001 - unarchiving must not break the UI
             self.conversation.add_error(f"could not unarchive: {exc}")
             return
@@ -496,9 +387,6 @@ class SessionLayer(PolicyLayer):
         """Copy the current (or named) native session into a fresh session (/fork)."""
         if self._working:
             self.notify("cannot fork during a turn", severity="warning")
-            return
-        if not self._native_engine():
-            self.conversation.add_info("/fork requires the native TUI runtime (DEEPPYRO_TUI_NATIVE=1)")
             return
         fork = getattr(getattr(self.runtime, "sessions", None), "native_fork", None)
         if not callable(fork):

@@ -6,10 +6,11 @@ from typing import Any
 
 import pytest
 
+from deeppyro.api.types import DEFAULT_PRESET_ID
 from deeppyro.core.errors import ToolError
 from deeppyro.subagent import SubagentError, SubagentResult
 from deeppyro.tools.builtin.subagent import SubagentTool, subagent_tools
-from tests.subagent.helpers import FakeAgents, make_subagent
+from tests.subagent.helpers import make_subagent
 from tests.tools.helpers import make_context
 
 
@@ -225,7 +226,7 @@ async def test_blank_required_prompt_is_rejected(tmp_path) -> None:
 
 
 async def test_real_service_end_to_end(tmp_path) -> None:
-    env = make_subagent(tmp_path, agents=FakeAgents(reply="found it"))
+    env = make_subagent(tmp_path, reply="found it")
     tool = SubagentTool()
     ctx = make_context(tmp_path, services={"subagent": env.service})
 
@@ -239,6 +240,14 @@ async def test_real_service_end_to_end(tmp_path) -> None:
     assert meta["provider"] == "local"
     assert meta["model"] == "parent-model"
     assert result.text == f"subagent scout ({meta['childSessionId']}) completed:\nfound it"
-    child = env.store.open(meta["childSessionId"])
-    assert child.header.parentSession == env.parent.session_id
-    assert env.agents.agents[0].closed is True
+    specs = [spec for spec in env.sessions.created if spec.origin == "subagent"]
+    assert len(specs) == 1
+    assert specs[0].parent_id == env.parent.header.id
+    assert specs[0].delegation_depth == 1
+    child = env.open(meta["childSessionId"])
+    assert child.header.parent_id == env.parent.header.id
+    assert child.header.origin == "subagent"
+    assert child.header.delegation_depth == 1
+    assert child.header.preset == DEFAULT_PRESET_ID
+    assert env.agents.host_objects[0].closed is True
+    await env.service.close()

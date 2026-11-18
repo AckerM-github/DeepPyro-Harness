@@ -1,13 +1,16 @@
 # TUI native migration (KI-001 / KI-037)
 
-Status: design note for 0.3, not yet implemented for the turn engine. Read-only
-native session visibility is tracked separately (KI-037). Authority for release
-scope stays in `docs/release/0.2.0-known-issues.md`.
+Status: **implemented (0.3.0)**. The TUI turn engine is native-only (one `AgentLoop`,
+schema 1 sessions; TUI, headless and Web share the runtime). Plan-time items below that
+mention a v4 fallback, a native switch flag or `dpyro migrate` were superseded by the
+hard cut: those flags and the migration command were deleted, and old v4 sessions are
+not readable. Read the rest of this document as a design record, not current API.
 
 ## 1. Goal and non-goals
 
-Goal: the interactive TUI runs the schema 1 native agent loop by default, while
-the v4 reader stays available for old sessions through `dpyro migrate`.
+Goal (as delivered in 0.3.0): the interactive TUI runs the schema 1 native agent
+loop; v4 sessions are not readable and there is no migration command (these
+plan-time references were superseded by the hard cut).
 
 Non-goals for the first switch:
 

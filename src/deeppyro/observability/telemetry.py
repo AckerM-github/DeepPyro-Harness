@@ -90,7 +90,7 @@ class TelemetryPlugin(Plugin):
     """Trace writer for the v4 agent plus the optional OTLP export sink."""
 
     plugin_id = "telemetry"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "v4 trace coverage and optional OTLP/HTTP(JSON) export"
     inject: tuple[str, ...] = ("hooks", "config")
 

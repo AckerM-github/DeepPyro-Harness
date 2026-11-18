@@ -80,9 +80,7 @@ class StatusLayer(AppBase):
         if service is None:
             return None
         try:
-            if getattr(runtime, "native", False):
-                return refresh_native_activity(service, getattr(runtime, "session", None))
-            return service.refresh(getattr(runtime, "session", None))
+            return refresh_native_activity(service, getattr(runtime, "session", None))
         except Exception:  # noqa: BLE001 - the bar is cosmetic chrome
             return None
 

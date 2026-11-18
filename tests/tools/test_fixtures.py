@@ -1,4 +1,4 @@
-"""Regression samples reconstructed from fixtures/records and fixtures/sessions."""
+"""Replay hand-authored native tool-call samples through the builtin tools."""
 
 from __future__ import annotations
 
@@ -7,53 +7,33 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import pytest
 import respx
 
 from deeppyro.tools import builtin_tools
 from deeppyro.tools.builtin.web import DUCKDUCKGO_HTML_ENDPOINT, FETCH_NOTICE
-from tests.tools.helpers import FIXTURES, load_real_tool_calls, make_context, write_file
+from tests.tools.helpers import make_context, write_file
 
-if not FIXTURES.is_dir():
-    pytest.skip(
-        "real DSH fixtures not present; run: node tools/gen_fixtures.mjs",
-        allow_module_level=True,
-    )
-
+CALLS_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "native" / "tool_calls.json"
+CALLS: dict[str, dict[str, Any]] = json.loads(CALLS_PATH.read_text(encoding="utf-8"))["calls"]
 TOOLS = {tool.name: tool for tool in builtin_tools(object(), Path.cwd())}
 
 
-@pytest.fixture(scope="module")
-def real_calls() -> dict[str, list[dict[str, Any]]]:
-    calls = load_real_tool_calls()
-    if not calls:
-        pytest.skip("fixtures are not available in this checkout")
-    return calls
+def _args(name: str) -> dict[str, Any]:
+    """Return a private copy of one hand-authored sample."""
+    return json.loads(json.dumps(CALLS[name]))
 
 
-def test_fixture_records_are_present() -> None:
-    tool_call = FIXTURES / "records" / "by-type" / "tool_call.jsonl"
-    assert tool_call.is_file()
-    with tool_call.open(encoding="utf-8") as handle:
-        record = json.loads(handle.readline())
-    assert record["type"] == "tool/call"
-    assert {"turn", "step", "callId", "name", "arguments"} <= set(record["data"])
-
-
-def test_real_arguments_only_use_declared_properties(real_calls) -> None:  # type: ignore[no-untyped-def]
-    for name, calls in real_calls.items():
+def test_samples_reference_registered_tools() -> None:
+    for name, args in CALLS.items():
         tool = TOOLS[name]
         declared = set(tool.parameters["properties"])
+        assert set(args) <= declared, f"{name} sample used undeclared keys: {set(args) - declared}"
         required = set(tool.parameters.get("required", []))
-        for args in calls:
-            assert set(args) <= declared, f"{name} call used undeclared keys: {set(args) - declared}"
-        assert any(required <= set(args) for args in calls), (
-            f"no real {name} call satisfies the required fields"
-        )
+        assert required <= set(args), f"{name} sample misses required fields {required - set(args)}"
 
 
-async def test_read_replays_real_arguments(real_calls, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    args = dict(real_calls["read"][0])
+async def test_read_replays_sample_arguments(tmp_path: Path) -> None:
+    args = _args("read")
     target = write_file(tmp_path, "sample.txt", "first line\nsecond line\n")
     args["file_path"] = str(target)
     args.pop("offset", None)
@@ -64,8 +44,8 @@ async def test_read_replays_real_arguments(real_calls, tmp_path) -> None:  # typ
     assert "<type>file</type>" in result.text
 
 
-async def test_write_replays_real_arguments(real_calls, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    args = dict(real_calls["write"][0])
+async def test_write_replays_sample_arguments(tmp_path: Path) -> None:
+    args = _args("write")
     target = tmp_path / "replayed_script.ps1"
     args["file_path"] = str(target)
     result = await TOOLS["write"].run(args, make_context(tmp_path))
@@ -75,8 +55,8 @@ async def test_write_replays_real_arguments(real_calls, tmp_path) -> None:  # ty
     assert result.meta["bytes"] == len(args["content"].encode("utf-8"))
 
 
-async def test_edit_replays_real_strings(real_calls, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    args = dict(real_calls["edit"][0])
+async def test_edit_replays_sample_strings(tmp_path: Path) -> None:
+    args = _args("edit")
     target = write_file(tmp_path, "notes.md", args["old_string"] + "\n")
     args["file_path"] = str(target)
     args.pop("replace_all", None)
@@ -86,8 +66,8 @@ async def test_edit_replays_real_strings(real_calls, tmp_path) -> None:  # type:
     assert args["new_string"] in target.read_text(encoding="utf-8")
 
 
-async def test_grep_replays_real_pattern(real_calls, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    args = dict(real_calls["grep"][0])
+async def test_grep_replays_sample_pattern(tmp_path: Path) -> None:
+    args = _args("grep")
     tree = tmp_path / "wheel"
     write_file(tree, "gpu.py", "n_gpu_layers = 32\nCUDA = True\n")
     write_file(tree, "notes.txt", "CUDA mentioned outside python\n")
@@ -99,8 +79,8 @@ async def test_grep_replays_real_pattern(real_calls, tmp_path) -> None:  # type:
     assert result.meta["matches"] == 2
 
 
-async def test_glob_replays_real_pattern(real_calls, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    args = dict(real_calls["glob"][0])
+async def test_glob_replays_sample_pattern(tmp_path: Path) -> None:
+    args = _args("glob")
     tree = tmp_path / "tree"
     write_file(tree, "strata_a/nested/x.txt", "x")
     write_file(tree, "strata_b/y.txt", "y")
@@ -113,13 +93,13 @@ async def test_glob_replays_real_pattern(real_calls, tmp_path) -> None:  # type:
         for path in tree.glob(args["pattern"])
         if path.is_file() and not {".git", ".hg", ".svn", ".bzr", "CVS"} & set(path.parts)
     ]
+    assert expected
     assert result.meta["count"] == len(expected)
-    if expected:
-        assert all(path.name in result.text for path in expected)
+    assert all(path.name in result.text for path in expected)
 
 
-async def test_present_replays_real_arguments(real_calls, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    args = json.loads(json.dumps(real_calls["present"][0]))
+async def test_present_replays_sample_arguments(tmp_path: Path) -> None:
+    args = _args("present")
     target = write_file(tmp_path, "deliverable.md", "# deliverable\n")
     args["files"][0]["path"] = str(target)
     result = await TOOLS["present"].run(args, make_context(tmp_path))
@@ -127,15 +107,15 @@ async def test_present_replays_real_arguments(real_calls, tmp_path) -> None:  # 
     assert result.text == f"Presented {target}"
 
 
-async def test_todo_replays_real_arguments(real_calls, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    args = json.loads(json.dumps(real_calls["todo_write"][0]))
+async def test_todo_replays_sample_arguments(tmp_path: Path) -> None:
+    args = _args("todo_write")
     result = await TOOLS["todo_write"].run(args, make_context(tmp_path))
     assert result.is_error is False
-    assert result.text == "Updated todo list: 1 pending, 0 in progress, 0 completed."
+    assert result.text == "Updated todo list: 1 pending, 1 in progress, 1 completed."
 
 
-async def test_web_fetch_replays_real_url(real_calls, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    url = real_calls["web_fetch"][0]["url"]
+async def test_web_fetch_replays_sample_url(tmp_path: Path) -> None:
+    url = CALLS["web_fetch"]["url"]
     with respx.mock() as mock:
         mock.get(url).mock(
             return_value=httpx.Response(
@@ -151,8 +131,8 @@ async def test_web_fetch_replays_real_url(real_calls, tmp_path) -> None:  # type
     assert "Bug check" in result.text
 
 
-async def test_web_search_replays_real_queries(real_calls, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    queries = real_calls["web_search"][0]["queries"]
+async def test_web_search_replays_sample_queries(tmp_path: Path) -> None:
+    queries = CALLS["web_search"]["queries"]
     page = '<a class="result__a" href="https://learn.microsoft.com/bug-check">Bug check 0x10E</a>'
     with respx.mock() as mock:
         route = mock.post(DUCKDUCKGO_HTML_ENDPOINT).mock(return_value=httpx.Response(200, text=page))

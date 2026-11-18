@@ -5,7 +5,7 @@ a generated Python SDK into the system prompt: a Tools protocol whose methods
 are the visible tools, plus one TypedDict per argument and result object (and
 per nested object).  This module is the pure projection from
 deeppyro.core.protocols.ToolSchema to that text; it mirrors the
-renderToolsSdkPy renderer in DSH's dsh-tool-executor-ptc package.
+renderToolsSdkPy renderer in upstream's upstream-tool-executor-ptc package.
 
 The output is advisory prompt text, not a module that is imported: only tools
 and ToolCallError are bound at run time.  It must nevertheless be valid Python
@@ -107,7 +107,7 @@ _RESERVED: frozenset[str] = frozenset(
 )
 
 #: Class-name bases are capped so a deep chain of single-field objects keeps
-#: the emitted text linear in depth.  DSH counts UTF-16 code units here; this
+#: the emitted text linear in depth.  upstream counts UTF-16 code units here; this
 #: renderer counts code points, which only differs for astral names.
 MAX_CLASS_NAME_BASE = 120
 
@@ -116,7 +116,7 @@ MAX_CLASS_NAME_BASE = 120
 #: leaves headroom for the annotation's own brackets.
 MAX_LIST_NESTING = 180
 
-#: Keys accepted by the enforced JSON-Schema subset shared with DSH.
+#: Keys accepted by the enforced JSON-Schema subset shared with upstream.
 _CONSTRAINT_KEYWORDS: frozenset[str] = frozenset(
     {"type", "oneOf", "properties", "required", "additionalProperties", "items", "enum", "const"}
 )
@@ -381,7 +381,7 @@ def _render_type_root(schema: Any, class_name: str, state: _RenderState) -> str:
     """Validate one schema tree and render its Python type expression.
 
     A malformed or unsupported schema degrades to Any instead of failing prompt
-    assembly, matching DSH's context-free fallback.  Validation runs before
+    assembly, matching upstream's context-free fallback.  Validation runs before
     anything is emitted, so a rejected tree contributes no classes.
     """
     try:
@@ -498,7 +498,7 @@ class _UnsupportedSchema(Exception):
 def _assert_supported_json_schema(schema: Any) -> None:
     """Assert *schema* belongs to the supported subset.
 
-    The subset is the one DSH enforces for tool schemas: any JSON root, an
+    The subset is the one upstream enforces for tool schemas: any JSON root, an
     annotation-only schema for unconstrained JSON, one scalar type, object
     properties/required/boolean additionalProperties, array items, type-correct
     scalar enum/const, and exact oneOf with at least two branches.  Anything

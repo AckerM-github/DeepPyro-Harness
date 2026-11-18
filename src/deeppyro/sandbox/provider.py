@@ -1,6 +1,6 @@
 """The sandbox execution seam and the local Windows backend.
 
-Mirrors dsh-sandbox + dsh-sandbox-local. confine() either returns an argv that
+Mirrors upstream-sandbox + upstream-sandbox-local. confine() either returns an argv that
 runs under OS enforcement, or raises SandboxUnavailableError: it never falls back
 to an unconfined command. danger-full-access is the only mode that runs the
 original argv, and it reports enforcement="full".
@@ -97,12 +97,12 @@ class Confinement:
 
 
 def sandbox_denial_marker(mode: str) -> str:
-    """The exact DSH marker appended to a denied command's output."""
+    """The exact upstream marker appended to a denied command's output."""
     return f"[sandbox: file access denied under {mode} mode]"
 
 
 def escalation_hint_marker(subject: str) -> str:
-    """The exact DSH hint appended when a one-shot escalation is available."""
+    """The exact upstream hint appended when a one-shot escalation is available."""
     return (
         f"[sandbox: escalation available - retry this exact {subject} once with "
         "sandbox_permissions (the narrowest wider mode that suffices) + justification; "
@@ -121,7 +121,7 @@ def sandbox_permissions_description(subject: str) -> str:
 def validate_escalation_args(args: dict[str, Any]) -> tuple[str | None, str | None]:
     """Validate the paired sandbox_permissions/justification tool arguments.
 
-    Returns (mode, justification) or raises ValueError with the DSH wording.
+    Returns (mode, justification) or raises ValueError with the upstream wording.
     """
     requested = args.get("sandbox_permissions")
     justification = args.get("justification")

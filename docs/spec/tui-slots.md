@@ -1,10 +1,12 @@
 # TUI plugin slots
 
-> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+> **状态**：现行（0.3.0） · **层级**：功能规格 · **最后核对**：2026-11-19
 
-Status: implemented in layer E. The TUI is a **slot host**: plugins add status
-items, conversation rows, panels and settings pages without editing
-`tui/app.py` or the core widgets.
+Status: implemented in layer E and wired into the TUI host in 0.3.0
+(`tui/app.py` builds the `SlotRegistry` via `_bind_slots`, hosts
+`PluginStatusBar`, and calls the conversation-row helper). The TUI is a **slot
+host**: plugins add status items, conversation rows, panels and settings pages
+without editing `tui/app.py` or the core widgets.
 
 | File | Role |
 |---|---|
@@ -13,7 +15,7 @@ items, conversation rows, panels and settings pages without editing
 | `src/deeppyro/tui/widgets/plugin_slots.py` | `PluginStatusBar`, `PluginPanelHost`, `PluginTable`, `open_panel_for` |
 | `src/deeppyro/tui/screens/plugin_panel.py` | `PluginPanelScreen` modal and `open_plugin_panel` helper |
 | `tests/tui/test_slots.py`, `tests/tui/test_plugin_slots.py`, `tests/tui/test_ui_package.py` | registry/service/helper tests, tiny Textual host apps, and `ui.toml` loader tests |
-| `src/deeppyro/tui/app.py`, `theme.tcss` | **not modified here**; the Lead applies the checklist in section 7 |
+| `src/deeppyro/tui/app.py`, `theme.tcss` | wired in 0.3.0 (`_bind_slots`, `PluginStatusBar`, `handle_event` helper); section 7 is the historical integration checklist |
 
 `slots.py` imports only `deeppyro.api` and `deeppyro.core.errors`, so it can be
 loaded by the kernel before any Textual app exists. Widgets are the only
@@ -181,7 +183,7 @@ registry as the `slots` service:
 ```python
 class SlotsPlugin(Plugin):
     plugin_id = "slots"
-    version = "0.2.0"
+    version = "0.3.0"
     inject = ()
 
     def __init__(self, ctx, config):
@@ -219,7 +221,7 @@ from deeppyro.api import Plugin
 
 class ClockPlugin(Plugin):
     plugin_id = "clock"
-    version = "0.2.0"
+    version = "0.3.0"
     inject = ("slots",)
 
     def setup(self) -> None:
@@ -281,7 +283,7 @@ walks `registry.conversation_rows()` in order. For each row:
 It returns the mounted widgets (useful for tests). `registry=None` is a
 no-op, so the host can call it unconditionally.
 
-Event shapes are the ones in `docs/spec/INTERFACES.md` section 7:
+Event shapes are the native host event dicts documented in [tui.md](tui.md) section 4:
 `session`, `status`, `text`, `thinking`, `tool_call`, `tool_result`,
 `usage`, `final`, `error`. Example row:
 
@@ -295,8 +297,8 @@ slots.add_conversation_row(
 )
 ```
 
-The helper is deliberately external to `ConversationView`; the Lead adds one
-call in `handle_event` instead of editing the widget.
+The helper stays external to `ConversationView`; `app.py` calls it from
+`handle_event` (wired in 0.3.0).
 
 ## 6. Host widgets
 
@@ -340,10 +342,11 @@ call in `handle_event` instead of editing the widget.
 - `set_contributions(items)` replaces the list; `open_panel_for(registry, *,
   kind=PANEL, slot_id=None)` is the selection helper used by the modal.
 
-## 7. Integration checklist for the Lead
+## 7. Integration checklist (historical; wired in 0.3.0)
 
-All edits below are in `src/deeppyro/tui/app.py` unless stated; our file scopes
-forbid editing it here.
+The steps below are kept as the integration record. The edits are in
+`src/deeppyro/tui/app.py` unless stated; 0.3.0 already has the wiring, and a new
+slot consumer normally needs no app.py change.
 
 ### 7.1 Imports (after the current import block, around line 35)
 
@@ -501,9 +504,9 @@ does not add a built-in command. Alternatively, call `open_plugin_panel` from
 
 ### 7.9 Core bundle row (section 3)
 
-Add the `[[plugins]] id = "slots"` row to
-`src/deeppyro/bundles/core/bundle.toml`. Without it, every integration point
-above is inert but safe (`self._slots` is `None`, bar hidden, helper no-op).
+The `[[plugins]] id = "slots"` row is present in the core bundle (41 plugin
+rows + `[bundle]` metadata, 0.3.0). Without it, every integration point above
+is inert but safe (`self._slots` is `None`, bar hidden, helper no-op).
 
 ## 8. Tests
 
@@ -512,7 +515,7 @@ uv run pytest tests/tui/test_slots.py tests/tui/test_plugin_slots.py tests/tui/t
 # 50 passed
 
 uv run pytest tests/tui -o addopts= -q
-# full suite; add test_app.py etc. once the Lead's host integration lands
+# full suite; host integration has landed (app.py wiring, 0.3.0)
 ```
 
 `test_slots.py` covers ordering/filtering, duplicate detection, idempotent
@@ -765,7 +768,7 @@ want localized text. `"!key"` interpolation is intentionally not implemented
 [bundle]
 id = "acme"
 name = "Acme UI"
-version = "0.2.0"
+version = "0.3.0"
 api_version = 3
 ```
 

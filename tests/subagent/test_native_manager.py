@@ -1,9 +1,9 @@
 """Native subagent branch: spawn, prefix fork, restore, usage and notices.
 
-These tests pin the additive native path in :mod:`deeppyro.subagent.native_manager`
-and the routing in :class:`deeppyro.subagent.manager.SubagentService`.  They use
-real native sessions on a temporary root and duck-typed agents/host fakes, so the
-v4 tests keep covering the v4 path unchanged.
+These tests pin the native path in :mod:`deeppyro.subagent.native_manager` and
+the routing in :class:`deeppyro.subagent.manager.SubagentService`.  They use real
+native sessions on a temporary root and duck-typed agents/host fakes; the native
+runtime is the only subagent backend.
 """
 
 from __future__ import annotations
@@ -635,7 +635,7 @@ async def test_manager_routes_a_native_parent_to_the_native_branch(tmp_path: Pat
     await service.close()
 
 
-async def test_manager_close_leaves_the_v4_branch_untouched(tmp_path: Path) -> None:
+async def test_manager_close_without_a_bound_parent_is_a_noop(tmp_path: Path) -> None:
     service = SubagentService(agents=FakeAgents(), sessions=FakeSessions(tmp_path))
     service.configure(
         cwd=tmp_path,

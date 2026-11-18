@@ -63,7 +63,7 @@ def _non_empty(value: Any, message: str) -> str:
 def parse_questions(value: Any) -> tuple[Question, ...]:
     """Parse and validate the raw model-facing questions array.
 
-    Unknown fields are ignored: the DSH schema sets
+    Unknown fields are ignored: the upstream schema sets
     additionalProperties: true on question and option objects.
     """
     if not isinstance(value, list) or not value:

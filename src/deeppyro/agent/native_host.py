@@ -1,25 +1,24 @@
 """Reusable native agent host: one open session, many loop runs.
 
-This is the bridge the TUI migration (KI-001) will sit on while the v4 runtime
-is ported to the M2 native loop. It owns exactly one NativeSession and one
-AgentLoop; every send() starts a fresh AgentLoop.run on the same session, so
-each run rebuilds its context from the session fold and multi-turn state is
-simply the append-only log.
+This is the bridge the TUI and headless front ends sit on. It owns exactly one
+NativeSession and one AgentLoop; every send() starts a fresh AgentLoop.run on
+the same session, so each run rebuilds its context from the session fold and
+multi-turn state is simply the append-only log.
 
 Two objects live here:
 
 * NativeAgentHost - the live agent: send/interrupt/aclose plus usage and
   transcript reads. The TUI's turn driver talks to this object.
-* NativeSessionHandle - a thin, v4-shaped read surface over the same session,
+* NativeSessionHandle - a thin legacy-shaped read surface over the same session,
   so existing front-end services (working directory, status bar, transcript
   rendering) can be pointed at a native session without learning the native
   schema.
 
 The session vocabulary is owned by deeppyro.session.schema; this module only
-maps the small set of v4 record types the bridge accepts onto existing
-EventKinds and never invents new schema vocabulary. Nothing here imports
-deeppyro.core.wire or the TUI, and no module-level mutable state is kept, so
-several hosts can coexist in one process.
+maps the small set of legacy record types the bridge accepts onto existing
+EventKinds and never invents new schema vocabulary. Nothing here depends on the
+TUI, and no module-level mutable state is kept, so several hosts can coexist in
+one process.
 """
 
 from __future__ import annotations

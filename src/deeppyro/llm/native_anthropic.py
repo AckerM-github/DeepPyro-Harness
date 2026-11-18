@@ -1,9 +1,8 @@
 """Native Anthropic Messages provider.
 
 Implements core.llm.LlmProvider for POST <base>/v1/messages with stream=true, without
-importing any core.wire / core.protocols types. It is the native-loop counterpart of
-deeppyro.llm.anthropic (the v4 provider); the request mapping and the SSE protocol are the
-same (docs/spec/llm.md section 14):
+importing any core.wire / core.protocols types. It is the only Anthropic transport; the
+request mapping and the SSE protocol follow docs/spec/llm.md section 14:
 
 * instructions travel in a top-level system string, tool results are tool_result blocks
   inside user messages, and tool_use inputs are JSON objects rather than strings;

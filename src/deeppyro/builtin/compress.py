@@ -2,11 +2,11 @@
 
 The plugin is intentionally thin. It resolves the per-session block directory,
 builds the shared BlockStore/RefStore, and registers the tool factories:
-compress writes summaries, search_context finds a keyword in them, and
-decompress expands one known block. The tools receive the live session through
-ToolContext.services at call time; until the runtime injects it, compress falls
-back to the sessions store by session id, while the retrieval tools only need
-the session id because block files are session-addressed.
+compress writes summaries on the live native session, search_context finds a
+keyword in stored summaries, and decompress expands one known block. The tools
+receive the live session through ToolContext.services at call time; the
+retrieval tools only need the session id because block files are
+session-addressed.
 """
 
 from __future__ import annotations
@@ -19,10 +19,9 @@ from pydantic import BaseModel
 
 from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.builtin.sessions import SessionsPlugin
-from deeppyro.compact.block_tools import DecompressTool, SearchContextTool
 from deeppyro.compact.blocks import BlockStore
-from deeppyro.compact.compress_tool import CompressTool
-from deeppyro.compact.refs import RefStore
+from deeppyro.compact.native_block_tools import CompressTool, DecompressTool, SearchContextTool
+from deeppyro.compact.native_refs import RefStore
 from deeppyro.core.errors import ConfigError
 from deeppyro.kernel.config_service import KernelConfig
 
@@ -93,8 +92,7 @@ def _resolve_enabled(section: Mapping[str, Any], row: Mapping[str, Any]) -> bool
 
 
 def _store_root(service: Any) -> pathlib.Path | None:
-    store = getattr(service, "store", service)
-    root = getattr(store, "root", None)
+    root = getattr(service, "root", None)
     return pathlib.Path(root) if root is not None else None
 
 
@@ -102,7 +100,7 @@ class CompressPlugin(Plugin):
     """Register the compress tool backed by a per-session block store."""
 
     plugin_id = "compress"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "model-authored context compression blocks and checkpoints"
     Config = CompressConfig
     inject: ClassVar[list[str]] = ["config", "sessions", "tools"]
@@ -121,14 +119,13 @@ class CompressPlugin(Plugin):
         sessions = self.ctx.require(SessionsPlugin)
         store_root = _store_root(sessions)
         if store_root is None:
-            raise ConfigError("compress requires the sessions service to expose a store root")
+            raise ConfigError("compress requires the sessions service to expose its root")
         blocks_root = _resolve_blocks_dir(section, row, store_root)
-        store = getattr(sessions, "store", sessions)
         blocks = BlockStore(blocks_root)
         refs = RefStore(blocks_root)
         self.blocks = blocks
         self.refs = refs
-        self.ctx.register_tool(lambda _cfg, _workspace: [CompressTool(store, blocks, refs)])
+        self.ctx.register_tool(lambda _cfg, _workspace: [CompressTool(blocks, refs)])
         # Retrieval over the same block store: search first, decompress only the hit.
         self.ctx.register_tool(lambda _cfg, _workspace: [SearchContextTool(blocks), DecompressTool(blocks)])
 

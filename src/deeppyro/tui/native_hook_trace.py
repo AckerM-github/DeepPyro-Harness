@@ -1,9 +1,8 @@
 """Hook registry and recent-decision recorder for the native TUI runtime.
 
-The v4 TUI reads /hooks from hook/invoked and hook/result journal records in
-the agent session log. Native sessions never write those records: schema 1 has
-no hook journal, and the native host dispatches the same HookService that the
-plugins use. So /hooks on a native session observes the live hook service:
+Native sessions record no hook journal: schema 1 has no hook/invoked or
+hook/result events, and the native host dispatches the same HookService that the
+plugins use. So /hooks observes the live hook service:
 this recorder is registered with HookService.add_observer, which fires for
 every dispatch (invoked before, resolved after) even when no listener exists.
 
@@ -21,7 +20,7 @@ from deeppyro.hooks import HOOK_MODES, HOOK_NAMES
 
 __all__ = ["NOT_RECORDED", "UNAVAILABLE_TEXT", "NativeHookRecorder"]
 
-#: How many recent decisions the recorder keeps (matches the v4 /hooks limit).
+#: How many recent decisions the recorder keeps (matches the historical /hooks limit).
 DEFAULT_LIMIT = 50
 
 #: Explicit placeholder shown when the runtime never observed a hook decision.
@@ -40,9 +39,9 @@ def _int(value: Any) -> int:
 class NativeHookRecorder:
     """Records HookService dispatches and reports the live hook registry.
 
-    Every dispatch becomes one row shaped like the v4 hook trace viewer expects
-    ({'hook', 'mode', 'invoked', 'result'}), so screens.hook_trace renders both
-    runtimes identically. The registry view reports the declared hooks, their
+    Every dispatch becomes one row shaped like screens.hook_trace expects
+    ({'hook', 'mode', 'invoked', 'result'}). The registry view reports the
+    declared hooks, their
     dispatch mode, listener counts and observed invocation counts.
     """
 

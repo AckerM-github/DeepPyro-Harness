@@ -1,8 +1,8 @@
 """PyInstaller inputs for a frozen deeppyro build, derived from shipped data.
 
 The composition a build must carry is *data*: ``bundles/core/bundle.toml``
-names 38 plugin modules that nothing imports statically, so a static analyser
-alone drops them (and, transitively, httpx/Pillow/zstandard).  This module
+names 41 plugin modules that nothing imports statically, so a static analyser
+alone drops them (and, transitively, httpx/Pillow).  This module
 derives ``hiddenimports`` and ``datas`` from the very bundle files the runtime
 reads, so the frozen build cannot drift from the shipped composition -- there
 is nothing to hand-maintain.

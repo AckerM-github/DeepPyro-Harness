@@ -35,7 +35,7 @@ from deeppyro.core.messages import Message, SystemSource, TextPart, UserSource
 from deeppyro.llm.errors import CODE_AUTH, CODE_PROTOCOL, LlmHttpError
 from deeppyro.llm.native_provider import NativeOpenAICompatProvider
 from deeppyro.llm.retry import RetryPolicy
-from tests.llm.helpers import (
+from tests.llm.native_sse import (
     SSE_HEADERS,
     chat_chunk,
     sse_doc,

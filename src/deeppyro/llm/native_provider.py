@@ -1,8 +1,8 @@
 """Native streaming OpenAI chat-completions provider (KI-010).
 
-The native mirror of :class:`deeppyro.llm.openai_compat.OpenAICompatProvider`:
+The wire-free `/chat/completions` transport:
 it implements :class:`deeppyro.core.llm.LlmProvider` and emits native stream
-events instead of the v4 `core.protocols` ones, so the native agent loop never
+events instead of the legacy `core.protocols` ones, so the native agent loop never
 depends on `core.wire`-shaped types.
 
 Design highlights (full rationale in docs/spec/llm.md):
@@ -115,8 +115,8 @@ class NativeOpenAICompatProvider:
         self.timeout_s = float(timeout_s)
         self.retry_policy = retry_policy or RetryPolicy()
         # Optional duck-typed attachment resolver (see llm/attachments.py); the registry
-        # does not inject one yet, so bare attachment ids are dropped exactly like the
-        # v4 provider today.
+        # does not inject one yet, so bare attachment ids are dropped when no resolver is
+        # supplied.
         self.attachments = attachments
         self._client: httpx.AsyncClient | None = None
         self._closed = False

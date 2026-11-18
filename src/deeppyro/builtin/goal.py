@@ -9,7 +9,7 @@ from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.api.services import require_service
 from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.core.bus import EventBus
-from deeppyro.goal import DEFAULT_MAX_GOAL_ROUNDS, GoalService
+from deeppyro.goal import DEFAULT_MAX_GOAL_ROUNDS, GoalError, GoalService
 from deeppyro.tools.builtin.goal import (
     DEFAULT_BLOCKED_AFTER_CONSECUTIVE_ROUNDS,
     CreateGoalTool,
@@ -67,7 +67,7 @@ class GoalPlugin(Plugin):
 
     provide = "goal"
     plugin_id = "goal"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "per-session goal record, goal tools and prompt line"
     inject: ClassVar[list[str]] = ["sessions", "tools", "prompt"]
 
@@ -94,29 +94,30 @@ class GoalPlugin(Plugin):
         except Exception:  # noqa: BLE001 - the plugin still works without a bus
             return None
 
-    def _load(self, session_id: str) -> list[Any]:
-        """Durable records of one session, so a reopened goal survives."""
+    def _load(self, session_id: str) -> Any | None:
+        """Read one native session log, so a reopened goal renders in the prompt."""
         try:
             sessions = require_service(self.ctx, SessionsPlugin, owner=self.plugin_id)
-            store = getattr(sessions, "store", None)
-            if store is None:
-                return []
-            session = store.open(session_id)
-            return list(getattr(session, "records", ()) or ())
-        except Exception:  # noqa: BLE001 - a missing store only costs the goal
-            return []
+            return sessions.native_read(session_id)
+        except Exception:  # noqa: BLE001 - a missing session only costs the goal line
+            return None
 
     def _render(self, tools: Any, context: Any) -> str:
         session_id = getattr(context, "session_id", "")
         if not session_id:
             return ""
-        goal = self.service.get(session_id)
+        try:
+            goal = self.service.get(session_id)
+        except GoalError:
+            # A prompt can be rendered for a session that is not on disk yet (or
+            # for a synthetic PromptContext); that only costs the goal line.
+            return ""
         if not goal:
             return ""
         return f"## Goal\n\nThe user's goal for this session: {goal}"
 
     def _policy(self, tools: Any, context: Any) -> str:
-        """The model guidance DSH keeps in the prompt (spec §5.4)."""
+        """The model guidance upstream keeps in the prompt (spec §5.4)."""
         if not getattr(context, "session_id", ""):
             return ""
         return "## Goal tool\n\n" + GOAL_POLICY.format(rounds=self.blocked_after)

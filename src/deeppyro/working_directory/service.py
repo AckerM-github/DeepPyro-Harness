@@ -3,7 +3,7 @@
 The service owns the model-visible execution directory.  It is deliberately
 small: the agent session reads the current value for every tool context and
 runtime-context projection, while this service records changes as durable
-working-directory/change events and queues the DSH notice message.
+working-directory/change events and queues the upstream notice message.
 
 The host can either configure one set of default callbacks:
 
@@ -53,7 +53,7 @@ def _config_value(config: Any, *keys: str) -> Any:
 
 
 def _quote(path: Path) -> str:
-    """JSON-quote a path the same way DSH does in notices."""
+    """JSON-quote a path the same way upstream does in notices."""
     return json.dumps(str(path), ensure_ascii=False)
 
 
@@ -199,7 +199,7 @@ class WorkingDirectoryService:
     async def ensure(self, session: Any, *, cancel: asyncio.Event | None = None) -> Path:
         """Validate that the current cwd still exists.
 
-        P1 deliberately does not implement DSH's automatic recovery to the
+        P1 deliberately does not implement upstream's automatic recovery to the
         session header cwd; the caller gets an error and can cd explicitly.
         """
         session_id = _session_id(session)

@@ -30,6 +30,7 @@ from deeppyro.core.llm import (
     Usage,
     UsageEvent,
 )
+from deeppyro.core.protocols import ToolContext, ToolResult
 from deeppyro.llm import native_anthropic
 from deeppyro.llm import registry as llm_registry
 from deeppyro.llm.registry import LlmRegistry
@@ -40,7 +41,25 @@ from deeppyro.session.schema import EventKind, NativeCodec
 from deeppyro.tools.registry import ToolRegistry
 from deeppyro.tui.main import build_parser
 from deeppyro.tui.main import main as cli_main
-from tests.agent.fakes import FakeTool
+
+
+class FakeTool:
+    """A tool with a configurable text result and recorded calls."""
+
+    def __init__(self, name: str, *, text: str = "ok", error: BaseException | None = None) -> None:
+        self.name = name
+        self.description = f"{name} tool"
+        self.parameters: dict[str, Any] = {"type": "object", "properties": {}}
+        self.parallel_safe = True
+        self.text = text
+        self.error = error
+        self.calls: list[tuple[dict[str, Any], ToolContext]] = []
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        self.calls.append((dict(args), ctx))
+        if self.error is not None:
+            raise self.error
+        return ToolResult(text=self.text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +110,7 @@ class FakeNativeRuntime:
         self, provider: ScriptedProvider, tools: tuple[Any, ...] = (), *, preset: str = "standard"
     ) -> None:
         self.cwd = Path.cwd()
-        self.provider = provider
+        self.native_provider = provider
         self.model = "fake-model"
         self.provider_name = provider.name
         self.registry = ToolRegistry(tools)
@@ -165,53 +184,16 @@ def native_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("DEEPPYRO_SESSION_DIR", str(tmp_path / "sessions"))
     monkeypatch.setenv("DEEPPYRO_CHECKPOINTS_DIR", str(tmp_path / "checkpoints"))
     monkeypatch.setenv("DEEPPYRO_TRACES_DIR", str(tmp_path / "traces"))
-    monkeypatch.delenv(headless.NATIVE_LOOP_ENV, raising=False)
     return tmp_path
 
 
-def test_native_loop_enabled_defaults_to_native(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(headless.NATIVE_LOOP_ENV, raising=False)
-    assert headless.native_loop_enabled() is True
-    assert headless.native_loop_enabled(True) is True
-    assert headless.native_loop_enabled(False) is False
-    for value in ("1", "true", "YES", " on "):
-        monkeypatch.setenv(headless.NATIVE_LOOP_ENV, value)
-        assert headless.native_loop_enabled() is True
-    for value in ("0", "false", "NO", " off "):
-        monkeypatch.setenv(headless.NATIVE_LOOP_ENV, value)
-        assert headless.native_loop_enabled() is False
-        assert headless.native_loop_enabled(True) is True
-    monkeypatch.setenv(headless.NATIVE_LOOP_ENV, "bogus")
-    assert headless.native_loop_enabled() is True
-
-
-def test_cli_exposes_the_backend_switches() -> None:
+def test_cli_rejects_the_removed_backend_switches() -> None:
     parser = build_parser()
-    default = parser.parse_args(["hi"])
-    assert default.native_loop is False
-    assert default.legacy_v4 is False
-    assert parser.parse_args(["hi", "--native-loop"]).native_loop is True
-    assert parser.parse_args(["hi", "--legacy-v4"]).legacy_v4 is True
-    with pytest.raises(SystemExit):
-        parser.parse_args(["hi", "--native-loop", "--legacy-v4"])
-
-
-def test_cli_forwards_the_backend_choice(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: list[dict[str, Any]] = []
-
-    def fake_run_once(prompt: str, **kwargs: Any) -> int:
-        captured.append({"prompt": prompt, **kwargs})
-        return headless.EXIT_OK
-
-    import deeppyro.paths as paths_module
-
-    monkeypatch.setattr(paths_module, "migrate_legacy_layout", lambda: {})
-    monkeypatch.setattr(headless, "run_once", fake_run_once)
-    assert cli_main(["hi"]) == headless.EXIT_OK
-    with pytest.warns(DeprecationWarning):
-        assert cli_main(["hi", "--native-loop"]) == headless.EXIT_OK
-    assert cli_main(["hi", "--legacy-v4"]) == headless.EXIT_OK
-    assert [entry["native_loop"] for entry in captured] == [None, True, False]
+    assert not hasattr(parser.parse_args(["hi"]), "native_loop")
+    assert not hasattr(parser.parse_args(["hi"]), "legacy_v4")
+    for flag in ("--native-loop", "--legacy-v4"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["hi", flag])
 
 
 async def test_native_headless_run_persists_native_session(native_dirs: Path) -> None:
@@ -372,8 +354,6 @@ def test_run_once_native_reports_usage_and_trace_export(
         provider_name=provider.name,
         model="fake-model",
         context_window=32768,
-        store=None,
-        provider=provider,
         native_provider=provider,
         registry=ToolRegistry(()),
         permission=None,
@@ -402,22 +382,6 @@ def test_run_once_native_reports_usage_and_trace_export(
     assert turn.session_id == NativeCodec.read(files[0]).header.id
     # trace export: the run record and the model-call record reach the sink
     assert [type(record) for record in trace_export.records] == [RunRecord, ModelCallRecord]
-
-
-def test_run_once_native_loop_false_forces_legacy_v4(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An explicit False wins over the env var (--legacy-v4 pinning)."""
-    captured: dict[str, Any] = {}
-
-    async def fake_run_async(prompt: str, **kwargs: Any) -> int:
-        captured.update({"prompt": prompt, **kwargs})
-        return headless.EXIT_OK
-
-    monkeypatch.setattr(headless, "_run_async", fake_run_async)
-    monkeypatch.setenv(headless.NATIVE_LOOP_ENV, "1")
-    console, _stream = _console()
-    code = headless.run_once("legacy please", native_loop=False, console=console)
-    assert code == headless.EXIT_OK
-    assert captured["native_loop"] is False
 
 
 def test_cli_default_runs_the_native_loop(
@@ -472,20 +436,8 @@ class _ServiceWithoutNativeFactory:
 
 
 def test_resolve_native_provider_reports_a_missing_factory() -> None:
-    provider, error = headless._resolve_native_provider(
-        _ServiceWithoutNativeFactory(), "local", native_loop=True
-    )
-    assert provider is None
-    assert error is not None
-    assert "native provider factory" in error
-
-
-def test_resolve_native_provider_does_no_work_on_the_legacy_path() -> None:
-    class Service:
-        def native_provider(self, name: str) -> object:
-            raise AssertionError("the legacy path must not construct a native provider")
-
-    assert headless._resolve_native_provider(Service(), "local", native_loop=False) == (None, None)
+    with pytest.raises(ConfigError, match="native provider factory"):
+        headless._resolve_native_provider(_ServiceWithoutNativeFactory(), "local")
 
 
 def test_resolve_native_provider_returns_the_provider() -> None:
@@ -494,10 +446,7 @@ def test_resolve_native_provider_returns_the_provider() -> None:
             assert name == "local"
             return "native-provider"
 
-    assert headless._resolve_native_provider(Service(), "local", native_loop=True) == (
-        "native-provider",
-        None,
-    )
+    assert headless._resolve_native_provider(Service(), "local") == "native-provider"
 
 
 def test_resolve_native_provider_turns_a_config_error_into_a_reason() -> None:
@@ -505,25 +454,21 @@ def test_resolve_native_provider_turns_a_config_error_into_a_reason() -> None:
         def native_provider(self, name: str) -> object:
             raise ConfigError("provider 'claude' has no native transport")
 
-    provider, error = headless._resolve_native_provider(Service(), "claude", native_loop=True)
-    assert provider is None
-    assert error == "provider 'claude' has no native transport"
+    with pytest.raises(ConfigError) as info:
+        headless._resolve_native_provider(Service(), "claude")
+    assert "native provider unavailable for provider 'claude'" in str(info.value)
+    assert "provider 'claude' has no native transport" in str(info.value)
 
 
-def test_native_provider_helper_prefers_the_native_attribute() -> None:
+def test_native_provider_helper_returns_the_native_attribute() -> None:
     provider = ScriptedProvider([])
-    legacy_only = FakeNativeRuntime(provider)
-    assert headless._native_provider(legacy_only) is provider  # type: ignore[arg-type]
-
     runtime = headless.HeadlessRuntime(
         cfg=None,
         cwd=Path.cwd(),
         kernel_app=None,
         provider_name="scripted",
         model="fake-model",
-        context_window=None,
-        store=None,
-        provider=None,
+        context_window=32768,
         native_provider=provider,
         registry=ToolRegistry(()),
         permission=None,
@@ -531,41 +476,6 @@ def test_native_provider_helper_prefers_the_native_attribute() -> None:
         preset="standard",
     )
     assert headless._native_provider(runtime) is provider
-
-
-class _LegacyStore:
-    """Store double proving the legacy v4 branch was selected."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def create(self, *args: Any, **kwargs: Any) -> object:
-        self.calls += 1
-        raise ConfigError("legacy v4 path reached")
-
-
-def test_run_once_fails_when_no_native_provider_is_available(
-    native_dirs: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A missing native provider is a usage error: never a silent v4 fallback."""
-    runtime = FakeNativeRuntime(ScriptedProvider([]))
-    runtime.provider = None
-    store = _LegacyStore()
-    runtime.store = store
-
-    async def fake_boot(**kwargs: Any) -> FakeNativeRuntime:
-        return runtime
-
-    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
-    console, _ = _console()
-    code = headless.run_once("say hello", console=console)
-
-    assert code == headless.EXIT_USAGE
-    captured = capsys.readouterr()
-    assert "native loop requested but no native provider is available" in captured.err
-    assert "falling back to the legacy v4 loop" not in captured.err
-    assert store.calls == 0
-    assert runtime.closed is True
 
 
 # --------------------------------------------------------------------------
@@ -665,11 +575,7 @@ def test_anthropic_config_selects_the_native_provider_without_a_v4_fallback(
     runtime.native_provider_error = None
 
     async def fake_boot(**kwargs: Any) -> FakeNativeRuntime:
-        provider, error = headless._resolve_native_provider(
-            _LlmService(), "claude", native_loop=kwargs["native_loop"]
-        )
-        assert provider is not None
-        assert error is None
+        provider = headless._resolve_native_provider(_LlmService(), "claude")
         assert isinstance(provider, native_anthropic.NativeAnthropicProvider)
         runtime.native_provider = provider
         return runtime

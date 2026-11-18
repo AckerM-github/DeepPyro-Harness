@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
 from textual.widgets import Static
 
+from deeppyro.session.native_index import NativeSessionInfo
 from deeppyro.tui.app import CUSTOM_WORKSPACE, DeepPyroApp
 from deeppyro.tui.screens.plugin_panel import PluginPanelScreen
 from deeppyro.tui.slots import SlotRegistry
@@ -58,7 +61,7 @@ class FakeAgent:
         self.interrupted = False
         self.compactor = FakeCompactor()
 
-    async def send(self, text: str) -> str:
+    async def send(self, text: str) -> Any:
         self.busy = True
         try:
             self.sink.emit({"type": "status", "phase": "thinking"})
@@ -66,11 +69,15 @@ class FakeAgent:
             self.sink.emit({"type": "thinking", "text": "pondering。more"})
             self.sink.emit({"type": "text", "text": "hello "})
             self.sink.emit({"type": "text", "text": "world"})
-            self.sink.emit({"type": "usage", "input": 12, "output": 3, "cached": 0})
-            self.sink.emit({"type": "final", "text": "hello world"})
         finally:
             self.busy = False
-        return "hello world"
+        return SimpleNamespace(final_text="hello world", finish_reason="stop", usage=None)
+
+    def usage(self) -> dict[str, int]:
+        return {"input": 12, "output": 3, "cached": 0}
+
+    def turn_count(self) -> int:
+        return 0
 
     async def interrupt(self) -> None:
         self.interrupted = True
@@ -272,10 +279,37 @@ class FakeRuntime:
             self.cwd = workspace
         return workspace
 
-    def recent_sessions(self, limit: int = 20) -> list[Any]:
+    def recent_sessions(self, limit: int = 20, *, include_archived: bool = False) -> list[Any]:
+        stamp = int(time.time() * 1000)
         return [
-            FakeSessionInfo("session-aaaa1111", "fix tests", "D:/work"),
-            FakeSessionInfo("session-bbbb2222", "tui polish", "D:/work"),
+            NativeSessionInfo(
+                id="session-aaaa1111",
+                path=Path("D:/work/sessions/session-aaaa1111.jsonl"),
+                cwd="D:/work",
+                created_at=stamp,
+                updated_at=stamp,
+                title="fix tests",
+                turns=1,
+                event_count=2,
+                preset="standard",
+                parent_id=None,
+                origin="user",
+                preview=None,
+            ),
+            NativeSessionInfo(
+                id="session-bbbb2222",
+                path=Path("D:/work/sessions/session-bbbb2222.jsonl"),
+                cwd="D:/work",
+                created_at=stamp - 1000,
+                updated_at=stamp - 1000,
+                title="tui polish",
+                turns=2,
+                event_count=3,
+                preset="standard",
+                parent_id=None,
+                origin="user",
+                preview=None,
+            ),
         ]
 
     def session_usage(self) -> dict[str, int]:
@@ -492,7 +526,7 @@ async def test_plugins_command_opens_the_plugin_manager() -> None:
         assert not isinstance(app.screen, PluginScreen)
 
 
-async def test_splash_screen_shows_until_any_key() -> None:
+async def test_splash_screen_waits_for_the_terminal_entry_point() -> None:
     from deeppyro.tui.screens.splash import SplashScreen
 
     app = DeepPyroApp(runtime_factory=_make_runtime, splash=True)
@@ -503,6 +537,9 @@ async def test_splash_screen_shows_until_any_key() -> None:
         # The runtime line is filled in once the fake runtime is booted.
         assert "fake · fake-1" in splash.full_text()
         await pilot.press("space")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, SplashScreen)
+        await pilot.press("f2")
         await pilot.pause(0.2)
         assert not isinstance(app.screen, SplashScreen)
         assert app._prompt is not None
@@ -692,7 +729,7 @@ async def test_clicking_a_process_step_opens_the_thinking_viewer() -> None:
 
 
 async def test_thinking_command_opens_the_viewer(monkeypatch: Any) -> None:
-    from deeppyro.tui.history import ReasoningStep, TurnReasoning
+    from deeppyro.tui.native_history import ReasoningStep, TurnReasoning
     from deeppyro.tui.screens.thinking import ThinkingScreen
 
     reasoning = TurnReasoning(turn=1, steps=[ReasoningStep(step=1, text="deep thought")], finished=True)

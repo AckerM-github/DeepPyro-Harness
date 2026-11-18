@@ -23,7 +23,7 @@ BODY_LIMIT = 400
 
 DEFAULT_HEADERS = {"accept": "application/json, text/event-stream"}
 
-#: Environment names DSH strips before spawning a stdio server.
+#: Environment names upstream strips before spawning a stdio server.
 _SECRET_NAME = re.compile(r"KEY|PASSWORD|SECRET|TOKEN", re.IGNORECASE)
 _SCRUBBED_PREFIXES = ("DSH_", "DEEPPYRO_", "DPYRO_")
 

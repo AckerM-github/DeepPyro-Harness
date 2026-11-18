@@ -24,7 +24,7 @@ from textual.app import ComposeResult
 from textual.containers import ScrollableContainer, Vertical
 from textual.widgets import Markdown, Static
 
-from deeppyro.tui.history import TurnProcess, TurnReasoning, is_ptc_mode_source
+from deeppyro.tui.native_history import TurnProcess, TurnReasoning, is_ptc_mode_source
 from deeppyro.tui.widgets.agent_process import AgentProcess
 
 STREAM_REFRESH_SECONDS = 0.06

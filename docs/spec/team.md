@@ -1,11 +1,13 @@
-# Agent team layer (v4 records and native sessions)
+# Agent team layer (native sessions)
 
-Status: implemented. This document is the contract for the lead-owned team
-service: up to eight child members, member messaging, cold restore and the
-shared task board. The same public API runs on two backends: the legacy v4
-recorder path (session.records based) and the native session path. A session
-type decides which backend a bound service uses; the final 0.3 deletion wave
-removes the v4 path.
+Status: **current (0.3.0, native-only)**. This document is the contract for the
+lead-owned team service: up to eight child members, member messaging, cold
+restore and the shared task board. The native session path is the only backend:
+team facts are `plugin.team.*` events on the lead's schema 1 session and child
+sessions are native sessions created by the subagent manager. The 0.2.0 v4
+recorder path (session.records based) was deleted with the v4 stack; §3 keeps
+the historical description for traceability only. The Web runtime rejects team
+mode with HTTP 409; TUI and headless run team on the native path.
 
 ## 1. Design rules
 
@@ -16,9 +18,8 @@ removes the v4 path.
   plugin-local identifier; it is not the child session id (v4 reused the child
   session id, native keeps the two independent so a member can be renamed or
   removed without touching the child log).
-* The lead session owns every team fact. v4 writes team records; native writes
-  plugin.team.* events. Members never write team state into the lead log
-  themselves.
+* The lead session owns every team fact: it writes `plugin.team.*` events.
+  Members never write team state into the lead log themselves.
 * Roster, pending prompt queue and task board must survive a crash and be
   replayable; they are session facts. Token usage is NOT a session fact: it is
   reported to the UsageSink and recorded in traces only.
@@ -65,7 +66,7 @@ child tool registry from the preset scope. bind_session() selects the backend:
 * a native session, or its NativeSessionHandle, routes every operation to
   NativeTeamManager. bind_parent() is a compatibility alias.
 
-## 3. v4 recorder path (preserved)
+## 3. v4 recorder path (0.2.0 history — deleted in 0.3.0)
 
 The v4 path writes v4 records through the lead session append API:
 

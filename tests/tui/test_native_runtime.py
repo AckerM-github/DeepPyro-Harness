@@ -1,4 +1,4 @@
-"""Native TUI runtime tests: DEEPPYRO_TUI_NATIVE=1 against a scripted provider."""
+"""Native-only TUI runtime tests: the TUI boots against a scripted native provider."""
 
 from __future__ import annotations
 
@@ -19,11 +19,8 @@ from deeppyro.core.errors import DeeppyroError
 from deeppyro.core.llm import Finish, StopReason, TextDelta, Usage, UsageEvent
 from deeppyro.tui.app import DeepPyroApp
 from deeppyro.tui.app_turns import TurnLayer
-from deeppyro.tui.native_mode import tui_native_enabled
 from deeppyro.tui.runtime import TuiRuntime
 from deeppyro.tui.sink import TuiSink
-
-SESSION_PREFIX = "session-"
 
 
 class _ScriptedProvider:
@@ -102,7 +99,6 @@ def _config(tmp_path: Path) -> Config:
             )
         },
         agent={"provider": "local", "model": "m"},
-        session_dir=tmp_path / "sessions",
     )
 
 
@@ -111,7 +107,6 @@ async def _boot(
     tmp_path: Path,
     provider: _ScriptedProvider,
     *,
-    native: bool | None,
     resume: str | None = None,
 ) -> tuple[TuiRuntime, list[dict[str, Any]]]:
     monkeypatch.setattr(LlmPlugin, "native_provider", lambda self, name: provider)
@@ -120,47 +115,21 @@ async def _boot(
         sink=TuiSink(events.append),
         ask=_ask,
         config=_config(tmp_path),
-        native=native,
         resume=resume,
     )
     return runtime, events
 
 
-def _explode(name: str) -> Any:
-    def fail(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError(f"v4 session store call: {name}")
-
-    return fail
-
-
 @pytest.fixture(autouse=True)
 def _isolated_runtime_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEEPPYRO_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("DEEPPYRO_TUI_NATIVE", raising=False)
 
 
-async def test_flag_off_keeps_the_v4_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_boot_creates_a_native_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _ScriptedProvider()
-    runtime, events = await _boot(monkeypatch, tmp_path, provider, native=False)
+    runtime, events = await _boot(monkeypatch, tmp_path, provider)
     try:
-        assert runtime.native is False
-        assert runtime.store is not None
-        assert runtime.session is not None
-        assert not isinstance(runtime.session, NativeSessionHandle)
-        assert runtime.session_id.startswith(SESSION_PREFIX)
-        assert runtime.agent is not None
-        assert not isinstance(runtime.agent, NativeAgentHost)
-        assert not any(event.get("type") == "session" for event in events)
-    finally:
-        await runtime.close()
-
-
-async def test_flag_on_boots_the_native_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = _ScriptedProvider()
-    runtime, events = await _boot(monkeypatch, tmp_path, provider, native=True)
-    try:
-        assert runtime.native is True
-        assert runtime.store is None
+        assert not hasattr(runtime, "store")
         assert isinstance(runtime.session, NativeSessionHandle)
         assert isinstance(runtime.agent, NativeAgentHost)
         assert runtime.session_id == runtime.agent.session_id
@@ -179,32 +148,14 @@ async def test_flag_on_boots_the_native_runtime(tmp_path: Path, monkeypatch: pyt
         await runtime.close()
 
 
-async def test_environment_flag_selects_the_native_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("DEEPPYRO_TUI_NATIVE", "1")
-    assert tui_native_enabled() is True
-    provider = _ScriptedProvider()
-    runtime, _events = await _boot(monkeypatch, tmp_path, provider, native=None)
-    try:
-        assert runtime.native is True
-        assert isinstance(runtime.session, NativeSessionHandle)
-    finally:
-        await runtime.close()
-
-
-async def test_native_path_never_calls_the_v4_session_store(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    for name in ("create", "open", "list", "latest"):
-        monkeypatch.setattr(SessionsPlugin, name, _explode(name), raising=True)
+async def test_turns_run_through_the_native_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _ScriptedProvider()
     provider.script = [TextDelta("native answer"), Finish(StopReason.STOP)]
-    runtime, events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, events = await _boot(monkeypatch, tmp_path, provider)
     monkeypatch.setattr(TuiRuntime, "name_session_title", _noop_title)
     try:
         layer = _TurnHost(runtime)
-        await layer._run_native_turn("hello")
+        await layer._run_turn("hello")
         finals = [event for event in events if event.get("type") == "final"]
         assert finals and finals[-1]["text"] == "native answer"
         assert any(event.get("type") == "session" for event in events)
@@ -220,12 +171,12 @@ async def test_native_turn_emits_exact_tui_events(tmp_path: Path, monkeypatch: p
         UsageEvent(Usage(input_tokens=12, output_tokens=4)),
         Finish(StopReason.STOP),
     ]
-    runtime, events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, events = await _boot(monkeypatch, tmp_path, provider)
     monkeypatch.setattr(TuiRuntime, "name_session_title", _noop_title)
     try:
         events.clear()
         layer = _TurnHost(runtime)
-        await layer._run_native_turn("hello")
+        await layer._run_turn("hello")
         assert events == [
             {"type": "status", "phase": "thinking"},
             {"type": "step", "turn": 1, "step": 1},
@@ -247,12 +198,12 @@ async def test_native_turn_reports_a_truncated_answer(
 ) -> None:
     provider = _ScriptedProvider()
     provider.script = [TextDelta("cut"), Finish(StopReason.LENGTH)]
-    runtime, events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, events = await _boot(monkeypatch, tmp_path, provider)
     monkeypatch.setattr(TuiRuntime, "name_session_title", _noop_title)
     try:
         events.clear()
         layer = _TurnHost(runtime)
-        await layer._run_native_turn("write a long answer")
+        await layer._run_turn("write a long answer")
         assert [event["type"] for event in events] == [
             "status",
             "step",
@@ -272,12 +223,12 @@ async def test_native_turn_reports_a_truncated_answer(
 async def test_native_turn_reports_provider_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _ScriptedProvider()
     provider.failure = ProviderStreamError("provider exploded")
-    runtime, events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, events = await _boot(monkeypatch, tmp_path, provider)
     monkeypatch.setattr(TuiRuntime, "name_session_title", _noop_title)
     try:
         events.clear()
         layer = _TurnHost(runtime)
-        await layer._run_native_turn("boom")
+        await layer._run_turn("boom")
         kinds = [event["type"] for event in events]
         assert kinds[:2] == ["status", "step"]
         assert kinds[-1] == "error"
@@ -292,12 +243,12 @@ async def test_native_turn_reports_provider_errors(tmp_path: Path, monkeypatch: 
 async def test_native_turn_reports_unexpected_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _ScriptedProvider()
     provider.failure = RuntimeError("boom")
-    runtime, events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, events = await _boot(monkeypatch, tmp_path, provider)
     monkeypatch.setattr(TuiRuntime, "name_session_title", _noop_title)
     try:
         events.clear()
         layer = _TurnHost(runtime)
-        await layer._run_native_turn("boom")
+        await layer._run_turn("boom")
         assert events[-1]["type"] == "error"
         assert "RuntimeError" in events[-1]["message"]
         assert "boom" in events[-1]["message"]
@@ -308,12 +259,12 @@ async def test_native_turn_reports_unexpected_errors(tmp_path: Path, monkeypatch
 async def test_interrupt_cancels_a_native_turn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _ScriptedProvider()
     provider.gate = asyncio.Event()
-    runtime, events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, events = await _boot(monkeypatch, tmp_path, provider)
     monkeypatch.setattr(TuiRuntime, "name_session_title", _noop_title)
     try:
         events.clear()
         layer = _TurnHost(runtime)
-        task = asyncio.create_task(layer._run_native_turn("slow"))
+        task = asyncio.create_task(layer._run_turn("slow"))
         for _ in range(500):
             if provider.calls > 0:
                 break
@@ -337,16 +288,15 @@ async def test_interrupt_cancels_a_native_turn(tmp_path: Path, monkeypatch: pyte
 async def test_resume_reopens_a_native_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _ScriptedProvider()
     provider.script = [TextDelta("first"), Finish(StopReason.STOP)]
-    runtime, _events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, _events = await _boot(monkeypatch, tmp_path, provider)
     session_id = runtime.session_id
     try:
         await runtime.agent.send("remember this")
     finally:
         await runtime.close()
     provider.script = [TextDelta("second"), Finish(StopReason.STOP)]
-    resumed, resumed_events = await _boot(monkeypatch, tmp_path, provider, native=True, resume=session_id)
+    resumed, resumed_events = await _boot(monkeypatch, tmp_path, provider, resume=session_id)
     try:
-        assert resumed.native is True
         assert resumed.session_id == session_id
         view = resumed.session.fold()
         assert view.state.model is not None
@@ -367,7 +317,7 @@ async def test_native_title_is_written_through_the_native_path(
 ) -> None:
     provider = _ScriptedProvider()
     provider.script = [TextDelta("hello"), Finish(StopReason.STOP)]
-    runtime, _events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, _events = await _boot(monkeypatch, tmp_path, provider)
     try:
         record = runtime.kernel_app.mount_record("session-title")
         assert record is not None
@@ -385,11 +335,11 @@ async def test_native_title_is_written_through_the_native_path(
         await runtime.close()
 
 
-async def test_native_mode_enables_team_mode_and_keeps_genuine_absences_explicit(
+async def test_team_mode_toggles_and_keeps_genuine_absences_explicit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = _ScriptedProvider()
-    runtime, _events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, _events = await _boot(monkeypatch, tmp_path, provider)
     try:
         # team mode toggles the team preset on the native host and stops the manager
         # again; it no longer raises the old "not ported" error.
@@ -416,3 +366,11 @@ def test_cli_parser_accepts_resume() -> None:
 def test_app_passes_resume_to_the_runtime() -> None:
     app = DeepPyroApp(cwd=Path("."), resume="session-abc")
     assert app._resume == "session-abc"
+
+
+@pytest.mark.parametrize("flag", ["--legacy-v4", "--native-loop"])
+def test_removed_backend_flags_fail_to_parse(flag: str) -> None:
+    from deeppyro.tui.main import build_parser
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([flag])

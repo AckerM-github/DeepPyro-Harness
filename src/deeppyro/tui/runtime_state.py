@@ -22,7 +22,6 @@ class _RuntimeState:
     provider_name: str
     model: str
     context_window: int
-    store: Any
     provider: Any
     registry: Any
     permission: Any
@@ -35,7 +34,6 @@ class _RuntimeState:
     subagent: Any = None
     working_directory: Any = None
     user_questions: Any = None
-    projections: Any = None
     schedule: Any = None
     schedule_notice: Callable[[str], None] | None = None
     llm: Any = None
@@ -46,8 +44,6 @@ class _RuntimeState:
     agent: Any = None
     last_persist_error: str | None = None
     last_catalog_error: str | None = None
-    # Native-path additions, appended so the v4 field order stays pinned.
-    native: bool = False
     sessions: Any = None
     prompt: Any = None
     compactor: Any = None

@@ -1,7 +1,7 @@
 """Shared HTTP plumbing for OpenAI-compatible providers.
 
-Both the v4 `OpenAICompatProvider` and the native
-`NativeOpenAICompatProvider` speak to the same servers, so the transport
+The native `NativeOpenAICompatProvider` and `NativeAnthropicProvider` speak to
+their servers through the same streaming client shape, so the transport
 configuration (timeout shape, SSE request headers, bearer auth) lives here
 instead of being duplicated.  Secrets never come from this module: callers pass
 the already-resolved API key from `ProviderConfig.resolve_api_key`, which stays

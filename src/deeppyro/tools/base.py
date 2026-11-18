@@ -55,7 +55,7 @@ class BaseTool:
         return f"<{type(self).__name__} name={self.name!r} parallel_safe={self.parallel_safe}>"
 
 
-#: Sandbox modes a tool may request for one escalated call (DSH order).
+#: Sandbox modes a tool may request for one escalated call (upstream order).
 SANDBOX_MODES: tuple[str, ...] = ("workspace-write", "danger-full-access")
 
 SANDBOX_PERMISSIONS_DESCRIPTION = (
@@ -86,9 +86,9 @@ def make_parameters(
 
 
 def sandbox_properties(properties: dict[str, Any]) -> dict[str, Any]:
-    """Return `properties` plus the one-shot escalation fields DSH exposes.
+    """Return `properties` plus the one-shot escalation fields upstream exposes.
 
-    DSH only offers `sandbox_permissions`/`justification` on tools that can
+    upstream only offers `sandbox_permissions`/`justification` on tools that can
     widen the sandbox for a single call (write, edit, pwsh); read-only tools
     omit them.
     """

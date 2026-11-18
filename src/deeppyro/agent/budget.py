@@ -17,7 +17,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from deeppyro.core.protocols import Usage
+from deeppyro.core.llm import Usage
 
 
 class BudgetKind(StrEnum):

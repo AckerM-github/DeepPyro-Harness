@@ -2,11 +2,11 @@
 
 deeppyro.core.errors defines the cross-module contract: LlmError(message, provider=,
 status=, retryable=).  This module refines it with the machine-readable failure code the
-DSH session logs record (llm/retry failure.code: RATE_LIMIT / SERVER / TIMEOUT /
+upstream session logs record (llm/retry failure.code: RATE_LIMIT / SERVER / TIMEOUT /
 TRANSPORT / EMPTY_RESPONSE) plus transport hints such as Retry-After.
 
-It also hosts the small HTTP-error normalization helpers shared by the streaming transport
-(openai_compat.py) and catalog discovery (discovery.py): status -> code/message/retryable,
+It also hosts the small HTTP-error normalization helpers shared by the native streaming
+transports and catalog discovery (discovery.py): status -> code/message/retryable,
 Retry-After parsing and error-body summarising. Keeping them here means a listing failure
 and a stream failure are classified identically.
 """
@@ -22,8 +22,8 @@ from typing import Any
 
 from deeppyro.core.errors import LlmError
 
-# Machine-readable failure codes, aligned with the codes observed in fixtures
-# records/by-type/llm_retry.jsonl (policyKey retryable-code set).
+# Machine-readable failure codes, aligned with the retryable-code set the native
+# LLM retry policy pins.
 CODE_EMPTY_RESPONSE = "EMPTY_RESPONSE"
 CODE_RATE_LIMIT = "RATE_LIMIT"
 CODE_SERVER = "SERVER"

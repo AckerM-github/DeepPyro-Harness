@@ -16,7 +16,7 @@ from deeppyro.tui.widgets.conversation import ConversationView
 from deeppyro.tui.widgets.prompt_area import PromptArea
 
 
-class AppBase(App[None]):
+class AppBase(App[str | None]):
     """Base layer: shared app state and the small accessors every layer uses."""
 
     _cwd: str | Path | None

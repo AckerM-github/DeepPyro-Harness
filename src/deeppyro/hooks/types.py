@@ -29,7 +29,7 @@ AGENT_STATUS = "agent/status"
 # -- prompt and llm --------------------------------------------------------
 SYSTEM_PROMPT_ASSEMBLE = "system-prompt/assemble"
 LLM_STREAM = "llm/stream"
-# Deprecated: in DSH ``model/selection`` is a session-record name, not a bus
+# Deprecated: in upstream ``model/selection`` is a session-record name, not a bus
 # event (zero call sites, no ``interface Events`` member). The constant stays
 # importable for one minor, but the name is not dispatchable any more; a
 # session's model is still observable through its ``model/selection`` record.
@@ -44,14 +44,14 @@ AGENT_ERROR = "agent/error"
 TOOLS_PRE_EXECUTE = "tools/pre-execute"
 TOOLS_EXECUTE = "tools/execute"
 TOOLS_POST_EXECUTE = "tools/post-execute"
-# Deprecated: ``tool/call`` is a record name in DSH, not a bus event. Observe a
+# Deprecated: ``tool/call`` is a record name in upstream, not a bus event. Observe a
 # call through tools/pre-execute (admission), tools/execute (execution),
 # tools/post-execute (result) or the tools/result record instead.
 TOOL_CALL = "tool/call"
 
 # -- approval --------------------------------------------------------------
 APPROVAL_REQUEST = "approval/request"
-# Deprecated: DSH records ``approval/asked`` and ``approval/decided`` instead of
+# Deprecated: upstream records ``approval/asked`` and ``approval/decided`` instead of
 # dispatching them; deeppyro now appends the records from ApprovalService, so
 # the bus copies are gone. The constants stay importable for one minor.
 APPROVAL_ASKED = "approval/asked"
@@ -78,11 +78,11 @@ HOOK_NAMES = frozenset(
 )
 
 #: Names kept importable for one minor after they left the bus. They resolve to
-#: session-record names in DSH and are no longer registered or dispatched.
+#: session-record names in upstream and are no longer registered or dispatched.
 DEPRECATED_NAMES = frozenset({MODEL_SELECTION, TOOL_CALL, APPROVAL_ASKED, APPROVAL_DECIDED})
 
 # Recommended dispatch mode for each hook. Call sites that follow this table
-# keep the DSH semantics: unordered listeners are not called as a waterfall.
+# keep the upstream semantics: unordered listeners are not called as a waterfall.
 HOOK_MODES: dict[str, str] = {
     AGENT_PRE_STEP: "waterfall",
     AGENT_REQUEST: "waterfall",

@@ -23,7 +23,7 @@ class PluginManagerPlugin(Service):
 
     provide = "plugin_manager"
     plugin_id = "plugin-manager"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "external plugin and user bundle lifecycle manager"
     inject: ClassVar[list[str]] = []
 

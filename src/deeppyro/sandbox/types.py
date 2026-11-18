@@ -10,17 +10,17 @@ from __future__ import annotations
 import dataclasses
 from typing import Literal
 
-#: DSH sandbox modes. A mode limits file effects; it never changes the host
+#: upstream sandbox modes. A mode limits file effects; it never changes the host
 #: kernel, network, or the process identity beyond the OS sandbox backend.
 Preset = Literal["read-only", "workspace-write", "danger-full-access"]
-#: DSH approval policies. "always" is deliberately absent: upstream DSH only
+#: upstream approval policies. "always" is deliberately absent: upstream only
 #: knows "ask" and "never".
 Approval = Literal["ask", "never"]
 
 PRESETS: tuple[Preset, ...] = ("read-only", "workspace-write", "danger-full-access")
 APPROVALS: tuple[Approval, ...] = ("ask", "never")
 
-#: DSH approval outcomes. "allowed-once" grants exactly one call; there is no
+#: upstream approval outcomes. "allowed-once" grants exactly one call; there is no
 #: persistent allow.
 OUTCOMES: tuple[str, ...] = ("allowed-once", "rejected", "cancelled", "unavailable")
 
@@ -30,7 +30,7 @@ class Decision:
     """Outcome of one sandbox policy check.
 
     needs_approval marks a check that the preset itself does not forbid but
-    that must be approved by the user before it may run. In the DSH-aligned
+    that must be approved by the user before it may run. In the upstream-aligned
     design most checks are decided directly by the sandbox backend; the flag is
     kept for the approval bridge (Decision is part of the frozen interface).
     """
@@ -62,7 +62,7 @@ class PermissionPresetSpec:
     description: str = ""
 
 
-#: The DSH base presets (dsh-base cordis.patch.yml). "custom" is a derived,
+#: The upstream base presets (upstream-base cordis.patch.yml). "custom" is a derived,
 #: read-only state and is never a switch target.
 DEFAULT_PERMISSION_PRESETS: tuple[PermissionPresetSpec, ...] = (
     PermissionPresetSpec(

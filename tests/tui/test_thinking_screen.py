@@ -8,7 +8,7 @@ from textual.app import App
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
-from deeppyro.tui.history import ReasoningStep, TurnReasoning
+from deeppyro.tui.native_history import ReasoningStep, TurnReasoning
 from deeppyro.tui.screens.thinking import (
     DEFAULT_TITLE,
     EMPTY_TEXT,

@@ -97,7 +97,7 @@ class MetadataError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class Compat:
-    """Host compatibility window (mirrors DSH ``engines.dsh``)."""
+    """Host compatibility window (mirrors upstream engine metadata)."""
 
     dpyro: str = ""
     python: str = ""
@@ -120,7 +120,7 @@ class Deps:
 
 @dataclass(frozen=True, slots=True)
 class UiDeclaration:
-    """Declarative TUI contribution surface (mirrors DSH ``dsh.client``)."""
+    """Declarative TUI contribution surface (mirrors upstream client metadata)."""
 
     slots: tuple[str, ...] = ()
     package: str = ""
@@ -131,7 +131,7 @@ class UiDeclaration:
 
 @dataclass(frozen=True, slots=True)
 class BundleDeclaration:
-    """Composition rows shipped inside the package (mirrors DSH bundle patch)."""
+    """Composition rows shipped inside the package (mirrors upstream bundle patch)."""
 
     patch: str = ""
 

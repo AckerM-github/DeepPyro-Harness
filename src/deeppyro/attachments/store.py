@@ -100,7 +100,7 @@ DEFAULT_MAX_DIMENSION = 16_384
 _MANIFEST_NAME = "manifest.jsonl"
 _ATTACHMENT_ID_RE = re.compile(r"^att-[0-9a-f]{16}$")
 
-# Pillow format name -> DSH image media type (all normalized to PNG on disk).
+# Pillow format name -> upstream image media type (all normalized to PNG on disk).
 _PIL_FORMATS: dict[str, ImageMediaType] = {
     "PNG": "image/png",
     "JPEG": "image/jpeg",

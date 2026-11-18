@@ -1,6 +1,6 @@
 """Image attachment storage for the DeepPyro Harness.
 
-Public API: the DSH-compatible reference types and the AttachmentStore that
+Public API: the upstream-compatible reference types and the AttachmentStore that
 validates, normalizes and persists image bytes. This package deliberately has
 no kernel imports, so SDK code and tests can construct a store directly. The
 builtin attachments plugin (deeppyro.builtin.attachments) only resolves

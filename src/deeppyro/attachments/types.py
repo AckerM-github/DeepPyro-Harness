@@ -2,7 +2,7 @@
 
 Phase 1 of image offload stores image bytes in an AttachmentStore and keeps
 only small references in durable session events. The dataclasses in this
-module mirror the DeepSeek Harness (DSH) wire format exactly (camelCase keys),
+module mirror the DeepSeek Harness (upstream) wire format exactly (camelCase keys),
 so the same payloads round-trip without translation.
 
 Image reference wire shape::
@@ -114,7 +114,7 @@ class ImageAttachmentRef:
             raise ValueError(f"attachment dimensions must be positive, got {self.width}x{self.height}")
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the DSH-wire mapping for this reference."""
+        """Return the upstream-wire mapping for this reference."""
         data: dict[str, Any] = {
             "attachmentId": self.attachmentId,
             "mediaType": self.mediaType,
@@ -130,7 +130,7 @@ class ImageAttachmentRef:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ImageAttachmentRef:
-        """Build a reference from its DSH-wire mapping.
+        """Build a reference from its upstream-wire mapping.
 
         Raise TypeError for wrong field types and ValueError for invalid values.
         """
@@ -167,12 +167,12 @@ class FileAttachmentRef:
             raise ValueError(f"attachment byte size must be non-negative, got {self.bytes}")
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the DSH-wire mapping for this reference."""
+        """Return the upstream-wire mapping for this reference."""
         return {"attachmentId": self.attachmentId, "name": self.name, "bytes": self.bytes}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FileAttachmentRef:
-        """Build a reference from its DSH-wire mapping.
+        """Build a reference from its upstream-wire mapping.
 
         Raise TypeError for wrong field types and ValueError for invalid values.
         """

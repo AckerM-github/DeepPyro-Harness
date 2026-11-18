@@ -65,7 +65,7 @@ class KernelRuntime(Service):
 
     provide: ClassVar[str] = "kernel"
     plugin_id: ClassVar[str] = "kernel"
-    version: ClassVar[str] = "0.2.0"
+    version: ClassVar[str] = "0.3.0"
     description: ClassVar[str] = "Kernel runtime: mounted plugin registry and live config"
     inject: ClassVar[tuple[type[Any], ...]] = (KernelConfig,)
 

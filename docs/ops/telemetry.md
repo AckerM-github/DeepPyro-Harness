@@ -3,15 +3,15 @@
 | 项目 | 值 |
 | --- | --- |
 | 文档 | `docs/ops/telemetry.md` |
-| 状态 | 本地 trace 覆盖 native 与 v4；OTLP/HTTP(JSON) 导出器已实现但**默认关闭** |
-| 适用版本 | 0.2.0（基线 `main@6d57d7a`，2026-11-18 文档整理基线） |
+| 状态 | 本地 trace 由 native loop 写；OTLP/HTTP(JSON) 导出器已实现但**默认关闭**；v4 会话/loop 已删除（0.3.0） |
+| 适用版本 | 0.3.0（native-only；2026-11-19 文档核对） |
 | 结论 | 默认无遥测、无网络上报、无第三方分析 SDK |
 
 ## 1. 结论摘要
 
 - **默认不采集、不上报、不联网。** 运行时不会因为启动、对话、工具调用或崩溃而向任何远端发送数据；唯一的出站通道是可选的 OTLP 导出器，必须显式开启并给出 endpoint（§4）。
 - **默认的观测数据只写本地文件。** 会话日志（`session log`）、trace store 与 usage 账本都只写在本机用户目录下，由用户完全掌控，可以直接删除；唯一可选的出站通道是显式开启的 OTLP 导出（§4）。
-- **不与任何上游遥测端点兼容。** 0.2.0 不读取其他 harness 的遥测配置，也不复用其 telemetry 库或端点；事件目录里出现的 `session-telemetry/record` 只是逆向得到的名称映射，不产生发送行为（见 §2）。
+- **不与任何上游遥测端点兼容。** 本项目不读取其他 harness 的遥测配置，也不复用其 telemetry 库或端点；0.3.0 删除外部 DSH 事件目录后，源码中不再有上游事件名常量（见 §2）。
 - **未来若引入遥测，必须显式 opt-in。** 约定见 §4；在实现并写入 release note 之前，任何默认开启的上报都视为缺陷。
 
 ## 2. 代码现状（审计结论）
@@ -20,9 +20,9 @@
 
 | 检查项 | 结果 |
 | --- | --- |
-| 运行时依赖 | `pyproject.toml` 依赖只有 `httpx`、`pydantic`、`rich`、`zstandard`、`typing-extensions`、`textual`、`python-dateutil`、`tzdata`、`pillow`；dev 组只有 pytest/ruff/pyright 等，**没有任何 telemetry/analytics/OTEL/sentry SDK**。 |
-| 遥测模块 | 0.2.0 起有 `src/deeppyro/observability/{telemetry,otlp,protocols,otlp}.py`，但**默认关闭**：不带 endpoint 时不建后台任务、不发请求；另有 `builtin/usage.py` 写本地 JSONL 账本。没有 analytics/Sentry/metrics SDK。 |
-| 上游名称命中 | `src/deeppyro/core/event_catalog.py:87` 仍有 `"session-telemetry/record"` 常量（M0 从上游产物提取的事件名/调用点映射），**只是常量表，没有发送逻辑**；品牌残留见 KI-032。 |
+| 运行时依赖 | `pyproject.toml` 依赖有 `httpx`、`pydantic`、`rich`、`zstandard`、`typing-extensions`、`textual`、`python-dateutil`、`tzdata`、`pillow`；dev 组只有 pytest/ruff/pyright 等，**没有任何 telemetry/analytics/OTEL/sentry SDK**。注：0.3.0 已无 src 代码使用 `zstandard`（v4 zstd 会话读取已删除），依赖行仍留在 `pyproject.toml`，以构建配置为准。 |
+| 遥测模块 | `src/deeppyro/observability/{telemetry,otlp,protocols}.py` 存在，但**默认关闭**：不带 endpoint 时不建后台任务、不发请求；另有 `builtin/usage.py` 写本地 JSONL 账本。没有 analytics/Sentry/metrics SDK。 |
+| 上游名称命中 | 0.3.0 已删除 `src/deeppyro/core/event_catalog.py`（旧上游事件名常量表）；当前 `core/events.py` 是 native-only 内核事件目录，不含上游端点/发送逻辑。品牌残留审计由 lead 负责（历史 KI-032）。 |
 | 假阳性 | TUI 里的 `ProcessEntry` 等类名会被 `-i telemetry` 式搜索误命中，与上报无关。 |
 | 网络出站 | 运行时代码只通过 `llm/` 的 provider transport 访问用户配置的模型 API；没有其他出站目的地。 |
 
@@ -39,14 +39,14 @@ git grep -n -i 'requests\.|urlopen|http\.client|socket\.' -- src
 
 - 存储位置：默认 `~/.dpro/traces/<run_id>.jsonl`，可用 `DEEPPYRO_TRACES_DIR` 覆盖；只写本地文件，没有上传通道。
 - 记录内容：`run` / `model_call` / `tool_call` 三类记录。只保存 `prompt_hash`、`args_hash`（`sha256:<64hex>`）、token 计数、字节大小、时延、`finish_reason`、id 字段；**不保存 prompt 正文、消息正文、工具输出正文**（`docs/native/schema.md` §8.1、§8.5）。
-- 覆盖范围：native loop 与 v4 路径都会写。v4 由 `src/deeppyro/observability/telemetry.py` 插件监听 `llm/stream`、`agent/request`、`tools/pre-execute`/`tools/post-execute`、`agent/turn-stopping`、`session/disposed` 钩子产生 `model_call`/`tool_call` 记录，字段与 native 对齐（含 `retry_count`、`latency_ms`、`finish_reason`）；v4 的整数 turn/step 与 provider 工具 id 通过确定性 hash 派生成 native 记录要求的 id 形状。
+- 覆盖范围：由 native loop 写（`AgentLoop` 每个 run/model call/tool call 写一条）。`src/deeppyro/observability/telemetry.py` 仍保留旧 v4 的 hook/scanner 代码，但 0.3.0 删除 v4 agent 后那些 `agent/*`、`llm/stream` 钩子没有 dispatcher，实际生效的是 native loop 经 `trace_export` 服务转交的记录（字段含 `retry_count`、`latency_ms`、`finish_reason`）。
 - 用途：本地回放、调试、成本/时延统计。用户可以直接删除 `traces/`，不会影响会话与派生。
 - OpenTelemetry 字段命名对齐见 `docs/native/schema.md` §8.6（`provider` → `gen_ai.provider.name` 等）；**可选的 OTLP/HTTP(JSON) 导出**见 §4，默认关闭。
 - 用量账本 `src/deeppyro/builtin/usage.py` 同样是本地文件：默认 `~/.dpro/usage/usage.jsonl`（`DEEPPYRO_USAGE_DIR` 覆盖），逐轮追加 provider/model、input/output/cached tokens、latency、retries、stop reason、session/turn，并支持按 session/day/model 聚合。它不上传，也不进入 trace store。
 
 ## 4. 可选的 OTLP/HTTP(JSON) 导出（默认关闭）
 
-`src/deeppyro/observability/telemetry.py` 是 v4 路径的 trace 上报插件：监听 `llm/stream`、`agent/request`、`tools/pre-execute`/`tools/post-execute`、`agent/turn-stopping`、`session/disposed` 钩子，把 provider 调用与工具调用写成与 native 相同的 `model_call`/`tool_call` 记录（含 `retry_count`、`latency_ms`、`finish_reason`、token 计数、hash 与 id 字段）。native loop 通过 `trace_export` 服务把同一条记录交给同一个导出器，两条路径字段对齐。
+`src/deeppyro/observability/telemetry.py`（插件 `telemetry`）提供 `trace_export` 服务：native loop 把已写本地 trace 的 `run`/`model_call`/`tool_call` 记录交给它，由 `observability/otlp.py` 可选导出。插件里旧 v4 的 hook 监听与 `SessionRecordScanner` 代码仍在，但 v4 loop 已删除、这些钩子不再触发，因此当前唯一活跃路径是 native `trace_export`。
 
 导出器 `src/deeppyro/observability/otlp.py` 的约束：
 
@@ -59,7 +59,7 @@ git grep -n -i 'requests\.|urlopen|http\.client|socket\.' -- src
 
 ```toml
 [observability]
-enabled = true            # 关闭后 v4 不写 trace（默认 true）
+enabled = true            # 关闭后插件不装旧 v4 监听/本地 TraceStore（默认 true）；native loop 的本地 trace 与 trace_export 不受影响
 dir = "~/.dpro/traces"    # 可选，覆盖 TraceStore 根目录
 
 [observability.otlp]
@@ -86,7 +86,7 @@ timeoutSeconds = 5        # 可选，单次 POST 超时
 - 用 §2 的搜索命令检查依赖与源码；CI 不安装任何遥测包。
 - 在断网环境运行 `uv run dpyro --headless "hi" --provider <local>`，除模型 provider 外不应出现其他出站连接。
 - 检查 `~/.dpro/` 下新增文件：除 `sessions/`、`traces/`、`usage/`、`config.toml` 等本地文件外，不应出现上报队列/缓冲文件。
-- 默认配置下不得出现任何 OTLP 请求：`tests/observability/test_otlp.py` 断言关闭时零请求、开启后仅 POST 到配置的 endpoint、队列满只增加 `dropped`、传输失败只增加 `failed`、导出 span 不含 `session_id` 明文；`tests/observability/test_telemetry.py` 断言 v4 钩子产生的 trace 字段/replay 行为与 native 对齐。
+- 默认配置下不得出现任何 OTLP 请求：`tests/observability/test_otlp.py` 断言关闭时零请求、开启后仅 POST 到配置的 endpoint、队列满只增加 `dropped`、传输失败只增加 `failed`、导出 span 不含 `session_id` 明文；`tests/observability/test_telemetry.py` 覆盖插件的旧 v4 scanner 代码路径（v4 loop 已删除，生产路径以 native `trace_export` 为准）。
 - 发现任何未声明的出站请求，按安全缺陷处理并在 release note 中披露。
 
 ## 6. 变更纪律
@@ -98,6 +98,7 @@ timeoutSeconds = 5        # 可选，单次 POST 超时
 ## 7. 相关文档
 
 - `docs/native/schema.md` §8（Trace/run 关联、OTel 字段对齐、采样与保留）
-- `docs/release/0.2.0.md`（发布说明与已知限制）
+- `docs/release/0.3.0.md`（0.3.0 native-only 发布说明；旧 v4 trace 路径已删除）
+- `docs/release/0.2.0.md`（历史发布说明与已知限制）
 - `docs/adr/0001-three-track-native-agent.md`（ADR D2/D3：去 DSH 化范围）
 

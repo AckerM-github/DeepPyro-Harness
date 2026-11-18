@@ -94,7 +94,7 @@ class HookObservabilityPlugin(Plugin):
     """Log every dispatched hook; the in-tree reference consumer."""
 
     plugin_id = "hook-observability"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "log each runtime hook dispatch"
     inject: ClassVar[list[str]] = ["hooks"]
 

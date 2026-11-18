@@ -169,7 +169,7 @@ class PtcConfig:
 
     enabled is a feature flag: when false the plugin still provides the runtime
     service (so it can be inspected), but run_code is not registered and the
-    model never sees it.  Values accept DSH-style camelCase keys and snake_case
+    model never sees it.  Values accept upstream-style camelCase keys and snake_case
     aliases.
     """
 
@@ -190,7 +190,7 @@ class PtcConfig:
 
         Unknown keys are rejected so a typo in config.toml is visible.  A
         requested timeoutMs larger than maxTimeoutMs is truncated to the maximum
-        rather than rejected, matching the DSH timeout contract.
+        rather than rejected, matching the upstream timeout contract.
         """
         table = _require_table(mapping, name="configuration")
         known = {
@@ -286,7 +286,7 @@ class PtcConfig:
 
     @property
     def timeout(self) -> dict[str, int]:
-        """Return the DSH-shaped timeout descriptor."""
+        """Return the upstream-shaped timeout descriptor."""
         return {"defaultMs": self.timeout_ms, "maxMs": self.max_timeout_ms}
 
     def to_dict(self) -> dict[str, Any]:

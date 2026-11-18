@@ -19,14 +19,18 @@ from deeppyro.builtin.commands import CommandsPlugin
 from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.builtin.prompt_service import PromptPlugin
 from deeppyro.builtin.tools import ToolsPlugin
-from deeppyro.core.wire import MESSAGE_PROJECTION_TYPES, RECORD_TYPES, SURFACE_EVENT_TYPES
 from deeppyro.kernel.bundle import load_composition
 from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.kernel.runtime import KernelRuntime
 from deeppyro.plugins.settings_store import SettingsStore
 from deeppyro.session.fold import fold
 from deeppyro.session.native_index import native_session_archived, read_native_log
-from deeppyro.session.schema import SCHEMA_VERSION, EventKind, SessionLog
+from deeppyro.session.schema import (
+    PLUGIN_EVENT_PATTERN,
+    SCHEMA_VERSION,
+    EventKind,
+    SessionLog,
+)
 
 
 def _service_name(value: Any) -> str:
@@ -87,12 +91,7 @@ def _loaded_state(mount: Mapping[str, str]) -> str:
 
 
 def _event_row(record_type: str) -> dict[str, Any]:
-    return {
-        "type": record_type,
-        "kind": record_type.partition("/")[0],
-        "surface": record_type in SURFACE_EVENT_TYPES,
-        "projection": record_type in MESSAGE_PROJECTION_TYPES,
-    }
+    return {"type": record_type, "kind": record_type.partition(".")[0]}
 
 
 def _native_title(log: SessionLog) -> str | None:
@@ -225,7 +224,7 @@ _GUIDE = "\n".join(
         "",
         "    class MyPlugin(Plugin):",
         '        plugin_id = "my-plugin"',
-        '        version = "0.2.0"',
+        '        version = "0.3.0"',
         '        description = "my first plugin"',
         "        Config = MyConfig",
         '        volatile: ClassVar[tuple[str, ...]] = ("greeting",)',
@@ -240,7 +239,7 @@ _GUIDE = "\n".join(
         "    [bundle]",
         '    id = "my-bundle"',
         '    name = "My Bundle"',
-        '    version = "0.2.0"',
+        '    version = "0.3.0"',
         "    api_version = 3",
         "    order = 500",
         "    critical = false",
@@ -286,7 +285,7 @@ class InspectPlugin(Service):
 
     provide = "inspect"
     plugin_id = "inspect"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "live inspection of services, plugins, tools, prompts and commands"
     inject: ClassVar[list[str]] = []
 
@@ -497,19 +496,9 @@ class InspectPlugin(Service):
         return rows
 
     def events(self) -> list[dict[str, Any]]:
-        """Wire record types and the surface/projection subsets."""
-        rows: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for record_type in RECORD_TYPES:
-            if record_type in seen:
-                continue
-            seen.add(record_type)
-            rows.append(_event_row(record_type))
-        for record_type in (*SURFACE_EVENT_TYPES, *MESSAGE_PROJECTION_TYPES):
-            if record_type in seen:
-                continue
-            seen.add(record_type)
-            rows.append(_event_row(record_type))
+        """Native session event kinds plus the plugin event namespace."""
+        rows = [_event_row(kind.value) for kind in sorted(EventKind, key=lambda item: item.value)]
+        rows.append({"type": PLUGIN_EVENT_PATTERN, "kind": "plugin"})
         return rows
 
     def native_session(self, session_id: str, *, root: Path | str | None = None) -> dict[str, Any]:
@@ -517,8 +506,8 @@ class InspectPlugin(Service):
 
         Reports the header, event counts, run/turn/step/tool facts and a trace
         link. An unreadable or folded-broken log still yields the readable
-        facts plus an issues list; an unknown id yields an error payload. v4
-        sessions keep the record-type view reported by events().
+        facts plus an issues list; an unknown id yields an error payload. The
+        native event catalog is reported by events().
         """
         base = Path(root) if root is not None else None
         try:

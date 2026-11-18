@@ -12,8 +12,8 @@ from deeppyro.subagent.types import SubagentUsage
 class TeamPhase(StrEnum):
     """Lifecycle phase of one team member.
 
-    Native team facts store the phase as one of these values; the PHASE_* string
-    constants below remain the v4 recorder vocabulary (same wire strings).
+    Native team facts store the phase as one of these values; the PHASE_*
+    constants below are the string vocabulary written to plugin.team.* facts.
     """
 
     SPAWNING = "spawning"
@@ -65,12 +65,10 @@ class MemberInfo:
 class MemberRun:
     """One measured member turn and the provider usage it consumed.
 
-    The v4 team folds these runs out of the lead session log (record type
-    team/usage, written as an ignorable fact), so per-run usage survives a cold
-    resume. A failed or cancelled turn still carries the partial usage that
-    reached the provider before it stopped. The native team path keeps the same
-    in-memory shape for the live process but never writes usage to a session:
-    tokens and latency belong to traces and the UsageSink only.
+    Runs are kept in memory for the live process only; tokens and latency
+    belong to traces and the UsageSink, never to a session log. A failed or
+    cancelled turn still carries the partial usage that reached the provider
+    before it stopped.
     """
 
     run_id: str

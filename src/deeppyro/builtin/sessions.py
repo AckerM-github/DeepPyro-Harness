@@ -1,62 +1,36 @@
-"""The sessions service: durable session.v4 store plus the native control plane."""
+"""The sessions service: the native session control plane.
+
+One root directory holds the schema 1 session logs; :class:`NativeSessionControl`
+reads and writes them for the TUI, the web host and the tools. Native methods
+return native objects and native errors: NativeQueryError for unknown ids,
+SessionLockedError when another writer holds a session open and NativeForkError
+when a fork cannot be created.
+"""
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from deeppyro.api import PluginConfig, PluginContext, Service
-from deeppyro.config import session_dir
-from deeppyro.kernel.config_service import KernelConfig
-from deeppyro.session import SessionStore
+from deeppyro.paths import sessions_dir
 from deeppyro.session.native_control import NativeSessionControl, NewSession
 from deeppyro.session.native_index import NativeSessionInfo, NativeTranscript
 from deeppyro.session.schema import NativeSession, SessionLog
 
 
 class SessionsPlugin(Service):
-    """Exposes the SessionStore and convenience constructors.
-
-    Two surfaces live here:
-
-    * the v4 store surface (create/open/list/latest) kept byte-for-byte for the
-      legacy runtime, and
-    * the native control surface (native_*) that the TUI migration calls. Those
-      methods delegate to :class:`NativeSessionControl` over the same session
-      directory, so both surfaces see the same files and the native one owns no
-      storage code of its own.
-
-    Native methods return native objects and native errors: NativeQueryError for
-    unknown ids, SessionLockedError when another writer holds a session open and
-    NativeForkError when a fork cannot be created.
-    """
+    """Owns the session directory and the native control surface."""
 
     provide = "sessions"
     inject: ClassVar[list[str]] = ["config"]
     plugin_id = "sessions"
-    version = "0.2.0"
-    description = "durable session log store"
+    version = "0.3.0"
+    description = "native session log store"
 
     def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
         super().__init__(ctx, config)
-        cfg = ctx.require(KernelConfig).value
-        self.store = SessionStore(root=session_dir(cfg))
-        self.native = NativeSessionControl(root=session_dir(cfg))
-
-    # --------------------------------------------------------- v4 surface
-
-    def create(self, cwd: str, **kwargs: Any) -> Any:
-        return self.store.create(cwd, **kwargs)
-
-    def open(self, session_id: str) -> Any:
-        return self.store.open(session_id)
-
-    def list(self) -> list[Any]:
-        return self.store.list()
-
-    def latest(self) -> Any:
-        return self.store.latest()
-
-    # ------------------------------------------------------ native surface
+        self.root = sessions_dir()
+        self.native = NativeSessionControl(root=self.root)
 
     def native_create(self, spec: NewSession) -> NativeSession:
         """Create one schema 1 session and return it open (caller closes it).

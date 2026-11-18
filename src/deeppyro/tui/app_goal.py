@@ -17,7 +17,14 @@ class GoalLayer(ModelLayer):
         runtime = self.runtime
         usage = runtime.session_usage()
         session = getattr(runtime, "session", None)
-        records = len(getattr(session, "records", []) or [])
+        events = getattr(session, "events", ())
+        records = len(events) if isinstance(events, (list, tuple)) else 0
+        turn_reader = getattr(session, "turn_count", None)
+        try:
+            raw_turns = turn_reader() if callable(turn_reader) else 0
+            turns = raw_turns if isinstance(raw_turns, int) else int(str(raw_turns))
+        except Exception:  # noqa: BLE001 - /status must never fail
+            turns = 0
         permission = getattr(runtime, "permission", None)
         sandbox_mode = getattr(getattr(permission, "policy", None), "mode", None)
         policy = self._current_permission()
@@ -40,7 +47,7 @@ class GoalLayer(ModelLayer):
             f"policy   {policy}",
             f"tokens   input {usage['input']}  output {usage['output']}  cached {usage['cached']}",
             f"context  {context_percent(self._context_used, runtime.context_window)}% of {runtime.context_window}",
-            f"records  {records}  turns {getattr(session, 'turn_count', lambda: 0)()}",
+            f"records  {records}  turns {turns}",
             f"phase    {self._phase}",
         ]
         goal_view = None

@@ -1,29 +1,20 @@
-"""The goal state machine: verbs, revision CAS and phase transitions."""
+"""The goal state machine: verbs, revision CAS and phase transitions.
+
+The service is native-only: every write is one goal.changed fact appended to a
+real NativeSession, and the state is refolded from that log. These tests drive
+the public verbs against an on-disk session and assert both the returned view
+and the durable event payload.
+"""
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
 from deeppyro.goal import GoalError, GoalRef, GoalService
-
-
-class _Record:
-    def __init__(self, type_: str, data: dict[str, Any], time: int = 0) -> None:
-        self.type = type_
-        self.data = data
-        self.time = time
-
-
-class _Session:
-    def __init__(self, session_id: str = "session-1") -> None:
-        self.session_id = session_id
-        self.records: list[_Record] = []
-
-    def append(self, type_: str, data: dict[str, Any] | None = None) -> int:
-        self.records.append(_Record(type_, dict(data or {}), time=len(self.records) + 1))
-        return len(self.records)
+from deeppyro.session.schema import NativeSession
 
 
 class _Clock:
@@ -41,9 +32,24 @@ def _service() -> GoalService:
     return service
 
 
-async def test_edit_keeps_the_phase_and_bumps_the_revision() -> None:
+SESSION_ID = "session-11111111-1111-1111-1111-111111111111"
+
+
+@pytest.fixture
+def session(tmp_path: Path) -> Iterator[NativeSession]:
+    native = NativeSession.create(
+        tmp_path / f"{SESSION_ID}.jsonl",
+        cwd=tmp_path,
+        session_id=SESSION_ID,
+    )
+    try:
+        yield native
+    finally:
+        native.close()
+
+
+async def test_edit_keeps_the_phase_and_bumps_the_revision(session: NativeSession) -> None:
     service = _service()
-    session = _Session()
     created = await service.create(session, "first", max_goal_rounds=5)
 
     edited = await service.edit(session, created.ref, objective="second")
@@ -53,12 +59,15 @@ async def test_edit_keeps_the_phase_and_bumps_the_revision() -> None:
     assert edited.goal.revision == 2
     assert edited.goal.max_goal_rounds == 5
     assert edited.activation == "armed"
-    assert session.records[-1].data["operation"] == "edit"
+    event = session.events[-1]
+    assert event.type == "goal.changed"
+    assert event.data["goal"]["objective"] == "second"
+    assert event.data["goal"]["revision"] == 2
+    assert event.data["rounds_started"] == 0
 
 
-async def test_a_stale_reference_is_rejected() -> None:
+async def test_a_stale_reference_is_rejected(session: NativeSession) -> None:
     service = _service()
-    session = _Session()
     created = await service.create(session, "first")
     await service.edit(session, created.ref, objective="second")
 
@@ -68,9 +77,8 @@ async def test_a_stale_reference_is_rejected() -> None:
     assert stale.value.code == "GOAL_STALE_REVISION"
 
 
-async def test_a_second_create_while_active_is_refused() -> None:
+async def test_a_second_create_while_active_is_refused(session: NativeSession) -> None:
     service = _service()
-    session = _Session()
     created = await service.create(session, "first")
 
     with pytest.raises(GoalError) as exists:
@@ -80,9 +88,8 @@ async def test_a_second_create_while_active_is_refused() -> None:
     assert created.goal.id in str(exists.value)
 
 
-async def test_pause_disarms_and_resume_arms_again() -> None:
+async def test_pause_disarms_and_resume_arms_again(session: NativeSession) -> None:
     service = _service()
-    session = _Session()
     created = await service.create(session, "first")
     assert service.activation(session) == "armed"
 
@@ -100,28 +107,10 @@ async def test_pause_disarms_and_resume_arms_again() -> None:
     assert "already active and armed" in str(already.value)
 
 
-async def test_resume_refuses_an_exhausted_goal() -> None:
+async def test_resume_refuses_an_exhausted_goal(session: NativeSession) -> None:
     service = _service()
-    session = _Session()
     created = await service.create(session, "first", max_goal_rounds=1)
-    session.records.append(
-        _Record(
-            "user/message",
-            {
-                "id": "message-1",
-                "role": "user",
-                "content": [{"type": "text", "text": "go"}],
-                "source": {
-                    "kind": "goal",
-                    "goalId": created.goal.id,
-                    "revision": created.goal.revision,
-                    "round": 1,
-                },
-            },
-            time=99,
-        )
-    )
-    service.invalidate(session)
+    service.admit_round(session, created.ref, 1)
     paused = await service.pause(session, created.ref)
 
     with pytest.raises(GoalError) as exhausted:
@@ -131,9 +120,8 @@ async def test_resume_refuses_an_exhausted_goal() -> None:
     assert "exhausted 1 goal rounds" in str(exhausted.value)
 
 
-async def test_block_requires_a_reason_and_records_the_code() -> None:
+async def test_block_requires_a_reason_and_records_the_code(session: NativeSession) -> None:
     service = _service()
-    session = _Session()
     created = await service.create(session, "first")
 
     blocked = await service.block(session, created.ref, "the API key is missing")
@@ -142,7 +130,7 @@ async def test_block_requires_a_reason_and_records_the_code() -> None:
     assert blocked.goal.blocked_reason is not None
     assert blocked.goal.blocked_reason.code == "model-reported"
     assert blocked.goal.blocked_reason.message == "the API key is missing"
-    assert session.records[-1].data["goal"]["blockedReason"] == {
+    assert session.events[-1].data["goal"]["blocked_reason"] == {
         "code": "model-reported",
         "message": "the API key is missing",
     }
@@ -151,9 +139,8 @@ async def test_block_requires_a_reason_and_records_the_code() -> None:
     assert missing.value.code == "GOAL_INVALID_BLOCK_REASON"
 
 
-async def test_complete_allows_a_fresh_create() -> None:
+async def test_complete_allows_a_fresh_create(session: NativeSession) -> None:
     service = _service()
-    session = _Session()
     created = await service.create(session, "first")
 
     done = await service.complete(session, created.ref)
@@ -166,9 +153,8 @@ async def test_complete_allows_a_fresh_create() -> None:
     assert fresh.goal.phase == "active"
 
 
-async def test_clear_needs_a_goal_and_a_matching_reference() -> None:
+async def test_clear_needs_a_goal_and_a_matching_reference(session: NativeSession) -> None:
     service = _service()
-    session = _Session()
     with pytest.raises(GoalError) as nothing:
         await service.clear(session)
     assert nothing.value.code == "GOAL_NOT_FOUND"
@@ -179,9 +165,8 @@ async def test_clear_needs_a_goal_and_a_matching_reference() -> None:
     assert stale.value.code == "GOAL_STALE_REVISION"
 
 
-async def test_edit_cannot_be_called_without_a_replacement() -> None:
+async def test_edit_cannot_be_called_without_a_replacement(session: NativeSession) -> None:
     service = _service()
-    session = _Session()
     created = await service.create(session, "first")
 
     with pytest.raises(GoalError) as invalid:

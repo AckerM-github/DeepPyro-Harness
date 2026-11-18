@@ -1,6 +1,6 @@
 """The kernel event bus: one registry, five dispatch modes, no domain names.
 
-DSH dispatches every domain event through a single cordis ``EventsService``;
+upstream dispatches every domain event through a single cordis ``EventsService``;
 DeepPyro keeps that single-bus shape natively. This module is the transport half:
 it knows how to register listeners, filter them by scope, freeze payloads,
 notify observers, and run the five dispatch modes (emit, serial, waterfall,

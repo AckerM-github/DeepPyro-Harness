@@ -1,31 +1,36 @@
-"""LLM provider layer: streaming providers, retries and model discovery.
+"""Native-only LLM layer: wire-free providers, retries and model discovery.
 
-Public API (INTERFACES 5):
-  LlmRegistry       - build/cache providers from Config, plus the model catalog
-  create_provider   - construct one provider from a ProviderConfig
-  create_native_provider - construct the wire-free native (KI-010) provider
-  OpenAICompatProvider - streaming chat-completions transport
-  AnthropicProvider - streaming Anthropic Messages transport
-  RetryPolicy       - exponential backoff for retryable first-token failures
-  ModelInfo...      - model-catalog values returned by list_models()/model_info()
-  StreamEvent...    - re-exported core protocol event types for convenience
+Public API:
+  LlmRegistry            - build/cache native providers from Config, plus the model catalog
+  create_native_provider - construct one native provider from a ProviderConfig
+  ModelRequest/ModelResponse/StreamEvent/... - the deeppyro.core.llm contract, re-exported
+  RetryPolicy            - exponential backoff for retryable first-token failures
+  ModelInfo...           - model-catalog values returned by list_models()/model_info()
+  errors/discovery/SSE   - helpers shared by native provider plugins and tooling
+
+Providers stream `deeppyro.core.llm.ModelRequest` and yield `deeppyro.core.llm.StreamEvent`
+values; there is no second (v4) transport layer behind this package.
 """
 
 from __future__ import annotations
 
-from deeppyro.core.protocols import (
+from deeppyro.core.llm import (
     Finish,
-    FinishKind,
     LlmProvider,
-    LlmRequest,
+    ModelRequest,
+    ModelResponse,
+    NativeToolCall,
     ReasoningDelta,
+    RetryScheduled,
+    StopReason,
     StreamEvent,
     TextDelta,
     ToolCallArgsDelta,
     ToolCallStart,
+    ToolSpec,
     Usage,
+    UsageEvent,
 )
-from deeppyro.llm.anthropic import AnthropicProvider
 from deeppyro.llm.catalog import (
     ModelBadge,
     ModelCatalog,
@@ -48,15 +53,7 @@ from deeppyro.llm.errors import (
     LlmRequestError,
     failure_dict,
 )
-from deeppyro.llm.messages import build_chat_payload, convert_messages, message_to_chat
-from deeppyro.llm.messages_anthropic import (
-    REASONING_EFFORTS,
-    build_anthropic_payload,
-    convert_anthropic_messages,
-    tool_to_anthropic,
-)
-from deeppyro.llm.openai_compat import OpenAICompatProvider
-from deeppyro.llm.registry import LlmRegistry, create_native_provider, create_provider
+from deeppyro.llm.registry import LlmRegistry, create_native_provider
 from deeppyro.llm.retry import RetryPolicy
 from deeppyro.llm.sse import SseDecoder, SseEvent, decode_sse_text, iter_sse
 
@@ -64,44 +61,39 @@ __all__ = [
     "DEFAULT_CATALOG_TIMEOUT_S",
     "DEFAULT_CATALOG_TTL_S",
     "MAX_LISTING_BYTES",
-    "REASONING_EFFORTS",
-    "AnthropicProvider",
     "CatalogCache",
     "Finish",
-    "FinishKind",
     "LlmHttpError",
     "LlmProvider",
     "LlmRegistry",
-    "LlmRequest",
     "LlmRequestError",
     "ModelBadge",
     "ModelCatalog",
     "ModelInfo",
-    "OpenAICompatProvider",
+    "ModelRequest",
+    "ModelResponse",
+    "NativeToolCall",
     "ReasoningDelta",
     "RetryPolicy",
+    "RetryScheduled",
     "SseDecoder",
     "SseEvent",
+    "StopReason",
     "StreamEvent",
     "TextDelta",
     "ToolCallArgsDelta",
     "ToolCallStart",
+    "ToolSpec",
     "Usage",
+    "UsageEvent",
     "anthropic_listing_url",
-    "build_anthropic_payload",
-    "build_chat_payload",
     "catalog_from_config",
-    "convert_anthropic_messages",
-    "convert_messages",
     "create_native_provider",
-    "create_provider",
     "decode_sse_text",
     "failure_dict",
     "fetch_listing",
     "iter_sse",
     "merge_catalogs",
-    "message_to_chat",
     "openai_listing_url",
     "parse_model_listing",
-    "tool_to_anthropic",
 ]

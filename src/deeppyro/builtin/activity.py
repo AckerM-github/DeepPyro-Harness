@@ -265,7 +265,7 @@ class ActivityPlugin(Plugin):
     """Kernel plugin exposing the shared activity service."""
 
     plugin_id = "activity"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "session activity projection: plan, jobs, agent team"
     inject: ClassVar[list[str]] = []
 

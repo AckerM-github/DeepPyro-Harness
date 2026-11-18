@@ -1,4 +1,4 @@
-"""Headless one-shot mode: sinks, validation and the run_once exit codes (legacy v4 path)."""
+"""Headless one-shot mode: sinks, validation, boot discovery and the CLI contract."""
 
 from __future__ import annotations
 
@@ -14,134 +14,16 @@ from rich.console import Console
 from deeppyro import headless
 from deeppyro.api import PluginDependencyError
 from deeppyro.config import AgentConfig, Config, ModelConfig, ProviderConfig
-from deeppyro.core.errors import ConfigError, DeeppyroError
-from deeppyro.hooks import SESSION_CREATED, SESSION_DISPOSED, HookService
+from deeppyro.core.errors import ConfigError
+from deeppyro.hooks import HookService
 from deeppyro.llm import LlmRequestError, ModelInfo
 from deeppyro.llm.errors import CODE_TRANSPORT
 from tests.service_doubles import service_lookup, service_require
 
 
-class FakeSession:
-    session_id = "session-11112222-3333-4444-5555-666677778888"
-
-
-class FakeAgent:
-    def __init__(self, events: list[dict[str, Any]], *, fail: bool = False, interrupt: bool = False) -> None:
-        self._events = events
-        self._fail = fail
-        self._interrupt = interrupt
-        self.sent: list[str] = []
-        self.closed = False
-
-    async def send(self, text: str) -> str:
-        self.sent.append(text)
-        if self._interrupt:
-            raise KeyboardInterrupt
-        for event in self._events:
-            self.sink.emit(event)
-        if self._fail:
-            raise DeeppyroError("boom")
-        return "done"
-
-    async def interrupt(self) -> None:
-        self.interrupted = True
-
-    async def aclose(self) -> None:
-        self.closed = True
-
-
-class FakeStore:
-    def __init__(self) -> None:
-        self.created: list[str] = []
-        self.agent_presets: list[str | None] = []
-
-    def create(self, cwd: str, *, agent_preset: str | None = None) -> FakeSession:
-        self.created.append(cwd)
-        self.agent_presets.append(agent_preset)
-        return FakeSession()
-
-
-class FakeAgents:
-    def __init__(self, agent: FakeAgent) -> None:
-        self.agent = agent
-
-    def options(self, **overrides: Any) -> dict[str, Any]:
-        return overrides
-
-    def create(self, **kwargs: Any) -> FakeAgent:
-        self.agent.sink = kwargs["sink"]
-        return self.agent
-
-
-class FakeJobs:
-    def __init__(self) -> None:
-        self.owners: list[str] = []
-
-    async def cancel_owner(self, owner: str) -> int:
-        self.owners.append(owner)
-        return 0
-
-
-class FakeTeam:
-    def __init__(self) -> None:
-        self.bound: list[Any] = []
-        self.closed = False
-
-    def bind_session(self, session: Any) -> None:
-        self.bound.append(session)
-
-    async def close(self) -> None:
-        self.closed = True
-
-
-class FakeRuntime:
-    def __init__(
-        self,
-        agent: FakeAgent,
-        *,
-        jobs: Any = None,
-        team: Any = None,
-        preset: str | None = "standard",
-    ) -> None:
-        self.cwd = Path("D:/work")
-        self.provider_name = "fake"
-        self.model = "fake-1"
-        self.context_window = 8192
-        self.preset = preset
-        self.store = FakeStore()
-        self.agents = FakeAgents(agent)
-        self.jobs = jobs
-        self.team = team
-        self.closed = False
-
-    def pin_permission(self, session: Any) -> None:
-        return None
-
-    def create_agent(self, session: Any, sink: Any, *, max_steps: int | None = None) -> FakeAgent:
-        return self.agents.create(session=session, sink=sink, max_steps=max_steps)
-
-    async def aclose(self) -> None:
-        self.closed = True
-
-
 def make_console() -> tuple[Console, io.StringIO]:
     stream = io.StringIO()
     return Console(file=stream, width=100, force_terminal=False), stream
-
-
-def patch_runtime(monkeypatch: pytest.MonkeyPatch, runtime: Any) -> None:
-    async def fake_boot(**kwargs: Any) -> Any:
-        return runtime
-
-    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
-
-
-# The native loop is the headless default since the 0.2.0 flip.  This module
-# pins the legacy v4 run_once contract, so it selects v4 explicitly; the
-# native default is covered by tests/native/test_headless_native.py.
-@pytest.fixture(autouse=True)
-def _legacy_v4_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(headless.NATIVE_LOOP_ENV, "0")
 
 
 # --------------------------------------------------------------------------
@@ -228,7 +110,7 @@ def test_rich_sink_reports_errors() -> None:
 
 
 # --------------------------------------------------------------------------
-# run_once
+# run_once validation
 # --------------------------------------------------------------------------
 
 
@@ -244,133 +126,6 @@ def test_run_once_rejects_bad_max_steps() -> None:
     assert "--max-steps" in stream.getvalue()
 
 
-class RecordingAgents:
-    def __init__(self) -> None:
-        self.options_seen: list[dict[str, Any]] = []
-        self.created: list[dict[str, Any]] = []
-
-    def options(self, **overrides: Any) -> dict[str, Any]:
-        self.options_seen.append(overrides)
-        return overrides
-
-    def create(self, **kwargs: Any) -> object:
-        self.created.append(kwargs)
-        return object()
-
-
-def test_create_agent_passes_the_resolved_model() -> None:
-    agents = RecordingAgents()
-    runtime = headless.HeadlessRuntime(
-        cfg=headless.Config(),
-        cwd=Path("D:/work"),
-        kernel_app=None,
-        provider_name="fake",
-        model="fake-1",
-        context_window=8192,
-        store=FakeStore(),
-        provider=object(),
-        registry=object(),
-        permission=object(),
-        agents=agents,
-    )
-    runtime.create_agent(FakeSession(), sink=object(), max_steps=7)
-    assert agents.options_seen[-1]["model"] == "fake-1"
-    assert agents.options_seen[-1]["context_window"] == 8192
-    assert agents.options_seen[-1]["max_steps"] == 7
-    assert agents.created[-1]["cwd"] == str(Path("D:/work"))
-
-
-def test_run_once_cancels_background_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
-    agent = FakeAgent([{"type": "final", "text": "done"}])
-    jobs = FakeJobs()
-    runtime = FakeRuntime(agent, jobs=jobs)
-    patch_runtime(monkeypatch, runtime)
-    console, _stream = make_console()
-    assert headless.run_once("question", console=console) == headless.EXIT_OK
-    assert jobs.owners == [FakeSession.session_id]
-
-
-def test_run_once_binds_the_team_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    agent = FakeAgent([{"type": "final", "text": "done"}])
-    team = FakeTeam()
-    runtime = FakeRuntime(agent, team=team)
-    patch_runtime(monkeypatch, runtime)
-    console, _stream = make_console()
-    assert headless.run_once("question", console=console) == headless.EXIT_OK
-    assert len(team.bound) == 1
-    assert getattr(team.bound[0], "session_id", "") == FakeSession.session_id
-
-
-def test_run_once_streams_a_turn(monkeypatch: pytest.MonkeyPatch) -> None:
-    agent = FakeAgent(
-        [
-            {"type": "thinking", "text": "hmm"},
-            {"type": "text", "text": "answer"},
-            {"type": "usage", "input": 4, "output": 1, "cached": 0},
-            {"type": "final", "text": "answer"},
-        ]
-    )
-    runtime = FakeRuntime(agent)
-    patch_runtime(monkeypatch, runtime)
-    console, stream = make_console()
-    code = headless.run_once("question", console=console)
-    assert code == headless.EXIT_OK
-    assert agent.sent == ["question"]
-    assert agent.closed is True
-    assert runtime.closed is True
-    assert runtime.store.created == ["D:\\work"]
-    out = stream.getvalue()
-    assert "answer" in out
-    assert "session 11112222" in out
-    assert "tokens in=4 out=1 cached=0" in out
-
-
-def test_run_once_json_mode_emits_session_and_events(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    agent = FakeAgent(
-        [
-            {"type": "text", "text": "hi"},
-            {"type": "final", "text": "hi"},
-        ]
-    )
-    patch_runtime(monkeypatch, FakeRuntime(agent))
-    console, _ = make_console()
-    code = headless.run_once("q", json_output=True, console=console)
-    assert code == headless.EXIT_OK
-    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    types = [line["type"] for line in lines]
-    assert types == ["session", "text", "final"]
-    assert lines[0]["sessionId"].startswith("session-")
-
-
-def test_run_once_maps_agent_failure_to_exit_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    agent = FakeAgent([], fail=True)
-    patch_runtime(monkeypatch, FakeRuntime(agent))
-    console, stream = make_console()
-    assert headless.run_once("q", console=console) == headless.EXIT_ERROR
-    assert "boom" in stream.getvalue()
-    assert agent.closed is True
-
-
-def test_run_once_maps_keyboard_interrupt_to_130(monkeypatch: pytest.MonkeyPatch) -> None:
-    agent = FakeAgent([], interrupt=True)
-    patch_runtime(monkeypatch, FakeRuntime(agent))
-    console, stream = make_console()
-    assert headless.run_once("q", console=console) == headless.EXIT_INTERRUPTED
-    assert "interrupted" in stream.getvalue()
-
-
-def test_run_once_maps_config_error_to_exit_usage(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def failing_boot(**kwargs: Any) -> Any:
-        raise headless.ConfigError("unknown provider: nope")
-
-    monkeypatch.setattr(headless, "boot_runtime", failing_boot)
-    console, stream = make_console()
-    assert headless.run_once("q", console=console) == headless.EXIT_USAGE
-    assert "unknown provider" in stream.getvalue()
-
-
 def test_resolve_workspace_rejects_missing_directory(tmp_path: Path) -> None:
     with pytest.raises(headless.ConfigError):
         headless.resolve_workspace(tmp_path / "missing")
@@ -378,7 +133,7 @@ def test_resolve_workspace_rejects_missing_directory(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
-# boot_runtime: model catalog discovery (P1 A3a)
+# boot_runtime: model catalog discovery
 # --------------------------------------------------------------------------
 
 
@@ -407,8 +162,6 @@ class FakeLlmService:
         return object()
 
     def native_provider(self, name: str) -> object:
-        # boot_runtime constructs the native (KI-010) transport eagerly; the
-        # fake only needs a non-None transport, not a usable stream here.
         self.native_provider_name = name
         return object()
 
@@ -472,12 +225,6 @@ class FakeKernelApp:
         self._services = services
         self.stopped = False
 
-    def service(self, name: str) -> Any:
-        try:
-            return self._services[name]
-        except KeyError:
-            raise LookupError(name) from None
-
     def get(self, service: str | type[Any]) -> Any | None:
         return service_lookup(self._services, service)
 
@@ -507,11 +254,11 @@ def make_kernel_app(
     return FakeKernelApp(
         {
             "llm": llm,
-            "sessions": type("Sessions", (), {"store": object()})(),
             "sandbox": FakeSandbox(),
             "tools": tools or FakeToolService(),
-            "agents": RecordingAgents(),
+            "agents": object(),
             "presets": presets or FakePresets(),
+            "hooks": HookService(),
         }
     )
 
@@ -635,187 +382,15 @@ async def test_boot_runtime_default_model_never_queries_the_catalog(
 
 
 # --------------------------------------------------------------------------
-# session lifecycle hooks (task-63)
+# preset selection at boot
 # --------------------------------------------------------------------------
-
-
-class FakeHookedRuntime(FakeRuntime):
-    """FakeRuntime plus a kernel app exposing the hooks service."""
-
-    def __init__(self, agent: FakeAgent, hooks: HookService) -> None:
-        super().__init__(agent)
-        self.kernel_app = FakeKernelApp({"hooks": hooks})
-        self.order: list[str] = []
-
-    async def aclose(self) -> None:
-        self.order.append("aclose")
-        await super().aclose()
-
-
-def record_hooks(hooks: HookService, order: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    created: list[dict[str, Any]] = []
-    disposed: list[dict[str, Any]] = []
-
-    def on_created(payload: dict[str, Any]) -> None:
-        created.append(dict(payload))
-        order.append("created")
-
-    def on_disposed(payload: dict[str, Any]) -> None:
-        disposed.append(dict(payload))
-        order.append("disposed")
-
-    hooks.on(SESSION_CREATED, on_created)
-    hooks.on(SESSION_DISPOSED, on_disposed)
-    return created, disposed
-
-
-def test_run_once_emits_session_created_then_disposed(monkeypatch: pytest.MonkeyPatch) -> None:
-    hooks = HookService()
-    runtime = FakeHookedRuntime(FakeAgent([{"type": "final", "text": "done"}]), hooks)
-    created, disposed = record_hooks(hooks, runtime.order)
-    patch_runtime(monkeypatch, runtime)
-    console, _stream = make_console()
-
-    assert headless.run_once("q", console=console) == headless.EXIT_OK
-
-    assert created == [{"sessionId": FakeSession.session_id, "cwd": str(runtime.cwd), "preset": "standard"}]
-    assert disposed == [{"sessionId": FakeSession.session_id}]
-    assert runtime.order == ["created", "disposed", "aclose"]
-
-
-def test_run_once_emits_disposed_on_agent_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    hooks = HookService()
-    runtime = FakeHookedRuntime(FakeAgent([], fail=True), hooks)
-    created, disposed = record_hooks(hooks, runtime.order)
-    patch_runtime(monkeypatch, runtime)
-    console, _stream = make_console()
-
-    assert headless.run_once("q", console=console) == headless.EXIT_ERROR
-
-    assert len(created) == 1
-    assert disposed == [{"sessionId": FakeSession.session_id}]
-
-
-def test_run_once_survives_failing_session_hook_listener(monkeypatch: pytest.MonkeyPatch) -> None:
-    hooks = HookService()
-
-    def explode(payload: dict[str, Any]) -> None:
-        raise RuntimeError("listener broke")
-
-    hooks.on(SESSION_CREATED, explode)
-    hooks.on(SESSION_DISPOSED, explode)
-    runtime = FakeHookedRuntime(FakeAgent([{"type": "final", "text": "done"}]), hooks)
-    patch_runtime(monkeypatch, runtime)
-    console, _stream = make_console()
-
-    assert headless.run_once("q", console=console) == headless.EXIT_OK
-    assert runtime.closed is True
-
-
-# --------------------------------------------------------------------------
-# agent preset selection (task-73)
-# --------------------------------------------------------------------------
-
-
-def test_run_once_defaults_to_the_standard_preset(monkeypatch: pytest.MonkeyPatch) -> None:
-    hooks = HookService()
-    runtime = FakeHookedRuntime(FakeAgent([{"type": "final", "text": "done"}]), hooks)
-    created, _disposed = record_hooks(hooks, [])
-    patch_runtime(monkeypatch, runtime)
-    console, _stream = make_console()
-
-    assert headless.run_once("q", console=console) == headless.EXIT_OK
-
-    assert runtime.store.agent_presets == ["standard"]
-    assert created[0]["preset"] == "standard"
-
-
-def test_run_once_forwards_an_explicit_preset(monkeypatch: pytest.MonkeyPatch) -> None:
-    agent = FakeAgent([{"type": "final", "text": "done"}])
-    runtime = FakeRuntime(agent, preset="ptc")
-    seen: dict[str, Any] = {}
-
-    async def fake_boot(**kwargs: Any) -> Any:
-        seen.update(kwargs)
-        return runtime
-
-    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
-    console, _stream = make_console()
-
-    assert headless.run_once("q", preset="ptc", console=console) == headless.EXIT_OK
-
-    assert seen["preset"] == "ptc"
-    assert runtime.store.agent_presets == ["ptc"]
-
-
-def test_run_once_reports_an_unknown_preset_on_stderr(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    async def fake_boot(**kwargs: Any) -> Any:
-        raise headless.UnknownPresetError("unknown agent preset: 'ghost'")
-
-    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
-    console, stream = make_console()
-
-    assert headless.run_once("q", preset="ghost", console=console) == headless.EXIT_USAGE
-
-    captured = capsys.readouterr()
-    assert "unknown agent preset" in captured.err
-    assert captured.out == ""
-    assert stream.getvalue() == ""
-
-
-def test_run_once_json_unknown_preset_writes_no_events(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    async def fake_boot(**kwargs: Any) -> Any:
-        raise headless.UnknownPresetError("unknown agent preset: 'ghost'")
-
-    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
-    console, _stream = make_console()
-
-    assert headless.run_once("q", preset="ghost", json_output=True, console=console) == headless.EXIT_USAGE
-
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "unknown agent preset" in captured.err
-
-
-def test_create_agent_uses_a_preset_scoped_registry() -> None:
-    agents = RecordingAgents()
-    tools = FakeToolService()
-    spec = SimpleNamespace(id="ptc", revision=2)
-    runtime = headless.HeadlessRuntime(
-        cfg=headless.Config(),
-        cwd=Path("D:/work"),
-        kernel_app=None,
-        provider_name="fake",
-        model="fake-1",
-        context_window=8192,
-        store=FakeStore(),
-        provider=object(),
-        registry=object(),
-        permission=object(),
-        agents=agents,
-        tools=tools,
-        preset="ptc",
-        preset_spec=spec,
-    )
-
-    runtime.create_agent(FakeSession(), sink=object())
-
-    assert Path(tools.registry_calls[0][0]) == Path("D:/work")
-    assert tools.registry_calls[0][1] == {"scope": "ptc", "revision": 2}
-    assert agents.created[-1]["preset"] == "ptc"
-    assert agents.created[-1]["preset_revision"] == 2
 
 
 async def test_boot_runtime_resolves_and_ensures_the_requested_preset(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    tools = FakeToolService()
     presets = FakePresets()
-    kernel_app = make_kernel_app(FakeLlmService(), tools=tools, presets=presets)
+    kernel_app = make_kernel_app(FakeLlmService(), presets=presets)
     patch_kernel_boot(monkeypatch, kernel_app)
 
     runtime = await headless.boot_runtime(config=make_config(), cwd=tmp_path, preset="ptc")
@@ -823,8 +398,6 @@ async def test_boot_runtime_resolves_and_ensures_the_requested_preset(
         assert runtime.preset == "ptc"
         assert runtime.preset_spec.revision == 2
         assert presets.ensured == [("ptc", 2)]
-        runtime.create_agent(FakeSession(), sink=object())
-        assert tools.registry_calls[-1][1] == {"scope": "ptc", "revision": 2}
     finally:
         await runtime.aclose()
 
@@ -832,17 +405,14 @@ async def test_boot_runtime_resolves_and_ensures_the_requested_preset(
 async def test_boot_runtime_defaults_to_the_standard_preset(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    tools = FakeToolService()
     presets = FakePresets()
-    kernel_app = make_kernel_app(FakeLlmService(), tools=tools, presets=presets)
+    kernel_app = make_kernel_app(FakeLlmService(), presets=presets)
     patch_kernel_boot(monkeypatch, kernel_app)
 
     runtime = await headless.boot_runtime(config=make_config(), cwd=tmp_path)
     try:
         assert runtime.preset == "standard"
         assert runtime.preset_spec.revision == 0
-        runtime.create_agent(FakeSession(), sink=object())
-        assert tools.registry_calls[-1][1] == {"scope": "standard", "revision": 0}
     finally:
         await runtime.aclose()
 
@@ -869,6 +439,11 @@ async def test_boot_runtime_rejects_an_unknown_preset(
     with pytest.raises(headless.UnknownPresetError, match="unknown agent preset"):
         await headless.boot_runtime(config=make_config(), cwd=tmp_path, preset="ghost")
     assert kernel_app.stopped is True
+
+
+# --------------------------------------------------------------------------
+# CLI contract
+# --------------------------------------------------------------------------
 
 
 def test_build_parser_accepts_preset() -> None:
@@ -940,191 +515,13 @@ def test_cli_forwards_the_permission_flags_to_run_once(monkeypatch: pytest.Monke
     assert seen[0]["approval_policy"] == "ask"
 
 
-def test_build_parser_exposes_the_backend_switches() -> None:
+def test_build_parser_rejects_the_removed_backend_switches() -> None:
     from deeppyro.tui.main import build_parser
 
     parser = build_parser()
     default = parser.parse_args(["--headless", "hi"])
-    assert default.native_loop is False
-    assert default.legacy_v4 is False
-    assert parser.parse_args(["--headless", "hi", "--legacy-v4"]).legacy_v4 is True
-    assert parser.parse_args(["--headless", "hi", "--native-loop"]).native_loop is True
-    with pytest.raises(SystemExit):
-        parser.parse_args(["--headless", "hi", "--legacy-v4", "--native-loop"])
-
-
-@pytest.mark.parametrize(
-    ("flags", "expected", "deprecated"),
-    [
-        ((), None, False),
-        (("--legacy-v4",), False, False),
-        (("--native-loop",), True, True),
-    ],
-)
-def test_cli_maps_the_backend_switches(
-    monkeypatch: pytest.MonkeyPatch,
-    recwarn: pytest.WarningsRecorder,
-    flags: tuple[str, ...],
-    expected: bool | None,
-    deprecated: bool,
-) -> None:
-    import deeppyro.paths
-    import deeppyro.tui.main as cli
-
-    seen: list[dict[str, Any]] = []
-
-    def fake_run_once(prompt: str, **kwargs: Any) -> int:
-        seen.append({"prompt": prompt, **kwargs})
-        return 0
-
-    monkeypatch.setattr(deeppyro.paths, "migrate_legacy_layout", lambda: None)
-    monkeypatch.setattr(headless, "run_once", fake_run_once)
-
-    assert cli.main(["--headless", "hi", *flags]) == 0
-
-    assert seen[0]["native_loop"] is expected
-    deprecations = [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
-    if deprecated:
-        assert deprecations
-    else:
-        assert not deprecations
-
-
-def test_cli_legacy_v4_overrides_the_env_switch(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """--legacy-v4 wins over DEEPPYRO_NATIVE_LOOP=1 and runs the v4 loop."""
-    import deeppyro.paths
-    import deeppyro.tui.main as cli
-
-    agent = FakeAgent([{"type": "final", "text": "v4 answer"}])
-    runtime = FakeRuntime(agent)
-    patch_runtime(monkeypatch, runtime)
-    monkeypatch.setattr(deeppyro.paths, "migrate_legacy_layout", lambda: None)
-    monkeypatch.setenv(headless.NATIVE_LOOP_ENV, "1")
-
-    assert cli.main(["--headless", "hi", "--legacy-v4"]) == headless.EXIT_OK
-
-    captured = capsys.readouterr()
-    assert runtime.store.created == ["D:\\work"]
-    assert agent.sent == ["hi"]
-    assert "v4 answer" in captured.out
-
-
-def test_run_once_forwards_permission_flags_to_boot(monkeypatch: pytest.MonkeyPatch) -> None:
-    agent = FakeAgent([{"type": "final", "text": "done"}])
-    runtime = FakeRuntime(agent)
-    seen: dict[str, Any] = {}
-
-    async def fake_boot(**kwargs: Any) -> Any:
-        seen.update(kwargs)
-        return runtime
-
-    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
-    console, _stream = make_console()
-
-    code = headless.run_once(
-        "q",
-        permission_mode="read-only",
-        approval_policy="never",
-        console=console,
-    )
-
-    assert code == headless.EXIT_OK
-    assert seen["permission_mode"] == "read-only"
-    assert seen["approval_policy"] == "never"
-
-
-async def test_boot_runtime_rejects_unknown_permission_options(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    kernel_app = make_kernel_app(FakeLlmService())
-    patch_kernel_boot(monkeypatch, kernel_app)
-
-    with pytest.raises(ConfigError, match="invalid permission preset"):
-        await headless.boot_runtime(config=make_config(), cwd=tmp_path, permission_mode="bogus")
-    with pytest.raises(ConfigError, match="invalid approval policy"):
-        await headless.boot_runtime(config=make_config(), cwd=tmp_path, approval_policy="always")
-    assert kernel_app.stopped is False
-
-
-class _RecordingPermissionService:
-    def __init__(self) -> None:
-        self.pinned: list[Any] = []
-        self.applied: list[tuple[Any, str]] = []
-
-    def pin_initial(self, session: Any) -> str:
-        self.pinned.append(session)
-        return "workspace-write"
-
-    def apply(self, session: Any, name: str) -> str:
-        self.applied.append((session, name))
-        return name
-
-
-class _RecordingApprovalService:
-    def __init__(self) -> None:
-        self.policies: list[tuple[Any, str]] = []
-
-    def set_policy(self, session: Any, policy: str) -> None:
-        self.policies.append((session, policy))
-
-
-class _PermissionKernel:
-    def __init__(self) -> None:
-        self.permissions = _RecordingPermissionService()
-        self.approvals = _RecordingApprovalService()
-
-    def get(self, service: str | type[Any]) -> Any | None:
-        services = {"permissionPresets": self.permissions, "approval": self.approvals}
-        return service_lookup(services, service)
-
-
-def test_pin_permission_applies_the_cli_overrides() -> None:
-    kernel = _PermissionKernel()
-    runtime = headless.HeadlessRuntime(
-        cfg=Config(),
-        cwd=Path("D:/work"),
-        kernel_app=kernel,
-        provider_name="fake",
-        model="fake-1",
-        context_window=8192,
-        store=None,
-        provider=None,
-        registry=None,
-        permission=None,
-        agents=None,
-        permission_mode="read-only",
-        approval_policy="never",
-    )
-    session = object()
-
-    runtime.pin_permission(session)
-
-    assert kernel.permissions.pinned == [session]
-    assert kernel.permissions.applied == [(session, "read-only")]
-    assert kernel.approvals.policies == [(session, "never")]
-
-
-def test_pin_permission_without_overrides_only_pins() -> None:
-    kernel = _PermissionKernel()
-    runtime = headless.HeadlessRuntime(
-        cfg=Config(),
-        cwd=Path("D:/work"),
-        kernel_app=kernel,
-        provider_name="fake",
-        model="fake-1",
-        context_window=8192,
-        store=None,
-        provider=None,
-        registry=None,
-        permission=None,
-        agents=None,
-    )
-    session = object()
-
-    runtime.pin_permission(session)
-
-    assert kernel.permissions.pinned == [session]
-    assert kernel.permissions.applied == []
-    assert kernel.approvals.policies == []
+    assert not hasattr(default, "native_loop")
+    assert not hasattr(default, "legacy_v4")
+    for flag in ("--legacy-v4", "--native-loop"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--headless", "hi", flag])

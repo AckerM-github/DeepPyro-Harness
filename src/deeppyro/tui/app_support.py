@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from deeppyro.tui.session_view import goal_lines
@@ -20,17 +20,6 @@ CUSTOM_WORKSPACE_LABEL = "Enter path..."
 
 #: How many paired hook decisions the /hooks viewer reads and shows.
 HOOK_TRACE_LIMIT = 50
-
-#: Session record types that bracket one hook invocation.
-_HOOK_INVOKED_RECORD = "hook/invoked"
-_HOOK_RESULT_RECORD = "hook/result"
-
-
-def _record_field(record: Any, name: str) -> Any:
-    """Read a session record field from a mapping or an object."""
-    if isinstance(record, Mapping):
-        return record.get(name)
-    return getattr(record, name, None)
 
 
 def _goal_service(runtime: Any) -> Any | None:
@@ -62,33 +51,3 @@ def _emit_goal(conversation: ConversationView, view: Any) -> None:
     """Write the fixed `/goal` block into the conversation."""
     for line in goal_lines(view):
         conversation.add_info(line)
-
-
-def _normalize_hook_rows(rows: Any) -> list[dict[str, Any]]:
-    """Keep the mapping rows of a SessionQuery.hook_trace result."""
-    if not isinstance(rows, (list, tuple)):
-        return []
-    return [dict(row) for row in rows if isinstance(row, Mapping)]
-
-
-def _hook_rows_from_records(session: Any) -> list[dict[str, Any]]:
-    """Pair hook records from raw session records, newest last."""
-    records = getattr(session, "records", None)
-    if not isinstance(records, (list, tuple)):
-        return []
-    pending: list[dict[str, Any]] = []
-    for record in records:
-        record_type = _record_field(record, "type")
-        data = _record_field(record, "data")
-        if not isinstance(data, Mapping):
-            continue
-        hook = str(data.get("hook") or "")
-        mode = str(data.get("mode") or "")
-        if record_type == _HOOK_INVOKED_RECORD:
-            pending.append({"hook": hook, "mode": mode, "invoked": dict(data), "result": None})
-        elif record_type == _HOOK_RESULT_RECORD:
-            for row in reversed(pending):
-                if row["result"] is None and row["hook"] == hook:
-                    row["result"] = dict(data)
-                    break
-    return pending[-HOOK_TRACE_LIMIT:]

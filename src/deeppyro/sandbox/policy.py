@@ -1,6 +1,6 @@
 """Sandbox policy: the standing file mode for one session.
 
-Mirrors dsh-sandbox-policy. A policy is resolved per call from an optional
+Mirrors upstream-sandbox-policy. A policy is resolved per call from an optional
 explicit mode, the last log-only sandbox/mode record of the session, and the
 deployment default. The workspace root always comes from the session cwd, so a
 session cannot be talked into writing somewhere else by configuration.
@@ -31,7 +31,7 @@ class SandboxPolicy:
 
 
 class SandboxPolicyService:
-    """Resolve and persist the DSH sandbox policy."""
+    """Resolve and persist the upstream sandbox policy."""
 
     def __init__(
         self,
@@ -103,7 +103,7 @@ def workspace_writable_roots(policy: SandboxPolicy) -> tuple[Path, ...]:
 def writable_roots(policy: SandboxPolicy) -> tuple[Path, ...]:
     """Every directory a workspace-write call may modify.
 
-    DSH adds /tmp and the platform temporary directory; the same roots are used
+    upstream adds /tmp and the platform temporary directory; the same roots are used
     here so a tool that writes a temporary file keeps working in workspace-write.
     """
     roots = list(workspace_writable_roots(policy))
@@ -125,7 +125,7 @@ def is_path_under(path: str | Path, root: str | Path) -> bool:
 
 
 def sandbox_policy_text(policy: SandboxPolicy) -> str:
-    """The exact DSH runtime-context paragraph for one policy."""
+    """The exact upstream runtime-context paragraph for one policy."""
     if policy.mode == "read-only":
         return (
             "Current DeepPyro file policy: read-only. Any available operation enforced by the "
@@ -151,7 +151,7 @@ def sandbox_policy_text(policy: SandboxPolicy) -> str:
 
 
 def approval_policy_text(policy: str) -> str:
-    """The exact DSH runtime-context paragraph for one approval policy."""
+    """The exact upstream runtime-context paragraph for one approval policy."""
     if policy == "never":
         return (
             "Approval prompts are disabled in this session: actions that require approval "

@@ -81,7 +81,6 @@ def _host(
 ) -> tuple[_TurnHost, list[dict[str, Any]]]:
     events: list[dict[str, Any]] = []
     runtime = SimpleNamespace(
-        native=True,
         compactor=compactor,
         session=session,
         sink=TuiSink(events.append),
@@ -160,7 +159,7 @@ async def test_turn_compacts_before_sending_the_prompt(tmp_path: Path) -> None:
     host, events = _host(tmp_path, handle, service, agent=agent)
     before = len(builder.session.events)
 
-    await host._run_native_turn("next request")
+    await host._run_turn("next request")
 
     assert agent.sent == ["next request"]
     assert events[0] == {"type": "status", "phase": "compacting"}

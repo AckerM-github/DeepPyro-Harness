@@ -1,4 +1,4 @@
-"""The three shared MCP resource tools, mirroring ``dsh-mcp-resources``."""
+"""The three shared MCP resource tools, mirroring ``upstream-mcp-resources``."""
 
 from __future__ import annotations
 

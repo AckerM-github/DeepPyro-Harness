@@ -1,26 +1,31 @@
-# Native schema 1 — M0–M4 implementation and baseline
+# Native schema 1 — implementation, baseline and 0.3.0 status
 
-Status: **M0–M4 complete; headless runs native by default in 0.2.0 (2026-11-18)**. The native message, session, fold, trace and `AgentLoop` modules exist and pass their gates. The loop is the default for headless `run_once` (`--legacy-v4` falls back; `--native-loop` is a deprecated alias); the TUI still uses v4, and removing v4 remains 0.3 work. The M0 recorded baseline and provenance remain valid.
+Status: **native-only as of 0.3.0 (2026-11-19)**. The native message, session, fold, trace and `AgentLoop`
+modules are the only runtime; TUI, headless and the loopback Web UI all use native schema 1. The v4 session stack,
+v4 loop, `core.wire`, projections, `session_query`, `dpyro migrate` and the four 0.2.0 fallback flags were deleted.
+The M0 recorded baseline and provenance remain valid and are still the reference for native behavior.
 
 ## Deliverables
 
 | Path | What it is |
 | --- | --- |
-| [schema.md](schema.md) | Native session schema 1: header, envelope, 30 core `EventKind`s, Message model, fold, trace, errors, fork/resume/checkpoint, 15 recorded refinements (D-1..D-15). 476 lines. |
-| [../adr/0001-three-track-native-agent.md](../adr/0001-three-track-native-agent.md) | ADR: three-track break, zero compatibility, retained DSH design assets, milestones and hard gates, locked M0 decisions. |
+| [schema.md](schema.md) | Native session schema 1: header, envelope, core `EventKind`s, Message model, fold, trace, errors, fork/resume/checkpoint, 15 recorded refinements (D-1..D-15). |
+| [../adr/0001-three-track-native-agent.md](../adr/0001-three-track-native-agent.md) | ADR: three-track break, zero compatibility, retained DSH design assets, milestones and hard gates; 0.3.0 status update at the top. |
 | [../../fixtures/native/](../../fixtures/native/) | 10 real provider recordings, manifest with checksums, validation report, and the two small files used by the sequential-tool case. |
 | [README.md](README.md) | This implementation, provenance, layout, validation and replay note. |
 | [coverage.md](coverage.md) | What the recorded baseline proves, which surfaces must be synthesized (`tests/fixtures/native/synthetic/`), and how much re-recording costs. |
 | [goal.md](goal.md) | Native goal rounds with no schema change: `goal.changed` round facts, `GoalService.admit_round`, `NativeRoundDriver`, budget/round-limit blocking, restart and remaining limits. |
+| [compaction.md](compaction.md) | Native compaction: `compaction.done` records, refs sidecar and token accounting. |
 | [../../src/deeppyro/core/messages.py](../../src/deeppyro/core/messages.py) | Frozen native `Message`, four content parts and eight sources; strict role/part matrix and JSON round-trip. |
-| [../../src/deeppyro/session/schema.py](../../src/deeppyro/session/schema.py) | Schema 1 header/envelope, 30 core `EventKind`s, `NativeCodec` reader/writer, writer lock and atomic append. |
+| [../../src/deeppyro/session/schema.py](../../src/deeppyro/session/schema.py) | Schema 1 header/envelope, core `EventKind`s, `NativeCodec` reader/writer, writer lock and atomic append. |
 | [../../src/deeppyro/session/fold.py](../../src/deeppyro/session/fold.py) | Pure fold to `SessionView`: replacement, compaction, state, approvals, tool pairing and missing-result repair. |
 | [../../src/deeppyro/observability/trace.py](../../src/deeppyro/observability/trace.py) | Trace records, canonical hashing, strict reader and `join_trace` against session events. |
 | [../../src/deeppyro/agent/loop.py](../../src/deeppyro/agent/loop.py) | Native `AgentLoop`: fold → `ContextPlan` → provider stream → assistant message, tools, budget/cancel, `run.*` events and trace. |
 | [../../src/deeppyro/agent/context_plan.py](../../src/deeppyro/agent/context_plan.py) / [run_state.py](../../src/deeppyro/agent/run_state.py) / [checkpoint.py](../../src/deeppyro/agent/checkpoint.py) | Frozen request plan, run state and atomic checkpoint sidecar for kill/resume. |
 | [../../tests/fixtures/native/golden-session.jsonl](../../tests/fixtures/native/golden-session.jsonl) | One complete tool turn used for byte-exact decode → fold → encode checks. |
 
-The old contracts are retained only as migration references: [../spec/INTERFACES.md](../spec/INTERFACES.md) and [../spec/session.md](../spec/session.md) now carry frozen/superseded banners.
+0.3.0 has no second session format and no migration reference: the old `INTERFACES.md` / `session.md` contract
+pages were deleted with the v4 stack. Old `session.v4.jsonl` files are rejected, not read.
 
 ## Recorded baseline provenance
 
@@ -84,16 +89,16 @@ UTF-8 JSONL, one object per line. A case starts with `case`, then interleaves `l
 - required: exactly 10 files, filename/case boundaries, JSON parse, request lifecycle, request bodies, non-empty messages, SSE payloads (689 lines), tool cases 06–10, case 09 order, cases 08/10 error results, no secrets, manifest checksums, case-end counts, all statuses `ok`, finish reasons present;
 - optional but observed: case 07 two parallel calls, case 05 `finish_reason=length`, streaming usage present.
 
-To re-check a checkout without the recorder, compare each `manifest.json` sha256 with the corresponding file and parse every JSONL line. The M2 differential replay asserts (all 10 cases match at fixture level):
+To re-check a checkout without the recorder, compare each `manifest.json` sha256 with the corresponding file and parse every JSONL line. The differential replay asserts (all 10 cases match at fixture level):
 
 1. every recorded `llm.request` is replayed against a fake provider that emits the recorded `llm.sse` chunks;
 2. the native loop produces the same assistant content, tool calls, finish reason and usage;
 3. the native session log round-trips and folds back to the same visible messages;
 4. no session log contains provider token/cost/latency snapshots (schema §8.5); those belong in the trace store.
 
-## Native implementation (M1 + M2)
+## Native implementation
 
-M1 added the native contract as a parallel surface; M2 added `agent/loop.py` and wired it into headless without making it the default. The modules are importable and covered by dedicated tests:
+The modules are importable and covered by dedicated tests:
 
 | Module | Contract | Tests |
 | --- | --- | --- |
@@ -113,11 +118,11 @@ uv run --no-sync pytest tests/core/test_messages.py tests/session tests/observab
 
 Behavioral notes:
 
-- **v4 is rejected, not read.** A line-1 `"version": 4` header or a zstd magic prefix raises `SessionV4Error` with the schema §9 message. There is no fallback reader and no migration path.
+- **v4 is rejected, not read.** A line-1 `"version": 4` header or a zstd magic prefix raises `SessionV4Error`. There is no fallback reader and no migration path.
 - **Append is all-or-nothing.** The writer validates the event and its seq/turn/step order before writing; a failed write truncates back to the previous offset. A second writer fails on the `<id>.jsonl.lock` file.
 - **The trace store is separate.** Default location is `~/.dpro/traces/<run_id>.jsonl`, overridable with `DEEPPYRO_TRACES_DIR`; records carry hashes, sizes, latency and IDs, never message text or tool arguments.
 - **Trace smoke is real-session based.** `test_trace_join_smoke_with_native_session` writes a native turn with one tool call, writes one model-call and one tool-call trace record, then joins both by `run_id`/step/call ID.
-- **Headless defaults to native; TUI does not.** `AgentLoop` is the default for headless `run_once` (`DEEPPYRO_NATIVE_LOOP=0` or `--legacy-v4` selects the v4 path). TUI interaction and `--legacy-v4` headless runs still emit v4 events. Native trace is emitted by the native loop, not by the v4 path. Full 0.2.0 suite passes with no expected xfails (the handoff differential is covered).
+- **One runtime for all entries.** TUI, headless and the loopback Web host all run the same native `AgentLoop`; there is no second loop and no loop-selection flag in 0.3.0.
 
 ## Known anomalies and limits
 
@@ -126,9 +131,9 @@ Behavioral notes:
 - Case 07's two calls were emitted voluntarily by the model in one response; the recorder did not retry to force them.
 - Cases 08 and 10 intentionally produce error tool results. Case 10's shell denial is simulated by the harness; no shell command ran.
 - Cases 08 and 09 contain the capture workspace path `D:/dshworkspace/m0/...` inside tool arguments/results. It is data from the real stream and is preserved byte-for-byte for replay; do not rewrite recordings.
-- The baseline does not cover image/attachment parts, approval prompts, compaction checkpoints, MCP/PTC, subagents or multi-agent handoff. Hand-authored offline pairs under `tests/fixtures/native/synthetic/` now cover all seven in the native/v4 differential, including handoff. Matrix, synthesis rules and re-recording cost: [coverage.md](coverage.md).
-- The full 0.2.0 residual list — TUI still v4, v4 coexistence, provider seam and accepted recording-baseline limits — is indexed in [docs/release/0.2.0-known-issues.md](../release/0.2.0-known-issues.md).
+- The baseline does not cover image/attachment parts, approval prompts, compaction checkpoints, MCP/PTC, subagents or multi-agent handoff. Hand-authored offline pairs under `tests/fixtures/native/synthetic/` cover those surfaces; matrix, synthesis rules and re-recording cost: [coverage.md](coverage.md).
+- 0.3.0 boundaries (old sessions unreadable, Web UI local-only, provider transports, plugin API v3) are summarized in [docs/release/0.3.0.md](../release/0.3.0.md).
 
 ## M0 exit state
 
-M0 is documentation and data only. M1 started with `core/messages.py`, `session/schema.py`, `NativeCodec`, fold and the trace skeleton, and kept tool schemas byte-stable. M1–M4 are complete; their checklists are ADR §6.1–§6.5, and the frozen decisions are schema §13. The 0.2.0 boundary is documented in [docs/README.md](../README.md) and the residual index above.
+M0 was documentation and data only. M1 added `core/messages.py`, `session/schema.py`, `NativeCodec`, fold and the trace skeleton, and kept tool schemas byte-stable. M1–M5 are complete; their checklists are ADR §6.1–§6.5, and the frozen decisions are schema §13. 0.3.0 completed the migration: v4 deleted, native-only runtime, TUI and Web native.

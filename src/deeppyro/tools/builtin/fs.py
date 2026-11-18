@@ -1,6 +1,6 @@
 """Filesystem tools: read, write, edit.
 
-Output formats follow the DSH tools observed in fixtures: read renders an XML
+Output formats follow the upstream tools observed in fixtures: read renders an XML
 envelope with line-numbered content and a pagination footer; write reports
 "Created file" or "Updated file"; edit performs a literal replacement and
 reports success as a single sentence.

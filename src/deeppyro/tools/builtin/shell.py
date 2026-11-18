@@ -3,7 +3,7 @@
 Both run one fresh process per call, merge stderr into stdout, and honour
 timeoutMs (default 120000, capped at 600000). A non-zero exit code is appended
 to the text as "[exit code: N]" but is NOT an error result - the model decides
-whether the failure matters, matching the DSH fixtures.
+whether the failure matters, matching the upstream fixtures.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ class _ShellTool(BaseTool):
         rules: tuple[RunnerFailureRule, ...],
         exit_code: int | None,
     ) -> tuple[str, bool, bool]:
-        """Append the DSH sandbox notice; return (text, denied, runner_failed)."""
+        """Append the upstream sandbox notice; return (text, denied, runner_failed)."""
         runner_failed = classify_runner_failure(exit_code, text, rules) is not None
         if runner_failed:
             notice = (

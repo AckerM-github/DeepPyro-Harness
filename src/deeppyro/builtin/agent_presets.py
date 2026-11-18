@@ -1,7 +1,7 @@
 """Built-in agent presets: PTC, Minimal and Cordis.
 
 These presets are registered from one plugin so a host can add or remove the
-DSH-style preset set as one composition row.  The PTC preset reuses the
+upstream-style preset set as one composition row.  The PTC preset reuses the
 run_code tool and prompt sections contributed by the ptc plugin through its
 preset scope; this plugin only declares the preset rows and the two prompt
 sections that belong to a single preset.
@@ -95,7 +95,7 @@ class AgentPresetsPlugin(Plugin):
     """Registers the built-in PTC, Minimal and Cordis agent presets."""
 
     plugin_id = "agent-presets"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "built-in agent presets: PTC, Minimal and Cordis"
     inject: ClassVar[list[str]] = ["presets", "prompt"]
 

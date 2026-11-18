@@ -1,6 +1,6 @@
 # dpyro-im: the IM shape for deeppyro
 
-> **状态**：现行（0.2.0 保留） · **层级**：外部插件规格 · **最后核对**：2026-11-18
+> **状态**：现行（0.3.0） · **层级**：外部插件规格 · **最后核对**：2026-11-19
 > 实现位于仓库外 `D:/Code/dpyro-im`；插件 API v3。总入口：[docs/README.md](../README.md)。
 
 `dpyro-im` lives out of tree (`D:\Code\dpyro-im`) and installs as an ordinary
@@ -19,7 +19,7 @@ means a frozen exe can still load them, and the dependency set (`websockets`,
 
 ## Runtime shape
 
-- one `AgentSession` per conversation key `(platform, kind, id)`, each with
+- one native session/host per conversation key `(platform, kind, id)`, each with
   its own serial queue and its own `sandbox.gate(..., session=...)`, so an
   approval prompt lands in the chat that caused it
 - routes persist in `~/.dpro/im/routes.json`; different chats never share a

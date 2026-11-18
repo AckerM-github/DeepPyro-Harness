@@ -1,9 +1,9 @@
 # web: the loopback web host for the native runtime
 
-> **状态**：现行（phase 1，0.3.0 原生运行时） · **层级**：Web 宿主规格 · **最后核对**：2026-11-18
+> **状态**：现行（0.3.0） · **层级**：Web 宿主规格 · **最后核对**：2026-11-19
 > 实现：`src/deeppyro/web/`；使用指南：[guides/web-ui.md](../guides/web-ui.md)。
-> 关联契约：[tui-native-runtime.md](../design/tui-native-runtime.md)（native 事件/会话事实）、
-> [sessions.md](session.md)、[sandbox.md](sandbox.md)、[plugin-platform.md](plugin-platform.md)。
+> 关联契约：[native/schema.md](../native/schema.md)（schema 1 会话）、[loop.md](loop.md)（AgentLoop）、
+> [sandbox.md](sandbox.md)、[plugin-platform.md](plugin-platform.md)、[tui.md](tui.md)（splash F1 入口）。
 
 ## 1. 定位与范围（Scope）
 
@@ -13,15 +13,15 @@ Web UI 是 native agent runtime 的**宿主/外壳（host and shell）**，不�
 §active binding§（当前挂接的会话）、一个有界发送队列和一个内存事件日志（journal）。进程重启后，
 浏览器凭 session id 重新回放，不依赖任何隐藏状态。
 
-Phase 1 范围：独立的 Web 宿主进程（stdlib-only）、单页前端、CLI、插件缝、测试与本文档。
-**不包含**：TUI splash 的 F1/F2 接线（由 lead 在后续集成步骤完成，本任务禁止修改
-`src/deeppyro/tui/`）、core bundle 行（lead 接线）、工具审批 UI、远程访问/TLS、团队预设。
+0.3.0 范围：独立的 Web 宿主进程（stdlib-only）、单页前端、CLI、插件缝、TUI splash F1 接线、
+测试与本文档。**不包含**：工具审批 UI、远程访问/TLS、团队预设（web 运行时拒绝 team 模式，422/409）。
+core bundle **不包含** web 插件行：`WebHostPlugin` 由宿主/launcher 直接构造，不以 bundle 行挂载。
 
 硬性约束：
 
 - 只监听回环地址：只允许 `127.0.0.1`（`localhost` 归一化），没有外部绑定选项。
 - 只依赖标准库（服务器、前端、CLI）；`httpx` 仅用于测试，且已是既有 dev 依赖。
-- 不 import `deeppyro.tui`、不 import/使用 v4 会话 API；测试用 AST 守卫固定这两条。
+- 不 import `deeppyro.tui`、不 import/使用任何已删除的 v4 会话/loop 模块；测试用 AST 守卫固定这两条。
 - 不新增运行时依赖，前端无构建步骤、无 CDN、无外部字体；资产是 Python 字符串常量，
   因此打包成单文件可执行体时无需 pyproject/静态文件安装步骤。
 
@@ -74,6 +74,7 @@ AgentLoop 发出 `AgentHooks` 事件 -> `WebAgentHooks` 转成 typed wire event 
 | `server.py` | stdlib asyncio HTTP/1.1 服务器：解析、鉴权、路由分发、SSE、keep-alive、关闭 |
 | `service.py` | `WebSessionHost`：native 会话附加/回放/发送/中断/状态/transcript/SSE |
 | `host.py` | `WebHost`：组合 service + server（可自 boot kernel），`start()`/`stop()` |
+| `launch.py` | 进程级启动器（`serve()` / `launch()`）：CLI 与 TUI splash 共用；启动宿主、打印 banner、`serve_forever`、关闭，返回 0（正常）/130（Ctrl-C） |
 | `plugin.py` | `WebHostPlugin` + `WebHostConfig`：插件缝，`setup()` 不监听 |
 | `assets.py` | 单页 HTML/CSS/JS 字符串常量，token 模板注入 |
 | `__main__.py` | `python -m deeppyro.web` CLI |
@@ -175,10 +176,10 @@ turn 完成顺序与 TUI 一致：先 `final` 再 `usage` 再 `status done`；�
 明文 HTTP 是有意选择：宿主只绑回环，TLS 没有信任边界收益；token 进入 URL/历史是本机
 单用户场景的可接受折衷（`Referrer-Policy: no-referrer` 且不提供跨源链接）。
 
-**诚实缺口**：phase 1 没有工具审批 UI。`PermissionGate` 使用一个始终拒绝的 ask 回调，
-因此需要审批的工具调用会被拒绝（错误显示在流里），不会静默放行；审批事件也不上报。
-v4-only 的审批审计记录（`approval/asked`/`approval/decided`）在 native session 中不可表示，
-`_NativeView.append` 会静默丢弃（返回 -1），不影响决策。
+**诚实缺口**：0.3.0 没有工具审批 UI。`PermissionGate` 使用一个始终拒绝的 ask 回调，
+因此需要审批的工具调用会被拒绝（错误显示在流里），不会静默放行。0.3.0 也不再派发
+`approval/asked`、`approval/decided` 总线事件（`hooks/types.py` 只保留一个 minor 的可导入常量）；
+native 会话用 `approval/policy` 与工具记录表达决策。
 
 ## 7. 生命周期与集成（Lifecycle）
 
@@ -192,16 +193,32 @@ CLI：
   则 409）。Ctrl-C 触发优雅关闭：停止监听、关闭连接与 SSE 流、detach 会话、停止
   自建 kernel。
 
-TUI splash 后续接线（**本任务未改 TUI/bundle**）只需要一次调用；TUI 已 boot 好 kernel 时：
+TUI splash 接线（0.3.0 已接线）：`tui/screens/splash.py` 的 **F1** 让 `DeepPyroApp.run()`
+返回 `"web"`；`tui/main.py:140-148` 随即调用 `deeppyro.web.launch.launch(...)`，本进程
+变成 Web 宿主并打印带 token 的 URL。**F2 / Enter / Escape** 进入终端 TUI，不调用 Web。
 
-    from deeppyro.web.host import WebHost
-    host = await WebHost.start(kernel_app=self.kernel_app, port=0, cwd=self.cwd)
-    host.print_banner()        # 打印形如 http://127.0.0.1:<port>/?token=<token>
-    # ... 浏览器使用期间继续 TUI 或等待 ...
-    await host.stop()
+共享启动器 `src/deeppyro/web/launch.py` 同时服务 CLI 与 TUI splash：
 
-F1 = `await WebHost.start(...)`（打印 URL，可选 `webbrowser.open(host.url)`）；
-F2 = 不调用，继续 TUI。若走插件缝（推荐，bundle 行由 lead 添加）：
+    # web/launch.py（要点）
+    async def serve(*, cwd=None, session_id=None, provider=None, model=None,
+                    port=0, host=LOCALHOST, banner=None) -> int:
+        web = await WebHost.start(port=port, cwd=cwd, session_id=session_id,
+                                  provider=provider, model=model, host=host,
+                                  version=__version__)
+        try:
+            web.print_banner(banner)
+            await web.serve_forever()
+        finally:
+            await web.stop()
+        return 0
+
+    def launch(**kwargs) -> int:      # Ctrl-C -> 130，正常关闭 -> 0
+        ...
+
+`python -m deeppyro.web` 的 CLI 走同一个 `serve()`。TUI 已 boot 好 kernel 时也可以直接用
+`WebHost.start(kernel_app=...)`；但 0.3.0 的 splash 路径使用独立 launcher，不传已有 kernel。
+
+插件缝仍可显式挂载（示例，**不是** 0.3.0 core bundle 的内容）：
 
     [[plugins]]
     id = "web"
@@ -239,11 +256,12 @@ F2 = 不调用，继续 TUI。若走插件缝（推荐，bundle 行由 lead 添�
 `::test_plugin_is_inert_until_started` 固定该扩展点。`WebHostPlugin` 是普通 kernel
 Service（`provide="web"`），因此满足“一切皆插件”：没有特权第二应用路径、没有 TUI/v4 import。
 
-**最小未来 kernel hook（缺口，不是本次改动）**：kernel 目前没有“交互式表面/宿主”枚举契约
-（`ctx.ui` 是 post/notify 之类的 no-op UI 槽，不是路由注册表）。若以后要让 splash 在不
-直接 import `deeppyro.web.host` 的情况下启动 Web，建议 kernel 增加一个通用的
-`HostSurface`/`InteractiveSurface` 契约（提供 name、start()、url、stop()），由 Web 插件和
-TUI 共同实现；phase 1 用 web 包内自有 `WebSurface` + 显式 `start()` 已足够，且不扩内核。
+**最小未来 kernel hook（缺口，0.3.0 未做）**：kernel 目前没有“交互式表面/宿主”枚举契约
+（`ctx.ui` 是 post/notify 之类的 no-op UI 槽，不是路由注册表）。0.3.0 的 splash F1 通过
+`deeppyro.web.launch.launch()` 直接进入本宿主（`tui/main.py:140-148`），而不是经内核契约。
+若以后要让 splash 在不直接 import `deeppyro.web.host` 的情况下启动 Web，建议 kernel 增加一个
+通用的 `HostSurface`/`InteractiveSurface` 契约（提供 name、start()、url、stop()），由 Web 插件和
+TUI 共同实现；当前用 web 包内自有 `WebSurface` + 显式 `start()` 已足够，且不扩内核。
 
 ## 9. 三条原则映射（Three principles）
 
@@ -251,7 +269,7 @@ TUI 共同实现；phase 1 用 web 包内自有 `WebSurface` + 显式 `start()` 
 Web 宿主是 `WebHostPlugin(Service, provide="web")`，由 bundle/manifest 像其他插件一样发现、
 注入、卸载；路由和 UI 面板通过 `WebSurface`/`RouteRegistry` 注册（`plugin.py` +
 `surface.py`），第三方插件无需改 `server.py`。测试断言 web 包不 import `textual`、
-不 import `deeppyro.v4`、无 aiohttp/flask/uvicorn/fastapi/starlette。缺口：kernel 尚无
+不以 `deeppyro.v4` 前缀导入（历史守卫名）、无 aiohttp/flask/uvicorn/fastapi/starlette。缺口：kernel 尚无
 通用交互表面契约（见 §8），当前扩展点是 web 包内 Protocol，后续可提成内核契约。
 
 **原则 2：Pythonic，非 TypeScript 形态。**
@@ -280,10 +298,11 @@ turn 事件来自同一个 `NativeAgentHost`/AgentLoop `AgentHooks` 流，UI 先
 - SSE journal 仅本次进程有效（容量 4096），历史回放靠 `/transcript`；重启后旧 token 和
   URL 失效。
 - 无 TLS、仅单用户/本机；token 出现在 URL/浏览器历史，仅适用于 loopback。
-- 团队预设（team mode）在 native 运行时未移植，创建/resume 返回 409。
+- 团队预设（team mode）在 web 运行时被拒绝（409：`team mode is not available in the web runtime yet`）；
+  团队只在 TUI/headless 中可用。这里是 web 宿主的范围限制，不是 native 运行时缺口。
 - 未挂接会话的历史 usage/context 显示为 0（native 事实不含按会话 token 账本）。
 - 无 compaction UI、无附件上传、无 markdown 渲染（纯文本，有意收敛 XSS 面）。
-- F1/F2 splash 接线与 core bundle 行不在本任务内（由 lead 集成）；TUI 文件未改。
+- core bundle 不含 web 插件行：宿主由 launcher/`WebHostPlugin` 直接构造（见 §7）。
 - 浏览器需支持 ES2020 + EventSource + fetch（现代 Chromium/Firefox/Safari 均可）。
 - `--host` 只接受回环值；不存在“暴露到局域网”的开关，这是产品约束而非遗漏。
 
@@ -301,12 +320,14 @@ resume/列表/未挂接会话 404、队列满 429、插件缝经 kernel 启动�
 CSP 仅同源、token 注入与转义、CSS 响应式、JS 无 markup 注入 API、EventSource+fetch+
 Bearer+after/seq、快捷键、snake_case wire 字段、资产为纯模块字符串、无构建步骤。
 
-验证命令（本任务实测）：
+`tests/web/test_launch.py`：共享启动器（`serve()`/`launch()`）的启动、banner、Ctrl-C 返回 130
+与关闭路径。
 
-    .venv\Scripts\python.exe -m pytest tests/web -q          # 36 passed
+验证命令：
+
+    .venv\Scripts\python.exe -m pytest tests/web -q
     .venv\Scripts\python.exe -m ruff check src/deeppyro/web tests/web
     .venv\Scripts\python.exe -m ruff format --check src/deeppyro/web tests/web
-    .venv\Scripts\python.exe scripts/typecheck.py            # web 文件无新增错误
 
-（全仓 `ruff`/`typecheck` 仍有并发行其他 agent 文件的既知新增项，不在本任务范围内修复；
-本任务只保证 `src/deeppyro/web/` 与 `tests/web/` 干净。）
+（若并行开发期间全仓 `ruff`/typecheck 有其它 agent 的既知新增项，只要求
+`src/deeppyro/web/` 与 `tests/web/` 干净。）

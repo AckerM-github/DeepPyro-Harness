@@ -33,7 +33,6 @@ from deeppyro.sandbox.policy import SandboxPolicyService
 from deeppyro.session.native_control import NewSession
 from deeppyro.subagent.manager import SubagentService
 from deeppyro.team.manager import TeamService
-from deeppyro.tui.runtime_schedule_host import _ScheduleSink
 from deeppyro.tui.runtime_services import ServiceLayer
 from deeppyro.tui.runtime_support import await_maybe, logger
 from deeppyro.user_questions.service import UserQuestionsService
@@ -66,25 +65,6 @@ class ScheduleLayer(ServiceLayer):
     """Layer 2 of the TUI runtime: scheduled sessions/agents and preset registries."""
 
     async def create_schedule_session(self, spec: Any, preset: str) -> Any:
-        """Create a fresh session for a schedule delivery."""
-        if self.native:
-            return await self._create_native_schedule_session(spec, preset)
-        directory = str(getattr(spec, "cwd", "") or "")
-        cwd = self.cwd
-        if directory:
-            candidate = Path(directory).expanduser()
-            try:
-                candidate = candidate.resolve()
-            except OSError:
-                candidate = self.cwd
-            if candidate.is_dir():
-                cwd = candidate
-        session = self.store.create(str(cwd), agent_preset=preset)
-        self._pin_permission(session)
-        await self._session_created(session, cwd=str(cwd), preset=preset)
-        return session
-
-    async def _create_native_schedule_session(self, spec: Any, preset: str) -> Any:
         """Create a schema 1 headless session for a schedule delivery."""
         directory = str(getattr(spec, "cwd", "") or "")
         cwd = self.cwd
@@ -106,36 +86,21 @@ class ScheduleLayer(ServiceLayer):
     async def create_schedule_agent(self, session: Any, *, preset: str) -> Any:
         """Build a silent agent for a scheduled turn."""
         await self._ensure_preset(preset, None)
-        if self.native:
-            handle = (
-                session
-                if getattr(session, "native_session", None) is not None
-                else NativeSessionHandle(session)
-            )
-            build = AgentBuild(
-                provider=self.provider_name,
-                model=self.model,
-                cwd=Path(self.cwd),
-                preset=preset,
-                permission=self.permission,
-                hooks=None,
-                prompt_facts=self._prompt_facts(handle),
-                services=self._plugin_services(),
-                context_window=self.context_window,
-            )
-            return self.agents.host(handle.native_session, build)
-        options = self.agents.options(model=self.model, context_window=self.context_window)
-        return self.agents.create(
-            session=session,
-            provider=self.provider,
-            registry=self._registry_for_preset(preset),
-            options=options,
-            sink=_ScheduleSink(),
-            permission=self.permission,
-            cwd=str(self.cwd),
-            services=self._plugin_services(),
-            preset=preset,
+        handle = (
+            session if getattr(session, "native_session", None) is not None else NativeSessionHandle(session)
         )
+        build = AgentBuild(
+            provider=self.provider_name,
+            model=self.model,
+            cwd=Path(self.cwd),
+            preset=preset,
+            permission=self.permission,
+            hooks=None,
+            prompt_facts=self._prompt_facts(handle),
+            services=self._plugin_services(),
+            context_window=self.context_window,
+        )
+        return self.agents.host(handle.native_session, build)
 
     def track_schedule_agent(self, session: Any, agent: Any) -> None:
         """Close a background agent once its scheduled turn is idle."""
@@ -158,22 +123,6 @@ class ScheduleLayer(ServiceLayer):
                 # background cleanup is best effort
                 with contextlib.suppress(Exception):
                     await await_maybe(close())
-
-    def _registry_for_preset(self, preset: str) -> Any:
-        """Tool registry narrowed to one agent preset."""
-        service = self._service(ToolsPlugin)
-        registry_for = getattr(service, "registry_for", None)
-        if callable(registry_for):
-            try:
-                return registry_for(Path(self.cwd), scope=preset)
-            except TypeError:
-                try:
-                    return registry_for(Path(self.cwd))
-                except Exception:  # noqa: BLE001 - fall back to the base registry
-                    return self.registry
-            except Exception:  # noqa: BLE001 - fall back to the base registry
-                return self.registry
-        return self.registry
 
     def _canonical_preset(self, preset: Any) -> str | None:
         """Normalize a preset id through the presets service aliases."""
@@ -202,11 +151,10 @@ class ScheduleLayer(ServiceLayer):
             service = self._service(contract)
             if service is not None:
                 services[service_name(contract)] = service
-        if self.native:
-            for contract in (TraceExportSink, UsageSink):
-                service = self._service(contract)
-                if service is not None:
-                    services[service_name(contract)] = service
+        for contract in (TraceExportSink, UsageSink):
+            service = self._service(contract)
+            if service is not None:
+                services[service_name(contract)] = service
         return services
 
     def start_schedule_send(self, agent: Any, message: str, source: dict[str, Any]) -> None:

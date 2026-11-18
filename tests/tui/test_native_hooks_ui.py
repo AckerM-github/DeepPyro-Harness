@@ -167,14 +167,14 @@ async def test_native_hooks_are_recorded_from_the_live_hook_service(
     """
 
     provider = _ToolCallProvider()
-    runtime, _events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, _events = await _boot(monkeypatch, tmp_path, provider)
     monkeypatch.setattr(TuiRuntime, "name_session_title", _noop_title)
     try:
         recorder = runtime.hook_recorder
         assert isinstance(recorder, NativeHookRecorder)
         assert runtime.kernel_app.get(HookService) is recorder._service
         host = _TurnHost(runtime)
-        await host._run_native_turn("hello")
+        await host._run_turn("hello")
         hooks = {row["hook"] for row in recorder.rows()}
         assert {"tools/pre-execute", "tools/execute", "tools/post-execute"} <= hooks
         assert all(row["result"] is not None for row in recorder.rows())
@@ -216,7 +216,7 @@ async def test_native_hooks_command_renders_registry_and_recent_decisions() -> N
     recorder = NativeHookRecorder(service)
     service.dispatch("tools/pre-execute", mode="waterfall")
     _resolved(service, "tools/pre-execute", duration=2.0)
-    host = _PanelHost(SimpleNamespace(native=True, hook_recorder=recorder))
+    host = _PanelHost(SimpleNamespace(hook_recorder=recorder))
 
     await host.hooks_command()
 
@@ -227,12 +227,12 @@ async def test_native_hooks_command_renders_registry_and_recent_decisions() -> N
 
 
 async def test_native_hooks_command_says_not_recorded_without_a_service() -> None:
-    host = _PanelHost(SimpleNamespace(native=True, hook_recorder=None))
+    host = _PanelHost(SimpleNamespace(hook_recorder=None))
     await host.hooks_command()
     assert host.infos == [UNAVAILABLE_TEXT]
 
     recorder = NativeHookRecorder(_FakeHookService())
-    host = _PanelHost(SimpleNamespace(native=True, hook_recorder=recorder))
+    host = _PanelHost(SimpleNamespace(hook_recorder=recorder))
     await host.hooks_command()
     assert host.infos[0].startswith("native hook registry:")
     assert host.infos[-1] == "no hook activity yet"

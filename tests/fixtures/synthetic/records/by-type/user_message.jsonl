@@ -1,1 +1,0 @@
-{"type":"user/message","seq":0,"time":1700000000000,"data":{"id":"msg_user","role":"user","content":[{"type":"text","text":"hello"}],"source":{"kind":"user"}},"surfaceOp":"append"}

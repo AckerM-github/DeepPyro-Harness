@@ -686,7 +686,6 @@ def _config(tmp_path: Path) -> Config:
             )
         },
         agent={"provider": "local", "model": "m"},
-        session_dir=tmp_path / "sessions",
     )
 
 

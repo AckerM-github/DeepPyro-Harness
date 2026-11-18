@@ -35,7 +35,7 @@ _AGENT_TEXT = "goal tools require a live agent turn"
 
 
 class GoalToolError(ToolError):
-    """A tool-layer refusal carrying the DSH code from the spec."""
+    """A tool-layer refusal carrying the upstream code from the spec."""
 
     def __init__(self, message: str, code: str) -> None:
         super().__init__(message)
@@ -46,13 +46,12 @@ class GoalToolError(ToolError):
 def is_root_agent(agent: Any) -> bool:
     """Is ``agent`` a top-level agent rather than a subagent?
 
-    ``deeppyro.subagent.manager`` (manager.py:437-444) and ``deeppyro.team.manager``
-    (manager.py:519-522) stamp every child session with ``origin="subagent"``
-    (plus ``parentSession`` and ``delegationDepth=1``), while a user fork keeps
-    the source origin but bumps the depth (``session/fork.py:77-86``).  The
-    header origin is therefore the marker; the parent link alone would also
-    reject forked top-level sessions.  Without a reachable header we fall back
-    to the preset id, which is how subagent presets are named in practice.
+    The native subagent and team managers stamp every child session with
+    ``origin="subagent"`` (plus a parent id and ``delegation_depth=1``), while a
+    user fork keeps the source origin but bumps the depth.  The header origin is
+    therefore the marker; the parent link alone would also reject forked
+    top-level sessions.  Without a reachable header we fall back to the preset
+    id, which is how subagent presets are named in practice.
     """
     header = getattr(getattr(agent, "session", None), "header", None)
     origin = getattr(header, "origin", None)
@@ -141,7 +140,6 @@ class GetGoalTool(BaseTool):
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         _agent, session = agent_and_session(ctx)
         service = goal_service(ctx)
-        service.bind(session, record=ctx.log)
         return _result(_payload(service, session))
 
 
@@ -173,7 +171,6 @@ class CreateGoalTool(BaseTool):
         if not _human_turn(agent):
             raise GoalToolError(_AUTHORITY_TEXT, GOAL_TOOL_AUTHORITY_REQUIRED)
         service = goal_service(ctx)
-        service.bind(session, record=ctx.log)
         await service.create(
             session,
             args.get("objective"),
@@ -223,7 +220,6 @@ class UpdateGoalTool(BaseTool):
         action, goal_id, revision = self._validate(args)
         agent, session = agent_and_session(ctx)
         service = goal_service(ctx)
-        service.bind(session, record=ctx.log)
         ref = _ref(goal_id, revision)
 
         if action in ("edit", "pause", "resume") and not _human_turn(agent):
@@ -265,7 +261,7 @@ class UpdateGoalTool(BaseTool):
             assert reason is not None
             await service.block(session, ref, reason, code="model-reported")
         if action in ("complete", "blocked") and round_authorized and ctx.conclude_turn is not None:
-            # DSH defers a closing message into the model context; v1 has no such
+            # upstream defers a closing message into the model context; v1 has no such
             # channel, so the documented downgrade is to end the turn here.
             conclusion: dict[str, Any] = {"kind": "completed"}
             if action == "blocked":
@@ -340,7 +336,6 @@ class GoalTool(BaseTool):
         if service is None:
             raise ToolError("goal is not available in this session")
         session = _legacy_session(ctx)
-        service.bind(session, record=ctx.log)
         if args.get("clear"):
             await service.clear(session)
             return ToolResult(text="goal cleared", meta={"goal": None})

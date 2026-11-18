@@ -1,4 +1,4 @@
-"""Attachment/image resolution shared by the v4 and native message converters.
+"""Attachment/image resolution for the native message converters.
 
 The session log never stores base64: image parts carry an attachment reference or a
 ready URL.  This module turns a part into a URL an OpenAI-compatible API accepts:
@@ -14,11 +14,11 @@ docs/spec/attachments.md): it only needs `read_image_bytes(ref) -> bytes` or
 to its reference dict.  Resolved bytes become an inline data URL in memory.
 
 The module is wire-free (standard library only, no `core.wire`/`core.protocols`), so
-the native provider can share it without loading the v4 seam.  *default_media_type* is
-the native `ImagePart.media_type` fallback: the v4 converter drops that value today
-(`agent/native_provider.py` mapped ImagePart to a wire part without media type), so
-passing it on the native path is a strict improvement that produces the same wire
-bytes when the reference already carries its own media type.
+both native transports can share it.  *default_media_type* is the native
+`ImagePart.media_type` fallback: the conversion path maps an ImagePart without a media
+type unless the reference carries its own, so passing this fallback is a strict
+improvement that produces the same wire bytes when the reference already carries its
+own media type.
 """
 
 from __future__ import annotations

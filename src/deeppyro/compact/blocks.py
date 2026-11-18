@@ -25,7 +25,42 @@ from typing import Any
 
 from deeppyro.core.errors import SessionError
 from deeppyro.core.ids import now_ms
-from deeppyro.session.layout import encode_segment
+
+#: Characters that pass through :func:`encode_segment` unescaped.
+_SAFE_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+
+
+def _utf16_units(value: str) -> list[int]:
+    """Return the UTF-16 code units of *value* (upstream encodes UTF-16 units)."""
+    encoded = value.encode("utf-16-le")
+    return [encoded[index] | (encoded[index + 1] << 8) for index in range(0, len(encoded), 2)]
+
+
+def _escape_unit(unit: int) -> str:
+    return f"~{unit:04X}"
+
+
+def encode_segment(value: str) -> str:
+    """Encode one path segment the way upstream's encodeSegment does.
+
+    Dot segments are escaped explicitly, safe characters pass through, and every
+    other UTF-16 code unit becomes a ~XXXX escape (upper-case hex).
+    """
+    if not isinstance(value, str) or not value:
+        raise SessionError("session path segment must be a non-empty string")
+    if value == ".":
+        return "~002E"
+    if value == "..":
+        return "~002E~002E"
+    parts: list[str] = []
+    for unit in _utf16_units(value):
+        char = chr(unit)
+        if unit < 0x80 and char in _SAFE_CHARS and char != "~":
+            parts.append(char)
+        else:
+            parts.append(_escape_unit(unit))
+    return "".join(parts)
+
 
 #: On-disk version of the block/ref records.  Bump only on incompatible change.
 BLOCK_STORE_VERSION = 1

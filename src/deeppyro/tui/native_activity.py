@@ -1,9 +1,9 @@
 """Native activity projection: fold native plugin facts into activity records.
 
-The v4 ActivityService projects team and subagent agents from agent-session
-records (team/member, subagent/descriptor, subagent/catalog). The native runtime
-keeps the same information as plugin events on the native session, so this module
-maps those facts onto the record shapes the service already understands. It also
+The ActivityService projects team and subagent agents from session records
+(team/member, subagent/descriptor, subagent/catalog). The native runtime keeps
+the same information as plugin events on the native session, so this module maps
+those facts onto the record shapes the service already understands. It also
 exposes the subagent runs with their measured usage (or an explicit "not
 recorded") for the agents panel; nothing here is estimated.
 """

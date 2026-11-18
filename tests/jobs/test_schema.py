@@ -1,4 +1,4 @@
-"""The job tools' model-facing schemas must match the DSH fixtures."""
+"""The job tools' model-facing schemas must match the native schema fixture."""
 
 from __future__ import annotations
 
@@ -10,8 +10,7 @@ import pytest
 
 from deeppyro.tools.builtin.jobs import JobKillTool, JobListTool, JobOutputTool
 
-FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
-HEADER = FIXTURES / "records" / "by-type" / "request_header.jsonl"
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "native" / "tool_schemas.json"
 
 TOOLS = {
     "job_output": JobOutputTool,
@@ -21,20 +20,17 @@ TOOLS = {
 
 
 def _fixture_tools() -> dict[str, dict[str, Any]]:
-    line = HEADER.read_text(encoding="utf-8").splitlines()[0]
-    record = json.loads(line)
-    header = record["data"]["header"]
-    return {tool["name"]: tool for tool in header["tools"]}
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    return payload["tools"]
 
 
 @pytest.mark.parametrize("name", sorted(TOOLS))
-def test_schema_matches_fixture(name: str) -> None:
-    fixture = _fixture_tools().get(name)
-    if fixture is None:
-        pytest.skip(f"fixture does not contain {name}")
+def test_schema_matches_native_fixture(name: str) -> None:
+    fixture = _fixture_tools()[name]
     tool = TOOLS[name]()
     ours = tool.parameters
     theirs = fixture["parameters"]
+    assert tool.name == name
     assert tool.description == fixture["description"]
     assert ours["type"] == theirs["type"] == "object"
     assert list(ours["properties"]) == list(theirs["properties"])

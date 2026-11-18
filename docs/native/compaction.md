@@ -1,18 +1,18 @@
 # Native compaction (schema 1)
 
-Status: **additive path, opt in.** The v4 compactor, surface, refs, blocks and
-compress tool keep working unchanged. This page documents the native modules that
+Status: **current (0.3.0, native-only).** The 0.2.0 v4 compactor, surface, refs
+modules and their tests were deleted with the v4 stack; the comparison table below
+is historical context. This page documents the native modules that
 compact a schema 1 `NativeSession` through its fold: automatic compaction writes
 exactly one `compaction.done` fact, and the model-authored compress path writes one
-fact per block. Nothing here is wired into `agent/loop.py` yet; the auto-compactor
-is exposed as a callable plus a pure pre-send policy, and the TUI/headless seam is
-`NativeCompactService` / `NativeCompactPlugin`.
+fact per block. The auto-compactor is exposed as a callable plus a pure pre-send policy, and the
+TUI/headless seam is `NativeCompactService` / `NativeCompactPlugin`
+(`agent/loop.py` still does not auto-compact itself).
 
 Contract of record: [native-capabilities.md](../design/native-capabilities.md) section 2
-(design) and [schema.md](schema.md) section 7 (fold). v4 behaviour reference:
-[../../src/deeppyro/compact/compactor.py](../../src/deeppyro/compact/compactor.py).
+(design history) and [schema.md](schema.md) section 7 (fold).
 
-## What changed relative to v4
+## What changed relative to v4 (0.2.0 comparison, historical)
 
 | Concern | v4 | native (this wave) |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ Contract of record: [native-capabilities.md](../design/native-capabilities.md) s
   rejects every other key.
 * The summary content is three `TextPart`s from
   `prompts.frame_summary`: preamble + open tag, the model summary, close tag.
-  `compact/prompts.py` is unchanged and shared with v4.
+  `compact/prompts.py` is the shared prompt module.
 * The fold applies the fact atomically: it removes the covered messages and
   inserts the summary at the start position. A non-contiguous or already-covered
   range fails the fold instead of corrupting the view, so the compactor validates
@@ -93,7 +93,7 @@ await engine.compact(session)              # -> CompactionDone | None
 `compact` accepts either a `NativeSession` or a `NativeSessionHandle`-shaped
 adapter (it unwraps `.native_session`), folds the log unless a view is passed, and
 returns `None` when no region is selectable. The provider stop reasons keep the
-v4 error strings:
+0.2.0 error strings (public text compatibility):
 
 | Stop | Error |
 | --- | --- |
@@ -108,7 +108,7 @@ v4 error strings:
 
 The size guard compares `estimate_message_tokens(framed summary)` with
 `region.message_tokens`. Because `CHECKPOINT_PREAMBLE` and the tags dominate a
-short summary, small regions cannot be compacted; that is the v4 guard kept
+short summary, small regions cannot be compacted; that is the 0.2.0 guard kept
 verbatim, not a regression.
 
 When `trace_store` is set and the caller supplied all four envelope ids, the
@@ -129,9 +129,9 @@ outcome = compressor.compress(session, content, envelope=None)
 # -> NativeCompressOutcome(ok, text, meta)
 ```
 
-`parse_content` keeps the v4 user-facing grammar:
+`parse_content` keeps the 0.2.0 user-facing grammar:
 `m00150–m00220 optional topic` headers, one plain string with all ranges,
-v4 error texts and codes (`COMPACT_INVALID_CONTENT`, `COMPACT_INVALID_RANGE`,
+0.2.0 error texts and codes (`COMPACT_INVALID_CONTENT`, `COMPACT_INVALID_RANGE`,
 `COMPACT_EMPTY_SUMMARY`). Validation happens entirely before the first append, over
 `view.messages` indices:
 
@@ -143,7 +143,7 @@ v4 error texts and codes (`COMPACT_INVALID_CONTENT`, `COMPACT_INVALID_RANGE`,
   overlapping; adjacent ranges must be merged into one header.
 * `COMPACT_SPLITS_TOOL_PAIR` - a block starts on a tool result whose call is
   outside it, or ends on an assistant message whose tool results are outside it.
-  Same code and message shape as v4, expressed as cut safety over indices.
+  Same code and message shape as the 0.2.0 implementation, expressed as cut safety over indices.
 * `COMPACT_EMPTY_RANGE` - the range covers no visible messages.
 * `COMPACT_SYSTEM_PROMPT` no longer exists: `view.system` is not a message, so the
   first block may start at index 0. This is a deliberate 0.3 change.
@@ -154,7 +154,7 @@ under one `compaction_id` per invocation. A failure after some blocks leaves the
 earlier facts committed, rolls back only the uncommitted refs/blocks and returns
 `COMPACT_PARTIAL_WRITE` with the committed block ids; a failure before the first
 append rolls both sidecars back and re-raises. Success text, fingerprints and
-`MINIMUM_STATUS` / `UNCOVERED_STATUS` keep the v4 wording so TUI/CLI output is
+`MINIMUM_STATUS` / `UNCOVERED_STATUS` keep the 0.2.0 wording so TUI/CLI output is
 unchanged.
 
 ## Refs sidecar
@@ -162,8 +162,8 @@ unchanged.
 `native_refs.py` keeps the deterministic `m00005` vocabulary (`REF_WIDTH=5`,
 `canonical_ref`, `ref_ordinal`) but persists
 `{ref, message_id, assigned_at}` in
-`<root>/<encoded session id>.native.refs.jsonl`, deliberately separate from the v4
-`.refs.jsonl` until 0.3. `RefStore.plan(session_id, view)` is a pure plan: existing
+`<root>/<encoded session id>.native.refs.jsonl`; the 0.2.0 `.refs.jsonl` writer was
+deleted with the v4 stack. `RefStore.plan(session_id, view)` is a pure plan: existing
 entries keep their ref in file order, new visible messages receive the next
 ordinals in view order, and `ensure` persists them. `addressable_messages` skips
 `CompactionSource` summaries, so a compress call can never cover a pinned summary.
@@ -174,11 +174,12 @@ session log, and refs are never rendered into prompt text.
 
 `compact/blocks.py` stays wire-free and gains only additive fields:
 `source` (`"compress"` default, `"auto"`), `compaction_id`, `messageRange`
-(`start`/`end` message ids). v4-shaped records keep their exact JSON shape, so
-`tests/compact/test_blocks.py` and the v4 readers are unchanged. One sidecar holds
-both model-authored and automatic summaries for the session; block ids remain
-`b1`, `b2`, ... and `search_context`/`decompress` (still the v4 tools reading the
-same store) work for both.
+(`start`/`end` message ids); the record JSON shape is unchanged, so
+`tests/compact/test_blocks.py` still covers it. One sidecar holds both
+model-authored and automatic summaries for the session; block ids remain `b1`,
+`b2`, ... and the current tools `search_context`/`decompress` (defined in
+`compact/native_block_tools.py`, mounted by the `compress` core bundle row) work
+for both.
 
 ## Service and plugin entry points
 
@@ -205,12 +206,11 @@ model, trace_store=...)` returns the shared service. Config fields are snake_cas
 `enabled`, `blocks_dir`, `keep_recent_tokens`, `context_window`, `threshold`,
 `max_tokens`.
 
-Nothing in `agent/loop.py` changes in this wave: the loop does not auto-compact,
-`/compact` wiring lands with the TUI-native runtime work, and the pre-send policy
-is documented rather than wired. The v4 `CompressPlugin`/`CompressTool` remain the
-registered tool until native `tools/contract.py` exists (the native compressor is a
-library, not a `BaseTool` subclass, precisely because that contract is not there
-yet).
+`agent/loop.py` does not auto-compact: hosts run the pre-send policy
+(`NativeCompactService.pre_send_compact`) and manual `/compact` goes through the
+same service. The registered compress tools come from
+`compact/native_block_tools.py` via the `compress` core bundle row; the 0.2.0
+`CompressPlugin`/`CompressTool` path is gone.
 
 ## Tests and gates
 
@@ -218,20 +218,15 @@ yet).
 | --- | --- |
 | `tests/compact/test_native_compactor.py` | policy, region selection (tool-pair boundary, pinned summary, balanced tool traffic), fact shape and replay after restart, system prompt preservation, second compaction never covering the summary, failed request / aborted / oversized summary leaving no fact, changed-session guard, trace-only usage, service manual + pre-send APIs, AST scan proving the native modules import no v4/wire modules |
 | `tests/compact/test_native_compress.py` | parser grammar and error texts, refs registration and replay, per-block facts, tool-pair guard, overlap/adjacency/empty guards, partial write and rollback, v4 text formatting |
-| existing `tests/compact` | v4 compactor, surface, refs, blocks, block tools, compress tool - all untouched and green |
+| `tests/compact/test_blocks.py` | block store shape/retrieval (shared with the native tools) |
 
 Gates: `.venv/Scripts/python.exe -m pytest tests/compact tests/native -q`;
 `ruff check`/`ruff format` on `src` and `tests`; `scripts/typecheck.py`.
 
 ## Limits and follow-ups
 
-* The native auto-compactor is not wired into `AgentLoop`; it is callable only.
-  Wiring is the next native-runtime wave and must keep the one-fact contract.
-* `compact/native_compress.py` is a library, not a native tool: the native tool
-  contract (`src/deeppyro/tools/contract.py`) does not exist yet.
-* Native `block_tools` (search/decompress) still live in the v4 module reading the
-  same `BlockStore`; a native re-base is 0.3 work.
-* In 0.3 the final shape rewrites `compact/compactor.py` in place, re-bases
-  `refs.py`/`compress_tool.py`, deletes `surface.py`/`tokens.py`, and folds these
-  `native_*` modules into the canonical ones; the v4 paths and tests are preserved
-  until then.
+* `AgentLoop` does not auto-compact by design; hosts drive the one-fact contract
+  through `NativeCompactService`.
+* The 0.3.0 follow-up anticipated above (delete `compactor.py`/`surface.py`,
+  re-base refs and block tools) has landed: `native_block_tools.py` is the current
+  tool module and the v4 compactor/surface/refs modules are deleted.

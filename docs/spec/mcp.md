@@ -1,6 +1,6 @@
 # MCP client
 
-> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+> **状态**：现行（0.3.0） · **层级**：功能规格 · **最后核对**：2026-11-19
 > 契约入口：[native/schema.md](../native/schema.md)；总入口：[docs/README.md](../README.md)。
 
 `deeppyro.mcp` is a Model Context Protocol **client** aligned with the DSH

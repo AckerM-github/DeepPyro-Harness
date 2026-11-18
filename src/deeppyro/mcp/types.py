@@ -14,7 +14,7 @@ LATEST_PROTOCOL_VERSION = "2025-06-18"
 #: Revision used when the server rejects the latest one.
 FALLBACK_PROTOCOL_VERSION = "2024-11-05"
 
-#: DSH namespaces MCP tools as ``mcp__<serverName>__<rawName>``.
+#: upstream namespaces MCP tools as ``mcp__<serverName>__<rawName>``.
 SERVER_NAME_PATTERN = r"^[A-Za-z0-9_-]{1,32}$"
 _SERVER_NAME = re.compile(SERVER_NAME_PATTERN)
 
@@ -41,7 +41,7 @@ class ReconnectConfig(BaseModel):
 
 
 class McpServerConfig(BaseModel):
-    """One ``[[mcp.servers]]`` row, mirroring the DSH field names."""
+    """One ``[[mcp.servers]]`` row, mirroring the upstream field names."""
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
@@ -87,7 +87,7 @@ class McpServerConfig(BaseModel):
 
     @property
     def streamable_http(self) -> bool:
-        """``http`` is the pre-DSH-alignment spelling of ``streamable-http``."""
+        """``http`` is the pre-upstream-alignment spelling of ``streamable-http``."""
 
         return self.transport in ("streamable-http", "http")
 

@@ -1,16 +1,15 @@
 """Native message references over the folded session view (schema 1).
 
-The v4 reference store (compact/refs.py) maps refs to session event seqs
-because v4 reads a flat record log.  Native sessions already fold into a
+The earlier reference store mapped refs to session event seqs because the
+deleted flat record log had no folded view.  Native sessions already fold into a
 SessionView of messages, so a native reference is keyed by message id: the ref
 is a stable, human-writable handle (m00005) for one message id, and the folded
 view decides ordering.  Refs are never rendered into prompt text; they are
 shown to the user and echoed back by the model through the compress tool.
 
-The sidecar is a rebuildable cache, exactly like the v4 one: a missing or torn
-file only loses assignments, never session content.  It uses its own file
-suffix so the v4 and native reference formats can coexist until the 0.3
-deletion wave.
+The sidecar is a rebuildable cache: a missing or torn file only loses
+assignments, never session content.  It uses its own file suffix so a native
+reference file never collides with a foreign sidecar.
 
 Pinned messages are not addressable: a message whose source is
 CompactionSource is a summary checkpoint and may never be covered by a later
@@ -28,11 +27,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from deeppyro.compact.blocks import REFS_SUFFIX, CompactError
+from deeppyro.compact.blocks import REFS_SUFFIX, CompactError, encode_segment
 from deeppyro.core.ids import now_ms
 from deeppyro.core.messages import CompactionSource, Message
 from deeppyro.session.fold import SessionView
-from deeppyro.session.layout import encode_segment
 
 #: Width of the zero-padded numeric part of a reference.
 REF_WIDTH = 5

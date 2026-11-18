@@ -1,899 +1,319 @@
-# Runtime hooks
-
-> **状态**：现行（过渡：v4 待移除） · **层级**：v4 hook 契约 · **最后核对**：2026-11-18
-> 本文的 cordis 兼容语义仅适用于默认 v4 路径；native loop 使用 typed `AgentHooks`。0.3 统一。
-
-Status: implemented for the default v4 path; the cordis-compatible event-bus semantics are historical.
-This document is the contract for the runtime hook service, the builtin hooks
-plugin row, the nineteen well-known hook names, and the payload/decision
-conventions call sites use. The implementation lives in src/deeppyro/hooks
-(types.py, service.py) and src/deeppyro/builtin/hooks.py. The agent loop and
-the tool pipeline are wired to the service as described in section 6; the last
-ten names are declared constants whose call sites belong to later layers.
-
-## 1. Design rules
-
-* One service per kernel. HooksPlugin creates a single HookService and
-  provides it as the hooks service, so every plugin and the runtime share the
-  same listener registry.
-* Names are fixed. Only the nineteen names in HOOK_NAMES may be registered or
-  dispatched; typos raise ValueError instead of silently doing nothing.
-* Payloads are plain dicts, not dataclasses. The service accepts the call
-  site's dict and freezes it recursively before the first handler runs: nested
-  mappings become MappingProxyType and lists become tuples. Handlers read keys
-  but cannot mutate the payload; they return new values instead.
-* Fallback results and values created by handlers are never frozen. Only the
-  dispatch payload is read-only.
-* Ordering is explicit. waterfall, serial, emit, and bail run handlers in
-  registration order; prepend puts a handler first. parallel starts handlers
-  concurrently and does not promise an observation order.
-* Listener scope is explicit and local. A listener may register a scope mapping
-  and dispatchers may pass one; matching uses subset semantics. global_ and
-  unscoped listeners remain the default broadcast behaviour (section 2.10).
-* Async or sync handlers are both accepted. The service awaits awaitable
-  return values and otherwise uses plain values.
-* Only asyncio. The service must run on the kernel event loop; registration and
-  dispatch are safe for concurrent coroutines on that loop but there is no OS
-  thread lock.
-* Disposal. on() returns an idempotent disposer. A plugin normally wraps it
-  with ctx.effect(disposer, ...) so the listener is removed when the plugin
-  fiber unloads. A once listener disposes itself before its handler runs.
-* The hooks plugin registers no tools, commands, or prompt sections. It only
-  provides the service.
-
-## 2. Service API
-
-`HookService` is a facade over `deeppyro.core.bus.EventBus`: the registry,
-scope filtering, payload freezing, observers, and the five dispatch modes all
-live in the bus, and `HooksPlugin` provides that same bus as service `bus`.
-The facade only adds the name policy (which hooks still exist). `ctx.on()`
-prefers `bus`, so a plugin subscription and an in-tree `hooks.on()` share one
-table -- see `docs/spec/events.md` §7.
-
-Module: src/deeppyro/hooks/service.py. Exports:
-deeppyro.hooks.HookService and deeppyro.hooks.HookAggregateError.
-
-    from deeppyro.hooks import HookAggregateError, HookService
-
-    HookService()
-    on(name, handler, *, prepend=False, once=False, scope=None, global_=False) -> disposer
-    has(name) -> bool
-    listeners(name) -> tuple[handler, ...]
-    add_observer(observer) -> disposer
-    observed -> bool
-    await waterfall(name, payload, fallback=None, *, scope=None) -> Any
-    await serial(name, payload, *, scope=None) -> list[Any]
-    await emit(name, payload, *, scope=None) -> None
-    await bail(name, payload, *, scope=None) -> Any
-    await parallel(name, payload, *, scope=None) -> None
-
-on() validates the name (ValueError for an unknown hook, with the valid names
-in the message), the handler (TypeError when it is not callable), and the scope
-(TypeError for a non-mapping, a non-string key, or an unsupported value type;
-an empty mapping is normalized to None), inserts at the front when prepend is
-true, and returns a disposer. Calling the disposer
-again is a no-op, and disposing one listener never removes another. With
-once=True the wrapped listener removes itself before invoking the handler, so
-a handler that dispatches the same hook again does not recurse; the returned
-disposer stays idempotent.
-
-has() and listeners() are read-only helpers: an unknown name yields False and
-an empty tuple. The five dispatch methods reject unknown names with ValueError.
-
-Every dispatch checks the cancellation signal before calling each listener
-(section 2.8). waterfall, serial, emit, bail, and parallel all freeze the
-payload first (section 2.7).
-
-### 2.1 waterfall
-
-Waterfall handlers have the signature handler(payload, next). next() is an
-async callable that runs the rest of the chain and returns its result. The
-polarity is the cordis one: the handler return value is the dispatch result.
-
-* Veto: returning None without calling next() stops the dispatch. The result is
-  None, downstream listeners do not run, and the fallback is not called.
-* Continuation: calling await next() runs the rest of the chain and returns its
-  result. If the handler then returns None, the dispatch result is that
-  downstream result; if it returns a non-None value, that value overrides the
-  downstream result.
-* Short-circuit: returning a non-None value without calling next() becomes the
-  dispatch result immediately; downstream listeners and the fallback are
-  skipped.
-* When the chain is exhausted the fallback is returned. A callable fallback is
-  invoked with no arguments and an awaitable result is awaited; any other
-  fallback is returned as is. The call-site fallbacks in this document are
-  parameterless callables.
-* Calling next() more than once raises RuntimeError. The error message names
-  the hook.
-* Handler exceptions (including CancelledError) propagate to the waterfall
-  caller. Call sites decide whether that aborts a turn or becomes a tool error.
-
-A veto is only "stop and return None"; it does not raise. Call sites that
-require a decision object translate a None result into their own error or
-default. Current consumers:
-
-* agent/pre-step: a None result blocks the turn (turn/end {"kind": "blocked"}
-  with reason kind "pre-step"). The block only applies when the service has a
-  pre-step listener: with no listener the call site does not dispatch at all,
-  so the built-in enter decision always runs.
-* agent/request: keep the original request controls.
-* agent/request-error: fail the turn; no retry.
-* model/selection: keep the model selected by the step.
-* system-prompt/assemble: keep the rendered prompt (no rewrite).
-* approval/request: fall back to the configured approval policy
-  (always -> allow, never -> deny, ask -> interactive question).
-* tools/pre-execute, tools/execute, tools/post-execute: the pipeline raises
-  ToolError for a None decision, which surfaces as an error result
-  (section 5).
-
-### 2.2 serial
-
-Serial handlers have the signature handler(payload). Every handler runs in
-order, the service collects each return value into a list, and it never
-short-circuits. Exceptions propagate immediately; later handlers do not run.
-If the cancellation signal is set before a listener, the dispatch stops and
-returns the values collected so far.
-
-### 2.3 emit
-
-Emit handlers also have the signature handler(payload). Every handler runs in
-order, but a handler exception is logged with logger.exception under the
-deeppyro.hooks.service logger and the remaining handlers still run. emit()
-returns None. CancelledError is a BaseException, so cancellation is not
-swallowed. The signal check stops the remaining listeners without raising.
-
-### 2.4 bail
-
-Bail handlers have the signature handler(payload). Handlers run in order and
-the first bailed value wins: bail() returns it immediately and later listeners
-do not run. The isBailed rule mirrors cordis: a value bails when it is neither
-None nor False. That means 0, an empty string, an empty dict, and every other
-non-None truthy or falsey object bail; only None and False continue. When no
-listener bails, bail() returns None. Exceptions propagate, and a set
-cancellation signal stops the dispatch with None.
-
-### 2.5 parallel
-
-Parallel handlers have the signature handler(payload). All listeners start
-concurrently with asyncio.gather(..., return_exceptions=True). When no handler
-fails, parallel() returns None. When one or more handlers fail, the failures
-are collected in registration order and raised as HookAggregateError:
-
-    class HookAggregateError(Exception):
-        errors: tuple[BaseException, ...]
-        hook: str | None
-
-The exception is raised from the first error (raise ... from errors[0]) and its
-message names the hook and the number of failures. A set cancellation signal
-prevents the dispatch and returns None.
-
-### 2.6 once
-
-on(name, handler, once=True) registers a listener that fires at most once for
-that registration. The wrapper removes itself from the registry before calling
-the handler, so inside the handler has(name) is already False and a nested
-dispatch of the same hook cannot reach it again. The disposer returned by on()
-still works and is idempotent; disposing early simply prevents the one call.
-With a scope, once waits for the first matching dispatch; non-matching
-dispatches do not consume the registration (section 2.10).
-
-### 2.7 Payload freezing
-
-Before dispatch every mode freezes the payload recursively:
-
-* dict and other Mapping instances become types.MappingProxyType with frozen
-  values.
-* list and tuple instances become tuples with frozen items.
-* Everything else, including asyncio.Event, AgentSession, ToolResult, and other
-  custom objects, is kept by reference and is not traversed.
-* The frozen view is created once per dispatch and shared by all listeners of
-  that dispatch; listeners receiving the payload in different positions see
-  the same object.
-* The caller's original dict is not modified and is not the object handlers
-  receive. A handler that writes a key or calls a mutating method gets
-  TypeError or AttributeError.
-* Fallback return values and values returned by handlers are not frozen: a
-  listener may return a mutable dict and call sites may edit it.
-
-Because custom objects keep identity, payload keys such as agent, signal, and
-result behave as before; only the containers around them are read-only.
-
-### 2.8 Cancellation
-
-Before invoking each listener the service looks at payload.get("signal"). If a
-signal key is present, the object has a callable is_set method, and is_set()
-returns a true value, the dispatch stops without raising:
-
-* waterfall returns the resolved fallback (the chain is not treated as
-  exhausted, but the remaining listeners are skipped).
-* serial returns the list collected so far.
-* emit returns None.
-* bail returns None.
-* parallel dispatches no handlers and returns None when the signal is already
-  set. A signal set by one parallel handler does not cancel siblings that have
-  already started.
-
-The check happens before each listener, so a handler can set the signal and the
-next listener is skipped. Keys without is_set, non-callable is_set, or a false
-is_set() result are ignored. Cancellation is a cooperative stop, not an
-exception: the service never raises AbortedError by itself. A handler-raised
-CancelledError still propagates like any other exception.
-
-### 2.9 Concurrency and reentrancy
-
-Each dispatch starts from a snapshot of the listener tuple, so adding or
-removing listeners while a dispatch is running only affects later dispatches.
-Separate dispatches have independent next() closures and may run concurrently.
-A single handler must not treat its next() as a reusable or per-request object:
-it may be called at most once, and calling it after the handler returned is not
-supported.
-
-### 2.10 Scope filtering (scope / global)
-
-A listener may be narrowed to a subset of dispatches with on(..., scope={...}).
-A dispatcher may identify itself with the keyword-only scope argument of any of
-the five modes. The rules are:
-
-* global_=True wins over every filter: the listener receives every dispatch of
-  that hook, whatever the dispatch scope is. A listener may set both global_ and
-  scope; global_ takes precedence.
-* A listener with scope=None (the default, and also the normalization of {}) is
-  unscoped and receives every dispatch.
-* A dispatch with scope=None only reaches unscoped and global listeners.
-  Scoped listeners stay dormant for that dispatch.
-* A dispatch with scope=M reaches a scoped listener when the listener scope is a
-  subset of M: every key of the listener scope exists in M and maps to an equal
-  value. Extra keys in M do not matter.
-* Filtering happens after the dispatch takes its registration snapshot and
-  before the mode runs. A filtered-out listener is not called at all and cannot
-  affect ordering, return values, cancellation, or HookAggregateError. prepend
-  applies within the filtered set, so a matching prepended listener still runs
-  first.
-* once composes with scope: the registration stays dormant until the first
-  matching dispatch, then disposes itself. A scoped once listener that never
-  matches never fires.
-* A dispatcher's invalid scope raises TypeError before any listener runs (the
-  same validation as registration): non-mapping, non-string keys, or values
-  other than str/int/bool are rejected. Booleans are accepted and compare
-  distinctly from integers only by Python equality rules.
-* The registered scope is copied into a read-only mapping, so mutating the
-  caller's dict afterwards does not change the filter.
-
-Recommended keys are session (the session id), agent (the agent name or id),
-preset (the agent preset), and layer (a pipeline layer). Keep values scalar; the
-service rejects None, floats, containers, and arbitrary objects so matching
-stays deterministic and comparable.
-
-Dispatch scope is supplied by the caller, not inferred from payload. Scoped
-listeners only run when a dispatch carries a matching scope; an unscoped
-dispatch skips them, while unscoped and global listeners always run.
-
-Current wiring:
-
-* src/deeppyro/agent/session.py dispatches every agent-side hook with
-  scope = {"session": session_id}, plus {"preset": preset_id} when the agent
-  has a preset id. One dispatch therefore isolates a Lead from its subagent
-  sessions, and a preset-scoped listener can target a whole agent mode.
-* src/deeppyro/tools/pipeline.py derives the same scope from the agent that
-  owns the tool call (the agent passed as run_tool_batch(..., agent=...)), so
-  tool/call and the three tool hooks follow the executing session.
-* The approval gate (src/deeppyro/sandbox/gate.py) and the lifecycle emits in
-  the runtime/headless entry points dispatch without a scope today, so their
-  scoped listeners are dormant unless the caller supplies one.
-
-The pipeline tolerates duck-typed hook objects that predate scope: when the
-bound dispatch call rejects the scope keyword it retries without it, so test
-doubles keep working. Real HookService always accepts the keyword.
-
-### 2.11 Dispatch observers
-
-add_observer(observer) registers a synchronous callable that receives one
-HookObservation per dispatch phase: invoked before any listener runs, and
-resolved from the dispatch finally clause with the result (or error) and
-duration_ms. Observer failures are logged with logger.exception and never change
-the dispatch result. add_observer returns an idempotent disposer; a plugin wraps
-it with ctx.effect so the observer is removed when its fiber unloads.
-
-observed is True while at least one observer is registered. Dispatch call sites
-that skip work when no listener is registered should still dispatch while
-observed is True, so the observation chain sees fallback and veto decisions even
-when a hook has no listener. Hot hooks (llm/stream and agent/assistant-stream)
-stay listener-gated because they fire once per model frame.
-
-The in-tree call sites implement this with a shared guard:
-AgentSession._hook_enabled(name) returns has(name) or observed for the nine
-non-hot agent dispatches; PermissionGate._ask_hook/_emit and
-tools/pipeline.py _emit_call_events use the same rule.
-
-The default bundle consumes the observer stream once: hook-journal writes
-hook/invoked and hook/result records through AgentSession.record_hook_event.
-Records are shaped by src/deeppyro/hooks/records.py and skip the two hot hooks.
-Plugins observe the bus directly with ctx.on(name, handler) — PluginContext
-routes any name declared in deeppyro.core.events to the HookService (M1 single
-bus) and only falls back to the runtime context's local dispatcher for kernel
-events.
-
-## 3. Hook catalogue
-
-HOOK_MODES in deeppyro.hooks.types records the dispatch mode. The table below
-is the authoritative list of when each hook fires. Every name has a producer in
-the default bundle; see sections 4 to 6 for payloads and decisions.
-
-| Hook | Mode | When |
-| --- | --- | --- |
-| agent/pre-step | waterfall | before a step builds its request |
-| agent/request | waterfall | after the request is built, before it is sent |
-| agent/request-error | waterfall | after a request/stream failed, before the turn fails or retries |
-| agent/turn-stopping | serial | while a turn is closing, before turn/end is recorded |
-| agent/assistant-stream | emit | for each transient assistant stream frame |
-| agent/status | emit | when the agent status phase changes |
-| system-prompt/assemble | waterfall | when the system prompt is assembled |
-| llm/stream | emit | for each raw provider stream event |
-| model/selection | waterfall | when the model for a request is selected |
-| session/created | emit | after a session is created (runtime/headless entry points) |
-| session/disposed | emit | after a session is disposed (runtime/headless entry points) |
-| agent/error | emit | when the agent records a fatal error |
-| tools/pre-execute | waterfall | before a tool call is validated/executed |
-| tools/execute | waterfall | instead of calling the tool implementation |
-| tools/post-execute | waterfall | after the tool returned, before the result is finalized |
-| tool/call | emit | when a tool call record is appended |
-| approval/request | waterfall | before an approval request is raised |
-| approval/asked | emit | when an approval request is shown to a human |
-| approval/decided | emit | when an approval decision is made |
-
-## 4. Agent hooks
-
-The agent loop dispatches these hooks; payloads follow the reference agent loop
-(turn/step integers, a cancellation signal, model selection and tool set
-snapshots). A call site may add keys, but must keep these stable. Values are
-frozen as described in section 2.7: lists such as messages or tools become
-tuples inside the payload, while agent, message objects, and signal keep their
-identity. Listeners that want the fallback or the downstream decision must
-explicitly await next(); returning None without next is a veto.
-
-### 4.1 agent/pre-step
-
-    payload = {messages, turn, step, signal, modelSelection, agent}
-    fallback = lambda: {"kind": "enter", "messages": claimed_messages}
-
-waterfall: before a step starts, after the inbox claim and tool resolution.
-The fallback enters the step with the claimed messages; the loop then appends
-the runtime-context snapshot (if any). A listener should call next() to receive
-the fallback when it needs the seed messages, then return
-{"kind": "enter", "messages": [...], "startsRequestSeries": true} to replace
-the admitted messages and force a new request series, or
-{"kind": "reject", "reason": "..."} to block the turn. A rejection closes the
-turn with turn/end {"kind": "blocked"} and writes no step/start. Any other kind
-raises ValueError. A None dispatch result (a veto) is treated like no decision:
-the step proceeds with the claimed messages.
-
-### 4.2 agent/request
-
-    payload = {turn, step, signal}
-    fallback = lambda: controls
-
-waterfall: once per model attempt, after the request controls are assembled.
-fallback returns the seed controls (provider, model, reasoning effort, sampling
-knobs); a listener returns a replacement controls mapping (usually after
-await next()). provider/model/reasoningEffort are fixed by the step selection:
-changing them raises an error instead of silently sending a different model.
-A None result (veto) keeps the original request unchanged.
-
-### 4.3 agent/request-error
-
-    payload = {turn, step, provider, failure, retryPolicy, signal}
-    fallback = lambda: None
-
-waterfall: after assistant/attempt has been recorded and before the turn fails.
-failure is {message, code, ...}; retryPolicy is the resolved retry policy or
-None. Return {"kind": "retry"} to retry the same attempt; anything else fails
-the turn, including the fallback None and the veto None. The loop writes
-llm/retry and llm/retry-started through deeppyro.agent.retry.decide_retry
-before retrying.
-
-### 4.4 agent/turn-stopping
-
-    payload = {turn, signal}
-    await serial(...)
-
-serial: after the last step ended and before turn/end, only when the inbox has
-no pending next-step message. A listener may steer by appending to the inbox,
-which keeps the turn open and runs another step. Return values are ignored;
-exceptions propagate. A set signal stops the remaining serial listeners.
-
-### 4.5 agent/assistant-stream
-
-    payload = {frame}
-
-emit: one process-local event per assistant stream frame
-({"type": "start"|"chunk"|"end", ...}); frame is also sent to the UI sink.
-Frames are not durable records; the payload is frozen, so listeners must not
-mutate the frame. A failing listener is logged and does not stop the stream.
-
-### 4.6 agent/status
-
-    payload = {status}
-
-emit: one process-local event whenever the agent phase changes between idle and
-running; the existing status sink event is still emitted separately. This is
-not a durable session event.
-
-### 4.7 system-prompt/assemble
-
-    payload = {agent, turn, step, prompt, tools, signal}
-    fallback = lambda: prompt
-
-waterfall: after the runtime-context projection and the prompt sections are
-rendered, before the text becomes the session's system message. prompt is the
-rendered string, tools is the tuple of tool names visible to the agent, and
-signal is currently None (the commit is not cancellable). A non-None return
-value replaces the prompt; returning a non-str raises SessionError
-("system-prompt/assemble hook returned <type>, expected str"). A veto (None
-without next) keeps the rendered prompt unchanged, so a listener cannot
-accidentally blank the system message.
-
-### 4.8 model/selection
-
-    payload = {agent, turn, step, provider, model}
-    fallback = lambda: {"model": model}
-
-waterfall: at the top of a request, before the request controls are built. The
-fallback carries the model selected when the step was admitted. A listener may
-return a mapping with a replacement model; other keys are ignored, and changing
-provider raises SessionError ("model/selection hook may not change the
-provider"). A veto keeps the current model. The resulting model is written into
-the request header and the request/context record.
-
-### 4.9 llm/stream
-
-    payload = {agent, frame, provider, model}
-
-emit: once per raw provider stream event (start/chunk/end, text, reasoning, and
-tool-call frames). It is dispatched after agent/assistant-stream, so UI
-listeners should prefer the agent-level hook and tracing listeners this one.
-The frame is a frozen dict; it is a transient observation and is not written to
-the session log.
-
-### 4.10 agent/error
-
-    payload = {agent, error, phase}
-
-emit: when the agent aborts a turn with a fatal error, just before turn/end
-records the failure. error is the exception object. phase is one of "turn",
-"request", or "tool" and says where the failure happened (provider errors
-report "request"). A cancellation (Ctrl+C) does not dispatch this hook.
-Listener errors are isolated by emit.
-
-### 4.11 session/created
-
-    payload = {sessionId, cwd, preset}
-
-emit: after the TUI runtime creates a session through new_session or
-create_schedule_session, and after headless creates the session for its run.
-Opening an existing session with resume, or re-opening a stored schedule
-session, does not dispatch it. preset is the agent preset id (or None). This is
-emitted by process-local entry points, not by SessionStore/Session objects.
-
-### 4.12 session/disposed
-
-    payload = {sessionId}
-
-emit: when the TUI runtime closes (once per session created in that process) and
-when headless finishes its run, before the session is closed. It is not a
-destructor callback on Session objects, and a session reused by later processes
-is not dispatched again.
-
-## 5. Tool hooks
-
-The tool pipeline in src/deeppyro/tools/pipeline.py already dispatches these
-three hooks when it receives a hooks object with an async waterfall method. The
-payloads and decisions below match that implementation exactly.
-
-Tool call payloads share the wire-shaped call dict:
-
-    call = {"callId": str, "name": str, "arguments": str}
-
-arguments is the raw JSON string requested by the model. turn and step may be
-None when the caller cannot provide them. The pipeline appends the tool/call
-record before pre-execute runs. Payloads are frozen before dispatch: call and
-arguments become MappingProxyType, so a listener reads them and returns a new
-decision instead of mutating them.
-
-Every tool payload also carries agent and toolSet:
-
-* agent is the executing AgentSession (the object the loop passes as
-  run_tool_batch(..., agent=self)), or None for a direct pipeline caller that
-  did not provide one. The key is always present, so a handler can distinguish
-  "no agent" from "old payload shape".
-* toolSet is the sorted list of tool names visible for this batch when the
-  caller supplies tool_set; the agent loop passes its surface registry names
-  (native or ptc). After freezing, handlers see it as a tuple with the same
-  order and items. The key is omitted when the caller supplies no tool set.
-
-Nested transports (the PTC dispatcher) pass the same two values so their tool
-hooks look identical to the model-driven path.
-
-A listener that returns None without awaiting next() vetoes the tool hook. The
-pipeline requires a decision object from pre-execute and post-execute and a
-ToolResult from execute, so such a veto becomes a ToolError and therefore an
-error result for the call. To continue, a listener must explicitly
-return await next() (or return its own decision or result).
-
-### 5.1 tools/pre-execute
-
-    payload = {"call": call, "tool": name, "turn": turn, "step": step,
-               "agent": agent, "toolSet": tool_set}
-    fallback = lambda: {"kind": "allow"}
-
-Decision kinds:
-
-* allow: execute normally.
-* deny: the tool is not run; the result is ToolResult(text="Error: " + reason,
-  is_error=True), where reason defaults to "tool execution denied".
-* ask: the tool needs approval. Without an approval mechanism wired into the
-  pipeline this becomes an error result that says approval is unavailable (the
-  reason is appended when present). A runtime with an approval gate may handle
-  ask before the pipeline or replace this decision.
-* cancel: the call is cancelled; the result is an error result, default text
-  "tool execution was cancelled".
-
-An invalid kind or a non-dict decision raises ToolError; the pipeline turns
-that into an error result, not a turn-fatal exception.
-
-### 5.2 tools/execute
-
-    payload = {"call": call, "tool": name, "turn": turn, "step": step,
-               "arguments": arguments_dict, "agent": agent, "toolSet": tool_set}
-    fallback = lambda: await tool.run(arguments_dict, ctx)
-
-The fallback runs the real tool implementation. A listener that wants the
-normal execution but with different arguments cannot mutate the frozen payload;
-it builds a new arguments dict, calls the tool or returns its own result, or
-returns await next() to run the real tool unchanged. A handler may return a
-ToolResult directly to replace the result, or return
-{"kind": "result", "result": ToolResult} (the result key is also accepted
-without the kind). Any other non-None value is invalid and leads to a
-ToolError. Handler exceptions become tool error results.
-
-A handler that runs a different implementation should return a ToolResult; the
-pipeline verifies the type after the waterfall.
-
-### 5.3 tools/post-execute
-
-    payload = {"call": call, "tool": name, "turn": turn, "step": step,
-               "result": ToolResult, "agent": agent, "toolSet": tool_set}
-    fallback = lambda: {"kind": "accept"}
-
-Decision kinds:
-
-* accept: keep the result. accept may carry content (replace ToolResult.text)
-  or value (carried as meta["value"]); specifying both raises ValueError, and
-  replacing the value of a failed result raises ValueError. Both are surfaced
-  as ToolError and become error results.
-* block: replace the result with ToolResult(text=feedback or a default
-  message, is_error=True); the model sees the tool as failed.
-
-Pipeline order for one call: tool/call record, tools/pre-execute, approval
-handling (if any), tools/execute, post-execute, retention/truncation, then the
-tool/result record. The approval gate is not part of the hooks layer; a call
-site that handles ask does so before or around the pipeline.
-
-## 6. Lifecycle, approval, and observation hooks
-
-These hooks are dispatched by the approval gate, the tool pipeline, and the
-process entry points rather than by the agent turn loop.
-
-### 6.1 tool/call
-
-    payload = {agent, callId, name, turn, step}
-
-emit: after the tool/call record was appended to the session log and before the
-call is validated or executed, so a tracing listener sees the call even when it
-is denied, blocked, or aborted. It is dispatched by the batch pipeline path (the
-agent loop calls run_tool_batch) and by the PTC fallback path; the single-call
-PTC transport entry (run_tool_call) does not append a record and does not emit.
-arguments are deliberately absent: they are available from the tool/call
-record, and the hook must stay cheap for every call.
-
-### 6.2 approval/request
-
-    payload = {id, request, approval, agent, policy, signal}
-    fallback = lambda: "unavailable"
-
-waterfall: inside ApprovalService.request, before the interactive answerer is
-consulted. It is not dispatched when the effective policy is "never": DSH
-rejects before the waterfall so a prepended listener cannot approve while
-prompts are disabled. id is the approval id; request is the ApprovalRequest
-(kind, summary, detail, tool, call_id, reason); approval is the serialisable
-view {id, toolName, callId}; policy is "ask"; agent/signal are the caller's
-values.
-
-A listener returns "allow", "deny" or "cancel" (outcome strings allowed-once /
-rejected / cancelled are accepted as aliases). allow short-circuits to
-allowed-once, deny to rejected, cancel to cancelled. "ask", "unavailable" and
-None continue to the answerer (or produce unavailable when no answerer is
-installed); any other value becomes unavailable rather than raising, and a
-listener exception is isolated into unavailable.
-
-### 6.3 approval/asked
-
-    payload = {id, toolName[, callId][, reason]}
-
-emit: just before the request is resolved (after the policy check, before the
-waterfall). It is not dispatched when the policy is "never", when the signal is
-already set, or when the hooks service has neither a listener nor an observer.
-
-### 6.4 approval/decided
-
-    payload = {id, outcome}
-
-emit: after a request that reached the waterfall/answerer path is resolved.
-outcome is one of "allowed-once", "rejected", "cancelled", "unavailable". The
-"never" shortcut returns rejected without emitting asked/decided.
-
-### 6.5 hook/observability consumer
-
-src/deeppyro/builtin/hook_observability.py is the in-tree consumer that makes
-the observation hooks observable without a tracing plugin:
-
-* It subscribes to ten hooks with an explicit await next() / no-op listener so
-  a P1 consumer exists for each one.
-* llm/stream and tool/call payloads are logged at DEBUG because they are hot;
-  the rest are logged at INFO under the deeppyro.hooks logger. Log lines read
-  "hook <name> key=value ...".
-* snapshot() exposes per-hook dispatch counters for tests and diagnostics, and
-  close() disposes every listener idempotently.
-
-The plugin is a normal core-bundle row (id "hook-observability") and does not
-change behaviour: every listener continues the chain.
-
-### 6.6 prompt-extension consumer
-
-src/deeppyro/builtin/prompt_extension.py is the in-tree post-order waterfall
-consumer for system-prompt/assemble (plugin id "prompt-extension",
-inject ["hooks", "config"]):
-
-* It reads `[prompt].extension` from the config (default "").
-* The listener awaits next_step() first, so it extends the fully assembled
-  prompt; a non-string result or an empty extension is returned unchanged.
-* Otherwise it appends "
-
-" plus the stripped extension and returns the new
-  string. This is the reference example for post-order prompt customisation.
-
-### 6.7 approval-policy consumer
-
-src/deeppyro/builtin/approval_policy.py (plugin id "approval-policy",
-inject ["hooks", "config"]) turns `[approval].hookMode` into an
-approval/request listener:
-
-| hookMode | behaviour |
-| --- | --- |
-| off (default) | continue the chain (the gate falls back to the interactive policy) |
-| ask | continue the chain |
-| allow | return "allow" when ApprovalRequest.tool matches hookTools |
-| deny | return "deny" when ApprovalRequest.tool matches hookTools |
-
-`[approval].hookTools` is a list of tool names (empty means every tool). A
-non-matching request continues the chain, so the plugin is inert until a tool is
-listed or the mode is allow/deny. ApprovalService maps "allow" to allowed-once
-and "deny" to rejected, then emits approval/decided.
-
-The match is against `ApprovalRequest.tool`, which the tool-side permission
-bridge populates with the calling tool's name: `write`/`edit` for explicit
-filesystem escalation and `pwsh`/`bash` for shell commands. Since DSH aligns
-writes with the sandbox policy, outside-workspace writes are denied directly
-(no approval), so in practice the request kind is `sandbox-escalation` produced
-by `sandbox_permissions`; one `hookTools` entry covers every escalation path a
-tool takes. Callers that build their own `ApprovalRequest` may leave `tool`
-unset, in which case only an empty `hookTools` list matches. A "never" policy
-bypasses the waterfall entirely.
-
-## 7. Wiring
-
-The hooks plugin is a normal kernel plugin row. The core bundle mounts it after
-tools-builtin (inject is empty, so its position only affects availability
-order):
-
-    [[plugins]]
-    id = "hooks"
-    plugin = "deeppyro.builtin.hooks:HooksPlugin"
-
-The runtime makes the service available to tool contexts by placing it in the
-ToolContext.services dict under the hooks key, and to the agent loop by passing
-it in AgentSession.services. Call sites use duck typing:
-
-    hooks = services.get("hooks")
-    if hooks is not None:
-        result = await hooks.waterfall("tools/pre-execute", payload, fallback)
-
-The tools/pipeline.py code already does exactly this and falls back to direct
-execution when no hooks object is present, so old callers keep working. The
-agent loop uses the same pattern: check for the service, dispatch the hook, and
-apply the decision described above. Missing service means no listeners, not an
-error.
-
-The core bundle also mounts hook plugins around that row. llm-retry and
-hook-observability follow hooks; hook-journal follows hook-observability and
-turns the observer stream into session records. prompt-extension and
-approval-policy mount after prompt-core (their prompt/config dependencies) and
-are inert by default. session-title follows hook-observability too. All of them
-are ordinary rows with their own ctx.effect cleanup:
-
-    [[plugins]]
-    id = "llm-retry"
-    plugin = "deeppyro.builtin.llm_retry:LlmRetryPlugin"
-
-    [[plugins]]
-    id = "hook-observability"
-    plugin = "deeppyro.builtin.hook_observability:HookObservabilityPlugin"
-
-    [[plugins]]
-    id = "hook-journal"
-    plugin = "deeppyro.builtin.hook_journal:HookJournalPlugin"
-
-    [[plugins]]
-    id = "prompt-extension"
-    plugin = "deeppyro.builtin.prompt_extension:PromptExtensionPlugin"
-
-    [[plugins]]
-    id = "approval-policy"
-    plugin = "deeppyro.builtin.approval_policy:ApprovalPolicyPlugin"
-
-hook-journal is critical=false: its failure is isolated and never blocks boot.
-It subscribes through add_observer, so it sees dispatches even when no listener
-is registered (section 2.11). Hot hooks are skipped. approval/* and session/*
-dispatches carry no agent, so hook-journal skips them; approval auditing writes
-session records from ApprovalService._record instead (section 9).
-
-Current call sites:
-
-* src/deeppyro/agent/session.py dispatches agent/pre-step, agent/request,
-  agent/request-error, agent/assistant-stream, agent/status,
-  agent/turn-stopping, agent/error, llm/stream and system-prompt/assemble;
-  every dispatch carries the session scope described in section 2.10.
-  agent/pre-step fires once per proposed step (M0 P0-2), and the loop has no
-  default step cap (P0-1).
-* src/deeppyro/tools/pipeline.py dispatches tools/pre-execute, tools/execute,
-  tools/post-execute, and tool/call with the owning agent's scope.
-* src/deeppyro/sandbox/gate.py dispatches approval/request (no scope); the
-  audit trail of asked/decided is session records written by
-  ApprovalService._record, not bus events.
-* src/deeppyro/tui/runtime.py and src/deeppyro/headless.py dispatch
-  session/created and session/disposed.
-* src/deeppyro/builtin/llm_retry.py registers an agent/request-error listener
-  that returns {"kind": "retry"} or continues the chain.
-* src/deeppyro/builtin/hook_observability.py registers a continuing listener
-  for ten observation hooks and logs them.
-* src/deeppyro/builtin/hook_journal.py registers an observer that appends
-  hook/invoked and hook/result records through AgentSession.record_hook_event;
-  SessionQuery.hook_trace pairs them back for /hooks and tests.
-* src/deeppyro/builtin/prompt_extension.py extends the assembled system prompt
-  post-order and src/deeppyro/builtin/approval_policy.py answers
-  approval/request from config.
-
-No hook name is left without a producer in the default bundle.
-
-## 8. Differences from DSH
-
-Aligned with the cordis event bus:
-
-* waterfall polarity matches cordis: the handler return value is the dispatch
-  result, so returning None without next() vetoes; next() is an explicit
-  continuation that runs the downstream chain.
-* bail uses the cordis isBailed rule (value is neither None nor False), so 0
-  bails.
-* parallel uses gather with return_exceptions=True and aggregates failures into
-  HookAggregateError, raised from the first failure.
-* once removes the listener before invoking it, matching cordis on/once.
-
-Remaining deviations:
-
-* Payloads are dicts; DSH describes typed event payloads. The keys documented
-  here are the compatibility surface.
-* Payloads are frozen recursively before dispatch. DSH consumers receive the
-  event object; deeppyro listeners cannot mutate payload containers. Use return
-  values for decisions.
-* There is no event bubbling or async event emitter hierarchy: one flat
-  registry per kernel and explicit dispatch by name. DSH EventOptions also
-  carries global/prepend; global_ is aligned with it, and prepend matches the
-  cordis ordering flag. Scope filtering is a deeppyro extension local to this
-  registry (section 2.10): a dispatch scope is explicit data, not an emitter
-  tree, and there is no propagation of scope through ancestors.
-* The service does not implement retry delays or approvals itself.
-  agent/request-error only answers retry/stop; the delay and the llm/retry
-  records come from deeppyro.agent.retry. ask/cancel from tools/pre-execute are
-  normalized by the pipeline when no approval gate is wired.
-* serial is a deeppyro extension that collects return values; cordis serial
-  returns the first bailed value. bail provides the cordis-shaped API.
-* Cancellation is a cooperative signal check before each listener, not an
-  AbortedError raised by the service.
-* Listener disposal is cooperative: plugins must dispose in their fiber
-  cleanup (ctx.effect) so unloading a plugin removes its listeners.
-* emit isolates handler exceptions; waterfall, serial, bail, and parallel
-  propagate them (parallel aggregates them). This contract states the policy
-  per mode.
-
-Migration from the pre-P1 service:
-
-* Lists in a payload are now tuples. Code that compared payload["toolSet"] to
-  a list must compare list(payload["toolSet"]) or tuple(...).
-* A waterfall listener that returned None to continue must now explicitly
-  return await next(). Returning None without next() now vetoes, which at tool
-  hooks is a ToolError and at agent hooks is a no-decision None.
-* A waterfall listener can no longer mutate the payload to feed downstream
-  listeners; build a new mapping or use the next() result instead.
-* The "next() called more than once" RuntimeError is retained; its message
-  names the hook.
-
-## 9. Bus migration (M0)
-
-The catalogue of bus names now lives outside this document, in
-[`events.md`](events.md) (`deeppyro.core.events`). `HookService` remains the
-transport; `ctx.on()` routes any catalogue name there and anything else to
-cordis. The migration table below lists the four names that were retired from
-the bus in M0.
-
-Four names used to sit on the bus although DSH spells them as session records.
-They keep their constants for one minor release, are marked ``DEPRECATED`` in
-`deeppyro.hooks.DEPRECATED_NAMES`, and are no longer dispatchable: subscribing to
-one raises `ValueError`, which is the honest failure for a name nothing emits.
-
-| retired name | DSH shape | replacement |
-| --- | --- | --- |
-| `tool/call` | record, no dispatch site | bus `tools/pre-execute`, `tools/execute`, `tools/post-execute`; record `tool/call` |
-| `model/selection` | record | records `request/header` and `request/context` |
-| `approval/asked` | record | record `approval/asked` written by the approval gate |
-| `approval/decided` | record | record `approval/decided` written by the approval gate |
-
-The approval audit trail is written through `ApprovalService._record`, so it
-lands on the session of the gate that asked (`PermissionGate(..., session=...)`)
-and survives a plugin that forgets to listen. The remaining fifteen names are
-unchanged; `docs/spec/dsh-event-catalog-unresolved.md` tracks the 94-name DSH
-contract, the ten subscribe-only names, and the runtime harvest.
-
-M1 also retires the cordis mirror. `hook-bridge` (and `kernel/hook_bridge.py`)
-is gone: `PluginContext.on()` now resolves a name through
-`deeppyro.core.events.EVENT_SPECS` and subscribes to the HookService directly, so
-a third-party plugin sees the bus without a second dispatch path. Names the
-catalogue does not know still fall back to the runtime context's local
-dispatcher (`ctx.on`), which keeps kernel observability (`plugin/status`,
-`loader/changed`, ...) working. The
-durable trace is unchanged: `hook-journal` keeps writing `hook/invoked` and
-`hook/result` session records, and the TUI reads those records rather than a
-republished event stream.
-
-## 10. Testing
-
-    uv run pytest -o addopts= -q tests/hooks tests/integration/test_p0_bus_alignment.py \
-        tests/integration/test_p1_bus.py
-
-tests/hooks/test_service.py covers waterfall order, veto, short-circuit,
-explicit continuation, fallback (plain and async), next-once enforcement,
-exception propagation, prepend, serial ordering/exceptions/cancellation, emit
-isolation and cancellation, bail rules, parallel concurrency and aggregation,
-once registration and disposal, recursive payload freezing in every mode,
-custom-object identity, fallback mutability, signal cancellation mid-chain,
-empty dispatches, dispatch snapshots, and concurrent dispatches.
-tests/hooks/test_scope.py covers session isolation, global and unscoped
-broadcast, dormant scoped listeners under an unscoped dispatch, multi-key subset
-matching, scope copying at registration, empty-scope normalization, all five
-dispatch modes, prepend ordering after filtering, once with scope, idempotent
-disposal, invalid registration and dispatch scopes, unknown names, cancellation,
-payload freezing, and scope registration for every known hook.
-tests/hooks/test_plugin.py covers the plugin contract (provide hooks, inject
-empty) and a real kernel boot mounting HooksPlugin through PluginSpec.
-tests/integration/test_p0_bus_alignment.py verifies the P0 bus surface against
-the service, including frozen tuple payload lists and observer listeners that
-explicitly await next().
-tests/integration/test_p1_bus.py drives the real AgentSession and pipeline:
-scoped listeners across two agents, dispatch without scope, tool/call scope
-isolation, pre-step veto blocking the turn, system-prompt/assemble veto keeping
-the rendered prompt, and approval/request veto falling back to the policy.
-tests/agent/test_session_hooks_p1.py covers the five agent-side consumer hooks
-(payload shapes, vetoes, provider/model constraints, error phases).
-tests/builtin/test_hook_observability.py covers the observation plugin counters,
-log levels, wiring, and idempotent close; tests/tui/test_runtime_hooks.py covers
-session/created and session/disposed from the runtime; tests/tui/test_headless.py
-covers the same for headless; tests/tools/test_sandbox.py covers the three
-approval hooks.
+# Hooks and the event bus
+
+> **状态**：现行（0.3.0 native-only） · **层级**：内核契约（typed loop hooks + plugin event bus）
+> **关联契约**：[loop.md](loop.md)（typed `AgentHooks` 的调用方）、[events.md](events.md)（内核事件目录与声明的生产者）、[native/schema.md](../native/schema.md)（事件落盘）、[tui.md](tui.md)（/hooks 视图）
+> **最后核对**：2026-11-19
+
+DeepPyro 0.3.0 has exactly **two hook surfaces**, and they do not overlap:
+
+1. **Typed loop hooks** — a synchronous Python `Protocol` (`AgentHooks` in `src/deeppyro/agent/events.py`)
+   that the one native `AgentLoop` calls with frozen dataclasses. This is how
+   in-process observers (the TUI, the headless sink, tests) watch a run. It is
+   not a bus: no names, no ordering between independent observers, no ability to
+   change the loop's result.
+2. **Plugin hooks** — string-named dispatch through `HookService` /
+   `EventBus` (`src/deeppyro/hooks/service.py`, `src/deeppyro/core/bus.py`). Plugins use
+   this to intercept tool calls, answer approval requests, observe session
+   lifecycle and subscribe to domain events. Five dispatch modes give a listener
+   a chance to veto, replace or observe a decision.
+
+This document is the contract for both. Code and tests win over prose; the
+event names themselves are catalogued in [events.md](events.md).
+
+## 1. Relationship to the deleted v4 stack
+
+The 0.3.0 hard cut removed the v4 loop-boundary hook machinery. There is no
+second path and no fallback:
+
+* the v4 `AgentSession` hook dispatch (the old `agent/*` catalogue fired from
+  `session_turn.py`/`session_stream.py`) is gone with the deleted session stack;
+* the hook journal (`builtin/hook_journal.py`) and `hooks/records.py` are deleted;
+  there is no journal file and the TUI `/hooks` view is fed by
+  `NativeHookRecorder` on the live hook service instead ([tui.md](tui.md));
+* `model/selection`, `tool/call`, `approval/asked` and `approval/decided` are
+  retired as dispatch names (`DEPRECATED_NAMES`). Their constants remain
+  importable for one minor, but registration is rejected — see §3.6;
+* the native loop never raises string-keyed bus events for its own lifecycle.
+  It calls `AgentHooks` and appends schema 1 session events instead
+  (`src/deeppyro/agent/events.py` docstring; [loop.md](loop.md)).
+
+## 2. Surface 1 — typed loop hooks
+
+### 2.1 The protocol
+
+```python
+class AgentHooks(Protocol):
+    def run_started(self, event: RunStarted) -> None: ...
+    def turn_started(self, event: TurnStarted) -> None: ...
+    def step_started(self, event: StepStarted) -> None: ...
+    def text_delta(self, event: TextDeltaEvent) -> None: ...
+    def reasoning_delta(self, event: ReasoningDeltaEvent) -> None: ...
+    def assistant_message(self, event: AssistantMessageEvent) -> None: ...
+    def tool_call_started(self, event: ToolCallStartedEvent) -> None: ...
+    def tool_call_finished(self, event: ToolCallFinishedEvent) -> None: ...
+    def checkpoint_written(self, event: CheckpointWrittenEvent) -> None: ...
+    def budget_exceeded(self, event: BudgetExceededEvent) -> None: ...
+    def run_finished(self, event: RunFinishedEvent) -> None: ...
+```
+
+Rules that follow from the implementation
+(`src/deeppyro/agent/loop.py`, emit helpers at lines 908–996 and the stream
+callbacks at 519–555):
+
+* **The default is `NullAgentHooks`**; every method is a no-op, so hooks are
+  entirely optional. Pass `hooks=...` to `AgentLoop.__init__` to observe.
+* **Calls are synchronous and inline.** The loop calls the method directly. The
+  observer must not block the event loop; offload slow work to a queue or
+  another task (see code/tests).
+* **Observer failures are isolated.** Every dispatch is wrapped in
+  `contextlib.suppress(Exception)`: an exception from an observer is swallowed
+  and can never fail the run, skip a session event or change the result. This
+  makes typed hooks observation-only by construction.
+* **The loop calls hooks after the corresponding session event is written** (the
+  dataclass docstrings state this), so an observer that consults the session log
+  sees the event that triggered the callback.
+* There is no global ordering contract between separate observers: the loop has
+  exactly one `AgentHooks` instance. Compose several observers yourself if
+  needed.
+
+### 2.2 Event payloads
+
+All payloads are frozen slotted dataclasses in
+`src/deeppyro/agent/events.py`. Every event carries `run_id` and `trace_id`;
+turn/step events carry `turn_id` and `step_id`.
+
+| Callback | Payload (besides ids) | Fires |
+|---|---|---|
+| `run_started` | `session_id`, `resumed: bool` | after `run.started` was appended; `resumed` is true for a resumed run |
+| `turn_started` | `prompt_message_id: str | None` | after `turn.started`; `None` when the turn resumes without a new prompt |
+| `step_started` | `step: int` | after `step.started` |
+| `text_delta` | `text: str` | per streamed assistant text fragment (never persisted) |
+| `reasoning_delta` | `text: str` | per streamed reasoning fragment (never persisted) |
+| `assistant_message` | `message: Message`, `finish_reason: str` | after `assistant.message` was appended |
+| `tool_call_started` | `call_id`, `name`, `arguments` (JSON string), `idempotency_key` | after `tool.call` was appended, **before** dispatch |
+| `tool_call_finished` | `call_id`, `name`, `result: ToolResult`, `duration_ms: int` | after the result is available; also fires for error results |
+| `checkpoint_written` | `session_id`, `path`, `last_seq: int`, `status: str` | after the checkpoint sidecar was atomically replaced |
+| `budget_exceeded` | `kind: BudgetKind`, `limit`, `actual` | immediately before the run aborts on a limit |
+| `run_finished` | `session_id`, `status: str` (`completed`/`failed`/`cancelled`), `reason: Mapping | None` | after `run.finished` was appended |
+
+### 2.3 Ordering
+
+The authoritative order is the session log ([native/schema.md](../native/schema.md)
+§5.5). As observed through typed hooks:
+
+1. `run_started` once, before any turn.
+2. `turn_started` once per turn.
+3. For each model step: `step_started`, then zero or more
+   `text_delta`/`reasoning_delta` fragments, then `assistant_message`; if
+   the assistant message contains tool calls, `tool_call_started` for every
+   call, then `tool_call_finished` as results arrive, then the next
+   `step_started`.
+4. `checkpoint_written` interleaves wherever the loop appends
+   `run.checkpoint` (start of a step, before tool dispatch, after tool
+   results, and once at the terminal state).
+5. `budget_exceeded` (when applicable) is immediately followed by
+   `run_finished` with `status="failed"`.
+6. `run_finished` is last, exactly once.
+
+Delta counts vary by provider and are not guaranteed: a non-streaming provider
+may emit none. `checkpoint_written` count varies with tool use.
+
+### 2.4 Consumers
+
+* **TUI** — `TuiAgentHooks` (`src/deeppyro/tui/native_hooks.py`) maps
+  `run_started` → status `thinking`, `step_started` → `step`,
+  `text_delta` → `text`, `reasoning_delta` → `thinking`,
+  `tool_call_started` → `tool_call`, `tool_call_finished` → `tool_result`;
+  `assistant_message`/`checkpoint_written`/`budget_exceeded`/`run_finished`
+  produce no TUI event (`run_finished` only clears the active marker). The
+  TUI also reads the session log/fold directly for the durable transcript.
+* **Headless** — `_NativeSinkHooks` (`src/deeppyro/headless.py`) turns
+  `text_delta` into a JSON `{"type":"text"}` line, `reasoning_delta` into
+  `{"type":"thinking"}`, and the tool callbacks into `tool_call`/`tool_result`;
+  the runner itself emits `session`/`final`/`usage`/`error` frames
+  ([headless.md](headless.md)).
+* Tests inject recording implementations of `AgentHooks` (for example
+  `tests/tui/test_native_hooks.py` and the native loop tests listed in
+  [loop.md](loop.md) §15).
+
+## 3. Surface 2 — the plugin hook service
+
+### 3.1 One registry, two doors
+
+`HooksPlugin` (`src/deeppyro/builtin/hooks.py`) allocates one `EventBus` and
+one `HookService` over it, and provides both as plugin services:
+
+```python
+`HookService` facade   methods: on, has, listeners, waterfall, serial, emit, bail, parallel
+`EventBus` transport  raw registration/dispatch, no domain names
+```
+
+The facade is the historical hook surface used by in-tree subscribers; the bus
+is name-agnostic and can dispatch any catalogue name. Both share the same
+registry: a listener registered through either door runs for dispatches through
+the other, and observers/scope accounting are global. The kernel hands the same
+`EventBus` to plugins (PluginContext `on`) and the loop/tool pipeline receives
+the `HookService`. There is exactly one bus per runtime
+(`tests/integration/test_single_bus.py`).
+
+### 3.2 Registration
+
+```python
+disposer = hooks.on(name, handler, *, prepend=False, once=False, scope=None, global_=False)
+```
+
+| Option | Semantics |
+|---|---|
+| `scope` | Mapping of plugin-scope keys. A listener runs only when its scope is a subset of the dispatch scope (empty scope normalizes to `None`). A scoped listener does **not** run for an unscoped dispatch. |
+| `global_=True` | Bypass scope filtering entirely. |
+| `prepend=True` | Insert at the head of the listener list (position 0). |
+| `once=True` | The registration disposes itself before the wrapped handler runs. |
+| disposer | Idempotent; calling twice is safe. |
+
+`has(name)` and `listeners(name)` report the registry; observers can be
+added with `add_observer` (§3.5).
+
+### 3.3 Dispatch modes
+
+Five modes, implemented in `src/deeppyro/core/bus.py`:
+
+| Mode | Semantics |
+|---|---|
+| `waterfall` | Chains listeners; a non-`None` return wins. A listener that returns `None` **without** calling `next()` vetoes the chain (dispatch returns `None`). Calling `next()` twice raises `RuntimeError("next() called more than once for hook {name!r}")`. A listener that awaits `next()` and returns `None` yields the next listener's result. `fallback` (callable or awaitable) resolves at the end of the chain and on cancellation. |
+| `serial` | Runs every listener in order, collecting return values; stops early when the payload's `signal` is set. |
+| `emit` | Notifies listeners in order. Every listener failure is isolated with `logger.exception("hook handler for %r failed")`; an `emit` cannot fail its dispatcher. |
+| `bail` | Runs listeners until one returns a value that is neither `None` nor `False`; returns it, otherwise `None`. |
+| `parallel` | `asyncio.gather(..., return_exceptions=True)`; results are returned, collected exceptions raise `HookAggregateError` with message `"N hook listener(s) failed for hook {name!r}"`. |
+
+Cancellation is cooperative: when a dispatch payload carries a `signal`
+object whose `is_set()` becomes true, `serial` stops and `waterfall` resolves its
+fallback instead of continuing the chain. Tool and approval payloads carry the
+run's cancel signal this way.
+
+### 3.4 Payloads
+
+Before dispatch, payload mappings are replaced by `MappingProxyType` views,
+lists/tuples by tuples; other objects keep their identity. Subscribers must
+treat payloads as read-only. A mode's return value is the dispatcher's decision;
+for `emit` the return values are observations only.
+
+The catalogue in `src/deeppyro/core/events.py` declares each name's mode and its
+declared producer ([events.md](events.md)). A dispatch uses the mode the caller
+chooses; the declared mode is the contract for that name.
+
+### 3.5 Observers
+
+`hooks.add_observer(callback) -> disposer` and `hooks.observed` give a global
+view of every dispatch. For each dispatch the bus emits exactly one
+`HookObservation(kind="invoked")` before listeners run, and exactly one
+`kind="resolved"` from a `finally` block. Fields: `kind`, `hook`, `mode`,
+`scope`, `payload`, `result`, `error`, `duration_ms`. An observer's own
+failure is logged and cannot change the dispatch result.
+
+In-tree observers: `builtin/hook_observability.py` (curated recent decisions,
+used by the TUI `/hooks` view), `tests/hooks/test_observer.py`, and telemetry.
+
+### 3.6 Name policy
+
+`HookService._validate` checks every registration and dispatch:
+
+* Names in `HOOK_NAMES` (`src/deeppyro/hooks/types.py`, 15 names) or any
+  name accepted by `is_bus_event()` (the [events.md](events.md) catalogue) are
+  allowed.
+* `DEPRECATED_NAMES` — `model/selection`, `tool/call`, `approval/asked`,
+  `approval/decided` — raise `ValueError`:
+  `"hook {name!r} was retired from the bus; subscribe to what replaces it
+  (tools/pre-execute, tools/execute, tools/post-execute for tool calls;
+  llm/stream or agent/request for model selection; approval/request for
+  approvals)"`. The constants stay importable for one minor; they no longer
+  register or dispatch.
+* Unknown names raise `ValueError("unknown hook {name!r}; expected one of: ...")`.
+
+Adding or changing a name/mode is a kernel change: update
+`src/deeppyro/core/events.py` and `src/deeppyro/hooks/types.py` together and extend
+the tests.
+
+## 4. What actually fires in 0.3.0
+
+The catalogue declares producers, but the call sites are authoritative. After
+the v4 deletion the verified dispatch sites are:
+
+| Name | Mode | Dispatched from | Contract |
+|---|---|---|---|
+| `tools/pre-execute` | waterfall | `src/deeppyro/tools/pipeline.py:258` | Decision `{"kind":"allow"|"deny"|"ask"|"cancel", ...}`. `deny`/`ask`/`cancel` short-circuit with an error `ToolResult`; a non-dict decision raises `ToolError`. Fallback = allow. |
+| `tools/execute` | waterfall | `src/deeppyro/tools/pipeline.py:314` | Fallback executes the tool. A listener may return a `ToolResult` or `{"kind":"result","result": ...}` to replace execution. |
+| `tools/post-execute` | waterfall | `src/deeppyro/tools/pipeline.py:349` | `{"kind":"accept", "content"|"value"}` may replace the result text/value; `{"kind":"block","feedback":...}` turns the result into an error. Fallback = accept. |
+| `approval/request` | waterfall | `src/deeppyro/sandbox/approval.py:179` | Decides an approval ask. Payload: id, request, approval preview, agent, policy, signal. Fallback `"unavailable"`; `None`/`"ask"`/`"unavailable"` defer to the normal answerer; unknown listener results become `"unavailable"`. |
+| `session/created` | emit | `src/deeppyro/headless.py:855`, `src/deeppyro/tui/runtime_services.py:77` | Notifies that a native session was opened (payload includes session id, cwd, preset). |
+| `session/disposed` | emit | `src/deeppyro/headless.py:977` | Notifies that a session was closed; failures are isolated. |
+| `command/executed` | emit | `src/deeppyro/builtin/commands.py:114` | A slash command ran; publish failures are logged, never raised. |
+| `workspace/changed` | emit | `src/deeppyro/working_directory/service.py:261` | The working directory changed; the kernel plugin wires the emitter. |
+| `goal/changed` | emit | `src/deeppyro/goal/service.py` (GOAL_BUS_EVENT emit helper) | Goal state changed; the native round driver subscribes (`src/deeppyro/goal/native_driver.py:182`). |
+| `mcp/connected` / `mcp/disconnected` | emit | `src/deeppyro/mcp/service.py:184` / `:298`, `:338` | MCP server lifecycle; payload `{"server", "tools"}`. |
+
+The native loop routes every tool call through the tool pipeline with the
+runtime `HookService` (`src/deeppyro/agent/loop.py:744`), which is why the three
+tool hooks are the supported way for a plugin to police tool use on the native
+runtime.
+
+### 4.1 Catalogued names with no current dispatcher
+
+These names are declared in the catalogue and accepted by `HookService`, but
+there is **no dispatch call site in `src` after the v4 stack deletion** (verified
+2026-11-19). Registering them is allowed; delivery must not be assumed:
+
+* `agent/pre-step`, `agent/request`, `agent/request-error`,
+  `agent/turn-stopping`, `agent/assistant-stream`, `agent/status`,
+  `agent/error` — these were v4 loop-boundary hooks. The native loop reports
+  through typed `AgentHooks` instead (§2).
+* `llm/stream` and `system-prompt/assemble` — declared producers are
+  `agent.loop` / `prompt.service`, but no emitter remains in `src`.
+* `goal/activation-changed` — catalogued; no emitter found at 2026-11-19
+  (`src/deeppyro/goal/service.py` has a comment about publishing it).
+* `agent/inbox/inserted`, `agent/inbox/claimed`, `agent/inbox/discarded` —
+  the producer module (`agent/inbox.py`) was deleted with the v4 stack.
+
+Several builtin plugins still subscribe to some of these names
+(`builtin/usage.py`, `builtin/session_title.py`, `builtin/prompt_extension.py`,
+`builtin/hook_observability.py`). They tolerate no delivery today. Do not
+document them as live integration points without re-checking the code; the
+catalogue producer field records intent, the call site is the fact.
+
+## 5. Builtin listeners
+
+| Plugin | Registers on | Effect |
+|---|---|---|
+| `builtin/hook_observability.py` | observer (curated: `llm/stream`, `system-prompt/assemble`, `approval/request`, `agent/error`, `session/created`, `session/disposed`) + `approval/request` | Keeps recent hook decisions for the TUI `/hooks` view. |
+| `builtin/approval_policy.py` | `approval/request` (waterfall) | Applies the configured approval policy before the interactive answerer. |
+| `builtin/prompt_extension.py` | `system-prompt/assemble` (waterfall) | Declared extension point; see §4.1. |
+| `builtin/session_title.py` | `agent/turn-stopping` (serial) | Declared title-update rule; see §4.1. |
+| `builtin/usage.py` | `agent/pre-step`, `agent/turn-stopping`, `llm/stream`, `session/disposed` | Legacy usage accounting; native usage is recorded by `agent/model_call.py` and `TurnUsage` records ([loop.md](loop.md) §12). |
+| `observability/telemetry.py` | several names | Telemetry spans; see ops/telemetry. |
+
+## 6. Migration notes
+
+* Use `from deeppyro.hooks import HookService, HookObservation, HookAggregateError`
+  and the name constants. `deeppyro.hooks.records` and
+  `deeppyro.builtin.hook_journal` are deleted; importing them is a plugin bug
+  in 0.3.0.
+* `import deeppyro.core.wire`, `deeppyro.session.store`,
+  `deeppyro.projections` and `deeppyro.session_query` are gone; plugins that
+  imported them no longer load (see release notes).
+* The v4 flags (`--legacy-v4`, `--native-loop`, `DEEPPYRO_NATIVE_LOOP`,
+  `DEEPPYRO_TUI_NATIVE`) are removed; passing them is an argument error, and
+  there is no hook-journal fallback.
+* Plugins do not receive `AgentHooks`; typed hooks are host/observer code.
+  Plugins interact through services and the string-named bus.
+
+## 7. Tests
+
+* `tests/hooks/test_service.py`, `tests/hooks/test_observer.py`,
+  `tests/hooks/test_scope.py`, `tests/hooks/test_plugin.py` — facade,
+  observers, scope filtering, plugin-provided service.
+* `tests/integration/test_bus_modes.py`, `test_single_bus.py`,
+  `test_bus_consumers.py`, `test_builtin_hooks_real.py`,
+  `test_event_harness.py`, `test_observability_services.py` — dispatch
+  semantics end to end.
+* `tests/builtin/test_approval_policy.py`, `test_hook_observability.py`,
+  `test_prompt_extension.py`, `test_session_title.py`, `test_usage.py` —
+  builtin listeners.

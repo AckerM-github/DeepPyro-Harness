@@ -34,7 +34,7 @@ class PromptExtensionPlugin(Plugin):
     """Append [prompt].extension to the rendered system prompt."""
 
     plugin_id = "prompt-extension"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "append configured text to the assembled system prompt"
     inject: ClassVar[list[str]] = ["hooks", "config"]
 

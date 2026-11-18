@@ -39,7 +39,7 @@ async def test_native_team_toggle_binds_and_stops_the_native_manager(
 ) -> None:
     provider = _ScriptedProvider()
     provider.script = [TextDelta("member reply"), Finish(StopReason.STOP)]
-    runtime, _events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, _events = await _boot(monkeypatch, tmp_path, provider)
     monkeypatch.setattr(TuiRuntime, "name_session_title", _noop_title)
     try:
         assert runtime.agent_mode != AGENT_MODE_TEAM
@@ -70,7 +70,7 @@ async def test_native_team_off_refuses_while_a_member_is_live(
 ) -> None:
     provider = _ScriptedProvider()
     provider.gate = asyncio.Event()
-    runtime, _events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, _events = await _boot(monkeypatch, tmp_path, provider)
     monkeypatch.setattr(TuiRuntime, "name_session_title", _noop_title)
     try:
         await runtime.set_team_mode(True)
@@ -92,7 +92,7 @@ async def test_native_team_deliveries_show_queued_and_delivered_state(
     provider = _ScriptedProvider()
     provider.script = [TextDelta("first reply"), Finish(StopReason.STOP)]
     provider.gate = asyncio.Event()
-    runtime, _events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, _events = await _boot(monkeypatch, tmp_path, provider)
     monkeypatch.setattr(TuiRuntime, "name_session_title", _noop_title)
     try:
         await runtime.set_team_mode(True)
@@ -127,7 +127,7 @@ async def test_native_team_roster_restores_after_resume(
 ) -> None:
     provider = _ScriptedProvider()
     provider.script = [TextDelta("done"), Finish(StopReason.STOP)]
-    runtime, _events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, _events = await _boot(monkeypatch, tmp_path, provider)
     monkeypatch.setattr(TuiRuntime, "name_session_title", _noop_title)
     session_id = runtime.session_id
     member_ids: list[str] = []
@@ -141,7 +141,7 @@ async def test_native_team_roster_restores_after_resume(
         await runtime.close()
 
     provider.script = [TextDelta("again"), Finish(StopReason.STOP)]
-    resumed, _events = await _boot(monkeypatch, tmp_path, provider, native=True, resume=session_id)
+    resumed, _events = await _boot(monkeypatch, tmp_path, provider, resume=session_id)
     try:
         assert resumed.agent_mode == AGENT_MODE_TEAM
         members = resumed.team.members()

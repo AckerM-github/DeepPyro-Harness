@@ -198,7 +198,6 @@ def test_native_panel_reads_subagent_runs_from_session_facts(tmp_path: Path) -> 
     _started(handle, "child-1")
     _finished(handle, "child-1")
     runtime = SimpleNamespace(
-        native=True,
         session=handle,
         subagent=SimpleNamespace(usage=lambda child_id: None),
     )

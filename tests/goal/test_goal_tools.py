@@ -56,7 +56,7 @@ def tool_names(plugin: GoalPlugin, ctx: StubContext) -> list[str]:
 
 def test_plugin_metadata_and_registration() -> None:
     plugin, ctx = build()
-    assert plugin.version == "0.2.0"
+    assert plugin.version == "0.3.0"
     assert plugin.provide == "goal"
     assert "goal" in ctx.provided
     assert ctx.provided["goal"] is plugin.service
@@ -128,4 +128,5 @@ def test_setup_registers_a_disposer_for_the_session_loader() -> None:
     assert callable(ctx.disposers[0])
     ctx.disposers[0]()
     # configure(load=None) is a late-binding no-op, so the loader keeps working.
-    assert plugin._load("session-missing") == []
+    # The native loader reads a session log and reports a missing session as None.
+    assert plugin._load("session-missing") is None

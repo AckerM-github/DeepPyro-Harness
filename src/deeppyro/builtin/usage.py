@@ -215,7 +215,7 @@ class UsageService(Service):
 
     provide = "usage"
     plugin_id = "usage"
-    version = "0.2.0"
+    version = "0.3.0"
     inject: ClassVar[tuple[Any, ...]] = ("hooks",)
     description = "Token/cost accounting ledger with JSONL persistence and turn reporting."
 

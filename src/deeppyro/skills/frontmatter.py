@@ -101,7 +101,7 @@ def parse_skill_text(text: str, *, source: str = "<skill>", fallback_name: str =
 def _metadata_fields(fields: dict[str, str], source: str) -> dict[str, str]:
     """Collect `metadata.<key>: value` lines into a flat mapping.
 
-    DSH accepts a nested YAML `metadata` map; this parser is line oriented, so
+    upstream accepts a nested YAML `metadata` map; this parser is line oriented, so
     the flat dotted spelling is the supported form. A bare `metadata:` line is
     accepted and ignored so authoring mistakes degrade instead of failing.
     """

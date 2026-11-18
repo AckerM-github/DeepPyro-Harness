@@ -11,7 +11,7 @@ from deeppyro.builtin.sandbox import SandboxPlugin
 from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.core.errors import ConfigError, DeeppyroError
 from deeppyro.sandbox.permission import PermissionPresetsService
-from deeppyro.session.native_index import NativeSessionInfo, list_native_sessions
+from deeppyro.session.native_index import NativeSessionInfo
 from deeppyro.tui.native_facts import native_view
 from deeppyro.tui.runtime_catalog import CatalogLayer
 from deeppyro.tui.runtime_support import await_maybe, logger, resolve_workspace
@@ -33,28 +33,14 @@ class StatusLayer(CatalogLayer):
 
     def permission_preset(self) -> str:
         """The current named permission preset (or "custom")."""
-        if self.native:
-            derived = self._native_permission_preset()
-            if derived is not None:
-                return derived
-        service = self._service(PermissionPresetsService)
-        current = getattr(service, "current", None)
-        if callable(current) and self.session is not None:
-            try:
-                return str(current(self.session))
-            except Exception:  # noqa: BLE001 - an optional service must not break the UI
-                logger.debug("permission preset unavailable", exc_info=True)
+        derived = self._native_permission_preset()
+        if derived is not None:
+            return derived
         return str(getattr(self.permission, "preset", "workspace-write"))
 
     async def set_permission(self, preset: str) -> str:
         """Switch the named permission preset for the live session."""
-        if self.native:
-            return await self._set_permission_native(preset)
-        service = self._service(PermissionPresetsService)
-        apply = getattr(service, "apply", None)
-        if not callable(apply) or self.session is None:
-            raise DeeppyroError("permission presets are not available in this session")
-        return str(apply(self.session, preset))
+        return await self._set_permission_native(preset)
 
     async def set_workspace(self, path: str | Path) -> Path:
         """Rebind tools and approvals to a new workspace, keeping the session."""
@@ -64,7 +50,7 @@ class StatusLayer(CatalogLayer):
         kernel_app = self.kernel_app
         if kernel_app is None:
             raise DeeppyroError("cannot switch workspace after the kernel has stopped")
-        bound = native_view(self.session) if self.native else self.session
+        bound = native_view(self.session)
         gate = kernel_app.require(SandboxPlugin).gate(workspace, ask=self.ask, session=bound)
         registry = kernel_app.require(ToolsPlugin).registry_for(workspace)
         self.permission = gate
@@ -79,7 +65,7 @@ class StatusLayer(CatalogLayer):
         """Workspace paths remembered by previous sessions, newest first."""
         paths: list[str] = []
         try:
-            infos = self._native_infos() if self.native else self.store.list()
+            infos = self._native_infos()
         except Exception:  # noqa: BLE001 - the dropdown must keep working
             infos = []
         for info in infos:
@@ -197,45 +183,25 @@ class StatusLayer(CatalogLayer):
             return 0
 
     def recent_sessions(self, limit: int = 20, *, include_archived: bool = False) -> list[Any]:
-        """Most recent sessions, newest first; archived ones are hidden by default."""
-        if self.native:
-            return self._native_infos(include_archived=include_archived, limit=max(limit, 0))
-        return list(self.store.list(include_archived=include_archived))[: max(limit, 0)]
+        """Most recent native sessions, newest first; archived ones are hidden by default."""
+        return self._native_infos(include_archived=include_archived, limit=max(limit, 0))
 
     def native_sessions(self, limit: int = 20) -> list[NativeSessionInfo]:
-        """Schema 1 (native) sessions beside the v4 store, newest first, read-only."""
+        """Schema 1 (native) sessions, newest first."""
         if limit <= 0:
             return []
-        if self.native:
-            return [info for info in self.recent_sessions(limit) if isinstance(info, NativeSessionInfo)]
-        try:
-            return list_native_sessions()[:limit]
-        except Exception:  # noqa: BLE001 - the session browser must survive a bad directory
-            logger.debug("native session listing failed", exc_info=True)
-            return []
+        return [info for info in self.recent_sessions(limit) if isinstance(info, NativeSessionInfo)]
 
     def archived_sessions(self, limit: int = 20) -> list[Any]:
-        """Archived sessions only, newest first."""
-        if self.native:
-            archived = [
-                info for info in self._native_infos(include_archived=True) if getattr(info, "archived", False)
-            ]
-            return archived[: max(limit, 0)]
-        sessions = [info for info in self.store.list(include_archived=True) if info.archived]
-        return sessions[: max(limit, 0)]
+        """Archived native sessions only, newest first."""
+        archived = [
+            info for info in self._native_infos(include_archived=True) if getattr(info, "archived", False)
+        ]
+        return archived[: max(limit, 0)]
 
     async def compact_now(self) -> bool:
-        """Compact the active session immediately; True when it shrank."""
-        if self.native:
-            return await self._compact_native()
-        session, agent = self.session, self.agent
-        if session is None or agent is None:
-            return False
-        compactor = getattr(agent, "compactor", None)
-        if compactor is None:
-            raise DeeppyroError("compaction is not available for this agent")
-        messages = session.derive_messages()
-        return bool(await compactor.compact(session, messages))
+        """Compact the active native session immediately; True when it shrank."""
+        return await self._compact_native()
 
     async def _compact_native(self) -> bool:
         """Compact a native session through the optional native compactor."""

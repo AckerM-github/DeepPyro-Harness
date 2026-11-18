@@ -8,7 +8,6 @@ from deeppyro.subagent.native_manager import NativeSubagentService
 from deeppyro.subagent.supervisor import (
     MAX_WORKERS,
     NativeSubagentServiceWorker,
-    SubagentServiceWorker,
     Supervisor,
     SupervisorError,
     SupervisorLimits,
@@ -39,7 +38,6 @@ __all__ = [
     "SubagentError",
     "SubagentResult",
     "SubagentService",
-    "SubagentServiceWorker",
     "SubagentUsage",
     "Supervisor",
     "SupervisorError",

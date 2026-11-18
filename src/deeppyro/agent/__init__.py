@@ -1,22 +1,14 @@
-"""Agent loop: options and the turn/step session driver.
-
-Event sinks are a frontend concern; the terminal implementations live in
-`deeppyro.headless` (one-shot) and `deeppyro.tui.sink` (interactive). The loop only accepts an
-injected `EventSink`.
-"""
+"""Native agent runtime: host, factory recipe and the run loop."""
 
 from __future__ import annotations
 
-from deeppyro.agent.options import AgentOptions
-from deeppyro.agent.session import (
-    AgentSession,
-    StreamAccumulator,
-    ToolCallDraft,
-)
+from deeppyro.agent.native_factory import AgentBuild, NativeAgentFactory, build_native_host
+from deeppyro.agent.native_host import NativeAgentHost, NativeSessionHandle
 
 __all__ = [
-    "AgentOptions",
-    "AgentSession",
-    "StreamAccumulator",
-    "ToolCallDraft",
+    "AgentBuild",
+    "NativeAgentFactory",
+    "NativeAgentHost",
+    "NativeSessionHandle",
+    "build_native_host",
 ]

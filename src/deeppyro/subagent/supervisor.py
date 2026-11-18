@@ -7,7 +7,7 @@ or all workers agree), stalls (unchanged outcomes repeat), failure (no worker
 produced a usable outcome in a round) and cancellation.
 
 The Worker protocol is intentionally tiny, so a real subagent adapter
-(SubagentServiceWorker) and fake workers in tests are interchangeable.  The
+(NativeSubagentServiceWorker) and fake workers in tests are interchangeable.  The
 supervisor enforces the wall-clock budget itself; step and token budgets are
 checked against the counts a worker reports.
 """
@@ -22,7 +22,6 @@ from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from deeppyro.subagent.errors import SubagentError
-from deeppyro.subagent.manager import SubagentService
 from deeppyro.subagent.native_manager import NativeSubagentService
 from deeppyro.subagent.types import SubagentResult, SubagentUsage, sum_usages
 
@@ -643,33 +642,6 @@ def _worker_outcome(result: SubagentResult) -> WorkerOutcome:
     )
 
 
-class SubagentServiceWorker:
-    """Adapt a SubagentService to the Worker protocol.
-
-    Outcomes carry the child run's measured usage (provider-reported tokens,
-    latency, retries and steps), so supervisor step/token budgets are checked
-    against real provider counters rather than estimates.
-    """
-
-    def __init__(self, service: SubagentService) -> None:
-        if not isinstance(service, SubagentService):
-            raise SupervisorError("subagent worker requires a SubagentService")
-        self._service = service
-
-    @property
-    def service(self) -> SubagentService:
-        """The wrapped subagent service."""
-        return self._service
-
-    async def run(self, assignment: WorkerAssignment) -> WorkerOutcome:
-        """Run one child agent and translate its result into a WorkerOutcome."""
-        result: SubagentResult = await self._service.run(
-            assignment.objective,
-            description=assignment.objective,
-        )
-        return _worker_outcome(result)
-
-
 class NativeSubagentServiceWorker:
     """Adapt a NativeSubagentService to the Worker protocol.
 
@@ -702,7 +674,6 @@ __all__ = [
     "DEFAULT_STALL_ROUNDS",
     "MAX_WORKERS",
     "NativeSubagentServiceWorker",
-    "SubagentServiceWorker",
     "Supervisor",
     "SupervisorError",
     "SupervisorLimits",

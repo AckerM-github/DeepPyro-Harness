@@ -1,0 +1,62 @@
+{
+  "comment": "Hand-authored native tool-call samples: realistic model arguments for builtin tools, replayed against local temp workspaces.",
+  "calls": {
+    "read": {
+      "file_path": "docs/design/native-capabilities.md",
+      "offset": 1,
+      "limit": 40
+    },
+    "write": {
+      "file_path": "tools/cleanup.ps1",
+      "content": "# remove stale local artifacts\nGet-ChildItem -Directory -Filter '.tmp-*' | Remove-Item -Recurse -Force\nWrite-Output 'cleanup complete'\n"
+    },
+    "edit": {
+      "file_path": "docs/design/native-capabilities.md",
+      "old_string": "See the plugin catalog for managed services.",
+      "new_string": "See the plugin catalog for the managed service list.",
+      "replace_all": false
+    },
+    "grep": {
+      "pattern": "CUDA|gpu",
+      "path": "src/deeppyro",
+      "include": "*.py"
+    },
+    "glob": {
+      "pattern": "**/*.txt",
+      "path": "docs"
+    },
+    "present": {
+      "files": [
+        {
+          "path": "docs/release/0.3.0.md",
+          "description": "Release notes for 0.3.0"
+        }
+      ]
+    },
+    "todo_write": {
+      "todos": [
+        {
+          "content": "Delete the v4 session stack",
+          "status": "completed"
+        },
+        {
+          "content": "Rewrite the native test guards",
+          "status": "in_progress"
+        },
+        {
+          "content": "Run the full gates",
+          "status": "pending"
+        }
+      ]
+    },
+    "web_fetch": {
+      "url": "https://learn.microsoft.com/windows-hardware/drivers/debugger/bug-check-0x10e--video-memory-management-internal"
+    },
+    "web_search": {
+      "queries": [
+        "bug check 0x10E VIDEO_MEMORY_MANAGEMENT_INTERNAL",
+        "video memory management internal fix"
+      ]
+    }
+  }
+}

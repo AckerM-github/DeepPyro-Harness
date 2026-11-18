@@ -14,7 +14,7 @@ class PromptPlugin(Service):
 
     provide = "prompt"
     plugin_id = "prompt"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "ordered system prompt sections"
 
     def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:

@@ -1,6 +1,6 @@
-"""Bridge between tools and the DSH sandbox services.
+"""Bridge between tools and the upstream sandbox services.
 
-The gate still owns the small synchronous check API, but the DSH-aligned flow is:
+The gate still owns the small synchronous check API, but the upstream-aligned flow is:
 try the operation under the current mode, and only after the sandbox actually
 denied it may the model retry once with sandbox_permissions + justification.
 The retry is approved through the approval service; the escalated mode applies
@@ -44,7 +44,7 @@ async def prepare_escalation(
 
     Returns the mode this one call should use. The current mode is returned when
     no escalation was requested (or when the target equals the current mode,
-    which DSH treats as a no-op rather than an approval prompt).
+    which upstream treats as a no-op rather than an approval prompt).
     """
     gate = gate_for(ctx)
     try:
@@ -115,7 +115,7 @@ def check_read(ctx: ToolContext, path: Path) -> None:
 
 
 def _check_write_with(policy: SandboxPolicy, path: Path) -> bool | str:
-    """True when allowed, else the DSH denial sentence."""
+    """True when allowed, else the upstream denial sentence."""
     target = path.expanduser().resolve(strict=False)
     if policy.mode == "danger-full-access":
         return True

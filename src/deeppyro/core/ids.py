@@ -1,7 +1,7 @@
 """Identifier helpers.
 
-DSH session ids look like `session-<uuid4>` inside directories named by cwd hash;
-we generate the same shape so logs remain recognizable to DSH tooling.
+upstream session ids look like `session-<uuid4>` inside directories named by cwd hash;
+we generate the same shape so logs remain recognizable to upstream tooling.
 """
 
 from __future__ import annotations

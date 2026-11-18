@@ -1,16 +1,18 @@
 # Native goal rounds (schema 1)
 
-Status: **additive path, opt in.** The v4 goal round driver still owns v4
-`AgentSession` sessions. This page documents the native driver that advances
-goal rounds over a schema 1 `NativeSession` and a `NativeAgentHost`. No schema
-change was needed: every round is one ordinary `run.*`/`turn.*` sequence plus
-the existing `goal.changed` fact.
+Status: **current (0.3.0, native-only).** The native round driver is the only
+goal-round implementation: it advances goal rounds over a schema 1
+`NativeSession` and a `NativeAgentHost`, and the core bundle row
+`goal-round-driver` mounts it. The v4 driver was deleted with the v4 stack; the
+comparison table below is 0.2.0 context. No schema change was needed: every round
+is one ordinary `run.*`/`turn.*` sequence plus the existing `goal.changed`
+fact.
 
-Contract of record: [docs/spec/goal.md](../spec/goal.md) (v4 user-visible
-behaviour). Design intent: [native-capabilities.md](../design/native-capabilities.md)
+Contract of record: [docs/spec/goal.md](../spec/goal.md) (user-visible
+behaviour, frozen at M0). Design intent: [native-capabilities.md](../design/native-capabilities.md)
 section 5. Session facts: [schema.md](schema.md).
 
-## What changed relative to the v4 driver
+## What changed relative to the v4 driver (0.2.0 comparison, historical)
 
 | Concern | v4 round driver | native round driver |
 | --- | --- | --- |
@@ -102,28 +104,29 @@ Native additions live beside the v4 code; nothing v4 was removed or changed:
   - `NativeRoundHost` and `GoalFacts` protocols; `is_native_host(obj)` duck
     check used by plugin wiring.
 - `deeppyro.builtin.goal_round_driver.NativeGoalRoundDriverPlugin`
-  - `plugin_id = goal-round-driver-native`, injects `hooks` and `agents`,
-    gated by the same `[goal] driver` boolean as the v4 plugin.
+  - `plugin_id = goal-round-driver` (service `goal-round-driver-native`), injects
+    `hooks` and `agents`, gated by the `[goal] driver` boolean.
   - Publishes the driver as service `goal-round-driver-native`; adopts native
     hosts from `agents.live_agents()` and `agents.on_created`.
 
 ## Wiring and remaining limits
 
-- The bundled v4 row (`bundles/core/bundle.toml`, id `goal-round-driver`) is
-  untouched. The native plugin class exists but is not yet registered in a
-  bundle row; a native-host bundle can mount it when that wiring lands. Until
-  then it is mounted manually by tests and by future native composition.
+- The core bundle row `goal-round-driver` (`bundles/core/bundle.toml`) mounts
+  `deeppyro.builtin.goal_round_driver:NativeGoalRoundDriverPlugin`; there is no
+  separate v4 row or v4 driver left.
 - The driver never starts a round by itself after load: a caller must adopt
   the host, arm the goal and request a drive (the `GOAL_BUS_EVENT` listener
   only reacts to goal changes).
-- There is no v4-style inbox fence. A user turn that is already running wins;
-  the driver waits for the next request instead of queueing beside it.
-- Activation is not persisted; this is intentional and matches the v4
+- There is no legacy inbox fence (the v4 inbox was deleted). A user turn that is
+  already running wins; the driver waits for the next request instead of
+  queueing beside it.
+- Activation is not persisted; this is intentional and matches the historical
   process-local contract, so restarts are always disarmed.
 - Only `goal.changed` carries round state. Per-round token, latency and retry
   detail stays in the trace store and is not reconstructible from the session.
-- The TUI and `--legacy-v4` headless path remain v4; this change adds a path
-  and does not switch any default.
+- TUI, headless and the Web UI all drive the native host, and this driver is the
+  only goal-round path. The 0.2.0 `--legacy-v4`/v4 driver alternative was removed
+  in 0.3.0.
 
 ## Tests
 

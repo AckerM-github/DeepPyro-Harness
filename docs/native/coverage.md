@@ -1,11 +1,11 @@
 # Native replay coverage and re-recording
 
-Status: **0.2.0 coverage note for KI-011, KI-031 and KI-034** (2026-11-18). KI-011
-and KI-031 are resolved; KI-034 remains an accepted limit of the baseline. The
-recorded baseline under [`fixtures/native/`](../../fixtures/native/) is real
-provider traffic, but it only exercises text and tool turns. This page records
-exactly what it proves, which protocol surfaces must be synthesized for the
-differential, and what re-recording costs.
+Status: **current coverage note for KI-011, KI-031 and KI-034** (native-only after
+0.3.0 deleted the v4 session, compaction and wire layers). The recorded baseline
+under `fixtures/native/` is real provider traffic, but it only exercises text and
+tool turns. This page records exactly what it proved, which protocol surfaces are
+covered by hand-authored native cases, and what re-recording costs. KI-011 and
+KI-031 are resolved; KI-034 remains an accepted limit of the baseline.
 
 ## 1. What the recorded baseline covers
 
@@ -16,7 +16,7 @@ captured 2026-11-17 from `deepseek-flash` with `temperature=0`, streaming, and
 
 | Protocol surface | Recorded? | Where |
 | --- | --- | --- |
-| streaming text deltas, `finish_reason=stop` | yes | 01–04 |
+| streaming text deltas, `finish_reason=stop` | yes | 01-04 |
 | multi-turn text (request replays assistant history) | yes | 04 |
 | truncated output, `finish_reason=length` | yes | 05 (intentional tiny `max_tokens`) |
 | forced single tool call + final answer | yes | 06 |
@@ -25,13 +25,13 @@ captured 2026-11-17 from `deepseek-flash` with `temperature=0`, streaming, and
 | sequential tools across two steps (injected second prompt) | yes | 09 |
 | policy-denied tool (simulated shell denial) | yes | 10 (no shell ran) |
 | provider `usage` and response model in `llm.response.end` | yes | every case |
-| image / attachment parts | no | needs synthetic |
-| approval prompts and outcomes | no | needs synthetic |
-| compaction checkpoints | no | needs synthetic |
-| MCP lifecycle and `mcp__<server>__<tool>` names | no | needs synthetic (tool seam only) |
-| PTC nested dispatch (`tool/ptc-dispatch*`) | no | needs synthetic |
-| subagent catalog / descriptor / child ids | no | needs synthetic |
-| multi-agent handoff | no | native `task.*` facts (synthesized, see §2) |
+| image / attachment parts | no | hand-authored case (`image.json`) |
+| approval prompts and outcomes | no | hand-authored case (`approval.json`) |
+| compaction checkpoints | no | hand-authored case (`compaction.json`) |
+| MCP tool names (`mcp__<server>__<tool>`) | no | hand-authored case, tool seam only (`mcp.json`) |
+| PTC nested dispatch inside the outer tool result | no | hand-authored case (`ptc.json`) |
+| subagent spawn and child ids | no | hand-authored case (`subagent.json`) |
+| multi-agent handoff | no | hand-authored native `task.*` facts (`handoff.json`) |
 | trace side channel (per-call tokens/latency/retries) | no (recordings store provider streams, not trace records) | the native loop derives tokens/latency from the stream and, since KI-010, records real retry counts from `RetryScheduled`; the baseline trace stays synthesized where usage is compared |
 
 The recordings are data only: replay never re-executes a provider request and
@@ -39,48 +39,48 @@ never needs an API key. `scripts/record_replay.py` asserts each recorded request
 body against a fake provider that emits the recorded SSE payloads, so the
 baseline can be re-verified offline on every checkout.
 
-## 2. Surfaces that must be synthesized
+## 2. Surfaces the recordings cannot reach
 
 [`tests/fixtures/native/synthetic/`](../../tests/fixtures/native/synthetic/) holds
-one hand-authored JSON pair per capability. Each file contains:
+one hand-authored JSON case per capability. Each file contains:
 
-- `v4`: a session v4 header plus `LogRecord` lines (hand-written, offline);
-- `native`: a schema 1 `session_id`, `created_at` and `Event` list;
+- `native`: a schema 1 `session_id`, `created_at` and `Event` list (optionally
+  `preset` and `origin`);
 - optional `trace`: `RunRecord` + `ModelCallRecord`/`ToolCallRecord` lines;
 - `coverage` (`covered` or `xfail`), `limitations` and, for xfail, a reason
   citing KI-011.
 
-| Capability | Case | Status | What is compared beyond the generic checks |
+Unknown fields are rejected (a stale v4 side cannot silently ride along), and the
+loader validates known capabilities, the schema 1 session id shape, and the
+event kinds.
+
+| Capability | Case | Status | What the case proves |
 | --- | --- | --- | --- |
-| image / attachment | `image.json` | covered | exactly one image part per side, same attachment, native `media_type` |
-| approval | `approval.json` | covered | `approval/asked`+`decided` vs `approval.requested`+`decided`; id, tool, call id, reason, outcome mapping (`allowed-once`→`allowed`) |
-| compaction | `compaction.json` | covered | v4 surface replace range vs native `covers`; summary text after stripping the v4 preamble/tags |
-| MCP | `mcp.json` | covered | `mcp__demo__lookup` name and result survive both sides |
-| PTC | `ptc.json` | covered | nested `tool/ptc-dispatch*` stay non-surface; only the outer call/result is visible |
-| subagent | `subagent.json` | covered | child id from `subagent/catalog` appears in the tool result; no native lifecycle event exists |
-| handoff | `handoff.json` | covered | v4 `task/state`, `task/handoff`, `task/handoff/result` (ignorable extension records) vs native `task.state`, `task.handoff`, `task.handoff.result`; run id, from/to, summary, open items, task id, prompt/turn/call id/budget, last-wins task status and result `ok`/text/error. Usage boundary: v4 embeds the parent snapshot in `handoff.state.usage` and the child usage in the result record, while native keeps both in the trace only |
+| image / attachment | `image.json` | covered | exactly one image part in the user message, `media_type` is `image/png`, the attachment survives `fold` |
+| approval | `approval.json` | covered | one `approval.requested` + one `approval.decided` with matching ids, the decision references a recorded `tool.call`, no approval stays pending |
+| compaction | `compaction.json` | covered | one `compaction.done` replaces a contiguous message span; the summary carries the compaction source id and stays in the fold, covered ids disappear |
+| MCP | `mcp.json` | covered | `mcp__demo__lookup` name survives; schema 1 keeps no MCP lifecycle event; the trace carries model calls |
+| PTC | `ptc.json` | covered | exactly one outer `ptc` call; the nested dispatch stays inside its result; no PTC lifecycle event |
+| subagent | `subagent.json` | covered | the `subagent` tool result names the child id and the folded history carries it; no subagent lifecycle event |
+| handoff | `handoff.json` | covered | native `task.state`, `task.handoff` and `task.handoff.result` are core kinds; run id, from/to, summary, open items, task id and budget are checked, and the fold projects one completed task plus one handoff |
 
 The harness [`tests/native/synthetic.py`](../../tests/native/synthetic.py) runs
-both sides through production parsers only: `read_session_file` plus
-`derive_messages` for v4, `NativeCodec.read` plus `fold` for native. It compares
-semantic projections rather than bytes:
+the native side through production parsers only: `NativeCodec.read` plus `fold`,
+after materializing the fixture events into a temporary session directory. It
+asserts semantic projections rather than bytes:
 
 1. message sequence: role, id, content parts, source facts and `tool_call_id`;
 2. tool call/result pairing: call id, name, canonicalized arguments, result text
    and `is_error`;
-3. usage presence: v4 assistant `usage` must match the synthetic trace's
-   `model_call` records, and the native session log must contain no token,
-   latency or cost fields (schema §8.5 keeps usage in the trace);
+3. usage presence: the native session log must contain no token, latency or cost
+   fields (schema §8.5 keeps usage in the trace); when the fixture carries a
+   trace, `join_trace` must bind it to the session and the per-call counters,
+   prompt hashes and tool names are checked;
 4. one capability-specific invariant from the table above.
 
-Handoff is the one surface whose two representations have different shapes: v4
-task tools write `task/state`, `task/handoff` and `task/handoff/result` as
-*ignorable extension records* (they are not in `RECORD_TYPES`, so a v4 reader
-skips them unless `ignorable` is true), while native schema 1 added first-class
-`task.state`, `task.handoff` and `task.handoff.result` events. The case compares
-the same facts on both sides and asserts the documented boundary: v4 keeps the
-parent and child token usage in the session records, native keeps usage in the
-trace only (schema §8.5), so the native facts must never sprout a usage field.
+Handoff uses native schema 1 task facts: `task.state`, `task.handoff` and
+`task.handoff.result`. Per-handoff token usage lives in the trace side channel
+only (schema §8.5), so the native handoff payload must never sprout a usage field.
 
 Run it directly:
 
@@ -91,22 +91,24 @@ uv run python scripts/differential_matrix.py --json native-differential-matrix.j
 
 `scripts/differential_matrix.py` prints the covered/uncovered matrix, writes the
 deterministic JSON report and exits non-zero when a capability has no case. The
-`native-replay` CI job runs it plus `pytest tests/eval tests/native`, is blocking
-(the old `continue-on-error` is gone), keeps `windows-latest` × Python
-3.12/3.13, has a 20-minute timeout and uploads both reports on success and failure.
+`native-replay` CI job runs it plus `pytest tests/eval tests/native`, is blocking,
+keeps `windows-latest` × Python 3.12/3.13, has a 20-minute timeout and uploads
+both reports on success and failure.
 
 ### Adding a synthetic case
 
 1. Create `tests/fixtures/native/synthetic/<capability>.json` in the shape above;
-   both sides must describe the *same* conversation, not two unrelated examples.
-2. A `covered` case must provide both `v4` and `native`; the harness will reject
-   a case whose vocabularies cannot express the capability, so do not fake one.
+   the native side must describe the capability as a real conversation shape.
+2. A `covered` case must provide `native`; the harness materializes it through the
+   production codec, so a malformed event or a missing capability invariant fails
+   the case instead of being faked.
 3. If the capability is genuinely unrepresentable, mark it `xfail`, cite KI-011 in
    `xfail_reason`, and add the missing pieces to `limitations`. The test uses
    `pytest.mark.xfail(strict=True)`: the gap is visible, and the day a real
    representation lands the case XPASSes and forces the diff to be reviewed.
-4. The matrix loader validates unique ids, known capabilities and schema-1 session
-   ids, so a typo cannot silently drop a capability from the report.
+4. The matrix loader validates unique ids, known capabilities, schema-1 session
+   ids and event kinds, and rejects unknown top-level fields, so a typo or a stale
+   v4 side cannot silently drop a capability from the report.
 
 ## 3. Re-recording the real baseline
 
@@ -146,9 +148,9 @@ Re-recording the 10 real cases is a separate, manual operation:
 5. Re-verify with `uv run python scripts/record_replay.py --json native-replay-report.json`
    and `uv run pytest tests/eval tests/native -q`.
 
-The 26 MB session corpus under `fixtures/sessions/` is untracked and is **not**
-part of this baseline; no replay or differential case depends on it (KI-030).
-New protocol surfaces should be added as synthetic pairs under
+The 26 MB v4 session corpus that used to live under `fixtures/sessions/` is gone and is **not**
+part of this baseline; no replay or synthetic case depends on it (KI-030).
+New protocol surfaces should be added as hand-authored synthetic cases under
 `tests/fixtures/native/synthetic/` instead of re-recording, because the recorded
 baseline is intentionally frozen: its value is that its bytes and checksums never
 move.

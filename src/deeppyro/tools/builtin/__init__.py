@@ -31,7 +31,7 @@ def builtin_tools(cfg: Any, workspace: Path) -> list[Tool]:
 
     Optional per-tool limits can be overridden through a `[tools]` section in
     the config file (`globMaxResults`, `grepMaxMatches`, `webSearchMaxResults`,
-    `webFetchMaxChars`, `presentMaxFiles`); everything else uses the DSH
+    `webFetchMaxChars`, `presentMaxFiles`); everything else uses the upstream
     defaults. The workspace is not baked into the tools - every call resolves
     paths against `ToolContext.cwd` so a session can change directory.
     """

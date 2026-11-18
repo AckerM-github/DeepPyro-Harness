@@ -32,10 +32,10 @@ from deeppyro.memory.backend import MemoryRecord
 class AgentRunner(Protocol):
     """The one-method seam every eval runner implements.
 
-    Real adapters wrap an AgentSession and translate its messages, tool calls and
-    long-term memory writes into an EvalOutcome; tests use ScriptedEvalRunner or
-    CallableAgentRunner.  The runner must not inspect case.expect: expectations
-    are only read by the scorer.
+    Real adapters wrap a native agent host and translate its messages, tool calls
+    and long-term memory writes into an EvalOutcome; tests use ScriptedEvalRunner
+    or CallableAgentRunner.  The runner must not inspect case.expect:
+    expectations are only read by the scorer.
     """
 
     async def run(self, case: EvalCase) -> EvalOutcome:

@@ -1,7 +1,7 @@
-"""Tests for the native OpenAI-compatible message converter (KI-010 port).
+"""Tests for the native OpenAI-compatible message converter (KI-010).
 
-The converter is the native mirror of deeppyro.llm.messages; these tests pin
-the request body byte-for-byte so the wire shape stays identical to the v4 path.
+The converter builds the native request body; these tests pin that body
+byte-for-byte so the provider wire shape stays stable.
 """
 
 from __future__ import annotations

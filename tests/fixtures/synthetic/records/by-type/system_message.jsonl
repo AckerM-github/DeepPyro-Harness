@@ -1,1 +1,0 @@
-{"type":"system/message","seq":0,"time":1700000000000,"data":{"turn":1,"step":1,"message":{"id":"msg_system","role":"system","content":[{"type":"text","text":"system prompt"}],"source":{"kind":"system-prompt"}}},"surfaceOp":"append"}

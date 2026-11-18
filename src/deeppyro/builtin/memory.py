@@ -80,7 +80,7 @@ class MemoryPlugin(Plugin):
 
     plugin_id = "memory"
     provide = "memory"
-    version = "0.2.0"
+    version = "0.3.0"
     description = (
         "runtime memory: USER.md/MEMORY.md projections, the mnemon_runtime_memory tool "
         "and long-term memory_search/memory_add"

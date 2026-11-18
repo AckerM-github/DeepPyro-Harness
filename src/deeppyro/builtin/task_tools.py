@@ -1,19 +1,17 @@
 """Durable task and handoff tools (KI-017): a task plugin, not a loop branch.
 
 Tasks and handoffs are facts in the session log, exactly like goal changes or
-team members: the service folds task/state, task/handoff and
-task/handoff/result records (session v4) or task.state, task.handoff and
-task.handoff.result events (native schema 1) back into the six-state machine
-from deeppyro.agent.task.  Reopening a session therefore restores unfinished
-work without a second storage location.
+team members: the service folds task.state, task.handoff and task.handoff.result
+events (native schema 1) back into the six-state machine from
+deeppyro.agent.task.  Reopening a session therefore restores unfinished work
+without a second storage location.
 
 task_handoff delegates one turn's context to the subagent service, writes the
 handoff (summary, budget, open items, and the prompt) to the parent session
 before the child runs, and copies the result and the child's real usage back
 into the parent turn.  Token usage stays a payload fact and a trace fact under
-native schema 1, never a session-log fact (schema 8.5); the v4 representation
-keeps its historical usage snapshot inside the handoff record.  Budget overruns
-fail the task instead of silently overspending.
+native schema 1, never a session-log fact (schema 8.5).  Budget overruns fail
+the task instead of silently overspending.
 """
 
 from __future__ import annotations
@@ -55,7 +53,7 @@ from deeppyro.tools.params import (
     schema_number,
 )
 
-# -- persisted record types (log-only, ignorable for DSH-compatible readers) --
+# -- persisted record types (log-only, ignorable for upstream-compatible readers) --
 TASK_EVENT = "task/state"
 HANDOFF_EVENT = "task/handoff"
 HANDOFF_RESULT_EVENT = "task/handoff/result"
@@ -420,10 +418,10 @@ def _apply_handoff_fact(state: _TaskState, record_type: str, data: Mapping[str, 
 class TaskService:
     """Fold task and handoff facts out of one session log.
 
-    The service is deliberately storage-agnostic: callers hand it a v4 session
-    object with records and append (see deeppyro.session.session) or a native
-    NativeSession with events and append, and the same fold works for a
-    reopened session read through either store.
+    The service is deliberately storage-agnostic: callers hand it a native
+    NativeSession with events and append (or a native session handle exposing
+    the same read surface), so the same fold works for a reopened session read
+    through the native store.
     """
 
     provide: ClassVar[str] = "task"
@@ -1043,7 +1041,7 @@ class TaskPlugin(Plugin):
 
     provide = "task"
     plugin_id = "task"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "durable task and handoff tools backed by the session log"
     inject: ClassVar[list[str]] = ["tools"]
 

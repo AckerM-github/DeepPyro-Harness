@@ -1,22 +1,17 @@
-"""Synthetic native/session-v4 differential cases for the protocol surfaces the
-recorded baseline cannot reach (KI-011).
+"""Synthetic coverage cases for the protocol surfaces the recorded baseline
+cannot reach (KI-011).
 
 The recorded fixtures under fixtures/native only carry real text and tool
-traffic.  Each JSON file under tests/fixtures/native/synthetic is a
-hand-authored, offline pair of the same conversation:
+traffic. Each JSON file under tests/fixtures/native/synthetic is a hand-authored,
+offline schema 1 event stream for one capability, optionally plus the trace side
+channel that carries per-call usage.
 
-* a session v4 log (header + surface records), and
-* the equivalent schema 1 native event stream,
-* optionally the trace side channel that carries per-call usage.
-
-Running a case writes both sides into a temporary directory, reads them back
-through the production parsers (read_session_file / NativeCodec), derives the
-message history on each side, and compares semantic projections rather than
-bytes: message sequence and parts, tool call/result pairing, usage presence,
-and one capability-specific invariant.  The handoff capability is covered by
-the task facts both vocabularies can express: session v4 keeps the task plugin
-payloads as ignorable extension records and native schema 1 makes task.state,
-task.handoff and task.handoff.result core kinds.
+Running a case writes the native events into a temporary directory, reads them
+back through NativeCodec, folds them with session.fold, and asserts the native
+shape invariants: message round-trip, tool pairing, compaction replacement,
+approval lifecycle, trace usage outside the session log, and one
+capability-specific invariant. The cases are regression fixtures for the native
+protocol surfaces; they do not compare against a second vocabulary.
 
 render_matrix lists the covered/uncovered matrix; scripts/differential_matrix.py
 prints it in CI.
@@ -30,50 +25,18 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
 
-from deeppyro.builtin.task_tools import HANDOFF_EVENT, HANDOFF_RESULT_EVENT, TASK_EVENT
-from deeppyro.compact.prompts import CHECKPOINT_PREAMBLE, SUMMARY_CLOSE_TAG, SUMMARY_OPEN_TAG
-from deeppyro.core.messages import (
-    CompactionSource,
-    ImagePart,
-    ModelSource,
-    PluginSource,
-    ReasoningPart,
-    RepairSource,
-    SystemSource,
-    TextPart,
-    ToolCallPart,
-    ToolSource,
-    UserSource,
+from deeppyro.core.messages import CompactionSource, ImagePart, Message, TextPart
+from deeppyro.observability.trace import (
+    TraceFormatError,
+    TraceJoin,
+    TraceLog,
+    join_trace,
+    read_trace,
 )
-from deeppyro.core.wire import (
-    SURFACE_EVENT_TYPES,
-    ReplaceOp,
-)
-from deeppyro.core.wire import (
-    ContentPart as WireContentPart,
-)
-from deeppyro.core.wire import (
-    ImagePart as WireImagePart,
-)
-from deeppyro.core.wire import (
-    Message as WireMessage,
-)
-from deeppyro.core.wire import (
-    ReasoningPart as WireReasoningPart,
-)
-from deeppyro.core.wire import (
-    TextPart as WireTextPart,
-)
-from deeppyro.core.wire import (
-    ToolCallPart as WireToolCallPart,
-)
-from deeppyro.observability.trace import TraceLog, join_trace, read_trace
-from deeppyro.session.derive import derive_messages, event_message, fold_surface
 from deeppyro.session.fold import SessionView, fold
-from deeppyro.session.reader import SessionRead, read_session_file
 from deeppyro.session.schema import (
+    APPROVAL_OUTCOMES,
     SESSION_ID_PATTERN,
     Event,
     EventKind,
@@ -100,7 +63,6 @@ FORBIDDEN_USAGE_KEYS = frozenset(
     }
 )
 
-HANDOFF_V4_TYPES = (TASK_EVENT, HANDOFF_EVENT, HANDOFF_RESULT_EVENT)
 HANDOFF_NATIVE_TYPES = ("task.state", "task.handoff", "task.handoff.result")
 RESERVED_SUBAGENT_TYPES = (
     "subagent.started",
@@ -108,24 +70,36 @@ RESERVED_SUBAGENT_TYPES = (
     "team.member.changed",
     "team.task.changed",
 )
-NATIVE_APPROVAL_OUTCOMES = {
-    "allowed-once": "allowed",
-    "rejected": "rejected",
-    "cancelled": "cancelled",
-    "unavailable": "unavailable",
-}
-USAGE_FIELDS = frozenset(
-    {"inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens"}
+NATIVE_KINDS = frozenset(kind.value for kind in EventKind)
+MESSAGE_EVENT_TYPES = frozenset(
+    {
+        "user.message",
+        "system.message",
+        "developer.message",
+        "assistant.message",
+        "tool.result",
+    }
 )
-V4_SURFACE_EVENT_TYPES = frozenset(SURFACE_EVENT_TYPES)
+MCP_TOOL_RE = re.compile(r"^mcp__([A-Za-z0-9_.-]+)__([A-Za-z0-9_.-]+)$")
+CHILD_ID_RE = re.compile(r"child-[0-9a-f]+")
+TASK_ID_RE = re.compile(r"^task_[0-9a-f]{16}$")
+CASE_ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+ALLOWED_CASE_FIELDS = frozenset(
+    {
+        "case_id",
+        "capability",
+        "coverage",
+        "title",
+        "limitations",
+        "xfail_reason",
+        "native",
+        "trace",
+    }
+)
 
 
 class DifferentialMismatch(AssertionError):
-    """The two sides of a synthetic case disagree on a semantic projection."""
-
-
-class NotSupportedError(RuntimeError):
-    """The vocabularies cannot represent a capability, so the case is xfail."""
+    """A synthetic case does not satisfy the native shape contract."""
 
 
 class Capability(StrEnum):
@@ -152,7 +126,7 @@ CAPABILITIES: tuple[Capability, ...] = (
 
 
 class Coverage(StrEnum):
-    """How a synthetic case participates in the differential."""
+    """How a synthetic case participates in the coverage matrix."""
 
     COVERED = "covered"
     XFAIL = "xfail"
@@ -160,7 +134,7 @@ class Coverage(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class SyntheticCase:
-    """One hand-authored native/v4 pair exercising a single protocol surface."""
+    """One hand-authored native case exercising a single protocol surface."""
 
     case_id: str
     capability: Capability
@@ -168,23 +142,18 @@ class SyntheticCase:
     coverage: Coverage
     limitations: tuple[str, ...]
     xfail_reason: str | None
-    v4: Mapping[str, object] | None
     native: Mapping[str, object] | None
     trace: Mapping[str, object] | None
 
     def require_representation(self) -> None:
-        """Raise when native schema 1 cannot record the task handoff facts yet."""
+        """Raise when schema 1 cannot record the handoff task facts."""
         if self.capability is not Capability.HANDOFF:
             return
-        native_kinds = {kind.value for kind in EventKind}
-        missing_native = [name for name in HANDOFF_NATIVE_TYPES if name not in native_kinds]
-        if not missing_native:
-            return
-        raise NotSupportedError(
-            f"{self.case_id}: native schema 1 cannot record task handoff facts yet "
-            f"(missing {missing_native}); the v4 side uses ignorable extension records "
-            f"{HANDOFF_V4_TYPES}; KI-011 tracks this gap"
-        )
+        missing = [name for name in HANDOFF_NATIVE_TYPES if name not in NATIVE_KINDS]
+        if missing:
+            raise DifferentialMismatch(
+                f"{self.case_id}: schema 1 lacks the handoff task kinds {missing}; KI-011 tracks the gap"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,18 +166,6 @@ class MatrixRow:
     limitations: tuple[str, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class NormalizedMessage:
-    """A side-agnostic projection of one message for semantic comparison."""
-
-    role: str
-    message_id: str
-    parts: tuple[tuple[str, ...], ...]
-    source: tuple[str, ...]
-    tool_call_id: str | None
-    is_error: bool
-
-
 # ---------------------------------------------------------------------------
 # Loading and validation
 # ---------------------------------------------------------------------------
@@ -219,10 +176,7 @@ def load_cases(root: Path | None = None) -> list[SyntheticCase]:
     base = FIXTURE_ROOT if root is None else root
     if not base.is_dir():
         raise DifferentialMismatch(f"synthetic fixture directory is missing: {base}")
-    cases: list[SyntheticCase] = []
-    for path in sorted(base.glob("*.json")):
-        raw = _read_json_object(path)
-        cases.append(_parse_case(raw, path))
+    cases = [_parse_case(_read_json_object(path), path) for path in sorted(base.glob("*.json"))]
     if not cases:
         raise DifferentialMismatch(f"synthetic fixture directory has no cases: {base}")
     _check(len({case.case_id for case in cases}) == len(cases), "synthetic case ids must be unique")
@@ -239,7 +193,15 @@ def _read_json_object(path: Path) -> Mapping[str, object]:
 
 def _parse_case(raw: Mapping[str, object], path: Path) -> SyntheticCase:
     where = path.name
+    unknown = sorted(set(raw) - ALLOWED_CASE_FIELDS)
+    if unknown:
+        raise DifferentialMismatch(f"{where}: unknown synthetic case field {unknown[0]!r}")
     case_id = _require_text(raw.get("case_id"), f"{where}: case_id")
+    _check(
+        CASE_ID_RE.fullmatch(case_id) is not None,
+        f"{where}: case_id must be a lowercase slug",
+    )
+    _check(path.stem == case_id, f"{where}: case_id {case_id!r} does not match the file name")
     capability_text = _require_text(raw.get("capability"), f"{where}: capability")
     coverage_text = _require_text(raw.get("coverage"), f"{where}: coverage")
     try:
@@ -259,28 +221,19 @@ def _parse_case(raw: Mapping[str, object], path: Path) -> SyntheticCase:
         _check("KI-011" in reason, f"{where}: the xfail reason must cite KI-011")
     else:
         _check(reason is None, f"{where}: only an xfail case may carry xfail_reason")
-    v4_raw = raw.get("v4")
     native_raw = raw.get("native")
     trace_raw = raw.get("trace")
-    v4 = None if v4_raw is None else _require_mapping(v4_raw, f"{where}: v4")
     native = None if native_raw is None else _require_mapping(native_raw, f"{where}: native")
     trace = None if trace_raw is None else _require_mapping(trace_raw, f"{where}: trace")
     if coverage is Coverage.COVERED:
-        _check(v4 is not None, f"{where}: a covered case needs the v4 side")
-        _check(native is not None, f"{where}: a covered case needs the native side")
-    if v4 is not None:
-        _require_mapping(v4.get("header"), f"{where}: v4.header")
-        _require_sequence(v4.get("records"), f"{where}: v4.records")
+        _check(native is not None, f"{where}: covered case needs the native side")
     if native is not None:
-        session_id = _require_text(native.get("session_id"), f"{where}: native.session_id")
-        _check(
-            re.fullmatch(SESSION_ID_PATTERN, session_id) is not None,
-            f"{where}: native.session_id does not match schema 1",
-        )
-        _require_int(native.get("created_at"), f"{where}: native.created_at")
-        _require_sequence(native.get("events"), f"{where}: native.events")
+        _validate_native(where, native)
     if trace is not None:
-        _require_sequence(trace.get("records"), f"{where}: trace.records")
+        records = _require_sequence(trace.get("records"), f"{where}: trace.records")
+        _check(len(records) > 0, f"{where}: trace.records must not be empty")
+        for record in records:
+            _require_mapping(record, f"{where}: trace record")
     return SyntheticCase(
         case_id=case_id,
         capability=capability,
@@ -288,10 +241,35 @@ def _parse_case(raw: Mapping[str, object], path: Path) -> SyntheticCase:
         coverage=coverage,
         limitations=limitations,
         xfail_reason=reason,
-        v4=v4,
         native=native,
         trace=trace,
     )
+
+
+def _validate_native(where: str, native: Mapping[str, object]) -> None:
+    session_id = _require_text(native.get("session_id"), f"{where}: native.session_id")
+    _check(
+        re.fullmatch(SESSION_ID_PATTERN, session_id) is not None,
+        f"{where}: native.session_id does not match schema 1",
+    )
+    _require_int(native.get("created_at"), f"{where}: native.created_at")
+    for name in ("preset", "origin"):
+        value = native.get(name)
+        if value is not None:
+            _require_text(value, f"{where}: native.{name}")
+    events = _require_sequence(native.get("events"), f"{where}: native.events")
+    _check(len(events) > 0, f"{where}: native.events must not be empty")
+    for raw_event in events:
+        event = _require_mapping(raw_event, f"{where}: native event")
+        kind = _require_text(event.get("type"), f"{where}: native event type")
+        _check(kind in NATIVE_KINDS, f"{where}: native event type {kind!r} is not a schema 1 kind")
+        data = event.get("data")
+        if data is not None:
+            _require_mapping(data, f"{where}: native event data")
+        for name in ("run_id", "turn_id", "step_id", "trace_id"):
+            value = event.get(name)
+            if value is not None:
+                _require_text(value, f"{where}: native event {name}")
 
 
 def _require_mapping(value: object, where: str) -> Mapping[str, object]:
@@ -333,40 +311,35 @@ def _check(condition: object, message: str) -> None:
         raise DifferentialMismatch(message)
 
 
+def _walk_keys(value: object) -> Iterator[str]:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            yield str(key)
+            yield from _walk_keys(item)
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        for item in value:
+            yield from _walk_keys(item)
+
+
 # ---------------------------------------------------------------------------
-# Materializing both sides through the production parsers
+# Materializing the native side through the production codec
 # ---------------------------------------------------------------------------
 
 
 def compare_case(case: SyntheticCase, tmp_path: Path) -> None:
-    """Materialize one synthetic case and assert semantic native/v4 equivalence."""
+    """Materialize one synthetic case and assert its native shape invariants."""
     case.require_representation()
-    v4_session = _materialize_v4(case, tmp_path)
-    native_log = _materialize_native(case, tmp_path)
-    view = fold(native_log.header, native_log.events)
+    log = _materialize_native(case, tmp_path)
+    view = fold(log.header, log.events)
     _check(view.issues == (), f"{case.case_id}: native fold reported issues {view.issues!r}")
-    v4_messages = derive_messages(v4_session.records)
-    _check_messages(case, v4_messages, view)
-    _check_tool_pairing(case, v4_session.records, native_log.events)
+    _check_header(case, log)
+    _check_events(case, log.events)
+    expected, system = _expected_messages(case, log.events)
+    _check_messages(case, view, expected, system)
+    _check_tool_pairing(case, log.events, expected)
     trace = None if case.trace is None else _materialize_trace(case, tmp_path)
-    _check_usage(case, v4_session.records, native_log.events, trace)
-    _check_capability(case, v4_session.records, native_log.events, view)
-
-
-def _materialize_v4(case: SyntheticCase, tmp_path: Path) -> SessionRead:
-    v4 = case.v4
-    _check(v4 is not None, f"{case.case_id}: covered case has no v4 side")
-    assert v4 is not None
-    header = _require_mapping(v4["header"], f"{case.case_id}: v4.header")
-    records = _require_sequence(v4["records"], f"{case.case_id}: v4.records")
-    path = tmp_path / f"{case.case_id}.v4.jsonl"
-    lines = [_json_line(header)]
-    lines.extend(_json_line(_require_mapping(record, f"{case.case_id}: v4 record")) for record in records)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    session = read_session_file(path)
-    _check(not session.truncated, f"{case.case_id}: v4 fixture was written truncated")
-    _check(not session.trimmed, f"{case.case_id}: v4 fixture has a seq gap")
-    return session
+    usage = _check_usage(case, log, trace)
+    _CAPABILITY_CHECKS[case.capability](case, log.events, view, usage)
 
 
 def _materialize_native(case: SyntheticCase, tmp_path: Path) -> SessionLog:
@@ -420,7 +393,10 @@ def _materialize_trace(case: SyntheticCase, tmp_path: Path) -> TraceLog:
     path = tmp_path / f"{case.case_id}.trace.jsonl"
     lines = [_json_line(_require_mapping(record, f"{case.case_id}: trace record")) for record in records]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return read_trace(path)
+    try:
+        return read_trace(path)
+    except TraceFormatError as exc:
+        raise DifferentialMismatch(f"{case.case_id}: trace does not parse: {exc}") from exc
 
 
 def _json_line(payload: Mapping[str, object]) -> str:
@@ -428,146 +404,199 @@ def _json_line(payload: Mapping[str, object]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Message projection and comparison
+# Native shape invariants
 # ---------------------------------------------------------------------------
 
 
-def _check_messages(case: SyntheticCase, v4_messages: Sequence[WireMessage], view: SessionView) -> None:
-    v4_system = [message for message in v4_messages if message.role == "system"]
-    v4_rest = [message for message in v4_messages if message.role != "system"]
-    if v4_system:
-        _check(len(v4_system) == 1, f"{case.case_id}: v4 side has more than one system message")
-        _check(view.system is not None, f"{case.case_id}: native side has no system message")
-        assert view.system is not None
-        _check(
-            _normalize_native_message(view.system) == _normalize_v4_message(v4_system[0], case.case_id),
-            f"{case.case_id}: system message projections differ",
-        )
-    else:
-        _check(view.system is None, f"{case.case_id}: native side has a system message but v4 does not")
-    expected = [_normalize_v4_message(message, case.case_id) for message in v4_rest]
-    actual = [_normalize_native_message(message) for message in view.messages]
+def _check_header(case: SyntheticCase, log: SessionLog) -> None:
+    native = case.native
+    assert native is not None
     _check(
-        len(expected) == len(actual),
-        f"{case.case_id}: message count differs (v4={len(expected)}, native={len(actual)})",
-    )
-    for index, (v4_message, native_message) in enumerate(zip(expected, actual, strict=True)):
-        _check(
-            v4_message == native_message,
-            f"{case.case_id}: message {index} differs (v4={v4_message!r}, native={native_message!r})",
-        )
-
-
-def _normalize_v4_message(message: WireMessage, case_id: str) -> NormalizedMessage:
-    parts = tuple(_normalize_v4_part(part, case_id) for part in message.content)
-    source_raw = _require_mapping(message.source, f"{case_id}: v4 message source")
-    source = _normalize_v4_source(source_raw, case_id)
-    if source[0] == "compaction":
-        parts = _strip_checkpoint_frame(parts, case_id)
-    return NormalizedMessage(
-        role=message.role,
-        message_id=message.id,
-        parts=parts,
-        source=source,
-        tool_call_id=message.toolCallId,
-        is_error=bool(message.isError),
-    )
-
-
-def _normalize_v4_part(part: WireContentPart, case_id: str) -> tuple[str, ...]:
-    if isinstance(part, WireTextPart):
-        return ("text", part.text)
-    if isinstance(part, WireReasoningPart):
-        return ("reasoning", part.text)
-    if isinstance(part, WireToolCallPart):
-        return ("tool-call", part.id, part.name, _canonical_arguments(part.arguments, case_id))
-    if isinstance(part, WireImagePart):
-        attachment = part.attachment
-        _check(
-            isinstance(attachment, str),
-            f"{case_id}: synthetic image fixtures use a string attachment, not a dict",
-        )
-        return ("image", str(attachment))
-    raise DifferentialMismatch(f"{case_id}: unsupported v4 message part {type(part).__name__}")
-
-
-def _normalize_v4_source(source: Mapping[str, object], case_id: str) -> tuple[str, ...]:
-    kind = source.get("kind")
-    if kind == "user":
-        return ("user",)
-    if kind == "model":
-        return (
-            "model",
-            _require_text(source.get("provider"), f"{case_id}: v4 model provider"),
-            _require_text(source.get("model"), f"{case_id}: v4 model name"),
-        )
-    if kind == "tool":
-        return ("tool", _require_text(source.get("callId"), f"{case_id}: v4 tool callId"))
-    if kind == "system-prompt":
-        return ("system",)
-    if kind == "compact-checkpoint":
-        return (
-            "compaction",
-            _require_text(source.get("compactionId"), f"{case_id}: v4 checkpoint compactionId"),
-        )
-    if kind == "repair":
-        return ("repair", _require_text(source.get("reason"), f"{case_id}: v4 repair reason"))
-    raise DifferentialMismatch(f"{case_id}: unsupported v4 message source kind {kind!r}")
-
-
-def _strip_checkpoint_frame(parts: tuple[tuple[str, ...], ...], case_id: str) -> tuple[tuple[str, ...], ...]:
-    texts = [part[1] for part in parts if part[0] == "text"]
-    _check(
-        len(texts) == 3 and len(parts) == 3,
-        f"{case_id}: v4 checkpoint message must be the three-part compact frame",
+        log.header.id == _require_text(native.get("session_id"), f"{case.case_id}: native.session_id"),
+        f"{case.case_id}: header id differs from the fixture",
     )
     _check(
-        texts[0] == CHECKPOINT_PREAMBLE + "\n\n" + SUMMARY_OPEN_TAG,
-        f"{case_id}: v4 checkpoint frame preamble differs from compact/prompts.py",
+        log.header.created_at == _require_int(native.get("created_at"), f"{case.case_id}: native.created_at"),
+        f"{case.case_id}: header created_at differs from the fixture",
     )
-    _check(texts[2] == SUMMARY_CLOSE_TAG, f"{case_id}: v4 checkpoint frame lacks its closing tag")
-    return (("text", texts[1]),)
+    _check(log.header.schema == 1, f"{case.case_id}: fixture must be a schema 1 session")
 
 
-def _normalize_native_message(message: Any) -> NormalizedMessage:
-    return NormalizedMessage(
-        role=message.role,
-        message_id=message.id,
-        parts=tuple(_normalize_native_part(part) for part in message.content),
-        source=_normalize_native_source(message.source),
-        tool_call_id=message.tool_call_id,
-        is_error=bool(message.is_error),
+def _check_events(case: SyntheticCase, events: Sequence[Event]) -> None:
+    _check(
+        [event.seq for event in events] == list(range(1, len(events) + 1)),
+        f"{case.case_id}: event seq is not contiguous",
+    )
+    previous = 0
+    for event in events:
+        _check(event.kind is not None, f"{case.case_id}: non-core event {event.type!r}")
+        if event.type != EventKind.RUN_CHECKPOINT.value:
+            leaked = sorted(set(_walk_keys(event.data)) & FORBIDDEN_USAGE_KEYS)
+            _check(
+                not leaked,
+                f"{case.case_id}: session log carries usage facts {leaked} "
+                "(schema 8.5: they belong in the trace side channel)",
+            )
+        _check(event.ts >= previous, f"{case.case_id}: event ts went backwards at seq {event.seq}")
+        previous = event.ts
+
+
+def _event_message(case: SyntheticCase, event: Event) -> Message:
+    raw = _require_mapping(event.data.get("message"), f"{case.case_id}: {event.type} message")
+    return Message.from_dict(raw)
+
+
+def _expected_messages(
+    case: SyntheticCase, events: Sequence[Event]
+) -> tuple[tuple[Message, ...], Message | None]:
+    messages: list[Message] = []
+    system: Message | None = None
+    for event in events:
+        if event.type in MESSAGE_EVENT_TYPES:
+            message = _event_message(case, event)
+            if message.role == "system":
+                _check(system is None, f"{case.case_id}: more than one system message")
+                system = message
+            else:
+                messages.append(message)
+        elif event.type == EventKind.COMPACTION_DONE.value:
+            messages = _apply_compaction(case, event, messages)
+    return tuple(messages), system
+
+
+def _apply_compaction(case: SyntheticCase, event: Event, messages: list[Message]) -> list[Message]:
+    covers = tuple(
+        _require_text(item, f"{case.case_id}: compaction cover")
+        for item in _require_sequence(event.data.get("covers"), f"{case.case_id}: compaction covers")
+    )
+    _check(bool(covers), f"{case.case_id}: compaction.done must cover at least one message")
+    summary = _event_message(case, event)
+    positions = [index for index, message in enumerate(messages) if message.id in covers]
+    _check(bool(positions), f"{case.case_id}: compaction covers no visible message")
+    first = min(positions)
+    window = tuple(message.id for message in messages[first : first + len(covers)])
+    _check(
+        window == covers,
+        f"{case.case_id}: compaction covers are not a contiguous message span "
+        f"(covered={covers!r}, visible={window!r})",
+    )
+    remaining = [message for message in messages if message.id not in covers]
+    remaining.insert(first, summary)
+    return remaining
+
+
+def _check_messages(
+    case: SyntheticCase,
+    view: SessionView,
+    expected: tuple[Message, ...],
+    system: Message | None,
+) -> None:
+    _check(view.system == system, f"{case.case_id}: folded system message differs")
+    _check(
+        view.messages == expected,
+        f"{case.case_id}: folded messages differ from the event stream "
+        f"(folded={[message.id for message in view.messages]!r}, "
+        f"events={[message.id for message in expected]!r})",
+    )
+    ids = [message.id for message in view.messages]
+    _check(len(set(ids)) == len(ids), f"{case.case_id}: folded messages carry duplicate ids")
+
+
+def _check_tool_pairing(case: SyntheticCase, events: Sequence[Event], messages: tuple[Message, ...]) -> None:
+    calls: dict[str, tuple[str, str]] = {}
+    for event in events:
+        if event.type != EventKind.TOOL_CALL.value:
+            continue
+        call_id = _require_text(event.data.get("call_id"), f"{case.case_id}: tool.call call_id")
+        _check(call_id not in calls, f"{case.case_id}: duplicate tool.call {call_id}")
+        calls[call_id] = (
+            _require_text(event.data.get("name"), f"{case.case_id}: tool.call name"),
+            _canonical_arguments(
+                _require_text(event.data.get("arguments"), f"{case.case_id}: tool.call arguments"),
+                case.case_id,
+            ),
+        )
+    parts = 0
+    for message in messages:
+        if message.role != "assistant":
+            continue
+        for part in message.tool_calls():
+            parts += 1
+            _check(part.id in calls, f"{case.case_id}: assistant tool call {part.id} has no tool.call")
+            name, arguments = calls[part.id]
+            _check(name == part.name, f"{case.case_id}: tool.call {part.id} name differs")
+            _check(
+                _canonical_arguments(part.arguments, case.case_id) == arguments,
+                f"{case.case_id}: tool.call {part.id} arguments differ",
+            )
+    _check(
+        parts == len(calls),
+        f"{case.case_id}: assistant tool-call parts and tool.call events disagree "
+        f"(parts={parts}, calls={len(calls)})",
+    )
+    results = []
+    for event in events:
+        if event.type != EventKind.TOOL_RESULT.value:
+            continue
+        message = _event_message(case, event)
+        call_id = _require_text(message.tool_call_id, f"{case.case_id}: tool.result tool_call_id")
+        _check(call_id in calls, f"{case.case_id}: tool.result {call_id} has no tool.call")
+        results.append(call_id)
+    _check(
+        sorted(results) == sorted(calls),
+        f"{case.case_id}: every tool.call needs exactly one tool.result "
+        f"(calls={sorted(calls)!r}, results={sorted(results)!r})",
     )
 
 
-def _normalize_native_part(part: object) -> tuple[str, ...]:
-    if isinstance(part, TextPart):
-        return ("text", part.text)
-    if isinstance(part, ReasoningPart):
-        return ("reasoning", part.text)
-    if isinstance(part, ToolCallPart):
-        return ("tool-call", part.id, part.name, _canonical_arguments(part.arguments, "native"))
-    if isinstance(part, ImagePart):
-        return ("image", part.attachment)
-    raise DifferentialMismatch(f"unsupported native message part {type(part).__name__}")
+def _check_usage(case: SyntheticCase, log: SessionLog, trace: TraceLog | None) -> TraceJoin | None:
+    for event in log.events:
+        if event.type == EventKind.RUN_CHECKPOINT.value:
+            continue
+        leaked = sorted(set(_walk_keys(event.data)) & FORBIDDEN_USAGE_KEYS)
+        _check(
+            not leaked,
+            f"{case.case_id}: session log carries usage facts {leaked} "
+            "(schema 8.5: they belong in the trace side channel)",
+        )
+    if trace is None:
+        return None
+    try:
+        joined = join_trace(trace, log.events)
+    except TraceFormatError as exc:
+        raise DifferentialMismatch(f"{case.case_id}: trace does not join the session: {exc}") from exc
+    _check(
+        joined.run.session_id == log.header.id,
+        f"{case.case_id}: trace run session id differs from the session header",
+    )
+    trace_ids = {event.trace_id for event in log.events if event.trace_id is not None}
+    _check(
+        trace_ids <= {joined.run.trace_id},
+        f"{case.case_id}: session events reference a different trace id {sorted(trace_ids)!r}",
+    )
+    for call in joined.model_calls:
+        _check(call.input_tokens >= 0, f"{case.case_id}: model call input tokens must be non-negative")
+        _check(call.output_tokens >= 0, f"{case.case_id}: model call output tokens must be non-negative")
+        _check(call.latency_ms >= 0, f"{case.case_id}: model call latency must be non-negative")
+        _check(call.prompt_hash.startswith("sha256:"), f"{case.case_id}: prompt hash must be sha256")
+    names = {
+        _require_text(event.data.get("call_id"), f"{case.case_id}: tool.call call_id"): _require_text(
+            event.data.get("name"), f"{case.case_id}: tool.call name"
+        )
+        for event in log.events
+        if event.type == EventKind.TOOL_CALL.value
+    }
+    for record in joined.tool_calls:
+        _check(
+            names.get(record.call_id) == record.tool,
+            f"{case.case_id}: trace tool_call {record.call_id} does not match the session tool.call",
+        )
+    return joined
 
 
-def _normalize_native_source(source: object) -> tuple[str, ...]:
-    if isinstance(source, UserSource):
-        return ("user",)
-    if isinstance(source, ModelSource):
-        return ("model", source.provider, source.model)
-    if isinstance(source, ToolSource):
-        return ("tool", source.call_id)
-    if isinstance(source, SystemSource):
-        return ("system",)
-    if isinstance(source, CompactionSource):
-        return ("compaction", source.compaction_id)
-    if isinstance(source, RepairSource):
-        return ("repair", source.reason)
-    if isinstance(source, PluginSource):
-        return ("plugin", source.plugin)
-    raise DifferentialMismatch(f"unsupported native message source {type(source).__name__}")
+# ---------------------------------------------------------------------------
+# Argument and text helpers
+# ---------------------------------------------------------------------------
 
 
 def _canonical_arguments(arguments: str, where: str) -> str:
@@ -578,203 +607,15 @@ def _canonical_arguments(arguments: str, where: str) -> str:
     return json.dumps(parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-# ---------------------------------------------------------------------------
-# Tool call / result pairing
-# ---------------------------------------------------------------------------
+def _arguments_object(case: SyntheticCase, arguments: str) -> Mapping[str, object]:
+    try:
+        return _require_mapping(json.loads(arguments), f"{case.case_id}: tool arguments")
+    except json.JSONDecodeError as exc:
+        raise DifferentialMismatch(f"{case.case_id}: tool arguments are not JSON: {exc}") from exc
 
 
-def _check_tool_pairing(case: SyntheticCase, records: Sequence[Any], events: Sequence[Event]) -> None:
-    v4_pairs = _v4_tool_pairs(case, records)
-    native_pairs = _native_tool_pairs(case, events)
-    _check(
-        len(v4_pairs) == len(native_pairs),
-        f"{case.case_id}: tool pair count differs (v4={len(v4_pairs)}, native={len(native_pairs)})",
-    )
-    for index, (v4_pair, native_pair) in enumerate(zip(v4_pairs, native_pairs, strict=True)):
-        _check(
-            v4_pair == native_pair,
-            f"{case.case_id}: tool pair {index} differs (v4={v4_pair!r}, native={native_pair!r})",
-        )
-    v4_calls = {
-        _require_text(record.data.get("callId"), f"{case.case_id}: v4 tool call id"): (
-            _require_text(record.data.get("name"), f"{case.case_id}: v4 tool name"),
-            _canonical_arguments(
-                _require_text(record.data.get("arguments"), f"{case.case_id}: v4 tool arguments"),
-                case.case_id,
-            ),
-        )
-        for record in records
-        if record.type == "tool/call"
-    }
-    assistant_calls = [
-        (part.id, part.name, _canonical_arguments(part.arguments, case.case_id))
-        for message in derive_messages(records)
-        if message.role == "assistant"
-        for part in message.content
-        if isinstance(part, WireToolCallPart)
-    ]
-    _check(
-        len(assistant_calls) == len(v4_calls),
-        f"{case.case_id}: v4 assistant tool-call parts and tool/call records disagree",
-    )
-    for call_id, name, arguments in assistant_calls:
-        _check(call_id in v4_calls, f"{case.case_id}: v4 tool/call record missing for {call_id}")
-        _check(
-            v4_calls[call_id] == (name, arguments),
-            f"{case.case_id}: v4 tool/call record for {call_id} differs from the assistant message",
-        )
-
-
-def _v4_tool_pairs(case: SyntheticCase, records: Sequence[Any]) -> list[tuple[str, str, str, str, bool]]:
-    calls: dict[str, tuple[str, str]] = {}
-    pairs: list[tuple[str, str, str, str, bool]] = []
-    for record in records:
-        if record.type == "tool/call":
-            call_id = _require_text(record.data.get("callId"), f"{case.case_id}: v4 tool call id")
-            _check(call_id not in calls, f"{case.case_id}: duplicate v4 tool/call {call_id}")
-            calls[call_id] = (
-                _require_text(record.data.get("name"), f"{case.case_id}: v4 tool name"),
-                _canonical_arguments(
-                    _require_text(record.data.get("arguments"), f"{case.case_id}: v4 arguments"),
-                    case.case_id,
-                ),
-            )
-        elif record.type == "tool/result":
-            message = _require_mapping(record.data.get("message"), f"{case.case_id}: v4 tool result")
-            call_id = _require_text(message.get("toolCallId"), f"{case.case_id}: v4 result toolCallId")
-            _check(call_id in calls, f"{case.case_id}: v4 tool/result has no matching tool/call")
-            name, arguments = calls.pop(call_id)
-            pairs.append(
-                (call_id, name, arguments, _text_parts(message.get("content")), bool(message.get("isError")))
-            )
-    _check(not calls, f"{case.case_id}: v4 tool/call without tool/result: {sorted(calls)}")
-    return pairs
-
-
-def _native_tool_pairs(case: SyntheticCase, events: Sequence[Event]) -> list[tuple[str, str, str, str, bool]]:
-    calls: dict[str, tuple[str, str]] = {}
-    pairs: list[tuple[str, str, str, str, bool]] = []
-    for event in events:
-        if event.type == "tool.call":
-            call_id = _require_text(event.data.get("call_id"), f"{case.case_id}: native call_id")
-            _check(call_id not in calls, f"{case.case_id}: duplicate native tool.call {call_id}")
-            calls[call_id] = (
-                _require_text(event.data.get("name"), f"{case.case_id}: native tool name"),
-                _canonical_arguments(
-                    _require_text(event.data.get("arguments"), f"{case.case_id}: native arguments"),
-                    case.case_id,
-                ),
-            )
-        elif event.type == "tool.result":
-            message = _require_mapping(event.data.get("message"), f"{case.case_id}: native tool result")
-            call_id = _require_text(
-                message.get("tool_call_id"), f"{case.case_id}: native result tool_call_id"
-            )
-            _check(call_id in calls, f"{case.case_id}: native tool.result has no matching tool.call")
-            name, arguments = calls.pop(call_id)
-            pairs.append(
-                (
-                    call_id,
-                    name,
-                    arguments,
-                    _text_parts(message.get("content")),
-                    bool(message.get("is_error")),
-                )
-            )
-    _check(not calls, f"{case.case_id}: native tool.call without tool.result: {sorted(calls)}")
-    return pairs
-
-
-def _text_parts(content: object) -> str:
-    parts = _require_sequence(content, "message content")
-    texts: list[str] = []
-    for part in parts:
-        mapping = _require_mapping(part, "content part")
-        if mapping.get("type") == "text":
-            texts.append(_require_text(mapping.get("text"), "text part"))
-    return "".join(texts)
-
-
-# ---------------------------------------------------------------------------
-# Usage: v4 carries it, native records it in the trace side channel only
-# ---------------------------------------------------------------------------
-
-
-def _check_usage(
-    case: SyntheticCase,
-    records: Sequence[Any],
-    events: Sequence[Event],
-    trace: TraceLog | None,
-) -> None:
-    for event in events:
-        if event.type == "run.checkpoint":
-            continue
-        leaked = sorted(set(_walk_keys(event.data)) & FORBIDDEN_USAGE_KEYS)
-        _check(
-            not leaked,
-            f"{case.case_id}: native session log carries usage facts {leaked} "
-            "(schema 8.5: they belong in trace)",
-        )
-    usages = [
-        _require_mapping(record.data.get("usage"), f"{case.case_id}: v4 usage")
-        for record in records
-        if record.type == "assistant/message" and record.data.get("usage") is not None
-    ]
-    if not usages:
-        _check(trace is None, f"{case.case_id}: trace side channel without v4 usage would be fabricated")
-        return
-    _check(trace is not None, f"{case.case_id}: v4 records carry usage but the case has no trace")
-    assert trace is not None
-    joined = join_trace(trace, events)
-    _check(
-        len(usages) == len(joined.model_calls),
-        f"{case.case_id}: v4 usage count differs from trace model_call count",
-    )
-    for index, (usage, call) in enumerate(zip(usages, joined.model_calls, strict=True)):
-        _check(
-            set(usage) == USAGE_FIELDS,
-            f"{case.case_id}: v4 usage {index} lacks the five token fields ({sorted(usage)})",
-        )
-        _check(
-            call.input_tokens == _require_int(usage.get("inputTokens"), f"{case.case_id}: inputTokens"),
-            f"{case.case_id}: usage {index} input tokens differ",
-        )
-        _check(
-            call.output_tokens == _require_int(usage.get("outputTokens"), f"{case.case_id}: outputTokens"),
-            f"{case.case_id}: usage {index} output tokens differ",
-        )
-        _check(
-            (call.cached_input_tokens or 0)
-            == _require_int(usage.get("cacheReadTokens"), f"{case.case_id}: cacheReadTokens"),
-            f"{case.case_id}: usage {index} cached tokens differ",
-        )
-        _check(
-            _require_int(usage.get("totalTokens"), f"{case.case_id}: totalTokens")
-            == call.input_tokens + call.output_tokens,
-            f"{case.case_id}: usage {index} total tokens differ from input+output",
-        )
-    native_calls = {
-        _require_text(event.data.get("call_id"), f"{case.case_id}: trace call id"): _require_text(
-            event.data.get("name"), f"{case.case_id}: trace tool name"
-        )
-        for event in events
-        if event.type == "tool.call"
-    }
-    for record in joined.tool_calls:
-        _check(
-            native_calls.get(record.call_id) == record.tool,
-            f"{case.case_id}: trace tool_call {record.call_id} does not match the native tool.call",
-        )
-
-
-def _walk_keys(value: object) -> Iterator[str]:
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            yield str(key)
-            yield from _walk_keys(item)
-    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        for item in value:
-            yield from _walk_keys(item)
+def _message_text(message: Message) -> str:
+    return "".join(part.text for part in message.content if isinstance(part, TextPart))
 
 
 # ---------------------------------------------------------------------------
@@ -782,473 +623,267 @@ def _walk_keys(value: object) -> Iterator[str]:
 # ---------------------------------------------------------------------------
 
 
-def _check_capability(
-    case: SyntheticCase,
-    records: Sequence[Any],
-    events: Sequence[Event],
-    view: SessionView,
-) -> None:
-    check = _CAPABILITY_CHECKS[case.capability]
-    check(case, records, events, view)
-
-
 def _check_image(
-    case: SyntheticCase, records: Sequence[Any], events: Sequence[Event], view: SessionView
+    case: SyntheticCase, events: Sequence[Event], view: SessionView, usage: TraceJoin | None
 ) -> None:
-    v4_images = _v4_image_attachments(case, records)
-    native_images = _native_image_attachments(case, events)
-    _check(len(v4_images) == 1, f"{case.case_id}: v4 side must carry exactly one image part")
-    _check(
-        len(native_images) == 1,
-        f"{case.case_id}: native side must carry exactly one image part",
-    )
-    _check(
-        v4_images[0] == native_images[0],
-        f"{case.case_id}: image attachment differs (v4={v4_images[0]!r}, native={native_images[0]!r})",
-    )
-    _check(
-        native_images[0].endswith(".png"),
-        f"{case.case_id}: the synthetic image fixture is a PNG",
-    )
-    _check(
-        any(message.role == "user" and _message_has_image(message) for message in view.messages),
-        f"{case.case_id}: fold dropped the image part from the user message",
-    )
-
-
-def _v4_image_attachments(case: SyntheticCase, records: Sequence[Any]) -> list[str]:
-    attachments: list[str] = []
-    for record in records:
-        if record.type != "user/message":
-            continue
-        content = _require_sequence(record.data.get("content"), f"{case.case_id}: v4 user content")
-        for part in content:
-            mapping = _require_mapping(part, f"{case.case_id}: v4 user part")
-            if mapping.get("type") == "image":
-                attachments.append(_require_text(mapping.get("attachment"), f"{case.case_id}: attachment"))
-    return attachments
-
-
-def _native_image_attachments(case: SyntheticCase, events: Sequence[Event]) -> list[str]:
-    attachments: list[str] = []
+    del usage
+    images: list[tuple[str, str]] = []
     for event in events:
-        if event.type != "user.message":
-            continue
-        message = _require_mapping(event.data.get("message"), f"{case.case_id}: native user message")
-        content = _require_sequence(message.get("content"), f"{case.case_id}: native user content")
-        for part in content:
-            mapping = _require_mapping(part, f"{case.case_id}: native user part")
-            if mapping.get("type") == "image":
-                attachments.append(
-                    _require_text(mapping.get("attachment"), f"{case.case_id}: native attachment")
-                )
-    return attachments
-
-
-def _message_has_image(message: object) -> bool:
-    content = getattr(message, "content", ())
-    return any(isinstance(part, ImagePart) for part in content)
+        if event.type == EventKind.USER_MESSAGE.value:
+            for part in _event_message(case, event).content:
+                if isinstance(part, ImagePart):
+                    images.append((part.attachment, part.media_type))
+    _check(len(images) == 1, f"{case.case_id}: expected exactly one native image part")
+    attachment, media_type = images[0]
+    _check(media_type == "image/png", f"{case.case_id}: the synthetic image fixture is a PNG")
+    _check(attachment.endswith(".png"), f"{case.case_id}: the image attachment must name a png")
+    _check(
+        any(
+            isinstance(part, ImagePart) and part.attachment == attachment
+            for message in view.messages
+            for part in message.content
+        ),
+        f"{case.case_id}: fold dropped the image part from the message history",
+    )
 
 
 def _check_approval(
-    case: SyntheticCase, records: Sequence[Any], events: Sequence[Event], view: SessionView
+    case: SyntheticCase, events: Sequence[Event], view: SessionView, usage: TraceJoin | None
 ) -> None:
-    asked = [record for record in records if record.type == "approval/asked"]
-    decided = [record for record in records if record.type == "approval/decided"]
-    requested = [event for event in events if event.type == "approval.requested"]
-    decided_events = [event for event in events if event.type == "approval.decided"]
-    _check(len(asked) == len(requested) == 1, f"{case.case_id}: expected one approval request")
-    _check(len(decided) == len(decided_events) == 1, f"{case.case_id}: expected one approval decision")
-    asked_data = asked[0].data
-    requested_data = requested[0].data
+    del usage
+    requested = [event for event in events if event.type == EventKind.APPROVAL_REQUESTED.value]
+    decided = [event for event in events if event.type == EventKind.APPROVAL_DECIDED.value]
+    _check(len(requested) == 1, f"{case.case_id}: expected one approval.requested")
+    _check(len(decided) == 1, f"{case.case_id}: expected one approval.decided")
+    request = requested[0].data
+    approval_id = _require_text(request.get("approval_id"), f"{case.case_id}: approval_id")
     _check(
-        _require_text(asked_data.get("id"), f"{case.case_id}: v4 approval id")
-        == _require_text(requested_data.get("approval_id"), f"{case.case_id}: native approval id"),
-        f"{case.case_id}: approval ids differ",
+        _require_text(decided[0].data.get("approval_id"), f"{case.case_id}: decided approval_id")
+        == approval_id,
+        f"{case.case_id}: approval request and decision ids differ",
+    )
+    outcome = _require_text(decided[0].data.get("outcome"), f"{case.case_id}: approval outcome")
+    _check(
+        outcome in APPROVAL_OUTCOMES,
+        f"{case.case_id}: approval outcome {outcome!r} is not a schema 1 outcome",
+    )
+    tool_call_id = _require_text(request.get("tool_call_id"), f"{case.case_id}: approval tool_call_id")
+    calls = {
+        _require_text(event.data.get("call_id"), f"{case.case_id}: tool.call call_id"): _require_text(
+            event.data.get("name"), f"{case.case_id}: tool.call name"
+        )
+        for event in events
+        if event.type == EventKind.TOOL_CALL.value
+    }
+    _check(
+        tool_call_id in calls,
+        f"{case.case_id}: approval request must reference a recorded tool.call",
     )
     _check(
-        _require_text(asked_data.get("toolName"), f"{case.case_id}: v4 approval toolName")
-        == _require_text(requested_data.get("tool_name"), f"{case.case_id}: native approval tool_name"),
-        f"{case.case_id}: approval tool names differ",
+        calls[tool_call_id] == _require_text(request.get("tool_name"), f"{case.case_id}: approval tool_name"),
+        f"{case.case_id}: approval tool name differs from the tool.call",
     )
     _check(
-        _require_text(asked_data.get("callId"), f"{case.case_id}: v4 approval callId")
-        == _require_text(requested_data.get("tool_call_id"), f"{case.case_id}: native approval tool_call_id"),
-        f"{case.case_id}: approval tool call ids differ",
-    )
-    _check(
-        _optional_text(asked_data.get("reason"), f"{case.case_id}: v4 approval reason")
-        == _optional_text(requested_data.get("reason"), f"{case.case_id}: native approval reason"),
-        f"{case.case_id}: approval reasons differ",
-    )
-    decided_data = decided[0].data
-    decided_native = decided_events[0].data
-    v4_outcome = _require_text(decided_data.get("outcome"), f"{case.case_id}: v4 approval outcome")
-    native_outcome = _require_text(decided_native.get("outcome"), f"{case.case_id}: native approval outcome")
-    _check(
-        NATIVE_APPROVAL_OUTCOMES.get(v4_outcome) == native_outcome,
-        f"{case.case_id}: approval outcomes differ (v4={v4_outcome!r}, native={native_outcome!r})",
-    )
-    _check(
-        not view.pending_approvals,
+        view.pending_approvals == (),
         f"{case.case_id}: a decided approval must not remain pending ({view.pending_approvals!r})",
     )
 
 
 def _check_compaction(
-    case: SyntheticCase, records: Sequence[Any], events: Sequence[Event], view: SessionView
+    case: SyntheticCase, events: Sequence[Event], view: SessionView, usage: TraceJoin | None
 ) -> None:
-    replacements = [
-        record
-        for record in records
-        if record.type in V4_SURFACE_EVENT_TYPES and isinstance(record.surfaceOp, ReplaceOp)
-    ]
-    _check(
-        len(replacements) == 1,
-        f"{case.case_id}: expected exactly one surface replace record, got {len(replacements)}",
-    )
-    replacement = replacements[0]
-    assert isinstance(replacement.surfaceOp, ReplaceOp)
-    start, end = replacement.surfaceOp.startSeq, replacement.surfaceOp.endSeq
-    earlier = list(fold_surface([record for record in records if record.seq < replacement.seq]))
-    shadowed = [event_message(node) for node in earlier if start <= node.seq <= end]
-    _check(
-        all(message is not None for message in shadowed), f"{case.case_id}: shadowed node is not a message"
-    )
-    shadowed_ids = [message.id for message in shadowed if message is not None]
-    done = [event for event in events if event.type == "compaction.done"]
-    _check(len(done) == 1, f"{case.case_id}: expected one native compaction.done")
+    del usage
+    done = [event for event in events if event.type == EventKind.COMPACTION_DONE.value]
+    _check(len(done) == 1, f"{case.case_id}: expected one compaction.done")
     data = done[0].data
-    covers = _require_sequence(data.get("covers"), f"{case.case_id}: native compaction covers")
-    _check(
-        tuple(covers) == tuple(shadowed_ids),
-        f"{case.case_id}: compaction covers differ (v4={shadowed_ids!r}, native={list(covers)!r})",
+    covers = tuple(
+        _require_text(item, f"{case.case_id}: compaction cover")
+        for item in _require_sequence(data.get("covers"), f"{case.case_id}: compaction covers")
     )
-    summary = _require_mapping(data.get("message"), f"{case.case_id}: native compaction summary")
-    summary_text = _text_parts(summary.get("content"))
-    v4_summary = _require_mapping(replacement.data, f"{case.case_id}: v4 checkpoint message")
-    v4_texts = [
-        _require_text(part.get("text"), f"{case.case_id}: v4 checkpoint part")
-        for part in _require_sequence(v4_summary.get("content"), f"{case.case_id}: v4 checkpoint content")
-        if _require_mapping(part, f"{case.case_id}: checkpoint part").get("type") == "text"
-    ]
+    summary = _event_message(case, done[0])
     _check(
-        len(v4_texts) == 3 and v4_texts[1] == summary_text,
-        f"{case.case_id}: compaction summary text differs",
+        isinstance(summary.source, CompactionSource),
+        f"{case.case_id}: compaction summary must carry a compaction source",
+    )
+    assert isinstance(summary.source, CompactionSource)
+    _check(
+        summary.source.compaction_id
+        == _require_text(data.get("compaction_id"), f"{case.case_id}: compaction_id"),
+        f"{case.case_id}: compaction summary source id differs from compaction.done",
     )
     _check(
-        len(view.messages) == 1 and view.messages[0].id == summary.get("id"),
-        f"{case.case_id}: native fold must leave only the compaction summary",
+        summary.text().strip() != "",
+        f"{case.case_id}: compaction summary must carry summary text",
     )
-    native_ids = {message.id for message in view.messages}
     _check(
-        all(message_id not in native_ids for message_id in shadowed_ids),
-        f"{case.case_id}: a compacted message survived in the native view",
+        summary.id in {message.id for message in view.messages},
+        f"{case.case_id}: compaction summary is missing from the folded view",
     )
-    v4_checkpoint = _require_mapping(replacement.data, f"{case.case_id}: compact message")
     _check(
-        _require_text(v4_checkpoint.get("id"), f"{case.case_id}: checkpoint id")
-        == _require_text(summary.get("id"), f"{case.case_id}: native summary id"),
-        f"{case.case_id}: compaction summary message ids differ",
+        not (set(covers) & {message.id for message in view.messages}),
+        f"{case.case_id}: a compacted message survived in the folded view",
     )
 
 
 def _check_mcp(
-    case: SyntheticCase, records: Sequence[Any], events: Sequence[Event], view: SessionView
+    case: SyntheticCase, events: Sequence[Event], view: SessionView, usage: TraceJoin | None
 ) -> None:
     del view
-    v4_names = _tool_call_names(case, records)
-    native_names = _native_tool_names(case, events)
+    names = [
+        _require_text(event.data.get("name"), f"{case.case_id}: tool.call name")
+        for event in events
+        if event.type == EventKind.TOOL_CALL.value
+    ]
+    matches = [MCP_TOOL_RE.fullmatch(name) for name in names]
     _check(
-        any(name.startswith("mcp__") for name in v4_names),
-        f"{case.case_id}: v4 side must call an mcp__<server>__<tool> tool",
-    )
-    _check(
-        sorted(v4_names) == sorted(native_names),
-        f"{case.case_id}: tool names differ (v4={v4_names!r}, native={native_names!r})",
-    )
-    _check(
-        not any(record.type.startswith("mcp") for record in records),
-        f"{case.case_id}: session v4 has no mcp/* record type, so the tool seam is all there is",
+        any(match is not None for match in matches), f"{case.case_id}: expected an mcp__<server>__<tool> call"
     )
     _check(
         not any(event.type.startswith("mcp") for event in events),
-        f"{case.case_id}: native schema 1 has no MCP lifecycle event yet",
+        f"{case.case_id}: schema 1 has no MCP lifecycle event; only the tool seam is recorded",
     )
-
-
-def _tool_call_names(case: SyntheticCase, records: Sequence[Any]) -> list[str]:
-    return [
-        _require_text(record.data.get("name"), f"{case.case_id}: v4 tool name")
-        for record in records
-        if record.type == "tool/call"
-    ]
-
-
-def _native_tool_names(case: SyntheticCase, events: Sequence[Event]) -> list[str]:
-    return [
-        _require_text(event.data.get("name"), f"{case.case_id}: native tool name")
-        for event in events
-        if event.type == "tool.call"
-    ]
+    if usage is not None:
+        _check(bool(usage.model_calls), f"{case.case_id}: the MCP trace must carry model calls")
 
 
 def _check_ptc(
-    case: SyntheticCase, records: Sequence[Any], events: Sequence[Event], view: SessionView
+    case: SyntheticCase, events: Sequence[Event], view: SessionView, usage: TraceJoin | None
 ) -> None:
-    del view
-    dispatch_starts = [record for record in records if record.type == "tool/ptc-dispatch-start"]
-    dispatches = [record for record in records if record.type == "tool/ptc-dispatch"]
-    _check(bool(dispatch_starts), f"{case.case_id}: v4 side must record a tool/ptc-dispatch-start")
-    _check(bool(dispatches), f"{case.case_id}: v4 side must record a tool/ptc-dispatch")
-    for record in (*dispatch_starts, *dispatches):
-        _check(
-            record.surfaceOp is None and record.sourceEventSeqs is None,
-            f"{case.case_id}: PTC dispatch records are non-surface log facts",
+    del view, usage
+    calls = [
+        (
+            _require_text(event.data.get("call_id"), f"{case.case_id}: tool.call call_id"),
+            _require_text(event.data.get("name"), f"{case.case_id}: tool.call name"),
+            _require_text(event.data.get("arguments"), f"{case.case_id}: tool.call arguments"),
         )
-    root_call = _require_text(dispatch_starts[0].data.get("rootCallId"), f"{case.case_id}: v4 root call id")
-    sub_call = _require_text(dispatch_starts[0].data.get("subCallId"), f"{case.case_id}: v4 sub call id")
-    _check(
-        sub_call.startswith(f"{root_call}:ptc:"),
-        f"{case.case_id}: nested dispatch ids do not follow <rootCallId>:ptc:<n>",
-    )
-    native_call_ids = [
-        _require_text(event.data.get("call_id"), f"{case.case_id}: native call id")
         for event in events
-        if event.type == "tool.call"
+        if event.type == EventKind.TOOL_CALL.value
     ]
+    ptc = [call for call in calls if call[1] == "ptc"]
+    _check(len(ptc) == 1, f"{case.case_id}: expected exactly one ptc tool.call")
+    arguments = _arguments_object(case, ptc[0][2])
+    code = arguments.get("code")
+    _check(isinstance(code, str) and code.strip() != "", f"{case.case_id}: ptc arguments need a code string")
     _check(
-        root_call in native_call_ids,
-        f"{case.case_id}: native side must keep the outer root call",
-    )
-    _check(
-        not any(":ptc:" in call_id for call_id in native_call_ids),
-        f"{case.case_id}: native schema 1 has no nested PTC dispatch call ids yet",
+        not any(call[1] == "read_file" for call in calls),
+        f"{case.case_id}: the nested ptc dispatch must stay inside the tool result",
     )
     _check(
         not any(event.type.startswith("ptc") for event in events),
-        f"{case.case_id}: native schema 1 has no PTC lifecycle event yet",
+        f"{case.case_id}: schema 1 has no PTC lifecycle event",
     )
 
 
 def _check_subagent(
-    case: SyntheticCase, records: Sequence[Any], events: Sequence[Event], view: SessionView
+    case: SyntheticCase, events: Sequence[Event], view: SessionView, usage: TraceJoin | None
 ) -> None:
-    catalogs = [record for record in records if record.type == "subagent/catalog"]
-    descriptors = [record for record in records if record.type == "subagent/descriptor"]
-    _check(len(catalogs) == 1, f"{case.case_id}: v4 side must record one subagent/catalog")
-    _check(len(descriptors) == 1, f"{case.case_id}: v4 side must record one subagent/descriptor")
-    child_id = _require_text(catalogs[0].data.get("childId"), f"{case.case_id}: subagent child id")
-    results = [
-        _text_parts(
-            _require_mapping(event.data.get("message"), f"{case.case_id}: tool result").get("content")
+    del usage
+    calls = [
+        (
+            _require_text(event.data.get("call_id"), f"{case.case_id}: tool.call call_id"),
+            _require_text(event.data.get("name"), f"{case.case_id}: tool.call name"),
         )
         for event in events
-        if event.type == "tool.result"
+        if event.type == EventKind.TOOL_CALL.value
     ]
+    spawns = [call for call in calls if call[1] == "subagent"]
+    _check(len(spawns) == 1, f"{case.case_id}: expected exactly one subagent tool.call")
+    call_id = spawns[0][0]
+    result_texts = [
+        _message_text(_event_message(case, event))
+        for event in events
+        if event.type == EventKind.TOOL_RESULT.value and _event_message(case, event).tool_call_id == call_id
+    ]
+    _check(len(result_texts) == 1, f"{case.case_id}: the subagent call needs one tool.result")
+    result_text = result_texts[0]
+    child = CHILD_ID_RE.search(result_text)
+    _check(child is not None, f"{case.case_id}: the subagent result must name the child id")
+    _check("spawned" in result_text, f"{case.case_id}: the subagent result must report the spawn")
+    assert child is not None
     _check(
-        any(child_id in text for text in results),
-        f"{case.case_id}: the subagent child id must surface in the tool result text",
-    )
-    native_kinds = {kind.value for kind in EventKind}
-    reserved = [name for name in RESERVED_SUBAGENT_TYPES if name in native_kinds]
-    _check(
-        not reserved,
-        f"{case.case_id}: native subagent lifecycle events landed; update the differential",
+        any(child.group(0) in _message_text(message) for message in view.messages),
+        f"{case.case_id}: the folded message history must carry the child id",
     )
     _check(
-        bool(view.messages) and any(child_id in _message_text(message) for message in view.messages),
-        f"{case.case_id}: the native message history must carry the child id",
+        not any(event.type in RESERVED_SUBAGENT_TYPES for event in events),
+        f"{case.case_id}: schema 1 has no subagent lifecycle event",
     )
-
-
-def _message_text(message: object) -> str:
-    content = getattr(message, "content", ())
-    return "".join(part.text for part in content if isinstance(part, TextPart))
 
 
 def _check_handoff(
-    case: SyntheticCase, records: Sequence[Any], events: Sequence[Event], view: SessionView
+    case: SyntheticCase, events: Sequence[Event], view: SessionView, usage: TraceJoin | None
 ) -> None:
-    task_states = [record for record in records if record.type == TASK_EVENT]
-    handoffs = [record for record in records if record.type == HANDOFF_EVENT]
-    results = [record for record in records if record.type == HANDOFF_RESULT_EVENT]
-    native_states = [event for event in events if event.type == "task.state"]
-    native_handoffs = [event for event in events if event.type == "task.handoff"]
-    native_results = [event for event in events if event.type == "task.handoff.result"]
+    del usage
+    types = {event.type for event in events}
+    for native_type in HANDOFF_NATIVE_TYPES:
+        _check(native_type in types, f"{case.case_id}: the fixture must record {native_type!r}")
+    states = [event for event in events if event.type == "task.state"]
+    handoffs = [event for event in events if event.type == "task.handoff"]
+    results = [event for event in events if event.type == "task.handoff.result"]
+    _check(len(states) >= 2, f"{case.case_id}: expected task.state create and update facts")
+    _check(len(handoffs) == 1, f"{case.case_id}: expected one task.handoff")
+    _check(len(results) == 1, f"{case.case_id}: expected one task.handoff.result")
+    task = _require_mapping(states[-1].data.get("task"), f"{case.case_id}: task.state task")
+    task_id = _require_text(task.get("id"), f"{case.case_id}: task id")
+    _check(TASK_ID_RE.fullmatch(task_id) is not None, f"{case.case_id}: task id does not match schema 1")
     _check(
-        bool(task_states) and bool(handoffs) and bool(results),
-        f"{case.case_id}: v4 side must record task/state, task/handoff and task/handoff/result",
+        _require_text(task.get("status"), f"{case.case_id}: final task status") == "completed",
+        f"{case.case_id}: the task must end completed",
     )
+    handoff = handoffs[0].data
+    run_id = _require_text(handoff.get("run_id"), f"{case.case_id}: handoff run_id")
+    from_owner = _require_text(handoff.get("from"), f"{case.case_id}: handoff from")
+    to_owner = _require_text(handoff.get("to"), f"{case.case_id}: handoff to")
+    _check(to_owner.startswith("subagent:"), f"{case.case_id}: handoff target must name the subagent")
+    summary = _require_text(handoff.get("summary"), f"{case.case_id}: handoff summary")
+    open_items = tuple(
+        _require_text(item, f"{case.case_id}: handoff open item")
+        for item in _require_sequence(handoff.get("open_items"), f"{case.case_id}: handoff open_items")
+    )
+    budget = _require_mapping(handoff.get("budget"), f"{case.case_id}: handoff budget")
+    max_steps = budget.get("max_steps")
     _check(
-        len(task_states) == len(native_states),
-        f"{case.case_id}: task state count differs (v4={len(task_states)}, native={len(native_states)})",
+        isinstance(max_steps, int) and not isinstance(max_steps, bool) and max_steps > 0,
+        f"{case.case_id}: handoff budget needs a positive max_steps",
     )
-    _check(
-        len(handoffs) == len(native_handoffs),
-        f"{case.case_id}: handoff count differs (v4={len(handoffs)}, native={len(native_handoffs)})",
-    )
-    _check(
-        len(results) == len(native_results),
-        f"{case.case_id}: handoff result count differs (v4={len(results)}, native={len(native_results)})",
-    )
-    for record in (*task_states, *handoffs, *results):
-        _check(
-            record.ignorable is True,
-            f"{case.case_id}: session v4 keeps {record.type!r} as an ignorable extension record",
-        )
-        _check(
-            record.surfaceOp is None and record.sourceEventSeqs is None,
-            f"{case.case_id}: {record.type!r} is a non-surface log fact",
-        )
-    for record, event in zip(task_states, native_states, strict=True):
-        v4_data = record.data
-        native_data = event.data
-        _check(
-            _require_text(v4_data.get("action"), f"{case.case_id}: v4 task action")
-            == _require_text(native_data.get("action"), f"{case.case_id}: native task action"),
-            f"{case.case_id}: task state actions differ",
-        )
-        _check(
-            dict(_require_mapping(v4_data.get("task"), f"{case.case_id}: v4 task"))
-            == dict(_require_mapping(native_data.get("task"), f"{case.case_id}: native task")),
-            f"{case.case_id}: task projections differ",
-        )
-    last_task = _require_mapping(task_states[-1].data.get("task"), f"{case.case_id}: v4 last task")
-    _check(
-        _require_text(last_task.get("status"), f"{case.case_id}: v4 last task status") == "completed",
-        f"{case.case_id}: v4 task must end completed",
-    )
-    v4_handoff = _require_mapping(handoffs[0].data, f"{case.case_id}: v4 handoff fact")
-    v4_handoff_payload = _require_mapping(v4_handoff.get("handoff"), f"{case.case_id}: v4 handoff payload")
-    v4_state = _require_mapping(v4_handoff_payload.get("state"), f"{case.case_id}: v4 handoff state")
-    native_handoff = native_handoffs[0].data
-    _check(
-        _require_text(v4_handoff.get("runId"), f"{case.case_id}: v4 handoff run id")
-        == _require_text(native_handoff.get("run_id"), f"{case.case_id}: native handoff run id"),
-        f"{case.case_id}: handoff run ids differ",
-    )
-    for field in ("from", "to", "summary", "created_at"):
-        _check(
-            _require_text(v4_handoff_payload.get(field), f"{case.case_id}: v4 handoff {field}")
-            == _require_text(native_handoff.get(field), f"{case.case_id}: native handoff {field}"),
-            f"{case.case_id}: handoff {field} differs",
-        )
-    _check(
-        _optional_text(v4_handoff_payload.get("task_id"), f"{case.case_id}: v4 handoff task id")
-        == _optional_text(native_handoff.get("task_id"), f"{case.case_id}: native handoff task id"),
-        f"{case.case_id}: handoff task ids differ",
-    )
-    _check(
-        _optional_texts(v4_handoff_payload.get("open_items"), f"{case.case_id}: v4 open items")
-        == _optional_texts(native_handoff.get("open_items"), f"{case.case_id}: native open items"),
-        f"{case.case_id}: handoff open items differ",
-    )
-    _check(
-        _require_text(v4_state.get("prompt"), f"{case.case_id}: v4 handoff prompt")
-        == _require_text(native_handoff.get("prompt"), f"{case.case_id}: native handoff prompt"),
-        f"{case.case_id}: handoff prompt differs",
-    )
-    _check(
-        _require_int(v4_state.get("turn"), f"{case.case_id}: v4 handoff turn")
-        == _require_int(native_handoff.get("turn"), f"{case.case_id}: native handoff turn"),
-        f"{case.case_id}: handoff turns differ",
-    )
-    _check(
-        _require_text(v4_state.get("callId"), f"{case.case_id}: v4 handoff call id")
-        == _require_text(native_handoff.get("call_id"), f"{case.case_id}: native handoff call id"),
-        f"{case.case_id}: handoff call ids differ",
-    )
-    _check(
-        dict(_require_mapping(v4_state.get("budget"), f"{case.case_id}: v4 handoff budget"))
-        == dict(_require_mapping(native_handoff.get("budget"), f"{case.case_id}: native handoff budget")),
-        f"{case.case_id}: handoff budgets differ",
-    )
-    _check(
-        "usage" in v4_state,
-        f"{case.case_id}: session v4 keeps the parent usage snapshot in handoff state.usage",
-    )
-    leaked = sorted(set(_walk_keys(native_handoff)) & FORBIDDEN_USAGE_KEYS)
+    leaked = sorted(set(_walk_keys(handoff)) & FORBIDDEN_USAGE_KEYS)
     _check(
         not leaked,
-        f"{case.case_id}: native handoff payload carries usage facts {leaked} "
-        "(schema 8.5: they belong in trace)",
+        f"{case.case_id}: handoff payload carries usage facts {leaked} "
+        "(schema 8.5: they belong in the trace side channel)",
     )
-    v4_result = results[0].data
-    native_result = native_results[0].data
+    result = results[0].data
+    _check(result.get("ok") is True, f"{case.case_id}: the handoff result must be ok")
     _check(
-        _require_text(v4_result.get("runId"), f"{case.case_id}: v4 result run id")
-        == _require_text(native_result.get("run_id"), f"{case.case_id}: native result run id"),
-        f"{case.case_id}: handoff result run ids differ",
-    )
-    _check(
-        _optional_text(v4_result.get("taskId"), f"{case.case_id}: v4 result task id")
-        == _optional_text(native_result.get("task_id"), f"{case.case_id}: native result task id"),
-        f"{case.case_id}: handoff result task ids differ",
+        _require_text(result.get("run_id"), f"{case.case_id}: handoff result run_id") == run_id,
+        f"{case.case_id}: handoff result run id differs",
     )
     _check(
-        bool(v4_result.get("ok")) == bool(native_result.get("ok")),
-        f"{case.case_id}: handoff result outcomes differ",
+        _require_text(result.get("task_id"), f"{case.case_id}: handoff result task_id") == task_id,
+        f"{case.case_id}: handoff result task id differs",
     )
+    _check(len(view.tasks) == 1, f"{case.case_id}: the fold must project one task")
     _check(
-        _optional_text(v4_result.get("result"), f"{case.case_id}: v4 result text")
-        == _optional_text(native_result.get("result"), f"{case.case_id}: native result text"),
-        f"{case.case_id}: handoff result texts differ",
+        view.tasks[0].task_id == task_id and view.tasks[0].status == "completed",
+        f"{case.case_id}: the folded task differs from the task.state facts",
     )
+    _check(len(view.handoffs) == 1, f"{case.case_id}: the fold must project one handoff")
+    fact = view.handoffs[0]
+    _check(fact.run_id == run_id, f"{case.case_id}: the folded handoff run id differs")
+    _check(fact.from_owner == from_owner, f"{case.case_id}: the folded handoff sender differs")
+    _check(fact.to_owner == to_owner, f"{case.case_id}: the folded handoff target differs")
+    _check(fact.summary == summary, f"{case.case_id}: the folded handoff summary differs")
+    _check(fact.task_id == task_id, f"{case.case_id}: the folded handoff task id differs")
+    _check(fact.open_items == open_items, f"{case.case_id}: the folded handoff open items differ")
+    _check(fact.result_ok is True, f"{case.case_id}: the folded handoff must record the ok result")
     _check(
-        _optional_result_text(v4_result.get("error"), f"{case.case_id}: v4 result error")
-        == _optional_result_text(native_result.get("error"), f"{case.case_id}: native result error"),
-        f"{case.case_id}: handoff result errors differ",
+        fact.result == _optional_text(result.get("result"), f"{case.case_id}: handoff result text"),
+        f"{case.case_id}: the folded handoff result text differs",
     )
-    v4_usage = _require_mapping(v4_result.get("usage"), f"{case.case_id}: v4 result usage")
-    _check(
-        set(v4_usage) == USAGE_FIELDS,
-        f"{case.case_id}: v4 handoff result usage lacks the five token fields ({sorted(v4_usage)})",
-    )
-    leaked = sorted(set(_walk_keys(native_result)) & FORBIDDEN_USAGE_KEYS)
-    _check(
-        not leaked,
-        f"{case.case_id}: native handoff result carries usage facts {leaked} "
-        "(schema 8.5: they belong in trace)",
-    )
-    _check(len(view.tasks) == 1, f"{case.case_id}: native fold must project one task")
-    folded_task = view.tasks[0]
-    _check(
-        folded_task.task_id == _require_text(last_task.get("id"), f"{case.case_id}: v4 task id"),
-        f"{case.case_id}: folded task id differs",
-    )
-    _check(
-        folded_task.status == _require_text(last_task.get("status"), f"{case.case_id}: v4 task status"),
-        f"{case.case_id}: folded task status differs",
-    )
-    _check(len(view.handoffs) == 1, f"{case.case_id}: native fold must project one handoff")
-    folded_handoff = view.handoffs[0]
-    _check(
-        folded_handoff.run_id == _require_text(v4_handoff.get("runId"), f"{case.case_id}: v4 run id"),
-        f"{case.case_id}: folded handoff run id differs",
-    )
-    _check(folded_handoff.result_ok is True, f"{case.case_id}: folded handoff result must be ok")
-    _check(
-        folded_handoff.result == _optional_text(v4_result.get("result"), f"{case.case_id}: v4 result text"),
-        f"{case.case_id}: folded handoff result text differs",
-    )
-    _check(
-        folded_handoff.task_id
-        == _optional_text(v4_result.get("taskId"), f"{case.case_id}: v4 result task id"),
-        f"{case.case_id}: folded handoff task id differs",
-    )
-
-
-def _optional_result_text(value: object, where: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise DifferentialMismatch(f"{where}: expected a string")
-    return value or None
 
 
 _CAPABILITY_CHECKS: dict[
-    Capability, Callable[[SyntheticCase, Sequence[Any], Sequence[Event], SessionView], None]
+    Capability, Callable[[SyntheticCase, Sequence[Event], SessionView, TraceJoin | None], None]
 ] = {
     Capability.IMAGE: _check_image,
     Capability.APPROVAL: _check_approval,
@@ -1274,7 +909,7 @@ def matrix_rows(cases: Sequence[SyntheticCase]) -> list[MatrixRow]:
             coverage=case.coverage,
             limitations=case.limitations,
         )
-        for case in cases
+        for case in sorted(cases, key=lambda case: (case.capability.value, case.case_id))
     ]
 
 
@@ -1301,7 +936,7 @@ def render_matrix(cases: Sequence[SyntheticCase]) -> str:
     """Render the matrix as aligned text for CI logs."""
     rows = matrix_rows(cases)
     width = max(len(row.case_id) for row in rows)
-    lines = ["native synthetic differential coverage (KI-011)"]
+    lines = ["native synthetic coverage matrix (KI-011)"]
     lines.append(f"{'capability':<10}  {'case':<{width}}  {'status':<7}  limitations")
     for row in rows:
         limitations = "; ".join(row.limitations) if row.limitations else "-"
@@ -1310,6 +945,7 @@ def render_matrix(cases: Sequence[SyntheticCase]) -> str:
         )
     covered = sorted({row.capability.value for row in rows if row.coverage is Coverage.COVERED})
     xfail = sorted({row.capability.value for row in rows if row.coverage is Coverage.XFAIL})
+    lines.append(f"cases: {len(rows)} hand-authored offline schema-1 sessions")
     lines.append(f"covered: {', '.join(covered)}")
     lines.append(f"xfail (KI-011): {', '.join(xfail) or '-'}")
     return "\n".join(lines)

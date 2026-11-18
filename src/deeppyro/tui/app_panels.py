@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import contextlib
-import inspect
 from collections.abc import Callable
 from typing import Any
 
 from deeppyro.tui.app_goal import GoalLayer
-from deeppyro.tui.app_support import HOOK_TRACE_LIMIT, _hook_rows_from_records, _normalize_hook_rows
+from deeppyro.tui.app_support import HOOK_TRACE_LIMIT
 from deeppyro.tui.native_activity import subagent_runs as native_subagent_runs
 from deeppyro.tui.native_hook_trace import UNAVAILABLE_TEXT as HOOKS_UNAVAILABLE_TEXT
 from deeppyro.tui.screens.hook_trace import EMPTY_TEXT as HOOK_TRACE_EMPTY_TEXT
@@ -90,7 +89,7 @@ class PanelLayer(GoalLayer):
     def _native_subagent_runs(self) -> list[Any]:
         """Native subagent runs (facts + measured usage) for the agents panel."""
         runtime = self.runtime
-        if runtime is None or not getattr(runtime, "native", False):
+        if runtime is None:
             return []
         with contextlib.suppress(Exception):
             return list(
@@ -167,49 +166,6 @@ class PanelLayer(GoalLayer):
             )
         self.refresh_status()
 
-    def _session_query(self) -> Any:
-        """The session-query service, when the kernel provides one."""
-        runtime = self.runtime
-        if runtime is None:
-            return None
-        query = getattr(runtime, "session_query", None)
-        if query is not None:
-            return query
-        from deeppyro.builtin.session_query import SessionQueryPlugin
-
-        kernel_app = getattr(runtime, "kernel_app", None)
-        getter = getattr(kernel_app, "get", None)
-        if not callable(getter):
-            return None
-        try:
-            return getter(SessionQueryPlugin)
-        except Exception:  # noqa: BLE001 - the service is optional
-            return None
-
-    async def _hook_rows(self) -> list[dict[str, Any]]:
-        """Paired hook rows for the current session, newest last."""
-        runtime = self.runtime
-        session = getattr(runtime, "session", None) if runtime is not None else None
-        trace = getattr(session, "hook_trace", None)
-        if callable(trace):
-            # fall back to the raw records
-            with contextlib.suppress(Exception):
-                rows = trace(limit=HOOK_TRACE_LIMIT)
-                if inspect.isawaitable(rows):
-                    rows = await rows
-                return _normalize_hook_rows(rows)
-        session_id = str(getattr(session, "session_id", "") or "")
-        query = self._session_query()
-        trace = getattr(query, "hook_trace", None)
-        if callable(trace) and session_id:
-            # fall back to the raw records
-            with contextlib.suppress(Exception):
-                rows = trace(session_id, limit=HOOK_TRACE_LIMIT)
-                if inspect.isawaitable(rows):
-                    rows = await rows
-                return _normalize_hook_rows(rows)
-        return _hook_rows_from_records(session)
-
     def _native_hook_recorder(self) -> Any:
         """The native hook recorder built at boot over the live hook service."""
         runtime = self.runtime
@@ -234,19 +190,8 @@ class PanelLayer(GoalLayer):
                 self.conversation.add_info(hook_trace_line(row))
 
     async def hooks_command(self, argument: str = "") -> None:
-        """Open the recent hook decisions of the current session (/hooks)."""
-        if getattr(self.runtime, "native", False):
-            await self._native_hooks()
-            return
-        rows = await self._hook_rows()
-        if not rows:
-            self.conversation.add_info(HOOK_TRACE_EMPTY_TEXT)
-            return
-        try:
-            await self.push_screen_wait(HookTraceScreen(rows))
-        except Exception:  # noqa: BLE001 - outside a worker there is no modal
-            for row in rows:
-                self.conversation.add_info(hook_trace_line(row))
+        """Open the native hook registry and recent decisions (/hooks)."""
+        await self._native_hooks()
 
     async def compact(self) -> None:
         if self._working:

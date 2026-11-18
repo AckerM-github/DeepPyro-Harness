@@ -1,13 +1,10 @@
 """Native LLM protocol (KI-010).
 
 This module is the wire-free contract between a native provider and the native
-agent loop. It must stay importable without `deeppyro.core.wire` and without
-`deeppyro.core.protocols` (which re-exports the v4 types and imports wire), so
-it only depends on the standard library plus :mod:`deeppyro.core.messages`.
-
-The v4 equivalents live in :mod:`deeppyro.core.protocols` and survive until
-the v4 agent/session stack is deleted; the native loop and its providers use the
-types below exclusively.
+agent loop. It deliberately stays independent of :mod:`deeppyro.core.protocols`
+(the shared tool contract) and of the removed v4 wire models, so it only depends
+on the standard library plus :mod:`deeppyro.core.messages`. The native loop and
+every native provider use the types below exclusively.
 """
 
 from __future__ import annotations

@@ -150,7 +150,7 @@ class CommandsBuiltinPlugin(Plugin):
 
     inject: ClassVar[list[str]] = ["commands"]
     plugin_id = "commands-builtin"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "built-in slash commands"
 
     def setup(self) -> None:

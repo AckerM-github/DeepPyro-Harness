@@ -29,7 +29,7 @@ class McpPlugin(Service):
 
     provide = "mcp"
     plugin_id = "mcp"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "MCP client: connects to configured servers and bridges their tools"
     inject: ClassVar[list[str]] = ["config", "tools", "prompt"]
 

@@ -23,8 +23,8 @@ from typing import Any, ClassVar, cast
 from deeppyro.api import Plugin, PluginConfig, PluginContext
 from deeppyro.core.errors import ConfigError
 from deeppyro.core.payload import field_of
-from deeppyro.core.payloads import ApprovalRequestHookPayload
 from deeppyro.hooks import APPROVAL_REQUEST
+from deeppyro.hooks.payloads import ApprovalRequestHookPayload
 from deeppyro.hooks.service import HookService
 from deeppyro.hooks.types import HookNext, HookPayload
 from deeppyro.kernel.config_service import KernelConfig
@@ -37,7 +37,7 @@ class ApprovalPolicyPlugin(Plugin):
     """Turn [approval].hookMode into approval/request answers."""
 
     plugin_id = "approval-policy"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "answer approval/request from [approval] hookMode"
     inject: ClassVar[list[str]] = ["hooks", "config"]
 

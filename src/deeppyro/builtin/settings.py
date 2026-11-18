@@ -33,7 +33,7 @@ class SettingsPlugin(Service):
 
     provide = "settings"
     plugin_id = "settings"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "plugin configuration store with CAS and secret masking"
     inject: ClassVar[list[str]] = []
 

@@ -3,7 +3,7 @@
 Contract: ``docs/spec/goal.md``. Every mutating verb appends a complete
 snapshot (or a clear tombstone) through :meth:`Session.append`, and the
 in-memory state is exactly the fold of those records. Activation is process
-local in the DSH sense: it is never persisted, it starts ``disarmed`` and a
+local in the upstream sense: it is never persisted, it starts ``disarmed`` and a
 fresh process (or a replayed session) therefore never auto-arms.
 """
 
@@ -19,8 +19,6 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any, ClassVar
 
 from deeppyro.core.errors import ToolError
-from deeppyro.goal import replay as goal_replay
-from deeppyro.goal.replay import ClearedChange, GoalReplayError, SnapshotChange
 from deeppyro.goal.types import (
     DEFAULT_MAX_GOAL_ROUNDS,
     GOAL_ALREADY_EXISTS,
@@ -35,16 +33,18 @@ from deeppyro.goal.types import (
     GOAL_STALE_REVISION,
     Activation,
     BlockedReason,
+    ClearedChange,
     GoalError,
     GoalRef,
     GoalSnapshot,
     GoalState,
     GoalView,
+    SnapshotChange,
+    view,
 )
 
 logger = logging.getLogger(__name__)
 
-RecordFn = Callable[[str, dict[str, Any]], Any]
 _CODE_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 _ID_PREFIX = "goal-"
 
@@ -67,13 +67,6 @@ def _session_id(session: Any) -> str:
     if not value:
         raise ToolError("goal: session has no session_id")
     return str(value)
-
-
-def _records_of(session: Any) -> list[Any]:
-    records = getattr(session, "records", None)
-    if records is None:
-        records = getattr(session, "log", None)
-    return list(records or ())
 
 
 def _positive_int(value: Any) -> int | None:
@@ -105,16 +98,10 @@ _GOAL_CHANGED_EVENT = "goal.changed"
 
 
 def _is_native_session(session: Any) -> bool:
-    """Whether the session is a schema 1 NativeSession (a durable event log)."""
+    """Whether the session is a schema 1 log: a NativeSession or a SessionLog."""
     if isinstance(session, (str, Mapping)):
         return False
-    if not (hasattr(session, "events") and hasattr(session, "header") and hasattr(session, "append")):
-        return False
-    # Local import: deeppyro.session.fold imports deeppyro.goal.types, so a
-    # module-scope session import would close a package cycle.
-    from deeppyro.session.schema import NativeSession
-
-    return isinstance(session, NativeSession)
+    return hasattr(session, "events") and hasattr(session, "header")
 
 
 def _native_goal_fact(goal: GoalSnapshot | None) -> dict[str, Any] | None:
@@ -184,9 +171,8 @@ class GoalService:
         self._states: dict[str, GoalState] = {}
         self._folded_at: dict[str, int] = {}
         self._activations: dict[str, Activation] = {}
-        self._records: dict[str, RecordFn] = {}
         self._emit: Callable[[str, dict[str, Any]], Any] | None = None
-        self._loader: Callable[[str], list[Any]] | None = None
+        self._loader: Callable[[str], Any | None] | None = None
         self._pending: set[asyncio.Task[Any]] = set()
         self._clock: Callable[[], int] = lambda: int(time.time() * 1000)
         self._max_chars = self._read_int(config, ("maxChars", "max_chars"), 0)
@@ -212,32 +198,20 @@ class GoalService:
         self,
         *,
         emit: Callable[[str, dict[str, Any]], Any] | None = None,
-        record: RecordFn | None = None,
-        load: Callable[[str], list[Any]] | None = None,
+        load: Callable[[str], Any | None] | None = None,
         clock: Callable[[], int] | None = None,
     ) -> None:
-        """Late binding, so the service works before and after the plugin boots."""
+        """Late binding, so the service works before and after the plugin boots.
+
+        load resolves one session id to a native session log for prompt
+        rendering, where only the id is available.
+        """
         if emit is not None:
             self._emit = emit
-        if record is not None:
-            self._records[""] = record
         if load is not None:
             self._loader = load
         if clock is not None:
             self._clock = clock
-
-    def bind(self, session: Any, *, record: RecordFn | None = None) -> None:
-        session_id = _session_id(session)
-        if record is not None:
-            self._records[session_id] = record
-        elif hasattr(session, "append"):
-            self._records[session_id] = session.append
-
-    def unbind(self, session: Any) -> None:
-        session_id = _session_id(session)
-        self._states.pop(session_id, None)
-        self._activations.pop(session_id, None)
-        self._records.pop(session_id, None)
 
     def invalidate(self, session: Any) -> None:
         """Drop the cached fold so the next read replays the log again."""
@@ -249,18 +223,11 @@ class GoalService:
         """The folded goal state, refolded whenever the log has grown."""
         if _is_native_session(session):
             return self._native_state(session)
-        session_id = _session_id(session)
-        records = self._load_records(session)
-        cached = self._states.get(session_id)
-        if cached is not None and self._folded_at.get(session_id) == len(records):
-            return cached
-        try:
-            folded = goal_replay.fold(records, default_max_rounds=self._default_max_rounds)
-        except GoalReplayError as exc:
-            raise GoalError(str(exc), "GOAL_REPLAY_FAILED") from exc
-        self._states[session_id] = folded
-        self._folded_at[session_id] = len(records)
-        return folded
+        if isinstance(session, str) and self._loader is not None:
+            loaded = self._loader(session)
+            if loaded is not None:
+                return self._native_state(loaded)
+        raise GoalError("goal state needs a native session", "GOAL_REPLAY_FAILED")
 
     def _native_state(self, session: Any) -> GoalState:
         """Fold the schema 1 event log into the v4 goal state shape."""
@@ -281,15 +248,8 @@ class GoalService:
         self._folded_at[session_id] = len(events)
         return folded
 
-    def _load_records(self, session: Any) -> list[Any]:
-        if isinstance(session, str):
-            if self._loader is None:
-                return []
-            return list(self._loader(session) or ())
-        return _records_of(session)
-
     def view(self, session: Any) -> GoalView | None:
-        return goal_replay.view(self.state(session), self.activation(session))
+        return view(self.state(session), self.activation(session))
 
     def goal(self, session: Any) -> GoalSnapshot | None:
         return self.state(session).goal
@@ -526,7 +486,6 @@ class GoalService:
         return view.goal.objective
 
     def _session_id_for(self, session: Any) -> str:
-        self.bind(session)
         return _session_id(session)
 
     def _commit(
@@ -537,23 +496,9 @@ class GoalService:
         *,
         activation: Activation | None,
     ) -> GoalView | None:
-        if _is_native_session(session):
-            return self._commit_native(session, session_id, change, activation=activation)
-        record = self._record_for(session_id)
-        record(GOAL_EVENT, change.to_dict())
-        current = self._states.get(session_id)
-        if current is None:
-            current = self.state(session)
-        try:
-            updated = goal_replay.apply_change(current, change)
-        except (GoalError, GoalReplayError) as exc:  # pragma: no cover - guard rail
-            raise GoalError(str(exc), "GOAL_REPLAY_FAILED") from exc
-        self._states[session_id] = updated
-        self._folded_at[session_id] = len(_records_of(session)) if not isinstance(session, str) else 0
-        if activation is not None:
-            self._set_activation(session_id, activation)
-        self._publish(session_id, change, updated)
-        return goal_replay.view(updated, self.activation(session_id))
+        if not _is_native_session(session):
+            raise GoalError("goal changes need a native session", "GOAL_REPLAY_FAILED")
+        return self._commit_native(session, session_id, change, activation=activation)
 
     def _commit_native(
         self,
@@ -584,7 +529,7 @@ class GoalService:
         if activation is not None:
             self._set_activation(session_id, activation)
         self._publish(session_id, change, state)
-        return goal_replay.view(state, self.activation(session_id))
+        return view(state, self.activation(session_id))
 
     def _require(self, session: Any, state: GoalState, ref: GoalRef) -> GoalSnapshot:
         current = state.goal
@@ -658,21 +603,15 @@ class GoalService:
     def _next_time(self, state: GoalState) -> int:
         return max(self._now(), state.updated_at)
 
-    def _record_for(self, session_id: str) -> RecordFn:
-        record = self._records.get(session_id) or self._records.get("")
-        if record is None:
-            raise ToolError("goal: the service is not bound to this session")
-        return record
-
     def _publish(
         self,
         session_id: str,
         change: SnapshotChange | ClearedChange,
         state: GoalState,
     ) -> None:
-        """Announce the change on the bus in the DSH shape.
+        """Announce the change on the bus in the upstream shape.
 
-        DSH publishes per agent, so its payload needs no session id. Our bus is
+        upstream publishes per agent, so its payload needs no session id. Our bus is
         global, so the frame carries one extra `session` key on top of the
         frozen `change` object; everything inside `change` is the contract.
         """

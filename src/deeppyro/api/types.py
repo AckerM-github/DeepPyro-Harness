@@ -95,7 +95,7 @@ class PresetSpec:
     instructions: tuple[str, ...] = ()
     order: int = 100
     plugin_id: str = ""
-    #: Plugin rows mounted inside the preset realm (DSH per-preset plugins).
+    #: Plugin rows mounted inside the preset realm (upstream per-preset plugins).
     plugins: tuple[PresetPluginRow, ...] = ()
     #: Host-filled: the immutable revision of this preset snapshot.
     revision: int = 0

@@ -36,7 +36,6 @@ def _config(tmp_path: Path) -> Config:
             )
         },
         agent={"provider": "local", "model": "m"},
-        session_dir=tmp_path / "sessions",
     )
 
 
@@ -86,12 +85,10 @@ async def test_sessions_plugin_native_control_api(tmp_path: Path) -> None:
         with pytest.raises(NativeQueryError):
             sessions.native_open(new_session_id())
 
-        # The v4 surface is untouched and still callable on the same plugin.
-        assert callable(sessions.create)
-        assert callable(sessions.open)
-        assert callable(sessions.list)
-        assert callable(sessions.latest)
-        assert sessions.store is not None
+        # The native control plane is the only session surface on the plugin.
+        assert sessions.root == sessions.native.root
+        for removed in ("create", "open", "list", "latest", "store"):
+            assert not hasattr(sessions, removed)
     finally:
         await app.stop()
 

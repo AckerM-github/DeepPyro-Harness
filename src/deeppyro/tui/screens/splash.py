@@ -1,9 +1,10 @@
 """Startup splash screen: pixel wordmark with a line-by-line reveal.
 
 The splash is a modal screen so the chat layout can finish mounting and the
-runtime can boot underneath it. It stays until the user presses any key; rows
-are revealed top-to-bottom and the runtime line is updated by the app once the
-kernel is ready.
+runtime can boot underneath it. It stays until the user picks an entry point:
+F1 opens the loopback web host, F2 (or Enter/Escape) opens the terminal UI.
+Rows are revealed top-to-bottom and the runtime line is updated by the app
+once the kernel is ready.
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from rich.text import Text
-from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
@@ -34,7 +34,7 @@ FULL_MIN_HEIGHT = 24
 _SPARK = "✦"
 _TAGLINE = "python core · terminal UI"
 _HELP = "/help for commands · Ctrl+C interrupts · Ctrl+D quits"
-_HINT = "press any key to continue"
+_HINT = "F1 web · F2 terminal"
 
 
 def _center_block(rows: list[Text]) -> list[Text]:
@@ -51,12 +51,14 @@ def _center_block(rows: list[Text]) -> list[Text]:
     return centered
 
 
-class SplashScreen(ModalScreen[None]):
-    """Startup banner: pixel wordmark, booting runtime and key hints."""
+class SplashScreen(ModalScreen[str | None]):
+    """Startup banner: pixel wordmark, booting runtime and entry points."""
 
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("escape", "dismiss_splash", "Continue", show=False),
-        Binding("enter", "dismiss_splash", "Continue", show=False),
+        Binding("f1", "start_web", "Web", show=True),
+        Binding("f2", "start_terminal", "Terminal", show=True),
+        Binding("escape", "start_terminal", "Terminal", show=False),
+        Binding("enter", "start_terminal", "Terminal", show=False),
     ]
 
     def __init__(
@@ -177,18 +179,26 @@ class SplashScreen(ModalScreen[None]):
         return _center_block(rows)
 
     # -- dismissal -------------------------------------------------------
+    def action_start_web(self) -> None:
+        """Leave the splash and hand the process to the loopback web host."""
+        self._finish("web")
+
+    def action_start_terminal(self) -> None:
+        """Leave the splash and keep the terminal UI."""
+        self._finish("terminal")
+
     def action_dismiss_splash(self) -> None:
+        """Compatibility alias: an automatic dismissal opens the terminal UI."""
+        self._finish("terminal")
+
+    def _finish(self, result: str) -> None:
         if self._dismissed:
             return
         self._dismissed = True
         stop = getattr(self._interval_timer, "stop", None)
         if stop is not None:
             stop()
-        self.dismiss(None)
-
-    def on_key(self, event: events.Key) -> None:
-        self.action_dismiss_splash()
-        event.stop()
+        self.dismiss(result)
 
 
 __all__ = [

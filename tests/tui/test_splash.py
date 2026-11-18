@@ -22,12 +22,16 @@ class SplashHost(App[None]):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__()
         self._splash_kwargs = kwargs
+        self.result: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("base")
 
     def on_mount(self) -> None:
-        self.push_screen(SplashScreen(**self._splash_kwargs))
+        self.push_screen(SplashScreen(**self._splash_kwargs), callback=self._splash_result)
+
+    def _splash_result(self, result: str | None) -> None:
+        self.result = result
 
 
 def test_wordmark_rows_are_padded_and_colored() -> None:
@@ -48,7 +52,7 @@ def test_compact_wordmark_is_one_plain_line() -> None:
     assert line.spans
 
 
-async def test_splash_reveals_rows_and_any_key_dismisses() -> None:
+async def test_splash_reveals_rows_and_f2_dismisses_to_the_terminal() -> None:
     app = SplashHost(version="0.1.0", cwd="D:/work", provider="fake", model="fake-1")
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.05)
@@ -62,11 +66,12 @@ async def test_splash_reveals_rows_and_any_key_dismisses() -> None:
         assert screen.line_count == len(full.splitlines())
         assert "python core · terminal UI" in full
         assert "fake · fake-1" in full
-        assert "press any key to continue" in full
+        assert "F1 web · F2 terminal" in full
 
-        await pilot.press("space")
+        await pilot.press("f2")
         await pilot.pause(0.2)
         assert not isinstance(app.screen, SplashScreen)
+        assert app.result == "terminal"
 
 
 async def test_splash_uses_compact_wordmark_on_small_terminals() -> None:
@@ -98,7 +103,7 @@ async def test_set_runtime_fills_the_boot_line() -> None:
         assert "D:/code/deeppyro" in text
 
 
-async def test_splash_stays_open_until_a_key_is_pressed() -> None:
+async def test_splash_stays_open_until_an_entry_point_is_chosen() -> None:
     app = SplashHost(version="0.1.0", cwd="D:/work")
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(2.4)
@@ -106,6 +111,25 @@ async def test_splash_stays_open_until_a_key_is_pressed() -> None:
         assert isinstance(screen, SplashScreen)
         assert screen.line_count == len(screen.visible_text().splitlines())
 
+        # Arbitrary keys no longer dismiss the splash: the entry point is a
+        # deliberate choice because F1 hands the process to the web host.
+        await pilot.press("space")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, SplashScreen)
+
         await pilot.press("enter")
         await pilot.pause(0.2)
         assert not isinstance(app.screen, SplashScreen)
+        assert app.result == "terminal"
+
+
+async def test_splash_f1_selects_the_web_entry_point() -> None:
+    app = SplashHost(version="0.1.0", cwd="D:/work")
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, SplashScreen)
+
+        await pilot.press("f1")
+        await pilot.pause(0.2)
+        assert not isinstance(app.screen, SplashScreen)
+        assert app.result == "web"

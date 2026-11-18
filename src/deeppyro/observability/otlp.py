@@ -35,7 +35,7 @@ __all__ = ["OtlpExporter", "OtlpSettings"]
 logger = logging.getLogger(__name__)
 
 _SCOPE_NAME = "deeppyro.observability"
-_SCOPE_VERSION = "0.2.0"
+_SCOPE_VERSION = "0.3.0"
 _TRACES_SUFFIX = "/v1/traces"
 _SPAN_KIND_INTERNAL = 1
 _SPAN_KIND_CLIENT = 3
@@ -61,7 +61,7 @@ class OtlpSettings:
     def from_config(cls, raw: Mapping[str, Any] | None) -> OtlpSettings:
         """Build settings from the [observability.otlp] config table.
 
-        Accepts both the camelCase spelling used by DSH configs and the
+        Accepts both the camelCase spelling used by upstream configs and the
         snake_case spelling used by Python-native configs.
         """
         if not isinstance(raw, Mapping):

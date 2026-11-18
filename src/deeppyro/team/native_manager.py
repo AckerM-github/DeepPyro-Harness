@@ -1,7 +1,8 @@
 """Native team manager: child native sessions, hosts, roster and task board.
 
-This is the schema-1 counterpart of :class:`TeamService`. The lead session is a
-native session; every member is a native child session (origin "subagent",
+This is the backend behind :class:`~deeppyro.team.manager.TeamService`, a thin
+native-only subclass of the manager. The lead session is a native session;
+every member is a native child session (origin "subagent",
 parent id and delegation depth copied from the lead header) driven by a
 :class:`NativeAgentHost`. Team state is recorded as plugin facts on the parent
 session (plugin.team.member.changed, plugin.team.message.queued / delivered and
@@ -13,8 +14,8 @@ usage counters for the in-memory MemberRun API, while the host usage tap
 forwards each turn to the team UsageSink with the child session id and
 source="subagent" for the ledger and the traces.
 
-The manager deliberately imports no v4 session types: the v4 TeamService path
-stays untouched next to it and the final 0.3 deletion wave removes v4.
+The manager imports no v4 session types: the v4 session stack was deleted in the
+0.3 wave and the native session schema is the only session log format.
 """
 
 from __future__ import annotations
@@ -71,10 +72,9 @@ TASK_EVENT = "plugin.team.task"
 def native_parts(session: Any) -> tuple[Any, Any]:
     """Return (native session, handle) when session is a native session/handle.
 
-    Returns (None, None) for a v4 Session or anything else, which is how the
-    service routes between the v4 recorder path and this manager. A handle
-    carries a native session; a raw native session has the snake_case header,
-    an events property and an append method, and never v4 records.
+    Returns (None, None) for anything that is not a native session or handle.
+    A handle carries a native session; a raw native session has the snake_case
+    header, an events property and an append method.
     """
     if session is None or hasattr(session, "records"):
         return None, None
@@ -369,9 +369,10 @@ class NativeTeamManager:
     ) -> None:
         """Attach the live lead-session context used to spawn members.
 
-        The signature mirrors TeamService.configure so the shared service can
-        feed both backends. The native path does not use registry: the native
-        agent factory resolves the child tool registry from the preset scope.
+        The signature mirrors the historical service.configure so the shared
+        plugin wiring feeds this backend unchanged. The registry argument is
+        unused: the native agent factory resolves the child tool registry from
+        the preset scope.
         """
         self._cwd = Path(cwd)
         self._provider = provider

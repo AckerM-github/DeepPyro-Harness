@@ -56,10 +56,8 @@ class ServiceLayer(_RuntimeState):
         self._schedule_tasks.clear()
 
     async def open_schedule_session(self, session_id: str) -> Any:
-        """Open a persisted session for a schedule delivery."""
-        if getattr(self, "native", False):
-            return self.sessions.native_open(session_id)
-        return self.store.open(session_id)
+        """Open a persisted native session for a schedule delivery."""
+        return self.sessions.native_open(session_id)
 
     def _service(self, contract: type[Any]) -> Any | None:
         """Resolve one optional service contract (None when unavailable)."""
@@ -88,27 +86,14 @@ class ServiceLayer(_RuntimeState):
             logger.exception("hook %r dispatch failed", name)
 
     def _pin_permission(self, session: Any) -> None:
-        """Seed a new session with the default permission preset and knobs."""
-        if session is None:
-            return
-        if getattr(self, "native", False):
-            self._pin_permission_native(session)
-            return
-        service = self._service(PermissionPresetsService)
-        pin = getattr(service, "pin_initial", None)
-        if not callable(pin):
-            return
-        # pinning must not brick a session
-        with contextlib.suppress(Exception):
-            pin(session)
-
-    def _pin_permission_native(self, session: Any) -> None:
         """Seed a native session with the default sandbox and approval facts.
 
         Schema 1 has no permission/preset record: the named preset is derived
         from the sandbox mode and approval policy facts, so only those two are
         appended and only when the log does not carry them yet.
         """
+        if session is None:
+            return
         service = self._service(PermissionPresetsService)
         getter = getattr(service, "get", None)
         default = str(getattr(service, "default", "") or "workspace-write")

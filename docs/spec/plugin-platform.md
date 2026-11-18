@@ -1,6 +1,6 @@
 # 插件平台：安装单元、装配顺序与诊断
 
-> **状态**：现行（API v3） · **层级**：插件规格 · **最后核对**：2026-11-18
+> **状态**：现行（API v3） · **层级**：插件规格 · **最后核对**：2026-11-19
 > 公开插件契约见 [plugin-core.md](plugin-core.md)；插件作者指南见 [docs/plugins/README.md](../plugins/README.md)。
 
 本文件定义 DeepPyro 的插件平台契约中与「外部插件包」有关的部分：唯一的安装单元是什么、`plugin.toml` 怎么写、插件包如何参与组合、依赖放在哪里、失败如何分类、`dpyro plugin` 子命令做什么。组合层（bundle/patch/清单）的合并语义见 @docs/spec/plugin-core.md；管理器的启用/禁用/删除语义见 @docs/spec/plugins.md；本文件只补充「包格式 + 装配 + 诊断」，不重复定义合并算法。
@@ -31,7 +31,7 @@
     [package]
     id = "dpyro-im"                 # 必须等于目录名
     name = "DeepPyro IM"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "QQ/Discord bridge"
     module = "dpyro_im"             # 也可以是 "dpyro_im.plugin:ImPlugin"
     class = "ImPlugin"
@@ -70,7 +70,7 @@
 ### 2.2 旧版扁平格式（继续支持）
 
     name = "Demo Plugin"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "a demo plugin"
     module = "demo_plugin"
     class = "DemoPlugin"

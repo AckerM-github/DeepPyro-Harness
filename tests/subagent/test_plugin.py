@@ -51,7 +51,7 @@ def test_plugin_metadata() -> None:
     plugin = SubagentPlugin(make_context(), None)
 
     assert plugin.plugin_id == "subagent"
-    assert plugin.version == "0.2.0"
+    assert plugin.version == "0.3.0"
     assert "subagent" in plugin.description
     assert plugin.inject == ["agents", "sessions", "sandbox", "tools"]
 

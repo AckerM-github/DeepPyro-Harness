@@ -28,8 +28,7 @@ from deeppyro.builtin.goal_round_driver import (
 from deeppyro.core.ids import new_session_id
 from deeppyro.core.llm import Finish, ModelRequest, StopReason, StreamEvent, TextDelta, Usage, UsageEvent
 from deeppyro.core.messages import GoalSource, MessageSource
-from deeppyro.goal.native_driver import NativeRoundDriver, is_native_host
-from deeppyro.goal.round_driver import render_goal_round_prompt
+from deeppyro.goal.native_driver import NativeRoundDriver, is_native_host, render_goal_round_prompt
 from deeppyro.goal.service import GoalService
 from deeppyro.goal.types import GOAL_BUS_EVENT, BlockedReason, GoalView
 from deeppyro.hooks.service import HookService

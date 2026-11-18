@@ -61,52 +61,12 @@ async def await_maybe(value: Any) -> Any:
 
 
 def _session_header_id(session: Any) -> str:
-    """Session id from a v4 session or a native handle/session (header id)."""
+    """Session id from a native handle or a session-fold header."""
     session_id = str(getattr(session, "session_id", "") or "")
     if session_id:
         return session_id
     header = getattr(session, "header", None)
     return str(getattr(header, "id", "") or "")
-
-
-def _recorded_preset(session: Any) -> tuple[str, int | None, str | None] | None:
-    """Last agent-preset/selected record: (preset, revision, previous).
-
-    The header only carries the preset a session was created with, so the
-    record is what makes a later switch (including /team on) survive resume.
-    """
-    records = getattr(session, "records", None) or []
-    for record in reversed(list(records)):
-        if getattr(record, "type", "") != "agent-preset/selected":
-            continue
-        data = getattr(record, "data", None)
-        if not isinstance(data, dict):
-            return None
-        preset = data.get("preset")
-        revision = data.get("revision")
-        previous = data.get("previous")
-        return (
-            preset if isinstance(preset, str) else "",
-            revision if isinstance(revision, int) else None,
-            previous if isinstance(previous, str) and previous else None,
-        )
-    return None
-
-
-def _recorded_model_selection(session: Any) -> tuple[str, str] | None:
-    """The last model/selection written to the session, if still readable."""
-    records = getattr(session, "records", None) or []
-    for record in reversed(list(records)):
-        if getattr(record, "type", "") != "model/selection":
-            continue
-        data = getattr(record, "data", None)
-        if isinstance(data, dict):
-            provider = data.get("provider")
-            model = data.get("model")
-            if isinstance(provider, str) and isinstance(model, str) and provider and model:
-                return provider, model
-        return None
-    return None
 
 
 def _resolve_model(cfg: Config, provider_name: str, *, model: str | None) -> str:

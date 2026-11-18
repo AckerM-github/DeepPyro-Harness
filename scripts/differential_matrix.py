@@ -1,9 +1,10 @@
-"""Print the synthetic native/v4 differential coverage matrix (KI-011).
+"""Print the native synthetic coverage matrix (KI-011).
 
 The offline CI gate prints this matrix so a capability can never silently drop
-out of the differential: every surface that the recorded baseline cannot reach
-(images, approvals, compaction, MCP, PTC, subagents, handoff) declares a case and
-a status, and the script exits non-zero when a capability has no case at all.
+out of the native coverage set: every surface that the recorded baseline cannot
+reach (images, approvals, compaction, MCP, PTC, subagents, handoff) declares a
+case and a status, and the script exits non-zero when a capability has no case at
+all.
 
 Everything is read from checked-in JSON under tests/fixtures/native/synthetic;
 the run is offline and deterministic and does not touch fixtures/native or node.
@@ -61,7 +62,7 @@ def _payload(cases: Sequence[SyntheticCase]) -> dict[str, object]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Load every synthetic case, print the matrix, optionally write JSON."""
-    parser = argparse.ArgumentParser(description="print the native synthetic differential matrix")
+    parser = argparse.ArgumentParser(description="print the native synthetic coverage matrix")
     parser.add_argument(
         "--json",
         type=Path,
@@ -79,7 +80,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.json is not None:
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps(_payload(cases), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"OK: {len(cases)} synthetic differential cases cover KI-011")
+    print(f"OK: {len(cases)} native synthetic coverage cases cover KI-011")
     return EXIT_OK
 
 

@@ -73,7 +73,7 @@ def authorization_section(visible_tools: Any = None, _prompt_ctx: Any = None) ->
     """Render the management authorization sentence for the system prompt.
 
     The section is omitted when the session does not expose the schedule tool,
-    mirroring DSH, which only contributes it when schedule create/edit tools are
+    mirroring upstream, which only contributes it when schedule create/edit tools are
     visible.
     """
     if visible_tools is not None:

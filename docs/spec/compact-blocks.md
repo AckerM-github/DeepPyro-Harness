@@ -1,11 +1,12 @@
 # compress / block / ref store (P1)
 
-> **状态**：现行（0.2.0 保留） · **层级**：功能规格 · **最后核对**：2026-11-18
+> **状态**：现行（0.3.0） · **层级**：功能规格 · **最后核对**：2026-11-19
 
 Status: implemented in `src/deeppyro/compact/{blocks,refs,compress_tool,block_tools}.py`
 plus the builtin plugin `src/deeppyro/builtin/compress.py`.  This document records the
 format, the transaction protocol, the retrieval tools, and the compatibility boundaries
-against the reference DSH host.  Public-API registration in `docs/spec/INTERFACES.md` is
+against the reference DSH host.  Public-API registration is defined by the current plugin specs
+([plugin-core.md](plugin-core.md), [plugins.md](plugins.md));
 owned by the Lead.
 
 ## 1. Why this exists
@@ -20,7 +21,7 @@ those summaries durably in two places:
   `user/message` that replaces the summarized range on the message surface.
 
 The session log stays the single source of truth: replaying it (see
-`docs/spec/session.md`) reproduces exactly the same messages the model saw, without
+[../native/schema.md](../native/schema.md)) reproduces exactly the same messages the model saw, without
 reading the block store.
 
 ## 2. Block store format (version 1)

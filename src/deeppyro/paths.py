@@ -1,6 +1,6 @@
 """User-level locations for DeepPyro.
 
-DeepPyro keeps everything user-scoped under one directory, mirroring DSH's
+DeepPyro keeps everything user-scoped under one directory, mirroring upstream's
 .home directory: configuration, sessions, plugins and prompt history all live
 in ~/.dpro by default. Environment variables can override the home or a
 single path so portable installs and tests stay hermetic.
@@ -12,7 +12,7 @@ import os
 import shutil
 from pathlib import Path
 
-#: Directory name under the user home (DSH uses .dsh; DeepPyro uses .dpro).
+#: Directory name under the user home (upstream uses a dot-directory; DeepPyro uses .dpro).
 HOME_DIR_NAME = ".dpro"
 
 HOME_ENV = "DEEPPYRO_HOME"

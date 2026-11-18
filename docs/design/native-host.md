@@ -1,7 +1,10 @@
 # Native Agent Host
 
-Status: phase 1 of KI-001 (TUI native migration). The bridge exists and is tested;
-the TUI is not wired to it yet.
+Status: **implemented (0.3.0)**. This note started as phase 1 of KI-001 (TUI native
+migration); the bridge is now the production path — TUI, headless and the Web UI all
+drive `AgentLoop` over `NativeAgentHost`, and the v4 read/append surface it once
+mirrored was removed with the v4 stack. The text below is the design record; where it
+describes v4-shaped seams, read those as plan-time context, not current API.
 
 `src/deeppyro/agent/native_host.py` is the reusable seam between a
 long-lived interactive session and the one-shot native agent loop. It owns one

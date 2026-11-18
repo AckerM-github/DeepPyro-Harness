@@ -21,7 +21,7 @@ from .types import McpToolInfo
 #: MCP tool names allow any characters; deeppyro tool names do not.
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
 
-#: Suffix length of the identity hash DSH appends when normalisation is lossy.
+#: Suffix length of the identity hash upstream appends when normalisation is lossy.
 HASH_SUFFIX = 12
 
 
@@ -42,7 +42,7 @@ def identity_hash(server: str, tool: str) -> str:
 def public_tool_name(server: str, tool: str) -> str:
     """``mcp__<server>__<tool>``, hash-suffixed whenever normalisation is lossy.
 
-    DSH guarantees that two distinct identities never collapse onto one public
+    upstream guarantees that two distinct identities never collapse onto one public
     name, so a rewritten name carries a digest of the original pair.
     """
 

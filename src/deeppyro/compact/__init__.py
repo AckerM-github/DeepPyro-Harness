@@ -1,8 +1,32 @@
-"""Context compaction."""
+"""Context compaction: blocks, refs and the native compactor."""
 
 from __future__ import annotations
 
-from deeppyro.compact.compactor import Compactor
+from deeppyro.compact.blocks import BlockRecord, BlockStore, CompactError
+from deeppyro.compact.native_compactor import (
+    CompactionDone,
+    CompactionRegion,
+    NativeCompactor,
+    select_region,
+    should_compact_before_send,
+    tool_safe_cuts,
+)
+from deeppyro.compact.native_compress import (
+    CompressBlock,
+    CompressedRange,
+    NativeCompressor,
+    NativeCompressOutcome,
+    parse_content,
+    requested_refs,
+)
+from deeppyro.compact.native_refs import (
+    RefEntry,
+    RefLocation,
+    RefPlan,
+    RefStore,
+    canonical_ref,
+    resolve_refs,
+)
 from deeppyro.compact.prompts import (
     CHECKPOINT_PREAMBLE,
     COMPACTION_INSTRUCTION,
@@ -10,50 +34,32 @@ from deeppyro.compact.prompts import (
     SUMMARY_OPEN_TAG,
     frame_summary,
 )
-from deeppyro.compact.surface import (
-    CompactionRegion,
-    EntryState,
-    SurfaceNode,
-    balanced_after,
-    balanced_before,
-    derive_node_message,
-    entry_state,
-    fold_surface,
-    latest_tool_schemas,
-    select_region,
-    surface_messages,
-    tool_pairing_cuts,
-)
-from deeppyro.compact.tokens import (
-    CHARS_PER_TOKEN,
-    MESSAGE_OVERHEAD,
-    estimate_message_tokens,
-    estimate_messages_tokens,
-    estimate_text_tokens,
-)
 
 __all__ = [
-    "CHARS_PER_TOKEN",
     "CHECKPOINT_PREAMBLE",
     "COMPACTION_INSTRUCTION",
-    "MESSAGE_OVERHEAD",
     "SUMMARY_CLOSE_TAG",
     "SUMMARY_OPEN_TAG",
+    "BlockRecord",
+    "BlockStore",
+    "CompactError",
+    "CompactionDone",
     "CompactionRegion",
-    "Compactor",
-    "EntryState",
-    "SurfaceNode",
-    "balanced_after",
-    "balanced_before",
-    "derive_node_message",
-    "entry_state",
-    "estimate_message_tokens",
-    "estimate_messages_tokens",
-    "estimate_text_tokens",
-    "fold_surface",
+    "CompressBlock",
+    "CompressedRange",
+    "NativeCompactor",
+    "NativeCompressOutcome",
+    "NativeCompressor",
+    "RefEntry",
+    "RefLocation",
+    "RefPlan",
+    "RefStore",
+    "canonical_ref",
     "frame_summary",
-    "latest_tool_schemas",
+    "parse_content",
+    "requested_refs",
+    "resolve_refs",
     "select_region",
-    "surface_messages",
-    "tool_pairing_cuts",
+    "should_compact_before_send",
+    "tool_safe_cuts",
 ]

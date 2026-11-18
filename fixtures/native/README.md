@@ -1,5 +1,7 @@
 # Native replay fixtures (M0 baseline)
 
+Status: **current evidence (0.3.0)** — the recorded baseline feeds the native replay/differential tests. The format itself is frozen (M0); see the provenance section in docs/native/README.md.
+
 This directory is a data-only capture of real DeepSeek provider traffic for the native schema 1 work. Do not edit the recordings: their sha256 and byte counts are frozen in `manifest.json` and validated by `validation.json`.
 
 - Provenance, case matrix, format, validation and limits: [../../docs/native/README.md](../../docs/native/README.md)

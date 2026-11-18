@@ -1,6 +1,6 @@
-"""Layered plugin manifests (DSH-style bundle + profile patch).
+"""Layered plugin manifests (upstream-style bundle + profile patch).
 
-DSH ships a bundle plugin list and applies `cordis.patch.yml` on top: entries
+upstream ships a bundle plugin list and applies `cordis.patch.yml` on top: entries
 are selected by `id`, may override `config`, may disable a plugin, or insert
 new ones. This module reproduces that model with TOML (stdlib `tomllib`,
 so the kernel needs no extra dependency to read manifests):
@@ -151,7 +151,7 @@ def _insert_position(order: list[str], spec: PluginSpec) -> int | None:
 
 
 def merge_plugins(base: Iterable[PluginSpec], patch: Iterable[PluginSpec]) -> tuple[PluginSpec, ...]:
-    """Apply patch entries on top of a base layer, in DSH patch semantics.
+    """Apply patch entries on top of a base layer, in upstream patch semantics.
 
     - same `id`: config shallow-merged (patch wins), name/disabled overridden
       only when the patch sets them;

@@ -4,12 +4,12 @@
 | --- | --- |
 | 文档 | `docs/native/schema.md` |
 | Schema 版本 | `1`（header 字段 `schema:1`） |
-| 状态 | M0 冻结、M1–M2 实现完成；M3/M4 未改 schema；0.2.0 RC 以 headless 默认 native / TUI 仍 v4 交付（2026-11-18，未打 tag） |
+| 状态 | M0 冻结、M1–M2 实现完成；M3/M4 未改 schema；0.3.0 起为产品唯一会话格式（native-only，2026-11-19） |
 | Owner | Lane Y（`core/`、`session/`、`agent/`、`prompt/`、`compact/`） |
-| 取代 | `docs/spec/session.md`（`session.v4`） |
+| 取代 | `docs/spec/session.md`（v4 存储规格；该文档已于 2026-11-19 随 v4 栈删除） |
 | 权威来源 | `docs/adr/0001-three-track-native-agent.md`（Accepted；M0–M4 完成）；研究报告 `deeppyro-native-python-agent-research.md` §3.3–3.5、§5.3、§9.3–9.5 |
 | M1 落点 | `src/deeppyro/core/messages.py`、`src/deeppyro/session/schema.py`、`src/deeppyro/session/fold.py`、`src/deeppyro/observability/trace.py` |
-| M2 落点 | `src/deeppyro/agent/{loop,run_state,checkpoint,budget,context_plan,events,native_provider}.py`；`session/schema.py` 增加 3 个 run 事件；headless `DEEPPYRO_NATIVE_LOOP` / `--legacy-v4` 开关（native 为默认，`--native-loop` 为弃用别名） |
+| M2 落点 | `src/deeppyro/agent/{loop,run_state,checkpoint,budget,context_plan,events}.py`；`session/schema.py` 增加 3 个 run 事件；0.3.0 起 provider 由 `core/llm.py` + `agent/model_call.py` 驱动，不存在 v4/回退开关 |
 | 冲突处理 | 与 ADR 冲突时以 ADR 为准；偏差在 §12 显式记录 |
 
 ## 1. 状态与范围
@@ -24,7 +24,8 @@ M1 起产品只写、只读 native schema 1；以下为 review 硬门槛：
 
 ### 1.2 零兼容（ADR D2）
 - 产品只读写 native schema 1。不提供 v4 reader、`V4Codec`、双写、`dpyro migrate` 命令（ADR D2/D3 删除项）。
-- 旧数据 `session.v4.jsonl`（含 `.zstd`）不被产品读取；需要旧数据的用户只能使用 repo 之外的一次性导出脚本。
+- 旧数据 `session.v4.jsonl`（含 `.zstd`）不被产品读取。0.3.0 不提供迁移命令（`dpyro migrate` 已删除）；
+  需要旧数据的用户应在 0.2.x 上读取或自行导出（见 `docs/release/0.3.0.md` §3）。
 - 产品不扫描旧 `projectKey` 目录；只枚举 `~/.dpro/sessions/*.jsonl`。
 - 读到 v4 header（`{"type":"session","version":4,...}`）必须显式失败（`SessionV4Error`，§9），不能降级、不能忽略该文件继续启动。
 - schema 是硬边界：`schema != 1` 一律拒绝。破坏性变更提升 schema 号并让旧 reader 显式拒绝；schema 1 内部只允许“读取器能力增长”（新增 EventKind 由新版本读取器支持，旧读取器拒绝，不做跨版本向前兼容承诺）。
@@ -48,7 +49,7 @@ M1 起产品只写、只读 native schema 1；以下为 review 硬门槛：
 - `session/events.py` 的 v4 header/envelope 校验与 `header_line_dict` 顺序整体退役，由 `session/schema.py` 的 `NativeCodec` 替代。
 - `session/derive.py` 的 interval 折叠、`sourceEventSeqs` 校验退役，由 `session/fold.py` 替代（§7）。
 - `session/writer.py` 的 zstd frame 写入不启用（§2.5）；compact UTF-8 JSONL + LF 保留。
-- `agent/session_tools.py` 中 `assistant/message` 的 `stream`/`usage`、`tool/result` 的 `surfaceOp`/`sourceEventSeqs` 字段删除；tool 图片的独立 user 消息 hack 删除。`core/wire.py` 可在 M1 的 provider adapter 内短期存在，但不得进入 session 存储或消息模型（ADR §4 规则 1）。
+- `agent/session_tools.py` 中 `assistant/message` 的 `stream`/`usage`、`tool/result` 的 `surfaceOp`/`sourceEventSeqs` 字段删除；tool 图片的独立 user 消息 hack 删除。`core/wire.py` 与临时 provider adapter 已在 0.3.0 删除；provider 边界见 §6.5。
 
 ## 2. 物理格式
 ### 2.1 路径与命名
@@ -304,7 +305,7 @@ system/developer 只允许 text；tool 只允许 text/image（tool 结果图片�
 ### 6.5 Provider 边界
 - `llm/` 层在调用前后做形状转换：native Message/Part 与 OpenAI/Anthropic 请求和响应互转；`tool_call.arguments` 保持原始 JSON 字符串，provider adapter 负责流式增量拼接，组装完成后一次性写入 `assistant.message`。
 - LLM 层内部流事件（`TextDelta`/`ToolCallArgsDelta`/`Usage`/`Finish`）只用于内存状态与 trace，不写 session log（§8）；session 层不 import provider 类型，provider 层不 import session 存储类型。
-- M2 实现：`src/deeppyro/agent/native_provider.py` 是当前唯一新增的 `core.wire` importer（ADR §4 规则 1 的已记录 seam），只做 native↔wire 形状转换；M3 provider 移植后删除该 seam。
+- 0.3.0 实现：provider 移植完成（见 [ADR 0001 的 0.3.0 状态更新](../adr/0001-three-track-native-agent.md)）。`core/llm.py` 定义 `LlmProvider`/`ModelRequest`，`agent/model_call.py` 是唯一的模型调用入口；只有 OpenAI-compatible 与 native Anthropic 两种 transport，不支持的 provider 显式报错，没有静默回退。`core/wire.py` 与 `agent/native_provider.py` 已删除。
 
 ## 7. 折叠与派生规则
 ### 7.1 输入输出
@@ -386,7 +387,7 @@ session log 全量、长期保留（可回放/可 fork）；trace store 高写�
 | --- | --- | --- |
 | 行不是合法 JSON | `CorruptLineError` | `session line {line} is not valid JSON: {detail}` |
 | 空行 | `CorruptLineError` | `session line {line} is blank` |
-| v4 header | `SessionV4Error` | `session format v4 is not supported; export it with the standalone migration script and start a schema 1 session: {path}` |
+| v4 header | `SessionV4Error` | 当前实现的消息为 `session format v4 is not supported; export it with the standalone migration script and start a schema 1 session: {path}`。注意：0.3.0 已删除 `dpyro migrate` 与迁移脚本，因此消息里的 “standalone migration script” 已不存在；实际处理是拒绝读取，旧数据只能在 0.2.x 上读取或自行导出 |
 | `schema` 非 1 | `UnsupportedSchemaError` | `unsupported session schema {schema!r}: this build reads schema 1 only` |
 | header 缺字段 | `HeaderError` | `session header lacks required field {name!r}` |
 | header 字段类型/值非法 | `HeaderError` | `session header field {name!r} has invalid value {value!r}` |

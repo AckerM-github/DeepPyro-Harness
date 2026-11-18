@@ -9,7 +9,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.widgets import Markdown, Static
 
-from deeppyro.tui.history import (
+from deeppyro.tui.native_history import (
     ProcessEntry,
     ReasoningStep,
     TurnProcess,

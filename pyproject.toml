@@ -1,14 +1,13 @@
 [project]
 name = "deeppyro-harness"
-version = "0.2.0"
-description = "DeepPyro Harness — terminal-first pure Python agent harness"
+version = "0.3.0"
+description = "DeepPyro Harness — local-first pure Python agent harness (terminal + loopback web)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "httpx>=0.28",
   "pydantic>=2.10",
   "rich>=13.9",
-  "zstandard>=0.23",
   "typing-extensions>=4.12",
   "textual>=8.2,<9",
   "python-dateutil>=2.9",
@@ -82,21 +81,16 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# camelCase here mirrors the DSH wire format written to session.v4.jsonl and the
-# on-disk TOML config schema. Python-side attributes move to snake_case with a
-# pydantic alias generator; the wire names must not change. Tracked as P1-5.
-"src/deeppyro/core/wire.py" = ["N815"]
+# camelCase here mirrors the on-disk TOML config schema. Python-side attributes
+# move to snake_case with a pydantic alias generator; the config names must not
+# change.
 "src/deeppyro/config.py" = ["N815"]
 "src/deeppyro/attachments/types.py" = ["N815"]
-"src/deeppyro/session/store.py" = ["N815"]
-"src/deeppyro/session_query/types.py" = ["N815"]
 "src/deeppyro/builtin/compress.py" = ["N815"]
 "src/deeppyro/builtin/session_title.py" = ["N815"]
-"src/deeppyro/builtin/session_query.py" = ["N815"]
 # ctypes structs must keep the Win32 spelling to stay greppable against the SDK.
 "src/deeppyro/sandbox/windows_acl_runner.py" = ["N801"]
-# Fixtures replay real payloads, so they keep the wire casing too.
-"tests/agent/test_images.py" = ["N815"]
+# Fixtures replay real payloads, so they keep the payload casing too.
 "tests/builtin/demo_plugins.py" = ["N815"]
 # Test bodies are fixtures, not public contracts: annotating every fake kernel,
 # stub tool and async test helper would add noise without catching bugs.

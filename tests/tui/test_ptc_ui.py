@@ -16,7 +16,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from deeppyro.tui.app import DeepPyroApp
-from deeppyro.tui.history import (
+from deeppyro.tui.native_history import (
     ProcessEntry,
     TurnProcess,
     TurnTool,
@@ -250,26 +250,29 @@ class FakeHistorySession:
             FakeMessage("user", "again", source={"kind": "user"}),
             _assistant_message("second answer", "thinking two"),
         ]
-        self.records: list[Any] = [
-            FakeRecord("turn/start", {"turn": 1}),
+        self.events: list[Any] = [
+            FakeRecord("turn.started", {}),
             FakeRecord(
-                "assistant/message",
+                "assistant.message",
+                {"message": _assistant_message("first answer", "thinking one", _run_code_arguments())},
+            ),
+            FakeRecord(
+                "tool.result",
                 {
-                    "step": 1,
-                    "message": _assistant_message("first answer", "thinking one", _run_code_arguments()),
+                    "message": {
+                        "role": "tool",
+                        "tool_call_id": "call-1",
+                        "content": [{"type": "text", "text": "ok"}],
+                    }
                 },
             ),
+            FakeRecord("turn.ended", {}),
+            FakeRecord("turn.started", {}),
             FakeRecord(
-                "tool/result",
-                {"message": {"toolCallId": "call-1", "content": [{"type": "text", "text": "ok"}]}},
+                "assistant.message",
+                {"message": _assistant_message("second answer", "thinking two")},
             ),
-            FakeRecord("turn/end", {}),
-            FakeRecord("turn/start", {"turn": 2}),
-            FakeRecord(
-                "assistant/message",
-                {"step": 1, "message": _assistant_message("second answer", "thinking two")},
-            ),
-            FakeRecord("turn/end", {}),
+            FakeRecord("turn.ended", {}),
         ]
 
     def derive_messages(self) -> list[Any]:

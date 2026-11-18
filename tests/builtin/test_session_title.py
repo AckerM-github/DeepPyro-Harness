@@ -1,4 +1,4 @@
-"""Native session-title naming for schema 1 sessions (v4 behaviour untouched)."""
+"""Native session-title naming for schema 1 sessions."""
 
 from __future__ import annotations
 
@@ -10,16 +10,101 @@ import pytest
 
 from deeppyro.builtin.session_title import (
     NATIVE_TITLE_REQUEST_EVENT,
+    TITLE_PROVIDER_FIRST_PROMPT,
     SessionTitlePlugin,
     _first_native_user_message,
     _native_session_of,
     _native_title,
 )
-from deeppyro.session.metadata import TITLE_PROVIDER_FIRST_PROMPT
+from deeppyro.core.llm import TextDelta
 from deeppyro.session.native_index import list_native_sessions
 from deeppyro.session.schema import EventKind, NativeCodec, NativeSession
+from tests.service_doubles import service_lookup, service_require
 from tests.session.native_helpers import SESSION_ID, TITLE, write_native
-from tests.test_session_title import FakeAgent, FakeContext, FakeHooks, FakeLLM, FakeProvider
+
+
+class FakeHooks:
+    def __init__(self) -> None:
+        self.handlers: dict[str, list[Any]] = {}
+
+    def on(self, name: str, handler: Any, **_: Any) -> Any:
+        self.handlers.setdefault(name, []).append(handler)
+        return lambda: self.handlers[name].remove(handler)
+
+    def has(self, name: str) -> bool:
+        return bool(self.handlers.get(name))
+
+
+class FakeProvider:
+    def __init__(self, chunks: list[str] | None = None, error: Exception | None = None) -> None:
+        self.chunks = list(chunks if chunks is not None else ["  你好", "，世界。  "])
+        self.error = error
+        self.requests: list[Any] = []
+
+    async def stream(self, request: Any) -> Any:
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        for chunk in self.chunks:
+            yield TextDelta(chunk)
+
+
+class FakeLLM:
+    def __init__(self, provider: FakeProvider) -> None:
+        self.instance = provider
+
+    def provider(self, name: str) -> FakeProvider:
+        return self.instance
+
+
+class FakeContext:
+    def __init__(self, *, hooks: Any = None, llm: Any = None, title: Any = None) -> None:
+        self.hooks = hooks
+        self.llm = llm
+        self.title = title
+        self.effects: list[str] = []
+
+    def service(self, name: str) -> Any:
+        if name == "hooks":
+            return self.hooks
+        if name == "llm":
+            return self.llm
+        if name == "config":
+            return SimpleNamespace(value=SimpleNamespace(title=self.title))
+        raise KeyError(name)
+
+    def _service_map(self) -> dict[str, Any]:
+        return {
+            "hooks": self.hooks,
+            "llm": self.llm,
+            "config": SimpleNamespace(value=SimpleNamespace(title=self.title)),
+        }
+
+    def get(self, service: str | type[Any]) -> Any | None:
+        return service_lookup(self._service_map(), service)
+
+    def require(self, service: type[Any]) -> Any:
+        return service_require(self._service_map(), service)
+
+    def effect(self, callback: Any, label: str = "") -> Any:
+        # Production semantics: record the teardown callback; never run it now.
+        self.effects.append(label)
+        return callback
+
+
+class FakeAgent:
+    def __init__(
+        self,
+        session: Any,
+        *,
+        turn: int = 1,
+        model: str = "deepseek-flash",
+        provider_name: str = "deepseek",
+    ) -> None:
+        self.session = session
+        self.turn = turn
+        self.model = model
+        self.provider_name = provider_name
 
 
 def make_native_plugin(

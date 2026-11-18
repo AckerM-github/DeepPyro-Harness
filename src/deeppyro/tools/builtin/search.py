@@ -1,6 +1,6 @@
 """Search tools: glob (path discovery) and grep (content search).
 
-Both are pure-Python implementations calibrated against the DSH fixtures:
+Both are pure-Python implementations calibrated against the upstream fixtures:
 
 * glob returns files only (never directories), newest modification time first,
   caps at 100 results, and reports "No files found" when nothing matches.

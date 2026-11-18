@@ -39,23 +39,6 @@ class TurnLayer(ScheduleLayer):
         self.run_worker(self._run_turn(text), group="turn", exclusive=True)
 
     async def _run_turn(self, text: str) -> None:
-        if getattr(self.runtime, "native", False):
-            await self._run_native_turn(text)
-            return
-        self._sink.begin_turn()
-        try:
-            await self.runtime.agent.send(text)
-        except Exception as exc:  # noqa: BLE001 - turn errors belong in the log
-            self.conversation.add_error(f"{type(exc).__name__}: {exc}")
-        finally:
-            if getattr(self.runtime, "busy", False):
-                self.run_worker(self._await_schedule_turn(), group="schedule")
-            else:
-                self._working = False
-                self._phase = "idle"
-                self.refresh_status()
-
-    async def _run_native_turn(self, text: str) -> None:
         """Run one native turn and emit the sink events the widgets consume.
 
         The native agent loop reports typed hooks; the agent host folds them
@@ -232,12 +215,8 @@ class TurnLayer(ScheduleLayer):
 
     async def _interrupt_turn(self) -> None:
         try:
-            if getattr(self.runtime, "native", False):
-                interrupted = bool(await self.runtime.agent.interrupt())
-                self.notify("interrupt requested" if interrupted else "nothing to interrupt")
-                return
-            await self.runtime.agent.interrupt()
+            interrupted = bool(await self.runtime.agent.interrupt())
         except Exception as exc:  # noqa: BLE001
             self.conversation.add_error(f"interrupt failed: {exc}")
             return
-        self.notify("interrupt requested")
+        self.notify("interrupt requested" if interrupted else "nothing to interrupt")

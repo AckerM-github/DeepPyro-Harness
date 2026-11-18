@@ -1,7 +1,7 @@
 # Runtime memory 规格
 
-> **状态**：现行（M4 已扩展） · **层级**：功能规格 · **最后核对**：2026-11-18
-> 0.2.0 边界：热 memory 已接入；SQLite FTS5 long-term memory 未暴露为工具、未自动写入。
+> **状态**：现行（M4 已扩展） · **层级**：功能规格 · **最后核对**：2026-11-19
+> 0.3.0 边界：热 memory 已接入；SQLite FTS5 long-term memory 未暴露为工具、未自动写入。
 
 本文件记录 DeepPyro P1 的 runtime memory（运行时记忆）：以 deeppyro_home()/memory/memories.json 为唯一真源，原子重建 USER.md 与 MEMORY.md 两个可读投影，向模型暴露一个写工具 mnemon_runtime_memory，并在系统提示词 order=12 处注入记忆快照。范围刻意限制在 DSH 宿主第三方插件 dsh-mnemon 的 runtime 部分；Documents、Memory Spaces、Recall/Related/View 等全部不在 P1 内。实现只读写 deeppyro_home() 下的文件，绝不访问 ~/.mnemon。
 
@@ -158,7 +158,7 @@ prompt section 位于 core identity（order 10）与 environment（order 20）�
 本层已就绪，集成方需要完成：
 1. @src/deeppyro/bundles/core/bundle.toml 追加一行：id = memory，plugin = deeppyro.builtin.memory:MemoryPlugin，critical = false；位置在 prompt 行之后。工具由该插件通过 ctx.register_tool 注册，不需要单独的 memory-tools 行（plan 中的可选拆分行未采用）。
 2. TUI 与 headless 的 _plugin_services（或等价位置）把 memory 服务放入 ToolContext.services，否则 mnemon_runtime_memory 会返回服务不可用；kernel boot 本身不需要异步 start/stop，本层没有后台任务。
-3. docs/spec/INTERFACES.md 的 core bundle 服务表补充 memory（由 Lead 维护）。
+3. core bundle 的 `memory` 行已注册，服务表接线完成。
 
 服务名唯一：memory。启用/禁用该插件通过用户清单的 disabled 标志即可（插件清单语义沿用 kernel.manifest），禁用时工具与 prompt section 消失，记忆文件保留在磁盘。
 

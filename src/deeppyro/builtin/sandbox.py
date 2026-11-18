@@ -28,12 +28,12 @@ from deeppyro.sandbox.types import DEFAULT_PERMISSION_PRESET
 
 
 class SandboxPlugin(Plugin):
-    """Build the DSH-aligned sandbox services and one gate per workspace."""
+    """Build the upstream-aligned sandbox services and one gate per workspace."""
 
     provide = "sandbox"
     inject: ClassVar[list[str]] = ["config"]
     plugin_id = "sandbox"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "sandbox policy, execution provider, and approvals"
 
     def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:

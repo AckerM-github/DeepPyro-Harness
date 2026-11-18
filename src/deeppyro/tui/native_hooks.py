@@ -1,4 +1,4 @@
-"""Agent hook adapter: native agent events re-emitted as v4 TUI events.
+"""Agent hook adapter: native agent events re-emitted as TUI dict events.
 
 The widgets, slots and status bar consume one dict vocabulary (see
 app_events.py). The native agent loop reports typed hook events instead. This
@@ -31,7 +31,7 @@ DEFAULT_EVENT_LIMIT = 4096
 
 
 class TuiAgentHooks(NullAgentHooks):
-    """Translate native hook payloads into the v4 TUI dict event vocabulary.
+    """Translate native hook payloads into the TUI dict event vocabulary.
 
     Only the events the widgets consume are forwarded: status (run started),
     step, text, thinking, tool_call and tool_result. Turn lifecycle, checkpoints

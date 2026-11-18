@@ -1,7 +1,7 @@
 """Web tools: web_search (DuckDuckGo HTML endpoint) and web_fetch (httpx).
 
 Search results are wrapped in an explicit untrusted-content notice, matching
-the DSH fixtures. HTTP failures raise :class:`ToolError`; a non-2xx fetch is NOT
+the upstream fixtures. HTTP failures raise :class:`ToolError`; a non-2xx fetch is NOT
 an error - the status line is reported and the body is returned when present.
 """
 

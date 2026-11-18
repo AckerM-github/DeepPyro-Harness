@@ -96,7 +96,7 @@ class UiService(Plugin):
 
     provide = "ui"
     plugin_id = "ui"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "Thread-safe UI actions for plugins (queue drained on the TUI thread)"
 
     def __init__(self, ctx: Any = None, config: Any = None) -> None:

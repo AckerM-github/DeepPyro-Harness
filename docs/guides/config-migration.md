@@ -1,8 +1,12 @@
-# 配置迁移：camelCase → snake_case（0.2.0）
+# 配置迁移：camelCase → snake_case（0.2.0–0.3.0）
 
 0.2.0 起 DeepPyro 的配置校验**始终严格**：配置文件与直接构造配置模型（`Config.model_validate`、
 `load_config`）使用同一套规则。0.1 的兼容读取（camelCase alias）已删除，旧写法会直接失败并指出
 替代键，而不是静默忽略。
+
+0.3.0 起，命令行启动会在读取配置前自动升级旧文件（`migrate_legacy_config`）：重命名 schema 字段、
+把 `[agent]` 的权限键搬到 `[permission]` / `[approval]`，并写一份 `.bak` 备份。`load_config` 本身
+仍然只接受 snake_case；自动迁移只发生在 CLI 入口，库调用方需要显式调用迁移函数。
 
 ## 发生了什么
 
@@ -38,7 +42,7 @@ ConfigError: invalid configuration: configuration key 'agent.maxTokens' is not s
 
 ### 配置模型字段
 
-| 0.1 camelCase | 0.2.0 snake_case | 位置 |
+| 0.1 camelCase | 0.2.0+ canonical | 位置 |
 | --- | --- | --- |
 | `contextWindow` | `context_window` | `[providers.X.models[*]]`、`ModelProfile` |
 | `baseURL` | `base_url` | `[providers.X]` |
@@ -46,14 +50,16 @@ ConfigError: invalid configuration: configuration key 'agent.maxTokens' is not s
 | `apiKey` | `api_key` | `[providers.X]` |
 | `maxTokens` | `max_tokens` | `[agent]`、`[providers.X]`、`[providers.X.models[*]]` |
 | `maxSteps` | `max_steps` | `[agent]` |
-| `sessionDir` | `session_dir` | 顶层 |
+| `sessionDir` | 已删除 | 顶层；改用 `DEEPPYRO_SESSION_DIR` |
+| `permissionPreset` | `[permission] defaultPreset` | `[agent]` → 独立表 |
+| `approvalPolicy` | `[approval] policy` | `[agent]` → 独立表 |
 
 ### adapter 选项（provider/catalog 读取的 model_extra）
 
 `[providers.X]` 允许 `max_tokens`、`reasoning_effort`；`[providers.X.models[*]]` 额外允许
 `input_modalities`。camelCase 拼写不再被接受：
 
-| 0.1 camelCase | 0.2.0 snake_case |
+| 0.1 camelCase | 0.2.0+ snake_case |
 | --- | --- |
 | `maxTokens` / `maxOutputTokens` / `maxCompletionTokens` | `max_tokens` |
 | `reasoningEffort` | `reasoning_effort` |
@@ -66,7 +72,7 @@ ConfigError: invalid configuration: configuration key 'agent.maxTokens' is not s
 
 ## 迁移前 / 后
 
-迁移前（0.1，仍可读）：
+迁移前（0.2 及更早，0.3 启动时自动迁移）：
 
 ```toml
 [agent]
@@ -74,6 +80,8 @@ provider = "deepseek"
 model = "deepseek-chat"
 maxTokens = 8192
 maxSteps = 20
+permissionPreset = "workspace-write"
+approvalPolicy = "ask"
 
 [providers.deepseek]
 baseURL = "https://api.deepseek.com/v1"
@@ -81,7 +89,7 @@ apiKeyEnv = "DEEPSEEK_API_KEY"
 models = [{ id = "deepseek-chat", contextWindow = 65536, maxTokens = 8192 }]
 ```
 
-迁移后（0.2.0）：
+迁移后（0.3.0）：
 
 ```toml
 [agent]
@@ -95,6 +103,12 @@ api = "openai-completions"
 base_url = "https://api.deepseek.com/v1"
 api_key_env = "DEEPSEEK_API_KEY"
 models = [{ id = "deepseek-chat", context_window = 65536, max_tokens = 8192 }]
+
+[permission]
+defaultPreset = "workspace-write"
+
+[approval]
+policy = "ask"
 ```
 
 ## 例外：仍然是开放边界的部分
@@ -110,16 +124,19 @@ models = [{ id = "deepseek-chat", context_window = 65536, max_tokens = 8192 }]
 
 ## 迁移步骤
 
-1. 在仓库/配置里搜索 7 个别名与 adapter camelCase 拼写；对照映射表改写。
-2. 运行 `uv run dpyro`（或测试里调 `load_config` / `Config.model_validate`），按报错逐个修；一次会列出
-   所有问题。
-3. 需要报告而不是失败时用 `lint_config(tomllib.loads(text))`，返回的是同样规则的字符串列表。
+1. 直接运行 `uv run dpyro`：CLI 入口会调用 `migrate_legacy_config()`，把旧配置原地升级并写
+   `<config>.bak`（已有备份时用 `.bak.1`、`.bak.2`……）。成功后新增一行 `config: migrated ...` 提示。
+2. 如果文件里有无法映射的未知键，迁移会在写盘前报 `ConfigError`，原文件保持不变；按报错逐个修，
+   或对照映射表手工改写。
+3. 库调用方不会被隐式改写：显式调用 `migrate_legacy_config(path)`，或直接按新 schema 构造配置。
+   需要报告而不是失败时用 `lint_config(tomllib.loads(text))`。
 4. 删除 `strict_config` 键；确认没有脚本依赖 `DEEPPYRO_STRICT_CONFIG` 改变配置加载行为。
 5. 插件 section 不动；以后新增配置一律 snake_case。
 
 ## 参考
 
-- `src/deeppyro/config.py`：`_REMOVED_ALIASES`、`_ADAPTER_ALIASES`、`lint_config`、`load_config`
+- `src/deeppyro/config.py`：`_REMOVED_ALIASES`、`_ADAPTER_ALIASES`、`migrate_legacy_config`、`lint_config`、`load_config`
 - `tests/api/test_config_lint.py`：错误文本与严格性回归测试
+- `tests/api/test_config_migration.py`：旧配置升级、幂等与 `.bak` 回归测试
 - `tests/test_config_v3.py`：snake_case canonical、camelCase 拒绝
 

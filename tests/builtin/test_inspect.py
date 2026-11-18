@@ -143,23 +143,20 @@ async def test_config_schema_reports_volatile_fields(app: App) -> None:
     assert demo["volatile_fields"] == ["temperature"]
 
 
-async def test_events_lists_wire_record_types(app: App) -> None:
-    from deeppyro.core.wire import MESSAGE_PROJECTION_TYPES, RECORD_TYPES, SURFACE_EVENT_TYPES
+async def test_events_lists_native_session_event_kinds(app: App) -> None:
+    from deeppyro.session.schema import CORE_EVENT_TYPES, PLUGIN_EVENT_PATTERN, EventKind
 
     rows = app.require(InspectPlugin).events()
     types = [row["type"] for row in rows]
 
     assert len(types) == len(set(types))
-    assert set(RECORD_TYPES) <= set(types)
-    assert all(set(row) == {"type", "kind", "surface", "projection"} for row in rows)
-    tool_result = next(row for row in rows if row["type"] == "tool/result")
+    assert set(CORE_EVENT_TYPES) <= set(types)
+    assert {kind.value for kind in EventKind} <= set(types)
+    assert all(set(row) == {"type", "kind"} for row in rows)
+    tool_result = next(row for row in rows if row["type"] == "tool.result")
     assert tool_result["kind"] == "tool"
-    assert tool_result["surface"] is True
-    assert tool_result["projection"] is False
-    for record_type in SURFACE_EVENT_TYPES:
-        assert next(row for row in rows if row["type"] == record_type)["surface"] is True
-    for record_type in MESSAGE_PROJECTION_TYPES:
-        assert next(row for row in rows if row["type"] == record_type)["projection"] is True
+    plugin = next(row for row in rows if row["type"] == PLUGIN_EVENT_PATTERN)
+    assert plugin["kind"] == "plugin"
 
 
 async def test_slots_and_theme_are_optional(app: App) -> None:

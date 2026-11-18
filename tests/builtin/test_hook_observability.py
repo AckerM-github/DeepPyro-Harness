@@ -12,7 +12,7 @@ from deeppyro.builtin.hook_observability import (
     WATERFALL_HOOKS,
     HookObservabilityPlugin,
 )
-from deeppyro.core.protocols import TextDelta
+from deeppyro.core.llm import TextDelta
 from deeppyro.hooks import (
     AGENT_ERROR,
     APPROVAL_REQUEST,

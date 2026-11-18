@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -14,8 +13,6 @@ from deeppyro.core.errors import AbortedError, ToolError
 from deeppyro.core.protocols import ToolContext
 from deeppyro.tools.builtin.working_directory import WorkingDirectoryTool
 from deeppyro.working_directory import WorkingDirectoryService
-
-SESSION_DIR = Path(__file__).resolve().parents[2] / "fixtures" / "sessions"
 
 
 class FakeSession:
@@ -44,27 +41,6 @@ def make_service(
     sink = records if records is not None else []
     service.configure(record=lambda kind, data: sink.append((kind, data)))
     return service
-
-
-def load_fixture_calls() -> list[dict[str, Any]]:
-    calls: list[dict[str, Any]] = []
-    if not SESSION_DIR.is_dir():
-        return calls
-    for path in sorted(SESSION_DIR.glob("*.jsonl")):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if record.get("type") != "tool/call":
-                continue
-            data = record.get("data") or {}
-            if data.get("name") == "working_directory":
-                calls.append(data)
-    return calls
 
 
 def test_schema_only_has_optional_cd() -> None:
@@ -143,36 +119,6 @@ async def test_cd_respects_cancel_event(tmp_path: Path) -> None:
     ctx.cancel.set()
     with pytest.raises(AbortedError):
         await WorkingDirectoryTool().run({"cd": str(target)}, ctx)
-
-
-def test_fixture_arguments_are_accepted() -> None:
-    calls = load_fixture_calls()
-    if not calls:
-        pytest.skip("working_directory fixture calls are unavailable")
-    assert len(calls) >= 1
-    properties = WorkingDirectoryTool.parameters["properties"]
-    for data in calls:
-        arguments = json.loads(data["arguments"])
-        assert isinstance(arguments, dict)
-        assert set(arguments) <= set(properties)
-        assert isinstance(arguments.get("cd"), str)
-        assert arguments["cd"].strip()
-
-
-async def test_fixture_result_shape_with_equivalent_directory(tmp_path: Path) -> None:
-    calls = load_fixture_calls()
-    if not calls:
-        pytest.skip("working_directory fixture calls are unavailable")
-    target = tmp_path / "replay"
-    target.mkdir()
-    service = make_service(tmp_path)
-    result = await WorkingDirectoryTool().run(
-        {"cd": str(target)}, make_context(tmp_path, {"working_directory": service})
-    )
-    assert result.is_error is False
-    assert Path(result.text) == target.resolve()
-    assert result.meta["cwd"] == str(target.resolve())
-    assert "\n" not in result.text
 
 
 def test_plugin_provides_service_and_registers_tool(tmp_path: Path) -> None:

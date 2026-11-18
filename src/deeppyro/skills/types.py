@@ -56,7 +56,7 @@ class SkillSummary:
     provider: str = "filesystem"
     path: str = ""
     resource_base: str = ""
-    #: Free-form `metadata.*` frontmatter keys, kept for parity with DSH.
+    #: Free-form `metadata.*` frontmatter keys, kept for parity with upstream.
     metadata: dict[str, str] = field(default_factory=dict)
 
 
@@ -83,7 +83,7 @@ class SkillConfig(BaseModel):
     """The [skills] configuration table.
 
     The filesystem provider is deliberately small in P1: no watcher, no
-    provider registry. Roots follow the DSH rank order; a later provider layer
+    provider registry. Roots follow the upstream rank order; a later provider layer
     can replace this model without changing the registry API.
     """
 
@@ -97,7 +97,7 @@ class SkillConfig(BaseModel):
     bundled_skill_dir: str = ""
     catalog_max_entries: int = 500
     catalog_description_max_length: int = 500
-    #: Empty means ~/.agents/skills (the agents-home root DSH ranks at 500).
+    #: Empty means ~/.agents/skills (the agents-home root upstream ranks at 500).
     user_agents_dir: str = ""
     watch: bool = False
 

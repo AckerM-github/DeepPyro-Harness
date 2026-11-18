@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from deeppyro.goal.replay import GoalReplayError, decode_change, fold, view
 from deeppyro.goal.service import GoalService
 from deeppyro.goal.types import (
     DEFAULT_MAX_GOAL_ROUNDS,
@@ -10,11 +9,14 @@ from deeppyro.goal.types import (
     GOAL_EVENT,
     GOAL_REPLAY_FAILED,
     BlockedReason,
+    ClearedChange,
     GoalError,
     GoalRef,
     GoalSnapshot,
     GoalState,
     GoalView,
+    SnapshotChange,
+    view,
 )
 
 __all__ = [
@@ -23,14 +25,13 @@ __all__ = [
     "GOAL_EVENT",
     "GOAL_REPLAY_FAILED",
     "BlockedReason",
+    "ClearedChange",
     "GoalError",
     "GoalRef",
-    "GoalReplayError",
     "GoalService",
     "GoalSnapshot",
     "GoalState",
     "GoalView",
-    "decode_change",
-    "fold",
+    "SnapshotChange",
     "view",
 ]

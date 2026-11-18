@@ -1,9 +1,14 @@
 # goal 契约（DSH 对齐）
 
-> **状态**：现行契约（goal 域冻结） · **层级**：goal 域契约 · **最后核对**：2026-11-18
+> **状态**：现行契约（goal 域冻结） · **层级**：goal 域契约 · **最后核对**：2026-11-19
 >
 > **FROZEN 依据**：M0 取证完成（2026-11-16）。本文件是 goal 域的唯一契约权威：后续实现只能按这里的字段、状态机、事件与不变量；无证据条目一律去 §9。
 > 基线：deeppyro `main` @ `0cd53af`（工作树 clean）。
+>
+> **0.3.0 说明**：本文是 M0 冻结的 goal 域契约；正文引用的 v4 实现/证据（`core/wire.py`、
+> `agent/session.py`、v4 记录名）是冻结时点历史，v4 栈已删除。当前实现为 native
+> `GoalService` + `goal/native_driver.py`（见 [../native/goal.md](../native/goal.md)），
+> 与本文冲突时以代码/测试为准。
 
 ## 0. 取证来源与工具
 
@@ -257,14 +262,14 @@ create_goal may infer goal intent from a direct human request in any language. A
 | idle 触发 | `agent/status {agent, status}` | `src/deeppyro/agent/session.py:504 await self._hooks.emit(AGENT_STATUS, {"status": phase}, scope=self._hook_scope())`，phase 只有 `running`(:484)/`idle`(:492) | payload **没有 agent/session 引用**；M3a 需把 `agent`（或 session id）加进 payload 或改由 driver 按 session 反查 |
 | inbox 事件 | `agent/inbox/{inserted,claimed,discarded}` | `src/deeppyro/agent/inbox.py:37-40` 常量；`:142 Inbox(log, *, emit)`；`agent/session.py:289` 注入 `self._inbox_event`，`:1236 _inbox_event` 只 `self._emit(event)` 到 sink | 需同时 `hooks.emit` 到总线（M3a）；`claimed` 的 `turn` 字段 deeppyro 已有 `claim(target, turn)` |
 | turn/end reasons | `max-tokens`、`aborted{reason:{kind:"disposed"}}` | `src/deeppyro/agent/session.py:671 max-tokens`、`:1630 aborted{reason:{kind}}`、`_abort_turn("disposed")` :547/:555；另有 `completed`/`max-steps`/`error`/`blocked{pre-step}` | 语义可映射，无需改记录 |
-| 活实例/根/发起者 | `agents.get/turnBoundaryOf/roots/currentInitiator/withoutInitiator` | deeppyro `AgentsPlugin`/`AgentSession` 无这些 API（`busy`/`turn`/`step`/`inbox` 有） | 需 M3a 提供最小等价物（`is_live`、`is_root`、`turn_boundary`、`initiator`），或 driver 降级为单 agent 语义（§9） |
+| 活实例/根/发起者 | `agents.get/turnBoundaryOf/roots/currentInitiator/withoutInitiator` | 0.2.0 的 deeppyro `AgentsPlugin`/`AgentSession` 无这些 API（`busy`/`turn`/`step`/`inbox` 有；v4 已删除） | 需 M3a 提供最小等价物（`is_live`、`is_root`、`turn_boundary`、`initiator`），或 driver 降级为单 agent 语义（§9） |
 | 终局 wrapup | `exec.deferContext(message)` | deeppyro 工具无 `deferContext`；可用 `agent.inject(...)`（next-step，不唤醒）近似 | 语义不完全等价（DSH 在**当前 step 后**注入并结束轮次） |
 | flush 检查点 | `sessions.flush(session)` | deeppyro 每条 append 即 flush+fsync（`src/deeppyro/session/session.py:26,85`；`session/writer.py:108,134`） | 天然满足，driver 的 flush 可退化为 no-op |
 | subagent 等待 | `subagents.waitForChildren(agent)` | `src/deeppyro/builtin/team.py`/`subagent` 服务无同名 API | M4 前按「无 subagents 服务」分支处理 |
 
 ## 9. UNRESOLVED
 
-1. **initiator/根 agent 语义**：DSH 用 `currentInitiator()` + `roots()` 判定「人类直接请求」；deeppyro 没有 initiator 概念。M3a 需要决定：新增 `AgentSession.initiator`（`source.kind === "user"` 的入站消息即设）还是用「当前 turn 内存在 user/message 且非 plugin 注入」近似。**影响 §5 的全部授权判定，必须先定。**
+1. **initiator/根 agent 语义**：DSH 用 `currentInitiator()` + `roots()` 判定「人类直接请求」；deeppyro 没有 initiator 概念。M3a 需要决定：新增 v4 `AgentSession.initiator`（`source.kind === "user"` 的入站消息即设）还是用「当前 turn 内存在 user/message 且非 plugin 注入」近似。**影响 §5 的全部授权判定，必须先定。**
 2. **`agent/status` payload 扩展**：模板 §8 提到「deeppyro agent/status 的 done 相位」，实际只有 `running`/`idle`。M3a 要么在 payload 加 `agent`/`session`，要么在 driver 侧用 scope 里的 `session` 反查 agent（driver 需要 agent 对象才能 followup/cancel）。
 3. **`deferContext` 等价物**：deeppyro 的 `agent.inject(text, source=...)` 是 next-step 且「不唤醒」；DSH 的 `deferContext` 是「本 step 结束后作为上下文注入并结束自主轮」。M3b 需确认用 inject 是否足以让模型收尾，或需要新增工具结果附带上下文。
 4. **driver 默认开关**：模板 §8 写「独立插件 + bundle.toml opt-in 行」。建议默认 **关**（`[goal] driver = false`），因为自动续行会消耗真实 token；需用户确认。

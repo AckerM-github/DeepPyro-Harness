@@ -6,7 +6,6 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,12 +17,10 @@ from deeppyro.builtin.usage import (
     UsageService,
 )
 from deeppyro.config import Config, ModelConfig, ModelCost, ModelProfile, ProviderConfig
-from deeppyro.hooks import AGENT_PRE_STEP, AGENT_TURN_STOPPING, LLM_STREAM, HookService
 from deeppyro.kernel.app import create_app
 from deeppyro.kernel.context import RuntimeContext
 from deeppyro.kernel.manifest import PluginSpec
 from deeppyro.observability.protocols import TurnUsage
-from tests.agent.fakes import FakeSessionLog
 
 SESSION_A = "session-11111111-2222-3333-4444-555555555555"
 SESSION_B = "session-66666666-7777-8888-9999-000000000000"
@@ -275,69 +272,5 @@ async def test_usage_service_mounts_through_the_v3_plugin_path() -> None:
         assert isinstance(service, UsageService)
         service.record(None, provider="local", model="m", input_tokens=12)
         assert service.totals().input_tokens == 12
-    finally:
-        await app.stop()
-
-
-async def test_usage_service_reports_v4_turns_from_session_records(tmp_path: Path) -> None:
-    app = await create_app(
-        _config(),
-        plugins=(
-            PluginSpec(id="hooks", name="deeppyro.builtin.hooks:HooksPlugin"),
-            PluginSpec(id="usage", name="deeppyro.builtin.usage:UsageService"),
-        ),
-    )
-    try:
-        hooks = app.require(HookService)
-        service = app.require(UsageService)
-        session = FakeSessionLog(cwd=tmp_path)
-        agent = SimpleNamespace(
-            session=session, session_id=session.session_id, provider_name="local", model="m"
-        )
-        # The v4 turn starts with agent/pre-step: that starts the record watermark.
-        await hooks.waterfall(AGENT_PRE_STEP, {"agent": agent, "turn": 1, "step": 1}, lambda: None)
-        for frame in ({"type": "start", "turn": 1, "step": 1}, {"type": "end", "finish": "stop"}):
-            await hooks.emit(
-                LLM_STREAM,
-                {"agent": agent, "frame": frame, "provider": "local", "model": "m"},
-            )
-        session.append(
-            "assistant/message",
-            {
-                "turn": 1,
-                "step": 1,
-                "message": {
-                    "id": "msg_" + "a" * 16,
-                    "role": "assistant",
-                    "content": [{"kind": "text", "text": "hi"}],
-                    "source": {"kind": "model", "provider": "local", "model": "m"},
-                },
-                "usage": {
-                    "inputTokens": 40,
-                    "outputTokens": 8,
-                    "cacheReadTokens": 16,
-                    "cacheWriteTokens": 0,
-                    "totalTokens": 48,
-                },
-            },
-        )
-        # agent/turn-stopping fires just before turn/end: flush the buffered turn.
-        await hooks.serial(
-            AGENT_TURN_STOPPING,
-            {"agent": agent, "turn": 1, "signal": None, "finalText": "hi"},
-        )
-
-        records = service.records()
-        assert len(records) == 1
-        usage = records[0]
-        assert usage.session_id == session.session_id
-        assert usage.turn == 1
-        assert usage.source == "v4"
-        assert (usage.input_tokens, usage.output_tokens, usage.cached_tokens) == (40, 8, 16)
-        assert usage.stop_reason == "stop"
-        assert usage.retries == 0
-        lines = service.log_path.read_text(encoding="utf-8").splitlines()
-        assert len(lines) == 1
-        assert json.loads(lines[0])["source"] == "v4"
     finally:
         await app.stop()

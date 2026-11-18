@@ -1,10 +1,10 @@
 """Permission gate: the per-session sandbox and approval facade.
 
 The gate keeps the small synchronous check API the tools already use
-(check_read/check_write/check_command) but delegates policy to the DSH-aligned
+(check_read/check_write/check_command) but delegates policy to the upstream-aligned
 services: SandboxPolicyService decides the standing mode and writable roots,
-ApprovalService decides one-shot approvals. In DSH the filesystem consumer
-(`dsh-fs-sandbox`) denies out-of-bound writes directly instead of prompting;
+ApprovalService decides one-shot approvals. In upstream the filesystem consumer
+(`upstream-fs-sandbox`) denies out-of-bound writes directly instead of prompting;
 escalation is a separate, approval-gated retry driven by the tool layer.
 """
 
@@ -179,7 +179,7 @@ class PermissionGate:
         signal: Any | None = None,
         agent: Any | None = None,
     ) -> Decision:
-        """Resolve one approval request through the DSH approval service."""
+        """Resolve one approval request through the upstream approval service."""
         outcome = await self._approval_service.request(
             req,
             session=self._session,

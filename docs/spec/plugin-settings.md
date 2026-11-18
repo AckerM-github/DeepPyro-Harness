@@ -1,6 +1,6 @@
 # 插件设置规格
 
-> **状态**：现行（API v3） · **层级**：插件规格 · **最后核对**：2026-11-18
+> **状态**：现行（API v3） · **层级**：插件规格 · **最后核对**：2026-11-19
 > 公开插件契约见 [plugin-core.md](plugin-core.md)；插件作者指南见 [docs/plugins/README.md](../plugins/README.md)。
 
 本文件详细描述 DeepPyro 的插件设置（SettingsStore / SettingsPlugin）语义：如何从 composition 中读取生效配置、如何用 revision + CAS 安全写入用户清单、secret 掩码、pydantic 校验、原子写与已知限制。PluginManager、bundle 生命周期与 agent 工具的总览见 @docs/spec/plugins.md；插件/清单格式见 @docs/spec/plugin-core.md 与 [plugin-core.md](plugin-core.md)。

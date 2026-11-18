@@ -38,7 +38,7 @@ Bundles may depend on other bundles:
 Requirements are resolved topologically (dependencies first); missing bundles,
 dependency cycles and unsupported version constraints raise CompositionError.
 
-This mirrors how DSH composes its package-level dsh.bundle.patch rows and the
+This mirrors how upstream composes its package-level bundle patch rows and the
 profile cordis.patch.yml: patches never deep-merge config.
 """
 
@@ -897,7 +897,7 @@ def default_composition(
         if path not in candidates:
             candidates.append(path)
     # Plugin packages may ship their own composition layer. It sits after the
-    # user bundles and before the patch manifests, mirroring DSH's layer order
+    # user bundles and before the patch manifests, mirroring upstream's layer order
     # (built-in bundle -> profile bundles -> profile patch).
     for path in discover_plugin_bundles():
         if path not in candidates:

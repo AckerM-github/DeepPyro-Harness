@@ -1,8 +1,10 @@
 # Native capabilities port — implementation design (0.3.0)
 
-Status: implementation design for the 0.3.0 hard cut. Target repository state:
-D:/code/deeppyro at 7d03ef6 plus the uncommitted provider-port working tree (see
-"Inputs"). This document is design only; it changes no source.
+Status: **implemented (0.3.0)**. This was the implementation design for the 0.3.0 hard
+cut (target repository state: D:/code/deeppyro at `7d03ef6` plus the provider-port
+working tree). The native capabilities are now the shipped path; plan-time references
+to flags (`--legacy-v4`, `DEEPPYRO_TUI_NATIVE`), v4 seams and `dpyro migrate` describe
+intermediate steps that no longer exist. Body retained as the design record.
 
 Hard constraints honoured throughout:
 

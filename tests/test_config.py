@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from deeppyro import config
+from deeppyro import config, paths
 from deeppyro.core.errors import ConfigError
 
 
@@ -47,7 +47,7 @@ def test_env_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEEPPYRO_CONFIG", str(tmp_path / "c.toml"))
     monkeypatch.setenv("DEEPPYRO_SESSION_DIR", str(tmp_path / "s"))
     assert config.config_path() == tmp_path / "c.toml"
-    assert config.session_dir() == tmp_path / "s"
+    assert paths.sessions_dir() == tmp_path / "s"
 
 
 def test_defaults_live_in_the_deeppyro_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -55,7 +55,7 @@ def test_defaults_live_in_the_deeppyro_home(tmp_path: Path, monkeypatch: pytest.
     for name in ("DEEPPYRO_CONFIG", "DEEPPYRO_SESSION_DIR"):
         monkeypatch.delenv(name, raising=False)
     assert config.config_path() == tmp_path / "home" / "config.toml"
-    assert config.session_dir() == tmp_path / "home" / "sessions"
+    assert paths.sessions_dir() == tmp_path / "home" / "sessions"
 
 
 def test_save_agent_selection_preserves_comments(tmp_path: Path) -> None:

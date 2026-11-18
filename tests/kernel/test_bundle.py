@@ -22,8 +22,6 @@ EXPECTED_ORDER = [
     "kernel",
     "llm",
     "sessions",
-    "session-migrate",
-    "session-query",
     "sandbox",
     "tools",
     "goal",
@@ -36,9 +34,7 @@ EXPECTED_ORDER = [
     "user-questions",
     "attachments",
     "hooks",
-    "llm-retry",
     "hook-observability",
-    "hook-journal",
     "session-title",
     "jobs",
     "plugin-tools",
@@ -60,7 +56,6 @@ EXPECTED_ORDER = [
     "subagent",
     "task",
     "activity",
-    "projections",
     "slots",
     "plugin-manager",
     "settings",
@@ -122,8 +117,6 @@ config = { start = 5 }
         "llm",
         "echo",
         "sessions",
-        "session-migrate",
-        "session-query",
         "sandbox",
         "tools",
         "goal",
@@ -136,9 +129,7 @@ config = { start = 5 }
         "user-questions",
         "attachments",
         "hooks",
-        "llm-retry",
         "hook-observability",
-        "hook-journal",
         "session-title",
         "jobs",
         "plugin-tools",
@@ -160,7 +151,6 @@ config = { start = 5 }
         "subagent",
         "task",
         "activity",
-        "projections",
         "slots",
         "plugin-manager",
         "settings",
@@ -186,8 +176,6 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
         assert list(app.started) == [
             "kernel",
             "llm",
-            "session-migrate",
-            "session-query",
             "goal",
             "goal-round-driver",
             "tools-builtin",
@@ -198,9 +186,7 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
             "user-questions",
             "attachments",
             "hooks",
-            "llm-retry",
             "hook-observability",
-            "hook-journal",
             "session-title",
             "jobs",
             "plugin-tools",
@@ -221,15 +207,13 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
             "subagent",
             "task",
             "activity",
-            "projections",
             "slots",
             "plugin-manager",
             "settings",
             "inspect",
         ]
-        # session-query waits for sessions; tools-builtin, working-directory, jobs and
+        # tools-builtin, working-directory, jobs and
         # plugin-tools inject the tools service, so they wait too.
-        assert app.started["session-query"] == "PENDING"
         assert app.started["tools-builtin"] == "PENDING"
         assert app.started["ptc"] == "PENDING"
         assert app.started["compress"] == "PENDING"
@@ -240,12 +224,9 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
         assert app.started["team"] == "PENDING"
         assert app.started["attachments"] == "ACTIVE"
         assert app.started["memory"] == "ACTIVE"
-        assert app.started["projections"] == "ACTIVE"
         assert app.started["llm"] == "ACTIVE"
         assert app.started["hooks"] == "ACTIVE"
-        assert app.started["llm-retry"] == "ACTIVE"
         assert app.started["hook-observability"] == "ACTIVE"
-        assert app.started["hook-journal"] == "ACTIVE"
         assert app.started["presets"] == "ACTIVE"
         assert app.started["prompt"] == "ACTIVE"
         assert app.started["prompt-core"] == "ACTIVE"

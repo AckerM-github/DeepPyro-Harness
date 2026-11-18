@@ -26,7 +26,7 @@ class SkillsPlugin(Service):
 
     provide = "skills"
     plugin_id = "skills"
-    version = "0.2.0"
+    version = "0.3.0"
     description = "read-only skill discovery and the skill loading tool"
     inject: ClassVar[list[str]] = ["config", "tools", "prompt", "commands"]
 

@@ -1,29 +1,24 @@
-"""The `/goal` command: fixed rendering, verbs and human resume."""
+"""The `/goal` command: fixed rendering, verbs and human resume.
+
+The command talks to the native GoalService over a real NativeSession, so the
+verbs exercise the same durable goal.changed facts the runtime writes; only the
+TUI host/conversation surface is faked.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
+import pytest
+
 from deeppyro.goal import GoalService
+from deeppyro.session.schema import NativeSession
 from deeppyro.tui.app import DeepPyroApp
 from deeppyro.tui.session_view import GOAL_USAGE, goal_lines, goal_summary_line
 
-
-class _Record:
-    def __init__(self, type_: str, data: dict[str, Any], time: int = 0) -> None:
-        self.type = type_
-        self.data = data
-        self.time = time
-
-
-class _Session:
-    def __init__(self, session_id: str = "session-1") -> None:
-        self.session_id = session_id
-        self.records: list[_Record] = []
-
-    def append(self, type_: str, data: dict[str, Any] | None = None) -> int:
-        self.records.append(_Record(type_, dict(data or {}), time=len(self.records) + 1))
-        return len(self.records)
+SESSION_ID = "session-11111111-1111-1111-1111-111111111111"
 
 
 class _Clock:
@@ -69,9 +64,21 @@ def _service() -> GoalService:
     return service
 
 
-def _host() -> tuple[_Host, GoalService, _Session]:
+@pytest.fixture
+def session(tmp_path: Path) -> Iterator[NativeSession]:
+    native = NativeSession.create(
+        tmp_path / f"{SESSION_ID}.jsonl",
+        cwd=tmp_path,
+        session_id=SESSION_ID,
+    )
+    try:
+        yield native
+    finally:
+        native.close()
+
+
+def _host(session: NativeSession) -> tuple[_Host, GoalService, NativeSession]:
     service = _service()
-    session = _Session()
     return _Host(service, session), service, session
 
 
@@ -79,8 +86,8 @@ async def _run(host: _Host, argument: str = "") -> None:
     await DeepPyroApp.goal_command(host, argument)  # type: ignore[arg-type]
 
 
-async def test_goal_without_a_goal_prints_the_usage_lines() -> None:
-    host, _service_instance, _session = _host()
+async def test_goal_without_a_goal_prints_the_usage_lines(session: NativeSession) -> None:
+    host, _service_instance, _session = _host(session)
 
     await _run(host)
 
@@ -88,8 +95,8 @@ async def test_goal_without_a_goal_prints_the_usage_lines() -> None:
     assert host.conversation.errors == []
 
 
-async def test_goal_renders_the_fixed_block_and_pause_hint() -> None:
-    host, _service_instance, session = _host()
+async def test_goal_renders_the_fixed_block_and_pause_hint(session: NativeSession) -> None:
+    host, service, _session = _host(session)
 
     await _run(host, "ship the release")
 
@@ -101,11 +108,11 @@ async def test_goal_renders_the_fixed_block_and_pause_hint() -> None:
         "Commands: /goal edit <objective>, /goal pause, /goal clear",
     ]
     assert host.refreshes == 1
-    assert _service_instance.view(session) is not None
+    assert service.view(session) is not None
 
 
-async def test_goal_renders_blocked_reason_and_resume_hint() -> None:
-    host, service, session = _host()
+async def test_goal_renders_blocked_reason_and_resume_hint(session: NativeSession) -> None:
+    host, service, _session = _host(session)
     created = await service.create(session, "ship it")
     await service.block(session, created.ref, "waiting for the API key", code="missing-key")
 
@@ -117,8 +124,8 @@ async def test_goal_renders_blocked_reason_and_resume_hint() -> None:
     assert "Commands: /goal edit <objective>, /goal resume, /goal clear" in host.conversation.infos
 
 
-async def test_goal_pause_and_resume_arm_the_goal() -> None:
-    host, service, session = _host()
+async def test_goal_pause_and_resume_arm_the_goal(session: NativeSession) -> None:
+    host, service, _session = _host(session)
     await _run(host, "ship it")
 
     await _run(host, "pause")
@@ -131,8 +138,8 @@ async def test_goal_pause_and_resume_arm_the_goal() -> None:
     assert service.activation(session) == "armed"
 
 
-async def test_goal_edit_keeps_the_phase_and_replaces_the_objective() -> None:
-    host, service, session = _host()
+async def test_goal_edit_keeps_the_phase_and_replaces_the_objective(session: NativeSession) -> None:
+    host, service, _session = _host(session)
     await _run(host, "first")
     await _run(host, "pause")
 
@@ -145,8 +152,8 @@ async def test_goal_edit_keeps_the_phase_and_replaces_the_objective() -> None:
     assert "Goal: second" in host.conversation.infos
 
 
-async def test_goal_complete_then_create_replaces_the_old_goal() -> None:
-    host, service, session = _host()
+async def test_goal_complete_then_create_replaces_the_old_goal(session: NativeSession) -> None:
+    host, service, _session = _host(session)
     await _run(host, "first")
 
     await _run(host, "complete")
@@ -160,8 +167,8 @@ async def test_goal_complete_then_create_replaces_the_old_goal() -> None:
     assert view.goal.objective == "second"
 
 
-async def test_goal_clear_reports_the_cleared_state() -> None:
-    host, service, session = _host()
+async def test_goal_clear_reports_the_cleared_state(session: NativeSession) -> None:
+    host, service, _session = _host(session)
     await _run(host, "first")
 
     await _run(host, "clear")
@@ -170,8 +177,8 @@ async def test_goal_clear_reports_the_cleared_state() -> None:
     assert service.view(session) is None
 
 
-async def test_goal_edit_without_a_body_shows_usage() -> None:
-    host, service, session = _host()
+async def test_goal_edit_without_a_body_shows_usage(session: NativeSession) -> None:
+    host, service, _session = _host(session)
     await service.create(session, "first")
 
     await _run(host, "edit")
@@ -179,8 +186,8 @@ async def test_goal_edit_without_a_body_shows_usage() -> None:
     assert host.conversation.infos == [GOAL_USAGE]
 
 
-async def test_goal_create_while_a_live_goal_exists_reports_the_phase() -> None:
-    host, service, session = _host()
+async def test_goal_create_while_a_live_goal_exists_reports_the_phase(session: NativeSession) -> None:
+    host, service, _session = _host(session)
     await service.create(session, "first")
 
     await _run(host, "second")
@@ -193,8 +200,8 @@ async def test_goal_create_while_a_live_goal_exists_reports_the_phase() -> None:
     ]
 
 
-async def test_goal_without_a_service_reports_an_error() -> None:
-    host = _Host(None, _Session())
+async def test_goal_without_a_service_reports_an_error(session: NativeSession) -> None:
+    host = _Host(None, session)
 
     await _run(host)
 

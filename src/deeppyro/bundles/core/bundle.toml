@@ -1,7 +1,7 @@
 [bundle]
 id = "core"
 name = "DeepPyro core"
-version = "0.2.0"
+version = "0.3.0"
 order = 0
 critical = true
 
@@ -25,16 +25,6 @@ plugin = "deeppyro.builtin.llm:LlmPlugin"
 id = "sessions"
 plugin = "deeppyro.builtin.sessions:SessionsPlugin"
 
-# v4 <-> native session migration; inert until something calls it.
-[[plugins]]
-id = "session-migrate"
-plugin = "deeppyro.session.migrate_service:SessionMigratePlugin"
-critical = false
-
-[[plugins]]
-id = "session-query"
-plugin = "deeppyro.builtin.session_query:SessionQueryPlugin"
-
 [[plugins]]
 id = "sandbox"
 plugin = "deeppyro.builtin.sandbox:SandboxPlugin"
@@ -49,7 +39,7 @@ plugin = "deeppyro.builtin.goal:GoalPlugin"
 
 [[plugins]]
 id = "goal-round-driver"
-plugin = "deeppyro.builtin.goal_round_driver:GoalRoundDriverPlugin"
+plugin = "deeppyro.builtin.goal_round_driver:NativeGoalRoundDriverPlugin"
 critical = false
 
 [[plugins]]
@@ -87,19 +77,8 @@ id = "hooks"
 plugin = "deeppyro.builtin.hooks:HooksPlugin"
 
 [[plugins]]
-id = "llm-retry"
-plugin = "deeppyro.builtin.llm_retry:LlmRetryPlugin"
-
-[[plugins]]
 id = "hook-observability"
 plugin = "deeppyro.builtin.hook_observability:HookObservabilityPlugin"
-
-# Journals every bus dispatch into the session log (hook/invoked + hook/result)
-# so a trace survives a crash; plugins observe events with ctx.on() instead.
-[[plugins]]
-id = "hook-journal"
-plugin = "deeppyro.builtin.hook_journal:HookJournalPlugin"
-critical = false
 
 # Names a session from its first exchange: the store derives a short fallback
 # title, and this plugin upgrades it once with a single small request.
@@ -204,10 +183,6 @@ critical = false
 [[plugins]]
 id = "activity"
 plugin = "deeppyro.builtin.activity:ActivityPlugin"
-
-[[plugins]]
-id = "projections"
-plugin = "deeppyro.builtin.projections:ProjectionsPlugin"
 
 [[plugins]]
 id = "slots"

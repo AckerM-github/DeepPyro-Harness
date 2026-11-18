@@ -22,18 +22,13 @@ from textual.widgets import Footer, Header
 
 from deeppyro import __version__
 from deeppyro.tui.app_panels import PanelLayer
-from deeppyro.tui.app_support import _HOOK_INVOKED_RECORD as _HOOK_INVOKED_RECORD
-from deeppyro.tui.app_support import _HOOK_RESULT_RECORD as _HOOK_RESULT_RECORD
 from deeppyro.tui.app_support import CUSTOM_WORKSPACE as CUSTOM_WORKSPACE
 from deeppyro.tui.app_support import CUSTOM_WORKSPACE_LABEL as CUSTOM_WORKSPACE_LABEL
 from deeppyro.tui.app_support import HOOK_TRACE_LIMIT as HOOK_TRACE_LIMIT
 from deeppyro.tui.app_support import RuntimeFactory as RuntimeFactory
 from deeppyro.tui.app_support import _emit_goal as _emit_goal
 from deeppyro.tui.app_support import _goal_service as _goal_service
-from deeppyro.tui.app_support import _hook_rows_from_records as _hook_rows_from_records
-from deeppyro.tui.app_support import _normalize_hook_rows as _normalize_hook_rows
-from deeppyro.tui.app_support import _record_field as _record_field
-from deeppyro.tui.history import reasoning_from_session
+from deeppyro.tui.native_history import reasoning_from_session
 from deeppyro.tui.screens.splash import SplashScreen
 from deeppyro.tui.screens.thinking import ThinkingScreen
 from deeppyro.tui.sink import TuiSink
@@ -132,8 +127,7 @@ class DeepPyroApp(PanelLayer):
             self._dismiss_splash()
             self.refresh_status()
             return
-        if getattr(self.runtime, "native", False):
-            self._register_native_commands()
+        self._register_tui_commands()
         self._configure_user_questions()
         self._configure_schedule()
         await self._start_schedule()
@@ -154,8 +148,8 @@ class DeepPyroApp(PanelLayer):
         with contextlib.suppress(Exception):
             await runtime.close()
 
-    def _register_native_commands(self) -> None:
-        """Register TUI-local slash commands that only exist on the native path."""
+    def _register_tui_commands(self) -> None:
+        """Register TUI-local slash commands backed by native session control."""
         commands = getattr(self.runtime, "commands", None)
         add = getattr(commands, "add", None)
         if not callable(add):
@@ -178,6 +172,11 @@ class DeepPyroApp(PanelLayer):
         return None
 
     def _on_splash_closed(self, result: Any = None) -> None:
+        # F1 on the splash leaves Textual entirely: main() hands the process to
+        # the loopback web host after run() returns this marker.
+        if result == "web":
+            self.exit("web")
+            return
         if self._prompt is not None:
             self._prompt.focus()
 
@@ -210,18 +209,13 @@ class DeepPyroApp(PanelLayer):
     async def thinking_command(self, argument: str) -> None:
         """Open the full-screen reasoning viewer (/thinking [turns])."""
         session = getattr(self.runtime, "session", None)
-        reasoning = reasoning_from_session
-        if getattr(self.runtime, "native", False):
-            from deeppyro.tui.native_history import reasoning_from_session as native_reasoning
-
-            reasoning = native_reasoning
         turns: list[Any] = []
         if session is not None:
             spec = argument.strip().lower()
             if spec in ("", "current"):
-                turns = list(reasoning(session, last_turns=1))
+                turns = list(reasoning_from_session(session, last_turns=1))
             elif spec in ("all", "*"):
-                turns = list(reasoning(session, last_turns=None))
+                turns = list(reasoning_from_session(session, last_turns=None))
             else:
                 try:
                     count = int(spec)
@@ -231,7 +225,7 @@ class DeepPyroApp(PanelLayer):
                 if count <= 0:
                     self.conversation.add_error("usage: /thinking [number of turns|all]")
                     return
-                turns = list(reasoning(session, last_turns=count))
+                turns = list(reasoning_from_session(session, last_turns=count))
         if not turns:
             current = self.conversation.current_reasoning
             if current is not None and current.has_reasoning:

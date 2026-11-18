@@ -32,7 +32,7 @@ from textual.message import Message
 from textual.widgets import Static
 
 from deeppyro.tui.format import compact_text
-from deeppyro.tui.history import ReasoningStep, TurnReasoning
+from deeppyro.tui.native_history import ReasoningStep, TurnReasoning
 from deeppyro.tui.widgets.thinking import STREAMING_LINE_CHARS, latest_sentence
 from deeppyro.tui.widgets.tool_card import (
     RUN_CODE_NAME,

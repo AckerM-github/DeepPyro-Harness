@@ -27,7 +27,7 @@ async def test_native_ptc_preset_builds_the_run_code_surface(
 ) -> None:
     provider = _ScriptedProvider()
     provider.script = [TextDelta("hi from ptc"), Finish(StopReason.STOP)]
-    runtime, events = await _boot(monkeypatch, tmp_path, provider, native=True)
+    runtime, events = await _boot(monkeypatch, tmp_path, provider)
     monkeypatch.setattr(TuiRuntime, "name_session_title", _noop_title)
     try:
         assert runtime.agent_presentation == "native"
@@ -48,7 +48,7 @@ async def test_native_ptc_preset_builds_the_run_code_surface(
         assert system is not None and PTC_ONLY_TEXT in system.text()
         events.clear()
         layer = _TurnHost(runtime)
-        await layer._run_native_turn("hello")
+        await layer._run_turn("hello")
         finals = [event for event in events if event.get("type") == "final"]
         assert finals and finals[-1]["text"] == "hi from ptc"
 

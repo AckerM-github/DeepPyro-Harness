@@ -1,31 +1,28 @@
-"""Frozen runtime protocols shared by session / llm / tools / agent / front end.
+"""Runtime contracts shared by tools, prompt, PTC and the agent host.
 
-These are the seams between workstreams. Change them only with the Lead.
+The tool contract is wire-free: :class:`ToolSchema` is a small pydantic model
+used by the registry, the prompt renderer and the PTC SDK, while
+:class:`ToolContext`, :class:`ToolResult` and :class:`Tool` are plain runtime
+types exchanged by the tool pipeline. Session and LLM shapes live in their own
+native modules.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
-from pydantic import Field
-
-#: Token usage is a wire-free native type; re-exported here so v4 importers keep working.
-from deeppyro.core.llm import Usage
-from deeppyro.core.wire import Message, WireModel
-
-FinishKind = Literal["stop", "tool-calls", "length", "error", "aborted", "content-filter"]
+from pydantic import BaseModel, ConfigDict, Field
 
 
-# --------------------------------------------------------------------------
-# LLM request
-# --------------------------------------------------------------------------
+class ToolSchema(BaseModel):
+    """Declaration of one model-facing tool."""
 
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-class ToolSchema(WireModel):
     name: str
     description: str = ""
     parameters: dict[str, Any] = Field(default_factory=dict)
@@ -34,101 +31,14 @@ class ToolSchema(WireModel):
     output: dict[str, Any] | None = None
 
 
-class LlmRequest(WireModel):
-    provider: str
-    model: str
-    messages: list[Message] = Field(default_factory=list)
-    system: str | None = None
-    tools: list[ToolSchema] = Field(default_factory=list)
-    max_tokens: int | None = None
-    temperature: float | None = None
-    context_window: int | None = None
-    # stable per-session identifier used by providers that support prompt caching
-    session_id: str | None = None
-
-
-# --------------------------------------------------------------------------
-# Stream events (provider -> loop)
-# --------------------------------------------------------------------------
-
-
-@dataclass(slots=True)
-class BlockStart:
-    """Open a content block; deltas that follow carry the same index."""
-
-    index: int
-    block_type: str
-
-
-@dataclass(slots=True)
-class BlockEnd:
-    """Close a content block; block is its wire representation."""
-
-    index: int
-    block: dict[str, Any]
-
-
-@dataclass(slots=True)
-class TextDelta:
-    text: str
-    index: int = 0
-
-
-@dataclass(slots=True)
-class ReasoningDelta:
-    text: str
-    index: int = 0
-
-
-@dataclass(slots=True)
-class ToolCallStart:
-    call_id: str
-    name: str
-    index: int = 0
-
-
-@dataclass(slots=True)
-class ToolCallArgsDelta:
-    call_id: str
-    delta: str
-    # name is a delta field in the reference protocol: it is only present when
-    # the provider repeats the name, so consumers must remember the last value.
-    name: str | None = None
-    index: int = 0
-
-
-@dataclass(slots=True)
-class Finish:
-    kind: FinishKind
-    failure: dict[str, Any] | None = None
-    replay_state: dict[str, Any] | None = None
-
-
-StreamEvent = (
-    BlockStart | BlockEnd | TextDelta | ReasoningDelta | ToolCallStart | ToolCallArgsDelta | Usage | Finish
-)
-
-
-@runtime_checkable
-class LlmProvider(Protocol):
-    name: str
-
-    def stream(self, req: LlmRequest) -> AsyncIterator[StreamEvent]: ...
-
-    async def aclose(self) -> None: ...
-
-
-# --------------------------------------------------------------------------
-# Tools
-# --------------------------------------------------------------------------
-
-
 @dataclass(slots=True)
 class ToolResult:
+    """Outcome of one tool call."""
+
     text: str = ""
     is_error: bool = False
     meta: dict[str, Any] | None = None
-    # optional non-text parts (images etc.) in wire form
+    # optional non-text parts (images etc.)
     parts: list[dict[str, Any]] = field(default_factory=list)
     # structured failure info persisted as tool/result.data.error, mirroring
     # the reference pipeline's `{name, code}` shape (for example
@@ -138,6 +48,8 @@ class ToolResult:
 
 @dataclass(slots=True)
 class ToolContext:
+    """Everything a tool needs to run one call."""
+
     cwd: Path
     session_id: str
     turn: int
@@ -147,10 +59,10 @@ class ToolContext:
     log: Callable[[str, dict[str, Any]], None]
     # permission gate object owned by deeppyro.sandbox; declared structurally
     permission: Any | None = None
-    # runtime services (jobs manager, session store, ...) attached by the app
+    # runtime services (jobs manager, session control, ...) attached by the app
     services: dict[str, Any] = field(default_factory=dict)
-    # the AgentSession executing this call, attached by the agent loop; tools
-    # that need the open turn (goal tools) read it instead of guessing
+    # the native agent host executing this call, attached by the agent loop;
+    # tools that need the open turn (goal tools) read it instead of guessing
     agent: Any | None = None
     # End the turn once this tool batch returns, instead of asking the model for
     # another step.  The argument is the turn/end reason, e.g.
@@ -168,29 +80,4 @@ class Tool(Protocol):
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult: ...
 
 
-# --------------------------------------------------------------------------
-# Session
-# --------------------------------------------------------------------------
-
-
-@runtime_checkable
-class SessionLogLike(Protocol):
-    session_id: str
-
-    def append(self, type: str, data: dict[str, Any]) -> int:
-        """Append a record; returns its seq."""
-        ...
-
-    def derive_messages(self) -> list[Message]:
-        """Messages as the model should see them."""
-        ...
-
-
-# --------------------------------------------------------------------------
-# Events (loop -> UI / --json stream)
-# --------------------------------------------------------------------------
-
-
-@runtime_checkable
-class EventSink(Protocol):
-    def emit(self, event: dict[str, Any]) -> None: ...
+__all__ = ["Tool", "ToolContext", "ToolResult", "ToolSchema"]

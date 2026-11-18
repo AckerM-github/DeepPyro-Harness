@@ -47,8 +47,6 @@ async def test_native_headless_services_are_the_observability_contracts(
             provider_name="local",
             model="m",
             context_window=32768,
-            store=None,
-            provider=None,
             registry=None,
             permission=None,
             agents=None,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,6 +13,7 @@ import pytest
 from deeppyro.core.errors import ToolError
 from deeppyro.core.protocols import ToolContext
 from deeppyro.goal import GoalError, GoalService
+from deeppyro.session.schema import Event, SessionHeader
 from deeppyro.tools.builtin.goal import (
     GOAL_TOOL_AGENT_REQUIRED,
     GOAL_TOOL_AUTHORITY_REQUIRED,
@@ -29,22 +31,31 @@ from deeppyro.tools.builtin.goal import (
 )
 
 
-class _Record:
-    def __init__(self, type_: str, data: dict[str, Any]) -> None:
-        self.type = type_
-        self.data = data
-        self.time = 0
-
-
 class FakeSession:
-    def __init__(self, session_id: str = "session-1", *, origin: str | None = None) -> None:
-        self.session_id = session_id
-        self.records: list[_Record] = []
-        self.header = SimpleNamespace(origin=origin, parentSession=None, delegationDepth=0)
+    """A native schema 1 session log with the goal tools' minimal write surface."""
 
-    def append(self, type_: str, data: dict[str, Any] | None = None) -> int:
-        self.records.append(_Record(type_, dict(data or {})))
-        return len(self.records)
+    def __init__(self, session_id: str = "session-1", *, origin: str | None = None) -> None:
+        self.header = SessionHeader(
+            id=session_id,
+            created_at=0,
+            cwd=str(Path.cwd()),
+            preset="standard",
+            parent_id=None,
+            origin=origin or "user",
+            delegation_depth=0,
+        )
+        self.events: list[Event] = []
+        self._ts = 0
+
+    @property
+    def session_id(self) -> str:
+        return self.header.id
+
+    def append(self, type_: str, data: dict[str, Any] | None = None) -> Event:
+        self._ts += 1
+        event = Event(type=type_, seq=len(self.events) + 1, ts=self._ts, data=dict(data or {}))
+        self.events.append(event)
+        return event
 
 
 class FakeAgent:
@@ -359,19 +370,7 @@ async def test_blocked_requires_a_reason(tmp_path: Any, reason: str | None) -> N
 
 def add_goal_rounds(session: FakeSession, service: GoalService, view: Any, rounds: int) -> None:
     for round_number in range(1, rounds + 1):
-        session.append(
-            "user/message",
-            {
-                "turn": round_number + 1,
-                "source": {
-                    "kind": "goal",
-                    "goalId": view.goal.id,
-                    "revision": view.goal.revision,
-                    "round": round_number,
-                },
-            },
-        )
-    service.invalidate(session)
+        service.admit_round(session, view.goal.ref, round_number)
 
 
 async def test_blocked_is_refused_below_the_threshold(tmp_path: Any) -> None:

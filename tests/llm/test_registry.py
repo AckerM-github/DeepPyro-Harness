@@ -1,4 +1,4 @@
-"""Provider construction, registry caching and model-catalog tests."""
+"""Native provider construction, registry caching and model-catalog tests."""
 
 from __future__ import annotations
 
@@ -11,15 +11,7 @@ import respx
 from deeppyro.config import Config, ProviderConfig
 from deeppyro.core.errors import ConfigError
 from deeppyro.core.llm import LlmProvider as NativeLlmProvider
-from deeppyro.core.protocols import LlmProvider
-from deeppyro.llm import (
-    AnthropicProvider,
-    LlmRegistry,
-    ModelInfo,
-    OpenAICompatProvider,
-    create_native_provider,
-    create_provider,
-)
+from deeppyro.llm import LlmRegistry, ModelInfo, create_native_provider
 from deeppyro.llm.errors import CODE_SERVER
 from deeppyro.llm.native_anthropic import NativeAnthropicProvider
 from deeppyro.llm.native_provider import NativeOpenAICompatProvider
@@ -33,22 +25,6 @@ def provider_config(**kwargs: object) -> ProviderConfig:
     }
     data.update(kwargs)
     return ProviderConfig.model_validate(data)
-
-
-def test_create_provider_builds_openai_compat_provider() -> None:
-    provider = create_provider("local", provider_config(api_key="secret"))
-    assert isinstance(provider, OpenAICompatProvider)
-    assert isinstance(provider, LlmProvider)
-    assert provider.name == "local"
-    assert provider.base_url == "http://127.0.0.1:8000/v1"
-    assert provider.api_key == "secret"
-    assert provider.model_ctx == 32768
-    assert provider.timeout_s == 600.0
-
-
-def test_create_provider_accepts_openai_alias() -> None:
-    provider = create_provider("p", provider_config(api="openai"))
-    assert isinstance(provider, OpenAICompatProvider)
 
 
 def anthropic_config(**kwargs: object) -> ProviderConfig:
@@ -69,86 +45,9 @@ def anthropic_config(**kwargs: object) -> ProviderConfig:
     return ProviderConfig.model_validate(data)
 
 
-def test_create_provider_builds_anthropic_provider() -> None:
-    provider = create_provider("claude", anthropic_config())
-    assert isinstance(provider, AnthropicProvider)
-    assert isinstance(provider, LlmProvider)
-    assert provider.name == "claude"
-    assert provider.messages_url == "https://api.anthropic.com/v1/messages"
-    assert provider.api_key == "anthropic-key"
-    assert provider.model_ctx == 200000
-    assert provider.model_max_tokens == 64000
-    assert provider.reasoning_effort == "medium"
-    assert provider.timeout_s == 600.0
-
-
-def test_create_provider_accepts_anthropic_alias() -> None:
-    provider = create_provider("claude", anthropic_config(api="anthropic"))
-    assert isinstance(provider, AnthropicProvider)
-
-
-def test_create_provider_anthropic_defaults_to_thinking_off() -> None:
-    provider = create_provider("claude", anthropic_config(models=[{"id": "claude-haiku"}]))
-    assert isinstance(provider, AnthropicProvider)
-    assert provider.reasoning_effort == "off"
-    assert provider.model_max_tokens is None
-
-
-def test_create_provider_anthropic_reads_provider_level_extras() -> None:
-    config = anthropic_config(
-        models=[{"id": "claude-haiku"}],
-        max_tokens=4096,
-        reasoning_effort="high",
-    )
-    provider = create_provider("claude", config)
-    assert isinstance(provider, AnthropicProvider)
-    assert provider.model_max_tokens == 4096
-    assert provider.reasoning_effort == "high"
-
-
-def test_create_provider_anthropic_requires_explicit_base_url() -> None:
-    config = ProviderConfig(api="anthropic-messages", api_key="key")
-    assert "base_url" not in config.model_fields_set
-    with pytest.raises(ConfigError, match="base_url") as info:
-        create_provider("claude", config)
-    assert "https://api.anthropic.com" in str(info.value)
-
-
-def test_create_provider_rejects_unknown_api() -> None:
-    with pytest.raises(ConfigError, match="unsupported api"):
-        create_provider("p", provider_config(api="gizmo"))
-
-
-def test_create_provider_without_models_has_no_context_window() -> None:
-    provider = create_provider("p", provider_config(models=[]))
-    assert isinstance(provider, OpenAICompatProvider)
-    assert provider.model_ctx is None
-
-
-def test_create_provider_model_ctx_uses_largest_window() -> None:
-    config = provider_config(
-        models=[
-            {"id": "small", "context_window": 8192},
-            {"id": "big", "context_window": 65536},
-            {"id": "unknown"},
-        ]
-    )
-    provider = create_provider("p", config)
-    assert isinstance(provider, OpenAICompatProvider)
-    assert provider.model_ctx == 65536
-
-
-def test_create_provider_reads_api_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DEEPPYRO_TEST_KEY", "env-secret")
-    provider = create_provider("p", provider_config(api_key_env="DEEPPYRO_TEST_KEY"))
-    assert isinstance(provider, OpenAICompatProvider)
-    assert provider.api_key == "env-secret"
-
-
-def test_create_provider_honours_timeout() -> None:
-    provider = create_provider("p", provider_config(), timeout_s=12.5)
-    assert isinstance(provider, OpenAICompatProvider)
-    assert provider.timeout_s == 12.5
+# --------------------------------------------------------------------------
+# provider construction
+# --------------------------------------------------------------------------
 
 
 def test_create_native_provider_builds_a_native_openai_compat_provider() -> None:
@@ -166,6 +65,25 @@ def test_create_native_provider_accepts_aliases_and_timeout() -> None:
     provider = create_native_provider("p", provider_config(api="openai"), timeout_s=12.5)
     assert isinstance(provider, NativeOpenAICompatProvider)
     assert provider.timeout_s == 12.5
+
+
+def test_create_native_provider_without_models_has_no_context_window() -> None:
+    provider = create_native_provider("p", provider_config(models=[]))
+    assert isinstance(provider, NativeOpenAICompatProvider)
+    assert provider.model_ctx is None
+
+
+def test_create_native_provider_model_ctx_uses_largest_window() -> None:
+    config = provider_config(
+        models=[
+            {"id": "small", "context_window": 8192},
+            {"id": "big", "context_window": 65536},
+            {"id": "unknown"},
+        ]
+    )
+    provider = create_native_provider("p", config)
+    assert isinstance(provider, NativeOpenAICompatProvider)
+    assert provider.model_ctx == 65536
 
 
 def test_create_native_provider_builds_a_native_anthropic_provider() -> None:
@@ -216,6 +134,11 @@ def test_create_native_provider_rejects_unknown_api() -> None:
         create_native_provider("p", provider_config(api="gizmo"))
 
 
+# --------------------------------------------------------------------------
+# registry caching and lifecycle
+# --------------------------------------------------------------------------
+
+
 def _config() -> Config:
     return Config(
         providers={
@@ -233,8 +156,9 @@ def _config() -> Config:
 
 def test_registry_caches_provider_instances() -> None:
     registry = LlmRegistry(_config())
-    first = registry.get("deepseek")
-    second = registry.get("deepseek")
+    first = registry.native_provider("deepseek")
+    second = registry.native_provider("deepseek")
+    assert isinstance(first, NativeOpenAICompatProvider)
     assert first is second
     assert "deepseek" in registry
     assert "nope" not in registry
@@ -244,39 +168,10 @@ def test_registry_caches_provider_instances() -> None:
 def test_registry_unknown_provider_raises_config_error() -> None:
     registry = LlmRegistry(_config())
     with pytest.raises(ConfigError, match="unknown provider"):
-        registry.get("missing")
-
-
-async def test_registry_aclose_closes_and_forgets() -> None:
-    registry = LlmRegistry(_config())
-    provider = registry.get("local")
-    assert isinstance(provider, OpenAICompatProvider)
-    provider._ensure_client()
-    assert provider._client is not None
-    await registry.aclose()
-    assert provider._client is None
-    assert provider._closed is True
-    assert registry.providers == {}
-    # idempotent
-    await registry.aclose()
-
-
-def test_registry_caches_native_provider_instances() -> None:
-    registry = LlmRegistry(_config())
-    first = registry.native_provider("deepseek")
-    second = registry.native_provider("deepseek")
-    assert isinstance(first, NativeOpenAICompatProvider)
-    assert first is second
-    assert set(registry.providers) == set()
-
-
-def test_registry_unknown_native_provider_raises_config_error() -> None:
-    registry = LlmRegistry(_config())
-    with pytest.raises(ConfigError, match="unknown provider"):
         registry.native_provider("missing")
 
 
-def test_registry_native_provider_builds_an_anthropic_provider() -> None:
+def test_registry_builds_an_anthropic_provider() -> None:
     cfg = Config(
         providers={
             "claude": ProviderConfig.model_validate(
@@ -295,28 +190,26 @@ def test_registry_native_provider_builds_an_anthropic_provider() -> None:
     assert provider is registry.native_provider("claude")
 
 
-async def test_registry_aclose_closes_both_layers() -> None:
+async def test_registry_aclose_closes_and_forgets() -> None:
     registry = LlmRegistry(_config())
-    legacy = registry.get("local")
-    native = registry.native_provider("local")
-    assert isinstance(legacy, OpenAICompatProvider)
-    assert isinstance(native, NativeOpenAICompatProvider)
-    legacy._ensure_client()
-    native._ensure_client()
+    provider = registry.native_provider("local")
+    assert isinstance(provider, NativeOpenAICompatProvider)
+    provider._ensure_client()
+    assert provider._client is not None
     await registry.aclose()
-    assert legacy._client is None
-    assert legacy._closed is True
-    assert native._client is None
-    assert native._closed is True
+    assert provider._client is None
+    assert provider._closed is True
     assert registry.providers == {}
+    # idempotent
+    await registry.aclose()
 
 
 async def test_registry_aclose_raises_first_error_after_closing_all(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = LlmRegistry(_config())
-    good = registry.get("local")
-    bad = registry.get("deepseek")
+    good = registry.native_provider("local")
+    bad = registry.native_provider("deepseek")
     closed: list[str] = []
 
     async def close_good() -> None:

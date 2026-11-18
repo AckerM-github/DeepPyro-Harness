@@ -1,200 +1,151 @@
 # The kernel event catalog
 
-> **状态**：现行（过渡：v4 待移除） · **层级**：v4 事件目录 · **最后核对**：2026-11-18
-> 本文描述 v4 HookService（`hooks`）；native loop 使用 30 个 `EventKind` 与 typed events（含 3 个 `task.*`）。
-> 0.3 随 v4 移除后重写或删除。
+> **状态**：现行（0.3.0） · **层级**：native 内核总线目录 · **最后核对**：2026-11-19
+> 0.3.0 native-only：事件目录就是 `src/deeppyro/core/events.py`，没有外部 DSH 目录、没有生成脚本、没有生成文件。
+> 传输层是 `deeppyro.hooks.service.HookService`（也作为服务名 `hooks` 暴露）；本文描述目录与派发语义。
 
-This document describes the single bus catalogue that decides whether a name is a
-domain event, how it dispatches, and who produces it. The transport is
-`deeppyro.hooks.service.HookService` (service name `hooks`); the catalogue is
-`deeppyro.core.events`.
+Every domain event goes through one bus. A name either exists (with a dispatch mode and a producer) or it
+does not exist at all; there is no second, private channel. `core/events.py` answers three questions for every
+name: does it exist, how does it dispatch, and who produces it.
 
-## 1. One list, three sources
+## 1. One list, two sources
 
-`EVENT_SPECS` merges exactly three sources, in this order:
+`EVENT_SPECS` merges exactly two sources, in this order:
 
 | source | contents | status |
 | --- | --- | --- |
-| `_PRODUCERS` in `core/events.py` | the 15 names deeppyro really dispatches | `implemented` |
-| `BUS_EVENTS` in `core/event_catalog.py` | all 94 DSH bus events from the M0 catalog | `implemented` if produced, else `reserved` |
-| `_RESERVED` in `core/events.py` | 21 names deeppyro declares without a DSH counterpart | `reserved` |
+| `_PRODUCERS` in `core/events.py` | the 24 names deeppyro really dispatches | `implemented` |
+| `_RESERVED` in `core/events.py` | 22 domain names a plugin may subscribe to before a producer exists | `reserved` |
 
-The table has 115 entries: 15 implemented and 100 reserved. A name outside the
-table is not a bus event, so `PluginContext.on()` routes it to the runtime context's local
-dispatcher instead (nothing in the kernel uses that path).
+The table has **46 entries: 24 implemented and 22 reserved**. A name outside the table is not a bus event,
+so `PluginContext.on()` would treat it as a dead subscription. Reserved entries carry a `reason` and a
+namespace-shaped `producer` string; they have no dispatcher yet.
 
-## 2. Generated, never hand-edited
+`EventSpec` is a frozen dataclass with `name`, `mode`, `status`, `producer` and `reason`; `EventMode` is one of
+`emit`, `serial`, `waterfall`, `bail`, `parallel`; `EventStatus` is `implemented` or `reserved`.
+Public read helpers: `spec(name)`、`is_bus_event(name)`、`mode_of(name)`、`producer_of(name)`、`names(include_reserved=True)`.
 
-`core/event_catalog.py` is generated:
+## 2. Implemented events
 
-```powershell
-node scripts/extract_dsh_events.mjs --dump $env:TEMP\dsh-events.json
-python scripts/gen_event_catalog.py --json $env:TEMP\dsh-events.json
-python scripts/gen_event_catalog.py --check        # CI-style drift check
-```
+`producer` names the subsystem responsible for dispatching the event; it is the catalog's declaration, not a
+promise that every path emits it in every situation. Call sites are authoritative.
 
-The generator strips the `dsh/node_modules/` prefix from evidence paths, sorts
-names and modes, and keeps the first call site, so the committed file has no
-environment-specific detail.
+| event | mode | producer |
+| --- | --- | --- |
+| `agent/pre-step` | waterfall | `agent.loop` |
+| `agent/request` | waterfall | `agent.loop` |
+| `agent/request-error` | waterfall | `agent.loop` |
+| `agent/turn-stopping` | serial | `agent.loop` |
+| `agent/assistant-stream` | emit | `agent.loop` |
+| `agent/status` | emit | `agent.loop` |
+| `agent/error` | emit | `agent.loop` |
+| `llm/stream` | emit | `agent.loop` |
+| `system-prompt/assemble` | waterfall | `prompt.service` |
+| `session/created` | emit | `sessions.service` |
+| `session/disposed` | emit | `sessions.service` |
+| `tools/pre-execute` | waterfall | `tools.pipeline` |
+| `tools/execute` | waterfall | `tools.pipeline` |
+| `tools/post-execute` | waterfall | `tools.pipeline` |
+| `approval/request` | waterfall | `sandbox.approval` |
+| `command/executed` | emit | `commands.service` |
+| `workspace/changed` | emit | `working_directory.service` |
+| `goal/changed` | emit | `goal.service` |
+| `goal/activation-changed` | emit | `goal.service` |
+| `mcp/connected` | emit | `mcp.service` |
+| `mcp/disconnected` | emit | `mcp.service` |
+| `agent/inbox/inserted` | emit | `agent.inbox` |
+| `agent/inbox/claimed` | emit | `agent.inbox` |
+| `agent/inbox/discarded` | emit | `agent.inbox` |
 
-## 3. Mode evidence and the one deliberate divergence
+`HOOK_MODES` in `hooks/types.py` is the mode source for hook-facing names; nine higher-level names
+(`command/executed`, `workspace/changed`, the two goal events, the two MCP events, the three inbox events)
+are declared in `_EXTRA_MODES` because they were never part of the legacy hook surface. Building the table
+fails fast: a `HOOK_MODES` name without a producer, or an implemented name without a mode, raises at import.
 
-The catalog's `modes` column records *dispatch* modes only. Subscription verbs
-(`on`/`once`) are tracked separately as `subscribed`, because a handler's arity
-tells us how the event is dispatched: a trailing `next` parameter means the
-caller expects a waterfall, a single parameter means plain emit. Before that
-distinction the catalog reported `emit` for four names that DSH actually
-waterfalls; `mode_conflicts()` therefore dropped from four entries to one.
+## 3. Dispatch modes
 
-| name | deeppyro | DSH catalog | status |
-| --- | --- | --- | --- |
-| `llm/stream` | emit | waterfall | deliberate deviation, see below |
+| mode | contract |
+| --- | --- |
+| `emit` | every listener runs; return values are ignored |
+| `serial` | listeners run in order, each may return a replacement value that the next listener sees |
+| `waterfall` | listeners receive the payload and a `next()` continuation; a listener may wrap or replace the result |
+| `bail` | the first listener returning a non-`None` value stops the chain and that value becomes the result |
+| `parallel` | listeners are awaited concurrently; ordering is not part of the contract |
 
-DSH waterfalls `llm/stream` over the *stream object itself*
-(`this.ctx.waterfall(this, "llm/stream", options, () => this.adapterStream(...))`),
-so a handler can replace the whole iterator. deeppyro emits one event per delta
-instead: the streaming path is hot, and every consumer so far (sink, journal,
-observability) wants deltas, not the iterator. Converging would give plugins the
-power to rewrite the stream but would put an await plus a payload copy on the
-per-token path. The deviation stays explicit — it is returned by
-`mode_conflicts()` and pinned by a test — until a consumer needs to replace the
-stream rather than watch it.
+`HookService` is a facade over `EventBus`: it forwards registration and dispatch and adds the one policy that
+belongs to hooks rather than the bus — which names may be registered. The bus itself is name-agnostic, so the
+kernel journal, prompt assembly, tool pipeline and plugins share one registry. Payloads are frozen recursively
+before dispatch (mappings become read-only proxies, lists/tuples become tuples, custom objects keep identity),
+so handlers treat payload data as read-only. `HooksPlugin` provides both `bus` and `hooks` from one instance,
+and `PluginContext.on()` prefers `bus`; a subscription through either door is dispatched through the other.
 
-## 4. Reserved entries carry a reason
+## 4. Reserved events
 
-Every reserved spec has either a DSH evidence path (`dsh_ref`) or an explicit
-`reason`. A reserved name is recognised, so a plugin subscribing to it gets a
-clear subscription instead of a silent no-op, but nothing emits it yet. Adding a
-producer means moving the name into `_PRODUCERS` and giving it a mode in
-`HOOK_MODES`; the catalogue test fails until both exist.
+Reserved names let a plugin subscribe before the producing subsystem exists; they carry a reason and are
+recognised, so the subscription is explicit rather than a silent no-op. Adding a producer means moving the
+name into `_PRODUCERS` and giving it a mode in `HOOK_MODES` (or `_EXTRA_MODES`), after which the catalog tests
+fail until both exist.
+
+| namespace | entries | why reserved now |
+| --- | --- | --- |
+| `api-session` | 4 | the web API owns these; the loopback host does not publish a separate session API yet |
+| `compaction` | 3 | compaction is a durable record (`compaction.done`); its lifecycle is silent |
+| `credentials` | 1 | credentials are read on demand |
+| `fs` | 1 | file watching is not implemented |
+| `jobs` | 1 | job bookkeeping is polled, not published |
+| `loader` | 1 | plugin loading does not publish itself |
+| `llm` | 1 | model selection is a session record, not a bus event |
+| `plugin` | 1 | plugin status is read through services |
+| `sandbox` | 1 | policy changes are read, not announced |
+| `schedule` | 1 | the scheduler fires durable runs, not bus events |
+| `settings` | 1 | settings write-through has no observers |
+| `subagent` | 2 | child-session lifecycle is folded from session facts |
+| `team` | 2 | team membership lives in team state, not events |
+| `tools` | 1 | `tools/result` is a session record name |
+| `web` | 1 | no fetch subsystem |
 
 ## 5. What is deliberately absent
 
-`internal/*` plumbing events from the former framework port are gone: the native runtime
-raises no events of its own, so names such as `internal/dispatch` do not exist here.
-Session records (`turn/end`, `tool/call`, …) are also absent: they are durable log
-entries, and `session/archived`-style additions must be written with `ignorable=True`
-rather than registered here.
+- **No external/D​SH catalog.** 0.3.0 removed `core/event_catalog.py`, `scripts/gen_event_catalog.py`,
+  `scripts/extract_dsh_events.mjs` and the `docs/spec/dsh-event-catalog*.md` evidence files. The catalog is
+  hand-maintained native code; there is no generated file to drift or regenerate.
+- **No `internal/*` plumbing events.** The native runtime raises no events of its own; service registration,
+  fiber state changes and configuration updates are plain method calls.
+- **No session records on the bus.** `turn/end`, `tool/call`, `approval/asked/decided`, `model/selection` and
+  similar names are durable session-log entries, not bus events. `model/selection`、`tool/call`、
+  `approval/asked`、`approval/decided` 常量在 `hooks/types.py` 中仅保留一个 minor 的可导入性，已不再注册/派发。
 
-## 6. Real consumers
-
-The bus is not a single-consumer pipe: six in-tree subscribers prove it, and
-`tests/integration/test_bus_consumers.py` pins the ordering rules.
+## 6. In-tree consumers
 
 | subscriber | name(s) | kind |
 | --- | --- | --- |
-| `builtin/hook_journal.py` | every dispatch | observer (`hook/invoked` + `hook/result`) |
-| `builtin/hook_observability.py` | 6 curated names | logging |
+| `builtin/hook_observability.py` | curated debug/report names | logging observer |
 | `builtin/approval_policy.py` | `approval/request` | waterfall |
 | `builtin/prompt_extension.py` | `system-prompt/assemble` | waterfall |
-| `builtin/llm_retry.py` | `agent/request-error` | emit listener |
 | `builtin/session_title.py` | `agent/turn-stopping` | serial |
+| `builtin/usage.py` | `llm/stream`, `agent/pre-step`, `agent/turn-stopping`, `session/disposed` | emit listeners + record fold |
+| `builtin/commands.py` | `command/executed` | emit |
+| `mcp/service.py` | `mcp/connected`, `mcp/disconnected` | emit |
+| `goal/native_driver.py` | `goal/changed`, `goal/activation-changed` | emit |
+| `working_directory/service.py` | `workspace/changed` | emit |
 
-Ordering is registration order, `prepend=True` runs first, `once=True` disposes
-before its handler runs, a scoped listener only sees dispatches whose scope
-contains every pair, `global_=True` bypasses filtering, and a disposer takes
-effect for the next dispatch.
+Ordering is registration order, `prepend=True` runs first, `once=True` disposes before its handler runs, a
+scoped listener only sees dispatches whose scope contains every pair, `global_=True` bypasses filtering, and a
+disposer takes effect for the next dispatch. `tests/integration/test_bus_consumers.py` pins these rules;
+`tests/integration/test_bus_modes.py` and `tests/integration/test_single_bus.py` cover catalog modes and the
+single-bus property.
 
-## 7. Transport vs catalogue
-
-Three pieces, three jobs:
-
-| piece | knows | does not know |
-| --- | --- | --- |
-| `core/event_catalog.py` | every DSH bus name + evidence | what deeppyro emits |
-| `core/events.py` | which names exist, their mode, their producer | how a dispatch runs |
-| `core/bus.py` (`EventBus`) | listener registry, scope filter, freezing, observers, five modes | any event name |
-
-`HookService` is a facade over the very same `EventBus`: it forwards
-registration and dispatch and adds the one policy that belongs to hooks rather
-than to the bus -- which names may still be registered. Retired names fail with a
-message naming their replacement; the bus itself is name-agnostic, which is what
-lets the kernel journal, prompt assembly, and plugins share one registry.
-
-`HooksPlugin` provides both services (`bus` and `hooks`) from one instance, and
-`PluginContext.on()` prefers `bus`, so a plugin subscription and a hook
-subscription land in the same table. `tests/integration/test_single_bus.py`
-pins that: a subscription through either door is dispatched through the other.
-
-## 8. internal/* plumbing
-
-The native runtime (`kernel/container.py`, `kernel/fiber.py`) raises **no** plumbing
-events: service registration, fiber state changes and configuration updates are plain
-method calls. The former catalogue of ten upstream `internal/*` events was deleted with
-the vendored port, so the names are not in `EVENT_SPECS` at all.
-
-`is_bus_event("internal/…")` is False simply because no such name is registered; binding
-a handler to one would be a dead subscription, which the "declared but unproduced"
-reservation rule in §4 is designed to prevent. `scripts/extract_dsh_events.mjs` may still
-list upstream `internal/*` names as reference for DSH parity — they are not part of this
-contract.
-
-## 9. Milestone status
-
-| milestone | state | evidence |
-| --- | --- | --- |
-| M0 catalogue rebuild | done | `scripts/extract_dsh_events.mjs`, `docs/spec/dsh-event-catalog.md` |
-| M1 single bus in front of plugins | done | `core/bus.py`, `PluginContext.on()` routes bus names, `hook-bridge` deleted |
-| M1b transport/catalogue split | done | `EventBus` raises anything, `HookService` keeps the name policy |
-| M2 catalogue + payload contract | done | `core/event_catalog.py` (94 names), `EVENT_SPECS` = 115 entries |
-| M3 mode evidence + semantics | done | `extract_dsh_events.mjs` reads dispatch modes, `test_bus_modes.py` |
-| M3b internal/* plumbing | done | catalogue dropped with the vendored port; the native runtime raises no plumbing events |
-| M4 consumers | done | six in-tree subscribers listed in §6, `test_bus_consumers.py` |
-| M5 documentation freeze | done | this document plus `hooks.md` §9 |
-
-One deviation survives on purpose: `llm/stream` is `emit` here and `waterfall` in
-DSH (§3). Everything else matches name for name.
-
-## 10. Reserved namespaces (P1)
-
-"The bus knows the name before the subsystem exists" is the rule for these
-namespaces. Each entry carries a reason and, when DSH has the same event, the
-call site that proves it:
-
-| namespace | entries | why declared now |
-| --- | --- | --- |
-| `subagent` | 5 | the plugin exists, the events are not raised yet |
-| `team` | 2 | team members land in `team/` state files, no events yet |
-| `schedule` | 3 | the scheduler fires jobs, not events |
-| `compaction` | 4 | compaction is a record, its lifecycle is silent |
-| `goal` | 2 | **both implemented** in M5: `goal/changed` and `goal/activation-changed` (section 11) |
-| `workspace` | 3 | `workspace/changed` is implemented for cwd moves; the rest wait |
-| `jobs` | 1 | job bookkeeping is polled, not published |
-| `fs` | 5 | file watching is not implemented |
-| `web` | 1 | no fetch subsystem |
-| `credentials` | 2 | credentials are read on demand |
-| `settings` | 2 | settings write-through has no observers |
-| `loader` | 6 | DSH's loader has no counterpart here |
-| `agent-preset` | 1 | presets resolve statically |
-| `app-boot` | 1 | boot does not publish itself |
-| `mcp` | 2 | **implemented**: `mcp/connected` and `mcp/disconnected` fire from `mcp.service` (see `mcp.md`) |
-| `api-session` | 6 | the web API owns these, there is no web API |
-| `sandbox` | 1 | policy changes are read, not announced |
-| `command` | 1 | **implemented**: `command/executed` fires for every run |
-
-`spill` and `attachment` are absent from the DSH catalogue, so nothing is
-declared for them: an empty namespace would be a shell, and the brief forbids
-shells.
-
-## 11. The goal bus contract (M5)
-
-Two names carry the goal state machine:
+## 7. The goal bus contract
 
 | name | mode | producer | payload |
 | --- | --- | --- | --- |
 | `goal/changed` | emit | `goal.service` | `{session, goal?, change{operation, ref{id, revision}, goal?}}` |
 | `goal/activation-changed` | emit | `goal.service` | `{sessionId, goal?{id, revision, activation}}` |
 
-`change` is the frozen DSH object: `operation` is one of `create`, `edit`,
-`pause`, `resume`, `complete`, `block`, `clear`; `ref` identifies the snapshot the
-operation produced (after `clear` it names the tombstone revision); `goal` is the
-full goal view or `None` after `clear`.
+`change` is the frozen domain object: `operation` is one of `create`, `edit`, `pause`, `resume`, `complete`,
+`block`, `clear`; `ref` identifies the snapshot the operation produced (after `clear` it names the tombstone
+revision); `goal` is the full goal view or `None` after `clear`. The bus is global, so `goal/changed` carries an
+extra `session` key on top of `change`. Everything inside `change` is the contract in [goal.md](goal.md) §6.
 
-DSH publishes these events per agent, so its frame needs no session id. Our bus
-is global, so `goal/changed` carries one extra `session` key on top of `change`,
-and `goal` (the objective string) stays for the pre-M5 consumers. Everything
-inside `change` is exactly the contract in `docs/spec/goal.md` section 6.
-
-`goal/activation-changed` fires only when the process-local activation actually
-changes: `create` and `resume` arm a goal, `pause`/`complete`/`block`/`clear`
-disarm it, `edit` leaves it alone, and every new agent starts disarmed.
+`goal/activation-changed` fires only when process-local activation actually changes: `create` and `resume` arm a
+goal, `pause`/`complete`/`block`/`clear` disarm it, `edit` leaves it alone, and every new agent starts disarmed.

@@ -1,6 +1,10 @@
 # Native provider port (KI-010)
 
-Status: design note for 0.3.0. Read-only deliverable; no source or test changes made.
+Status: **implemented (0.3.0)**. This design note was read-only at the time; the port has
+since shipped — `core/llm.py` + `agent/model_call.py` carry the only provider contract
+(OpenAI-compatible + native Anthropic transports), `agent/native_provider.py` was deleted,
+and `core.wire` was removed with the v4 stack. Seam/import numbers below are plan-time
+snapshots (HEAD `7d03ef6`), not current state.
 Scope: remove the last v4 seam from the native loop — `src/deeppyro/agent/native_provider.py` is today the only native module importing `deeppyro.core.wire` (6 imports, `agent/native_provider.py:31-36`). This note specifies the native provider contract, the translation it replaces, the HTTP implementation plan, migration order, tests, and what it does **not** unlock (deleting `core.wire`). Authority: `docs/release/0.2.0-known-issues.md` KI-010; `docs/adr/0001-three-track-native-agent.md` §4 rule 1, §6.2 (L215), `docs/native/schema.md` §6.5 (L304-305). TUI migration is a separate prerequisite, documented in `docs/design/tui-native-migration.md` (§1 L15, §4 L105-109); v4 deletion needs both.
 
 Non-goals: no v4 agent/session removal, no TUI work, no new runtime dependencies, no wire schema changes, no prompt-cache protocol headers (out of scope, §3.5).

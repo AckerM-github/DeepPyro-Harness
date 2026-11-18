@@ -2,7 +2,7 @@
 
 The lead session is a real native session under a temporary native root; child
 sessions are created through the same control plane and driven by fake native
-hosts. The v4 TeamService recorder path keeps its own suite.
+hosts. TeamService is a thin native-only alias of the manager.
 """
 
 from __future__ import annotations
@@ -218,7 +218,7 @@ def make_native_team(
         _configure(service, cwd=tmp_path, sink=sink)
     bound = NativeSessionHandle(parent) if handle_parent else parent
     service.bind_session(bound)
-    manager = service._native
+    manager = service
     assert isinstance(manager, NativeTeamManager)
     return NativeTeamEnv(
         service=service,
@@ -573,28 +573,23 @@ async def test_restore_from_handle_reads_the_folded_plugin_events(tmp_path: Path
             env.parent.close()
 
 
-def test_binding_a_v4_session_keeps_the_recorder_backend(tmp_path: Path) -> None:
-    from deeppyro.session.store import SessionStore
+def test_team_service_is_a_thin_native_alias() -> None:
+    assert issubclass(TeamService, NativeTeamManager)
+    service = TeamService()
+    assert isinstance(service, NativeTeamManager)
+    assert service.bound is False
+    # Compatibility alias for call sites that still reach for the composed
+    # backend; it must be this manager, never a second backend.
+    assert service._native is service
 
-    control = NativeSessionControl(root=tmp_path / "native")
-    native_parent = control.create(NewSession(cwd=tmp_path, preset="team"))
-    store = SessionStore(root=tmp_path / "v4")
-    v4_parent = store.create(tmp_path)
-    try:
-        service = TeamService(
-            agents=FakeAgents(),
-            sessions=SimpleNamespace(store=store),
-            sandbox=FakeSandbox(),
-        )
-        _configure(service, cwd=tmp_path)
-        service.bind_session(native_parent)
-        assert service._native is not None
-        service.bind_session(v4_parent)
-        assert service._native is None
-        assert service.parent_session_id == v4_parent.session_id
-    finally:
-        native_parent.close()
-        v4_parent.close()
+
+def test_binding_a_non_native_session_raises_native_team_error(tmp_path: Path) -> None:
+    service = TeamService(agents=FakeAgents(), sessions=SimpleNamespace(), sandbox=FakeSandbox())
+    _configure(service, cwd=tmp_path)
+    with pytest.raises(NativeTeamError, match="native parent session"):
+        service.bind_session(SimpleNamespace(session_id="session-parent"))
+    with pytest.raises(NativeTeamError, match="native parent session"):
+        service.bind_parent(SimpleNamespace(session_id="session-parent"))
 
 
 # -- the native module stays free of v4 session types --------------------
@@ -613,3 +608,20 @@ def test_native_manager_module_has_no_v4_session_imports() -> None:
     for needle in forbidden:
         assert needle not in source, f"native_manager must not depend on {needle!r}"
     assert "class NativeTeamManager" in source
+
+
+def test_team_service_module_has_no_v4_session_imports() -> None:
+    import deeppyro.team.manager as module
+
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    forbidden = (
+        "from deeppyro.session.session",
+        "from deeppyro.session.store",
+        "from deeppyro.session.writer",
+        "from deeppyro.core.wire",
+        "SessionHeader",
+        "LogRecord",
+    )
+    for needle in forbidden:
+        assert needle not in source, f"TeamService must not depend on {needle!r}"
+    assert "class TeamService(NativeTeamManager)" in source

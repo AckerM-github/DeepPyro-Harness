@@ -6,7 +6,7 @@ per assistant step and the full step text inside a scrollable area. Escape close
 the screen and returns None, matching the other read-only modals.
 
 The screen is pure presentation: callers pass the TurnReasoning objects rebuilt
-by deeppyro.tui.history (or handed over by AgentProcess.ThinkingRequested). It
+by deeppyro.tui.native_history (or handed over by AgentProcess.ThinkingRequested). It
 never talks to the agent loop and it does not read the session log itself.
 Styling lives in DEFAULT_CSS so no theme edit is required.
 """
@@ -22,7 +22,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-from deeppyro.tui.history import TurnReasoning
+from deeppyro.tui.native_history import TurnReasoning
 
 DEFAULT_TITLE = "Reasoning"
 EMPTY_TEXT = "No reasoning recorded."

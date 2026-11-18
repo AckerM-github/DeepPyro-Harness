@@ -1,8 +1,7 @@
 # Default subagent layer (spawn and fork child agents)
 
-> **状态**：现行（M4 已扩展） · **层级**：功能规格 · **最后核对**：2026-11-18
-> 0.2.0 边界：supervisor + 2 workers 已落地；未接真实 subagent 生命周期（无 token/step usage）。
-> 0.3 增补：原生（schema 1）分支已落地，与 v4 并存；由绑定的会话类型选择，v4 路径保持不变。
+> **状态**：现行（M4 已扩展） · **层级**：功能规格 · **最后核对**：2026-11-19
+> 0.3.0 边界（native-only）：native（schema 1）分支是唯一实现（§13 起；`subagent/native_manager.py`），v4 分支、v4 session store 与对应测试已随 v4 栈删除。本文 §1–§12 的 v4 manager/records 描述是 0.2.0 历史记录，只用于追溯。
 
 Status: implemented. This document is the contract for the default subagent
 service, its two agent-facing tools and the kernel plugin row. The team layer
@@ -145,9 +144,9 @@ seeded record prefix:
   inheritedEventCount=boundary+1, delegationDepth=parent header delegationDepth
   + 1. build_fork_seed copies the prefix, inserts the inherited
   `session/end-seed` marker and synthesizes closers for an open turn/step (see
-  docs/spec/session.md), so the child never starts mid-turn.
-* The session is written with SessionStore.create_with_seed(header, seed). A
-  store without that method raises
+  [../native/schema.md](../native/schema.md)), so the child never starts mid-turn.
+* (0.2.0 路径) The session was written with SessionStore.create_with_seed(header, seed)；0.3.0 起 v4 store 已删除，native 分支见 §13。A
+  store without that method raised
   'sessions store does not support seeded sessions'; a store failure becomes
   'cannot create fork session: ...'.
 * The seed is a one-time snapshot: only the pre-fork completion notices are
@@ -209,12 +208,12 @@ subagent/descriptor
 inheritedEventCount appears only for a fork and equals boundary+1 (the number
 of parent records copied into the child). The descriptor is appended to the
 child session first (the DSH authority position) and then to the parent session
-for backwards-compatible activity projection.
+for the historical activity projection (0.2.0 record vocabulary).
 
 childId is unique and label is the human name, matching the activity
 projection (docs/spec/activity.md): the activity bar builds one AgentInfo per
 descriptor and shows catalog/descriptor state for the conversation. The same
-records also drive the session projections (docs/spec/projections.md).
+records also drove the 0.2.0 session projections (that module was deleted in 0.3.0).
 
 ## 7. Kernel plugin and runtime wiring
 
@@ -311,7 +310,7 @@ as SubagentResult(is_error=True) instead of raised.
 ## 11. Tests
 
 tests/subagent/ uses fakes only (no kernel boot, no network): FakeAgents,
-FakeAgent, FakeSandbox, FakeLlm and a real SessionStore rooted in tmp_path.
+FakeAgent, FakeSandbox, FakeLlm and (0.2.0 tests) a real SessionStore rooted in tmp_path; the native-only tests use `tests/native/`.
 Coverage:
 
 * test_manager.py: child header fields and parent record shapes, child registry

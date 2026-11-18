@@ -77,7 +77,7 @@ def discover_roots(
 ) -> list[SkillRoot]:
     """Compute the ordered root list for one working directory.
 
-    Rank order is the DSH precedence order: project .dsh, project .agents,
+    Rank order is the upstream precedence order: the project dot-directory, project .agents,
     custom directories, user home, bundled assets. Duplicate resolved paths
     keep their first (lowest-rank) occurrence.
     """

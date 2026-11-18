@@ -9,14 +9,10 @@ import pytest
 
 from deeppyro.subagent import (
     MAX_WORKERS,
-    SubagentResult,
-    SubagentService,
-    SubagentServiceWorker,
     Supervisor,
     SupervisorError,
     SupervisorLimits,
     SupervisorStatus,
-    Worker,
     WorkerAssignment,
     WorkerBudget,
     WorkerOutcome,
@@ -56,30 +52,6 @@ class SlowWorker:
         else:
             await asyncio.sleep(self.delay)
         return WorkerOutcome(summary="slow worker finished", done=True)
-
-
-class FakeSubagentService(SubagentService):
-    """SubagentService subclass with a scripted run method."""
-
-    def __init__(self, *, text: str = "child answer", is_error: bool = False, error: str = "") -> None:
-        super().__init__()
-        self.text = text
-        self.is_error = is_error
-        self.error = error
-        self.calls: list[tuple[str, str]] = []
-
-    async def run(self, prompt: str, *, description: str, **kwargs: object) -> SubagentResult:
-        self.calls.append((prompt, description))
-        return SubagentResult(
-            child_id="child-1",
-            session_id="session-1",
-            label="label",
-            provider="fake",
-            model="fake-model",
-            text=self.text,
-            is_error=self.is_error,
-            error=self.error,
-        )
 
 
 def test_supervisor_rejects_more_than_two_workers() -> None:
@@ -362,41 +334,3 @@ def test_worker_run_fields() -> None:
     assert data["ok"] is True
     assert data["round"] == 2
     assert data["outcome"] == WorkerOutcome(summary="hello").to_dict()
-
-
-def test_subagent_service_worker_adapts_results() -> None:
-    service = FakeSubagentService(text="child answer")
-    worker = SubagentServiceWorker(service)
-    assert isinstance(worker, Worker)
-    assert worker.service is service
-    result = asyncio.run(worker.run(WorkerAssignment("worker-1", "do the thing", 1, WorkerBudget())))
-    assert result.summary == "child answer"
-    assert result.done is True
-    assert result.failed is False
-    assert service.calls == [("do the thing", "do the thing")]
-
-
-def test_subagent_service_worker_maps_errors() -> None:
-    service = FakeSubagentService(text="", is_error=True, error="child exploded")
-    worker = SubagentServiceWorker(service)
-    result = asyncio.run(worker.run(WorkerAssignment("worker-1", "do the thing", 1, WorkerBudget())))
-    assert result.failed is True
-    assert result.done is False
-    assert result.error == "child exploded"
-
-
-def test_subagent_service_worker_requires_service() -> None:
-    with pytest.raises(SupervisorError, match="requires a SubagentService"):
-        SubagentServiceWorker(object())  # type: ignore[arg-type]
-
-
-async def test_supervisor_drives_subagent_service_worker() -> None:
-    service = FakeSubagentService(text="shared answer")
-    supervisor = Supervisor(SubagentServiceWorker(service), limits=SupervisorLimits(max_workers=2))
-    result = await supervisor.run("do the thing")
-    assert result.status is SupervisorStatus.CONVERGED
-    assert result.latest_summaries() == (
-        ("worker-1", "shared answer"),
-        ("worker-2", "shared answer"),
-    )
-    assert len(service.calls) == 2

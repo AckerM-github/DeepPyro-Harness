@@ -24,6 +24,7 @@ import re
 import tempfile
 import tomllib
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, get_args, get_origin
 
@@ -46,7 +47,14 @@ _REMOVED_ALIASES: dict[str, str] = {
     "apiKey": "api_key",
     "maxTokens": "max_tokens",
     "maxSteps": "max_steps",
-    "sessionDir": "session_dir",
+}
+
+#: Top-level keys removed with the v4 session store. Unlike a renamed key there
+#: is no replacement field: native sessions follow DEEPPYRO_SESSION_DIR, so the
+#: stale key must fail loudly instead of falling through as plugin configuration.
+_REMOVED_KEYS: dict[str, str] = {
+    "sessionDir": "native sessions use the DEEPPYRO_SESSION_DIR environment variable",
+    "session_dir": "native sessions use the DEEPPYRO_SESSION_DIR environment variable",
 }
 
 #: camelCase spellings of the adapter options that 0.1 read from model_extra.
@@ -111,6 +119,10 @@ def _key_issue(model: type[_SchemaModel], key: str, path: str) -> str | None:
     replacement = _REMOVED_ALIASES.get(key) or _ADAPTER_ALIASES.get(key)
     if replacement is not None:
         return f"configuration key {field_path!r} is not supported; use {_dotted(path, replacement)!r}"
+    if model is Config and not path:
+        removal = _REMOVED_KEYS.get(key)
+        if removal is not None:
+            return f"configuration key {field_path!r} is not supported: {removal}; remove it"
     if key in _REMOVED_SWITCHES and model._report_removed_switches:
         return (
             f"configuration key {field_path!r} is no longer supported: "
@@ -199,11 +211,11 @@ class AgentConfig(_SchemaModel):
     model: str = ""
     temperature: float | None = None
     # Output cap per request. Reasoning consumes this budget too, so a low value
-    # truncates answers that think first (the dshinfer default is just 512).
+    # truncates answers that think first (the local backend default is just 512).
     # Tool-heavy steps can emit several long tool calls in one assistant message;
     # 8192 leaves room for that on DeepSeek's 8k-output models.
     max_tokens: int | None = 8192
-    # Unbounded like DSH; set [agent].max_steps to cap a runaway loop.
+    # Unbounded like upstream; set [agent].max_steps to cap a runaway loop.
     max_steps: int | None = None
 
 
@@ -231,7 +243,6 @@ class Config(_SchemaModel):
 
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     agent: AgentConfig = Field(default_factory=AgentConfig)
-    session_dir: Path | None = None
 
     def resolve(self) -> tuple[ProviderConfig, str]:
         provider = self.providers.get(self.agent.provider)
@@ -377,11 +388,10 @@ def lint_config(document: Mapping[str, Any]) -> list[str]:
     return _collect_issues(document)
 
 
-# User-scoped locations live under one home directory (DSH-style, ~/.dpro).
+# User-scoped locations live under one home directory (upstream-style, ~/.dpro).
 # DEEPPYRO_HOME overrides the root; DEEPPYRO_CONFIG and DEEPPYRO_SESSION_DIR
 # override individual paths at call time.
 DEFAULT_CONFIG_PATH = paths.default_config_path()
-DEFAULT_SESSION_DIR = paths.default_sessions_dir()
 
 DEFAULT_TOML = """
 # deeppyro configuration
@@ -420,8 +430,8 @@ models = [{ id = "deepseek-chat", context_window = 65536 }]
 [ptc]
 mode = "native"
 
-# Retry policy for failed provider requests. See docs/spec/llm.md and
-# src/deeppyro/builtin/llm_retry.py. "normal" retries only retryable failures
+# Retry policy for failed provider requests. See docs/spec/llm.md.
+# "normal" retries only retryable failures
 # within maxRetries; "always" retries every failure until the turn is cancelled.
 [retry]
 mode = "normal"
@@ -483,12 +493,6 @@ defaultPreset = "workspace-write"
 
 def config_path() -> Path:
     return paths.config_path()
-
-
-def session_dir(cfg: Config | None = None) -> Path:
-    if cfg is not None and cfg.session_dir is not None:
-        return Path(cfg.session_dir)
-    return paths.sessions_dir()
 
 
 def load_config(path: Path | None = None, create: bool = True) -> Config:
@@ -574,6 +578,209 @@ def _set_agent_value(lines: list[str], key: str, value: str) -> list[str]:
     return lines
 
 
+@dataclass(frozen=True, slots=True)
+class ConfigMigration:
+    """Outcome of upgrading a pre-0.3 configuration document in place."""
+
+    path: Path
+    changed: bool
+    backup: Path | None
+    changes: tuple[str, ...] = ()
+
+
+_ALIAS_REPLACEMENTS: dict[str, str] = {**_REMOVED_ALIASES, **_ADAPTER_ALIASES}
+_TABLE_HEADER = re.compile(r"^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(?:#.*)?$")
+_LEGACY_AGENT_KEYS: dict[str, tuple[str, str]] = {
+    "permissionPreset": ("permission", "defaultPreset"),
+    "approvalPolicy": ("approval", "policy"),
+}
+
+
+def _split_comment(line: str) -> tuple[str, str]:
+    """Split a TOML line into code and trailing comment, honouring strings."""
+    comment = _trailing_comment(line)
+    if not comment:
+        return line, ""
+    return line[: len(line) - len(comment)], comment
+
+
+def _replace_alias_keys(code: str) -> str:
+    """Rename bare alias keys while leaving string values untouched."""
+    out: list[str] = []
+    index = 0
+    length = len(code)
+    while index < length:
+        char = code[index]
+        if char in {'"', "'"}:
+            quote = char
+            out.append(char)
+            index += 1
+            while index < length:
+                inner = code[index]
+                out.append(inner)
+                index += 1
+                if quote == '"' and inner == "\\" and index < length:
+                    out.append(code[index])
+                    index += 1
+                elif inner == quote:
+                    break
+            continue
+        if char.isalnum() or char in {"_", "-"}:
+            end = index + 1
+            while end < length and (code[end].isalnum() or code[end] in {"_", "-"}):
+                end += 1
+            token = code[index:end]
+            cursor = end
+            while cursor < length and code[cursor].isspace():
+                cursor += 1
+            replacement = _ALIAS_REPLACEMENTS.get(token)
+            if replacement is not None and cursor < length and code[cursor] == "=":
+                out.append(replacement)
+            else:
+                out.append(token)
+            index = end
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _add_table_value(lines: list[str], table: str, key: str, value: str) -> tuple[list[str], bool]:
+    """Insert key = value under an existing table, or append the table."""
+    header = re.compile(rf"^\s*\[\s*{re.escape(table)}\s*\]\s*(?:#.*)?$")
+    key_line = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    rendered = f"{key} = {value}"
+    for index, line in enumerate(lines):
+        if not header.match(line):
+            continue
+        end = len(lines)
+        for cursor in range(index + 1, len(lines)):
+            if _ANY_SECTION_HEADER.match(lines[cursor]):
+                end = cursor
+                break
+        if any(key_line.match(lines[cursor]) for cursor in range(index + 1, end)):
+            return lines, False
+        lines.insert(index + 1, rendered)
+        return lines, True
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.extend([f"[{table}]", rendered])
+    return lines, True
+
+
+def _write_atomic(target: Path, text: str) -> None:
+    """Replace target with text, flushing the temporary file first."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+            newline="\n",
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise
+
+
+def _backup_path(target: Path) -> Path:
+    candidate = target.with_name(target.name + ".bak")
+    if not candidate.exists():
+        return candidate
+    for index in range(1, 1000):
+        candidate = target.with_name(f"{target.name}.bak.{index}")
+        if not candidate.exists():
+            return candidate
+    raise ConfigError(f"too many configuration backups next to {target}")
+
+
+def migrate_legacy_config(path: Path | None = None) -> ConfigMigration:
+    """Upgrade a pre-0.3 config file to the strict snake_case schema.
+
+    The migration is line-oriented so comments, ordering and unrelated plugin
+    tables survive.  Two [agent] keys moved into their own tables rather than
+    being renamed: permissionPreset becomes [permission] defaultPreset and
+    approvalPolicy becomes [approval] policy.  The result is fully re-parsed and
+    validated before an atomic replace, and the original is copied to <name>.bak.
+    Calling it again with an upgraded file changes nothing.
+    """
+    target = Path(path) if path is not None else config_path()
+    if not target.is_file():
+        return ConfigMigration(target, changed=False, backup=None)
+    original = target.read_text(encoding="utf-8")
+    lines = original.splitlines()
+    migrated: list[str] = []
+    changes: list[str] = []
+    pending: dict[str, str] = {}
+    table = ""
+    for raw in lines:
+        header = _TABLE_HEADER.match(raw)
+        if header is not None:
+            table = header.group(1).strip()
+            migrated.append(raw)
+            continue
+        code, comment = _split_comment(raw)
+        stripped = code.strip()
+        if not stripped:
+            migrated.append(raw)
+            continue
+        if table == "agent":
+            legacy = re.match(r"^(permissionPreset|approvalPolicy)\s*=\s*(.+)$", stripped)
+            if legacy is not None:
+                name, value = legacy.group(1), legacy.group(2).strip()
+                pending[name] = value
+                destination = _LEGACY_AGENT_KEYS[name]
+                changes.append(f"agent.{name} -> {destination[0]}.{destination[1]}")
+                continue
+        if not table:
+            top_level = re.match(r"^([A-Za-z0-9_-]+)\s*=", stripped)
+            if top_level is not None and top_level.group(1) in _REMOVED_KEYS:
+                changes.append(f"removed {top_level.group(1)}")
+                continue
+        replaced = _replace_alias_keys(code)
+        if replaced != code:
+            raw = replaced.rstrip() + (f"  {comment}" if comment else "")
+            changes.append("snake_case keys")
+        migrated.append(raw)
+
+    for name, value in pending.items():
+        destination, key = _LEGACY_AGENT_KEYS[name]
+        migrated, added = _add_table_value(migrated, destination, key, value)
+        if not added:
+            changes.append(f"{destination}.{key} already set; dropped agent.{name}")
+
+    if not changes:
+        return ConfigMigration(target, changed=False, backup=None)
+    rendered = "\n".join(migrated).rstrip("\n") + "\n"
+    try:
+        data: dict[str, Any] = tomllib.loads(rendered)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"invalid config file {target}: {exc}") from exc
+    issues = _collect_issues(data)
+    if issues:
+        raise ConfigError("invalid configuration after migration: " + "; ".join(issues))
+    Config.model_validate(data)
+    backup = _backup_path(target)
+    backup.write_bytes(original.encode("utf-8"))
+    _write_atomic(target, rendered)
+    return ConfigMigration(
+        target,
+        changed=True,
+        backup=backup,
+        changes=tuple(dict.fromkeys(changes)),
+    )
+
+
 def save_agent_selection(provider: str, model: str, path: Path | None = None) -> Path:
     """Persist provider/model under [agent] without rewriting unrelated text.
 
@@ -626,10 +833,10 @@ def save_agent_selection(provider: str, model: str, path: Path | None = None) ->
 
 __all__ = [
     "DEFAULT_CONFIG_PATH",
-    "DEFAULT_SESSION_DIR",
     "DEFAULT_TOML",
     "AgentConfig",
     "Config",
+    "ConfigMigration",
     "ConfigWarning",
     "ModelCapabilities",
     "ModelConfig",
@@ -639,6 +846,6 @@ __all__ = [
     "config_path",
     "lint_config",
     "load_config",
+    "migrate_legacy_config",
     "save_agent_selection",
-    "session_dir",
 ]

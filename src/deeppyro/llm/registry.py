@@ -1,9 +1,9 @@
-"""Provider construction, caching and model-catalog lookups.
+"""Native provider construction, caching and model-catalog lookups.
 
-create_provider() is the single seam between configuration (deeppyro.config.ProviderConfig)
-and the LLM layer: it picks the transport implementation for ProviderConfig.api.
-LlmRegistry caches one provider instance per configured provider name so the underlying
-HTTP connection pools are shared across turns.
+create_native_provider() is the single seam between configuration
+(deeppyro.config.ProviderConfig) and the LLM layer: it picks the native transport
+implementation for ProviderConfig.api. LlmRegistry caches one provider instance per
+configured provider name so the underlying HTTP connection pools are shared across turns.
 
 Transports (docs/spec/llm.md section 14): "openai-completions" (DeepSeek, llama-server,
 vLLM, ...) and "anthropic-messages" (Anthropic Messages API and compatibles). Anthropic
@@ -25,17 +25,14 @@ from typing import Any
 
 from deeppyro.config import Config, ProviderConfig
 from deeppyro.core.errors import ConfigError, LlmError
-from deeppyro.core.llm import LlmProvider as NativeLlmProvider
-from deeppyro.core.protocols import LlmProvider
-from deeppyro.llm.anthropic import AnthropicProvider
+from deeppyro.core.llm import LlmProvider
 from deeppyro.llm.catalog import ModelInfo, catalog_from_config, merge_catalogs
 from deeppyro.llm.discovery import DEFAULT_CATALOG_TTL_S, CatalogCache
 from deeppyro.llm.native_anthropic import NativeAnthropicProvider
 from deeppyro.llm.native_provider import NativeOpenAICompatProvider
-from deeppyro.llm.openai_compat import OpenAICompatProvider
 
-#: ProviderConfig.api values that map to OpenAICompatProvider. The canonical value is
-#: "openai-completions"; the aliases exist so hand-written configs are forgiving.
+#: ProviderConfig.api values that map to NativeOpenAICompatProvider. The canonical value
+#: is "openai-completions"; the aliases exist so hand-written configs are forgiving.
 _OPENAI_COMPAT_APIS = frozenset(
     {
         "openai-completions",
@@ -46,7 +43,7 @@ _OPENAI_COMPAT_APIS = frozenset(
     }
 )
 
-#: ProviderConfig.api values that map to AnthropicProvider.
+#: ProviderConfig.api values that map to NativeAnthropicProvider.
 _ANTHROPIC_APIS = frozenset(
     {
         "anthropic-messages",
@@ -59,49 +56,14 @@ _ANTHROPIC_APIS = frozenset(
 _DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 
 
-def create_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) -> LlmProvider:
-    """Build the LlmProvider described by one ProviderConfig.
-
-    Raises ConfigError for an unknown api kind or an Anthropic provider without an explicit
-    base_url, so misconfiguration fails at startup instead of on the first request.
-    """
-    api = (pc.api or "").strip().lower()
-    if api in _OPENAI_COMPAT_APIS:
-        return OpenAICompatProvider(
-            name,
-            pc.base_url,
-            pc.resolve_api_key(),
-            model_ctx=_context_window(pc),
-            timeout_s=timeout_s,
-        )
-    if api in _ANTHROPIC_APIS:
-        if "base_url" not in pc.model_fields_set or not pc.base_url.strip():
-            raise ConfigError(
-                f"provider {name!r} uses api {pc.api!r} but does not set base_url; "
-                "Anthropic providers require an explicit endpoint "
-                f"(for the official API: {_DEFAULT_ANTHROPIC_BASE_URL})"
-            )
-        return AnthropicProvider(
-            name,
-            pc.base_url,
-            pc.resolve_api_key(),
-            model_ctx=_context_window(pc),
-            model_max_tokens=_max_tokens(pc),
-            reasoning_effort=_reasoning_effort(pc),
-            timeout_s=timeout_s,
-        )
-    supported = ", ".join(sorted(_OPENAI_COMPAT_APIS | _ANTHROPIC_APIS))
-    raise ConfigError(f"provider {name!r} uses unsupported api {pc.api!r}; supported: {supported}")
-
-
-def create_native_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) -> NativeLlmProvider:
-    """Build the native (KI-010) LlmProvider described by one ProviderConfig.
+def create_native_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 600.0) -> LlmProvider:
+    """Build the native LlmProvider described by one ProviderConfig.
 
     Every supported api kind has a native transport: "openai-completions" maps to
     NativeOpenAICompatProvider and "anthropic-messages" to NativeAnthropicProvider.
     Misconfiguration (unknown api, Anthropic without an explicit base_url or without an
     API key) raises ConfigError here so the native loop fails at startup instead of
-    silently downgrading to the v4 loop.
+    silently calling the wrong endpoint on the first request.
     """
     api = (pc.api or "").strip().lower()
     if api in _OPENAI_COMPAT_APIS:
@@ -178,23 +140,22 @@ def _extra(obj: Any, *keys: str) -> Any:
 
 
 class LlmRegistry:
-    """Lazily instantiates and caches one LlmProvider per configured provider name."""
+    """Lazily instantiates and caches one native LlmProvider per configured provider name."""
 
     def __init__(self, cfg: Config, *, catalog_ttl_s: float = DEFAULT_CATALOG_TTL_S) -> None:
         self.config = cfg
         self.catalog_ttl_s = float(catalog_ttl_s)
         self._providers: dict[str, LlmProvider] = {}
-        self._native_providers: dict[str, NativeLlmProvider] = {}
         self._catalog = CatalogCache(ttl_s=self.catalog_ttl_s)
         self._catalog_locks: dict[str, asyncio.Lock] = {}
 
     # -- providers ----------------------------------------------------------
-    def get(self, provider: str) -> LlmProvider:
-        """Return the (cached) provider for a configured name.
+    def native_provider(self, provider: str) -> LlmProvider:
+        """Return the (cached) native provider for a configured name.
 
-        Raises ConfigError when the name is not present in Config.providers. Note that
-        Config.resolve() raises KeyError for the same condition; the LLM layer
-        normalizes configuration mistakes to ConfigError.
+        Raises ConfigError when the name is not present in Config.providers: the LLM
+        layer normalizes configuration mistakes to ConfigError instead of leaking the
+        KeyError that a bare Config.providers lookup would raise.
         """
         cached = self._providers.get(provider)
         if cached is not None:
@@ -202,24 +163,8 @@ class LlmRegistry:
         pc = self.config.providers.get(provider)
         if pc is None:
             raise ConfigError(self._unknown_provider_message(provider))
-        created = create_provider(provider, pc)
-        self._providers[provider] = created
-        return created
-
-    def native_provider(self, provider: str) -> NativeLlmProvider:
-        """Return the (cached) native provider for a configured name.
-
-        Separate cache from get(): the native loop may run next to the legacy one during
-        the migration, and the two provider objects own different HTTP clients.
-        """
-        cached = self._native_providers.get(provider)
-        if cached is not None:
-            return cached
-        pc = self.config.providers.get(provider)
-        if pc is None:
-            raise ConfigError(self._unknown_provider_message(provider))
         created = create_native_provider(provider, pc)
-        self._native_providers[provider] = created
+        self._providers[provider] = created
         return created
 
     @property
@@ -292,7 +237,7 @@ class LlmRegistry:
     # -- internals ----------------------------------------------------------
     async def _discover(self, provider: str) -> list[ModelInfo]:
         base = self.configured_models(provider)
-        impl = self.get(provider)
+        impl = self.native_provider(provider)
         lister = getattr(impl, "list_models", None)
         if lister is None:
             # Provider has no discovery capability: the configured catalog is the answer.
@@ -327,9 +272,8 @@ class LlmRegistry:
         """
         self._catalog.clear()
         self._catalog_locks.clear()
-        closures = list(self._providers.values()) + list(self._native_providers.values())
+        closures = list(self._providers.values())
         self._providers = {}
-        self._native_providers = {}
         if not closures:
             return
         results: list[Any] = await asyncio.gather(*(p.aclose() for p in closures), return_exceptions=True)
@@ -338,4 +282,4 @@ class LlmRegistry:
                 raise result
 
 
-__all__ = ["LlmRegistry", "create_native_provider", "create_provider"]
+__all__ = ["LlmRegistry", "create_native_provider"]
