@@ -1,8 +1,8 @@
 # Agent loop, prompt, hooks, and compaction (`deeppyro.agent`, `deeppyro.prompt`, `deeppyro.compact`)
 
 > **状态**：现行（过渡：v4 待移除） · **层级**：v4 loop 规格 · **最后核对**：2026-11-18
-> 本文描述默认 v4 loop；native `AgentLoop` 见 [native/schema.md §5.5](../native/schema.md)，仅 `--native-loop` 使用。
-> 0.3 切换默认后重写。
+> 本文只描述 v4 loop，它现在仅服务 TUI 交互路径与 `--legacy-v4`；headless 默认已走 native `AgentLoop`
+> （见 [native/schema.md §5.5](../native/schema.md)）。v4 退出后重写。
 
 Status: implemented (owner: loop-dev). Consumes only `core.protocols` / `core.errors` /
 `core.wire`; writes durable records through `SessionLogLike.append` and emits UI events

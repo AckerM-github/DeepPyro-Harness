@@ -17,6 +17,7 @@ from deeppyro.kernel.composition import (
 )
 from deeppyro.kernel.manifest import load_manifest
 from tests.kernel import plugins_dummy
+from tests.kernel.plugins_dummy import CounterPlugin, InterceptAwareService
 
 DUMMY = "tests.kernel.plugins_dummy"
 
@@ -133,7 +134,7 @@ plugin = "tests.kernel.plugins_dummy:InterceptProbePlugin"
     app = await _boot_composition(_composition(tmp_path, body))
     try:
         assert plugins_dummy.OBSERVED == [7]
-        assert app.service("counter").n == 7
+        assert app.require(CounterPlugin).n == 7
         states = {state["id"]: state for state in app.row_states()}
         assert states["group-isolated"]["state"] == "active"
         assert states["probe"]["parent"] == "group-isolated"
@@ -152,7 +153,7 @@ plugin = "tests.kernel.plugins_dummy:InterceptAwareService"
 """
     app = await _boot_composition(_composition(tmp_path, body))
     try:
-        service = app.service("intercept-aware")
+        service = app.require(InterceptAwareService)
         assert service.resolved == {"mode": "group"}
     finally:
         await app.stop()

@@ -126,7 +126,7 @@ _GUIDE = "\n".join(
         "",
         "    class MyPlugin(Plugin):",
         '        plugin_id = "my-plugin"',
-        '        version = "0.1.0"',
+        '        version = "0.2.0"',
         '        description = "my first plugin"',
         "        Config = MyConfig",
         '        volatile: ClassVar[tuple[str, ...]] = ("greeting",)',
@@ -141,7 +141,7 @@ _GUIDE = "\n".join(
         "    [bundle]",
         '    id = "my-bundle"',
         '    name = "My Bundle"',
-        '    version = "0.1.0"',
+        '    version = "0.2.0"',
         "    api_version = 3",
         "    order = 500",
         "    critical = false",
@@ -187,7 +187,7 @@ class InspectPlugin(Service):
 
     provide = "inspect"
     plugin_id = "inspect"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "live inspection of services, plugins, tools, prompts and commands"
     inject: ClassVar[list[str]] = []
 

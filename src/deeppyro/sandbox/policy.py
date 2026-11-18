@@ -128,19 +128,19 @@ def sandbox_policy_text(policy: SandboxPolicy) -> str:
     """The exact DSH runtime-context paragraph for one policy."""
     if policy.mode == "read-only":
         return (
-            "Current DSH file policy: read-only. Any available operation enforced by the DSH "
-            "file sandbox cannot modify files in the standing mode. Do not refuse a required "
+            "Current DeepPyro file policy: read-only. Any available operation enforced by the "
+            "DeepPyro file sandbox cannot modify files in the standing mode. Do not refuse a required "
             "modification from this policy alone: try an available tool normally and follow "
             "any denial and escalation guidance it returns."
         )
     if policy.mode == "danger-full-access":
         return (
-            "Current DSH file policy: danger-full-access. The DSH file sandbox does not "
+            "Current DeepPyro file policy: danger-full-access. The DeepPyro file sandbox does not "
             "restrict file modifications by available operations."
         )
     text = (
-        "Current DSH file policy: workspace-write. Any available operation enforced by the "
-        'DSH file sandbox may modify files under the session workspace: "'
+        "Current DeepPyro file policy: workspace-write. Any available operation enforced by the "
+        'DeepPyro file sandbox may modify files under the session workspace: "'
         f'{policy.workspace_root}".'
     )
     additional = [str(root) for root in policy.additional_writable_roots]

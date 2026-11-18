@@ -31,6 +31,9 @@ DEFAULT_SEARCH_LIMIT = 10
 MEMORY_ID_RE = re.compile(r"^mem_[0-9a-f]{16}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
+#: Longest accepted dedupe key, in characters.
+MAX_DEDUPE_KEY_LENGTH = 200
+
 #: Provenance fields a caller may require to be present on a search hit.
 PROVENANCE_FIELDS = (
     "source_session_id",
@@ -101,6 +104,25 @@ def validate_tags(tags: object) -> tuple[str, ...]:
     return tuple(result)
 
 
+def validate_dedupe_key(key: object) -> str | None:
+    """Validate one optional long-term memory dedupe key.
+
+    A dedupe key names the logical slot a record occupies, so a later write with
+    the same key overwrites the earlier record instead of appending a duplicate.
+    Keys are stored stripped and may not be blank.
+    """
+    if key is None:
+        return None
+    if not isinstance(key, str):
+        raise MemoryValidationError("memory dedupe key must be a string or null")
+    stripped = key.strip()
+    if not stripped:
+        raise MemoryValidationError("memory dedupe key must be a non-empty string")
+    if len(stripped) > MAX_DEDUPE_KEY_LENGTH:
+        raise MemoryValidationError(f"memory dedupe key may not exceed {MAX_DEDUPE_KEY_LENGTH} characters")
+    return stripped
+
+
 def validate_memory_id(memory_id: object) -> str:
     """Validate one long-term memory record id."""
     if not isinstance(memory_id, str) or not MEMORY_ID_RE.fullmatch(memory_id):
@@ -150,6 +172,7 @@ class MemoryProvenance:
     source_message_id: str | None = None
     run_id: str | None = None
     tags: tuple[str, ...] = ()
+    dedupe_key: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.content_sha256, str) or not SHA256_RE.fullmatch(self.content_sha256):
@@ -160,6 +183,7 @@ class MemoryProvenance:
         _optional_str(self.source_message_id, "source_message_id")
         _optional_str(self.run_id, "run_id")
         validate_tags(self.tags)
+        validate_dedupe_key(self.dedupe_key)
 
     def to_dict(self) -> dict[str, object]:
         """Serialize to a JSON-ready mapping, omitting null source fields."""
@@ -176,6 +200,8 @@ class MemoryProvenance:
             data["run_id"] = self.run_id
         if self.tags:
             data["tags"] = list(self.tags)
+        if self.dedupe_key is not None:
+            data["dedupe_key"] = self.dedupe_key
         return data
 
     @classmethod
@@ -191,6 +217,7 @@ class MemoryProvenance:
             "source_message_id",
             "run_id",
             "tags",
+            "dedupe_key",
         }
         unknown = sorted(set(raw) - allowed)
         if unknown:
@@ -207,6 +234,7 @@ class MemoryProvenance:
             source_message_id=_optional_str(raw.get("source_message_id"), "source_message_id"),
             run_id=_optional_str(raw.get("run_id"), "run_id"),
             tags=validate_tags(raw.get("tags")),
+            dedupe_key=validate_dedupe_key(raw.get("dedupe_key")),
         )
 
 
@@ -266,6 +294,28 @@ class MemoryRecord:
         if field == "run_id":
             return self.provenance.run_id
         raise MemoryValidationError(f"unknown provenance field {field!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryWriteReceipt:
+    """Result of one deduplicating long-term write.
+
+    'created' is True when the dedupe key was new and False when an existing
+    record for that key was overwritten in place.
+    """
+
+    record: MemoryRecord
+    created: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.record, MemoryRecord):
+            raise MemoryValidationError("memory write receipt record must be a memory record")
+        if not isinstance(self.created, bool):
+            raise MemoryValidationError("memory write receipt created must be a boolean")
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize to a JSON-ready mapping."""
+        return {"record": self.record.to_dict(), "created": self.created}
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,6 +379,25 @@ class MemoryBackend(Protocol):
         """Persist one memory and return the stored record."""
         ...
 
+    def upsert(
+        self,
+        content: str,
+        *,
+        dedupe_key: str,
+        source_session_id: str | None = None,
+        source_message_id: str | None = None,
+        run_id: str | None = None,
+        importance: str = DEFAULT_IMPORTANCE,
+        tags: Sequence[str] = (),
+        created_at: str | None = None,
+    ) -> tuple[MemoryRecord, bool]:
+        """Insert or overwrite the record for one dedupe key.
+
+        Returns the stored record and True when it was created, False when an
+        existing record with the same key was refreshed in place.
+        """
+        ...
+
     def search(
         self,
         query: str,
@@ -350,6 +419,7 @@ class MemoryBackend(Protocol):
 
 __all__ = [
     "DEFAULT_SEARCH_LIMIT",
+    "MAX_DEDUPE_KEY_LENGTH",
     "MEMORY_ID_RE",
     "PROVENANCE_FIELDS",
     "SHA256_RE",
@@ -358,11 +428,13 @@ __all__ = [
     "MemoryProvenance",
     "MemoryRecord",
     "MemorySearchHit",
+    "MemoryWriteReceipt",
     "format_timestamp",
     "hash_content",
     "utc_now",
     "validate_content",
     "validate_created_at",
+    "validate_dedupe_key",
     "validate_importance",
     "validate_limit",
     "validate_memory_id",

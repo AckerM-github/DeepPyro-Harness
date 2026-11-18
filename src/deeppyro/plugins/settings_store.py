@@ -13,13 +13,27 @@ store on top of that:
 
 Secret-looking keys are masked on read. A client that writes the masked
 placeholder back does not overwrite the stored secret; omitting the key keeps
-the current value. Every write is applied on the next boot, never live.
+the current value.
+
+Writes are serialized across processes by a small advisory lock file next to
+the manifest (settings.toml.lock, see deeppyro.plugins.file_lock).  The CAS
+token still rejects stale clients; the lock prevents two clients that both
+read the same revision from silently overwriting each other.
+
+Every write is persisted immediately but only applied on the next boot, except
+for fields that are safe to hot-apply: a plugin's declared `volatile` fields
+plus the shared runtime-safe whitelist (log/trace/debug levels, timeouts, retry
+and concurrency limits; see deeppyro.api.capabilities.LIVE_CONFIG_TOKENS). Those
+are reported separately so the settings service can hand them to the kernel
+without a restart; everything else is reported as needing a restart.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -27,12 +41,21 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from deeppyro import paths
+from deeppyro.api.capabilities import live_config_fields
 from deeppyro.api.errors import PluginConfigError
 from deeppyro.kernel.bundle import load_composition
 from deeppyro.kernel.composition import CompositionError, PluginRow, resolve_row
 from deeppyro.kernel.manifest import ManifestError, PluginSpec, resolve_plugin_name
 
-from .errors import PluginError, PluginNotFoundError, SettingsConflict
+from .errors import ManifestWriteError, PluginError, PluginNotFoundError, SettingsConflict
+from .file_lock import (
+    DEFAULT_POLL_SECONDS,
+    DEFAULT_TIMEOUT_SECONDS,
+    LockError,
+    LockTimeout,
+    file_lock,
+    lock_path_for,
+)
 from .manifest_store import read_manifest, save_user_manifest
 
 #: Placeholder returned for secrets; writing it back is a no-op.
@@ -46,6 +69,10 @@ APPLY_NEXT_BOOT = "next-boot"
 
 #: Volatile fields can be applied to a mounted plugin without a restart.
 APPLY_LIVE = "live"
+
+
+class SettingsLockTimeout(PluginError):
+    """Another process held the settings manifest lock for too long."""
 
 
 # -- masking and merging -------------------------------------------------
@@ -143,6 +170,19 @@ def plugin_volatile_fields(plugin_class: type | None) -> tuple[str, ...]:
     return ()
 
 
+def plugin_live_fields(plugin_class: type | None) -> tuple[str, ...]:
+    """Config fields that may be applied to a running plugin without a restart.
+
+    Combines the plugin's declared `volatile` fields with the shared
+    runtime-safe whitelist.  Every other field needs a restart.
+    """
+    fields: list[str] = list(plugin_volatile_fields(plugin_class))
+    for name in live_config_fields(plugin_class):
+        if name not in fields:
+            fields.append(name)
+    return tuple(fields)
+
+
 def validate_config(plugin_class: type | None, values: Mapping[str, Any]) -> None:
     """Validate values against the plugin Config, raising PluginConfigError."""
     config_class = _config_class(plugin_class)
@@ -196,6 +236,7 @@ class SettingsStore:
         manifest_path: str | Path | None = None,
         plugins_dir: str | Path | None = None,
         bundle_paths: Sequence[str | Path] = (),
+        lock_timeout: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         if manifest_path is None:
             self._manifest_path = paths.plugins_manifest_path()
@@ -209,6 +250,7 @@ class SettingsStore:
         else:
             self._plugins_dir = Path(plugins_dir)
         self._bundle_paths = tuple(str(path) for path in bundle_paths)
+        self._lock_timeout = max(0.0, float(lock_timeout))
 
     @property
     def manifest_path(self) -> Path:
@@ -224,6 +266,16 @@ class SettingsStore:
     def revision(self) -> str:
         """Current CAS token for this manifest."""
         return manifest_revision(self._manifest_path)
+
+    @property
+    def lock_path(self) -> Path:
+        """The cross-process lock file guarding this manifest."""
+        return lock_path_for(self._manifest_path)
+
+    @property
+    def lock_timeout(self) -> float:
+        """Seconds write() waits for another process to release the lock."""
+        return self._lock_timeout
 
     # -- public API --------------------------------------------------------
 
@@ -243,6 +295,7 @@ class SettingsStore:
             "revision": self.revision,
             "apply": APPLY_NEXT_BOOT,
             "volatile_fields": list(plugin_volatile_fields(plugin_class)),
+            "live_fields": list(plugin_live_fields(plugin_class)),
             "error": error,
         }
 
@@ -258,6 +311,7 @@ class SettingsStore:
             "revision": self.revision,
             "apply": APPLY_NEXT_BOOT,
             "volatile_fields": list(plugin_volatile_fields(plugin_class)),
+            "live_fields": list(plugin_live_fields(plugin_class)),
             "error": error,
         }
 
@@ -270,6 +324,20 @@ class SettingsStore:
         """Validate and persist a configuration patch with CAS semantics."""
         if not isinstance(patch, Mapping):
             raise PluginError("settings patch must be a JSON object")
+        # The whole read-check-write cycle runs under the cross-process lock:
+        # the CAS check alone cannot stop two writers that read the same
+        # revision from both persisting, because each atomic replace would
+        # overwrite the other's update.
+        with self._settings_lock():
+            return self._write_locked(plugin_id, patch, expected_revision)
+
+    def _write_locked(
+        self,
+        plugin_id: str,
+        patch: Mapping[str, Any],
+        expected_revision: str,
+    ) -> dict[str, Any]:
+        """Persist a patch; the caller must hold the settings lock."""
         actual_revision = self.revision
         if expected_revision != actual_revision:
             raise SettingsConflict(
@@ -290,14 +358,21 @@ class SettingsStore:
             specs[index] = replace(specs[index], config=dict(merged))
         self._write_specs(specs)
         changed = sorted(str(key) for key in merged if current.get(key) != merged.get(key))
-        volatile = plugin_volatile_fields(plugin_class)
+        live = plugin_live_fields(plugin_class)
+        live_changed = sorted(key for key in changed if key in live)
+        restart_fields = sorted(key for key in changed if key not in live)
         return {
             "plugin_id": plugin_id,
             "revision": self.revision,
             "values": mask_secrets(merged),
             "changed": changed,
-            "volatile_fields": list(volatile),
-            "volatile_changed": sorted(key for key in changed if key in volatile),
+            "volatile_fields": list(live),
+            "volatile_changed": live_changed,
+            "live_fields": list(live),
+            "live_changed": live_changed,
+            "restart_fields": restart_fields,
+            # The store cannot apply anything itself: the settings service either
+            # hands the live fields to the mounted kernel or reports a restart.
             "restart_required": True,
             "apply": APPLY_NEXT_BOOT,
         }
@@ -312,6 +387,20 @@ class SettingsStore:
         return dict(row.config or {}) if row is not None else {}
 
     # -- internals ---------------------------------------------------------
+
+    @contextmanager
+    def _settings_lock(self) -> Iterator[None]:
+        """Hold the cross-process settings lock for the manifest."""
+        try:
+            with file_lock(self._manifest_path, timeout=self._lock_timeout):
+                yield
+        except LockTimeout as exc:
+            raise SettingsLockTimeout(
+                f"timed out after {exc.timeout:.2f}s waiting for {exc.path}; "
+                f"another process may be editing the plugin manifest {self._manifest_path}"
+            ) from exc
+        except LockError as exc:
+            raise PluginError(str(exc)) from exc
 
     def _manifest_paths(self) -> tuple[str, ...]:
         return (str(self._manifest_path),) if self._manifest_path.is_file() else ()
@@ -362,13 +451,31 @@ class SettingsStore:
             raise PluginError(f"cannot read plugin manifest {self._manifest_path}: {exc}") from exc
 
     def _write_specs(self, specs: Sequence[PluginSpec]) -> None:
-        save_user_manifest(self._manifest_path, tuple(specs))
+        """Persist specs, retrying transient Windows sharing violations.
+
+        CPython opens files without FILE_SHARE_DELETE, so os.replace() can fail
+        with a sharing violation while another process happens to be reading
+        the manifest.  Those readers hold the file only briefly and are not
+        coordinated through our lock (read-only inspection never blocks), so
+        retry for a bounded time instead of surfacing a spurious write error.
+        """
+        deadline = time.monotonic() + self._lock_timeout
+        while True:
+            try:
+                save_user_manifest(self._manifest_path, tuple(specs))
+                return
+            except ManifestWriteError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                time.sleep(min(DEFAULT_POLL_SECONDS, remaining))
 
 
 __all__ = [
     "APPLY_LIVE",
     "APPLY_NEXT_BOOT",
     "MASKED_VALUE",
+    "SettingsLockTimeout",
     "SettingsStore",
     "manifest_revision",
     "mask_secrets",

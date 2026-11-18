@@ -19,7 +19,7 @@ class UserQuestionsPlugin(Plugin):
 
     provide = "user_questions"
     plugin_id = "tool-ask-user"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "blocking ask_user_question service and its model-facing tool"
     inject: ClassVar[list[str]] = ["tools"]
 

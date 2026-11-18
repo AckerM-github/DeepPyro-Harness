@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from deeppyro.builtin.session_query import SessionQueryPlugin
 from deeppyro.core.errors import ConfigError
 from deeppyro.session import SessionStore
 from deeppyro.session_query import INVALID_FILTER, SessionQueryError
@@ -154,7 +155,7 @@ async def test_kernel_mounts_service(tmp_path: pathlib.Path) -> None:
     )
     app = await create_app(config, composition=Composition(rows=rows, origin="test"))
     try:
-        service = app.service("session_query")
+        service = app.require(SessionQueryPlugin)
         assert service.query.read_window_max == 5
         assert service.list_summaries() == []
     finally:

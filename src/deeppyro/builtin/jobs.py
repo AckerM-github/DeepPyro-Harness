@@ -20,7 +20,7 @@ class JobsPlugin(Plugin):
 
     provide = "jobs"
     plugin_id = "jobs"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "background job registry and job control tools"
     inject: ClassVar[list[str]] = ["tools"]
 

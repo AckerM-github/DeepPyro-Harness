@@ -18,7 +18,15 @@ from deeppyro.subagent.supervisor import (
     WorkerOutcome,
     WorkerRun,
 )
-from deeppyro.subagent.types import MAX_LIVE_RUNS, SubagentActivation, SubagentResult
+from deeppyro.subagent.types import (
+    MAX_LIVE_RUNS,
+    SubagentActivation,
+    SubagentResult,
+    SubagentUsage,
+    UsageSink,
+    sum_usages,
+    usage_from_records,
+)
 
 __all__ = [
     "MAX_LIVE_RUNS",
@@ -28,15 +36,19 @@ __all__ = [
     "SubagentResult",
     "SubagentService",
     "SubagentServiceWorker",
+    "SubagentUsage",
     "Supervisor",
     "SupervisorError",
     "SupervisorLimits",
     "SupervisorResult",
     "SupervisorStatus",
+    "UsageSink",
     "Worker",
     "WorkerAssignment",
     "WorkerBudget",
     "WorkerOutcome",
     "WorkerRun",
     "filter_child_tools",
+    "sum_usages",
+    "usage_from_records",
 ]

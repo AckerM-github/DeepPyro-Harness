@@ -1,6 +1,6 @@
 # Native schema 1 — M0–M4 implementation and baseline
 
-Status: **M0–M4 complete; shipped as an opt-in surface in 0.2.0 (2026-11-18)**. The native message, session, fold, trace and `AgentLoop` modules exist and pass their gates. The loop is wired into headless behind `--native-loop` / `DEEPPYRO_NATIVE_LOOP=1`; the TUI and default headless still use v4, and removing v4 remains 0.3 work. The M0 recorded baseline and provenance remain valid.
+Status: **M0–M4 complete; headless runs native by default in 0.2.0 (2026-11-18)**. The native message, session, fold, trace and `AgentLoop` modules exist and pass their gates. The loop is the default for headless `run_once` (`--legacy-v4` falls back; `--native-loop` is a deprecated alias); the TUI still uses v4, and removing v4 remains 0.3 work. The M0 recorded baseline and provenance remain valid.
 
 ## Deliverables
 
@@ -10,6 +10,7 @@ Status: **M0–M4 complete; shipped as an opt-in surface in 0.2.0 (2026-11-18)**
 | [../adr/0001-three-track-native-agent.md](../adr/0001-three-track-native-agent.md) | ADR: three-track break, zero compatibility, retained DSH design assets, milestones and hard gates, locked M0 decisions. |
 | [../../fixtures/native/](../../fixtures/native/) | 10 real provider recordings, manifest with checksums, validation report, and the two small files used by the sequential-tool case. |
 | [README.md](README.md) | This implementation, provenance, layout, validation and replay note. |
+| [coverage.md](coverage.md) | What the recorded baseline proves, which surfaces must be synthesized (`tests/fixtures/native/synthetic/`), and how much re-recording costs. |
 | [../../src/deeppyro/core/messages.py](../../src/deeppyro/core/messages.py) | Frozen native `Message`, four content parts and eight sources; strict role/part matrix and JSON round-trip. |
 | [../../src/deeppyro/session/schema.py](../../src/deeppyro/session/schema.py) | Schema 1 header/envelope, 27 core `EventKind`s, `NativeCodec` reader/writer, writer lock and atomic append. |
 | [../../src/deeppyro/session/fold.py](../../src/deeppyro/session/fold.py) | Pure fold to `SessionView`: replacement, compaction, state, approvals, tool pairing and missing-result repair. |
@@ -115,7 +116,7 @@ Behavioral notes:
 - **Append is all-or-nothing.** The writer validates the event and its seq/turn/step order before writing; a failed write truncates back to the previous offset. A second writer fails on the `<id>.jsonl.lock` file.
 - **The trace store is separate.** Default location is `~/.dpro/traces/<run_id>.jsonl`, overridable with `DEEPPYRO_TRACES_DIR`; records carry hashes, sizes, latency and IDs, never message text or tool arguments.
 - **Trace smoke is real-session based.** `test_trace_join_smoke_with_native_session` writes a native turn with one tool call, writes one model-call and one tool-call trace record, then joins both by `run_id`/step/call ID.
-- **The loop is opt-in.** `AgentLoop` is selected by headless `--native-loop` / `DEEPPYRO_NATIVE_LOOP=1`; TUI, `run_code` and default headless still emit v4 events. Native trace is emitted by the native loop, not by the v4 path. Full 0.2.0 suite: 3690 passed, 0 failed, 0 skipped.
+- **Headless defaults to native; TUI does not.** `AgentLoop` is the default for headless `run_once` (`DEEPPYRO_NATIVE_LOOP=0` or `--legacy-v4` selects the v4 path). TUI interaction and `--legacy-v4` headless runs still emit v4 events. Native trace is emitted by the native loop, not by the v4 path. Full 0.2.0 suite passes with 1 expected xfail (handoff differential).
 
 ## Known anomalies and limits
 
@@ -124,8 +125,8 @@ Behavioral notes:
 - Case 07's two calls were emitted voluntarily by the model in one response; the recorder did not retry to force them.
 - Cases 08 and 10 intentionally produce error tool results. Case 10's shell denial is simulated by the harness; no shell command ran.
 - Cases 08 and 09 contain the capture workspace path `D:/dshworkspace/m0/...` inside tool arguments/results. It is data from the real stream and is preserved byte-for-byte for replay; do not rewrite recordings.
-- The baseline does not cover image/attachment parts, approval prompts, compaction checkpoints, MCP/PTC, subagents or multi-agent handoff. Those are later milestones (schema §5.2 reserved events, §8 trace).
-- The full 0.2.0 residual list — native opt-in, v4 coexistence, unwired Task/Handoff, provider seam and CI exceptions — is indexed in [docs/release/0.2.0-known-issues.md](../release/0.2.0-known-issues.md).
+- The baseline does not cover image/attachment parts, approval prompts, compaction checkpoints, MCP/PTC, subagents or multi-agent handoff. Hand-authored offline pairs under `tests/fixtures/native/synthetic/` now cover six of them in the native/v4 differential; handoff remains a strict xfail citing KI-011. Matrix, synthesis rules and re-recording cost: [coverage.md](coverage.md).
+- The full 0.2.0 residual list — TUI still v4, v4 coexistence, handoff differential gap, provider seam and accepted CI exceptions — is indexed in [docs/release/0.2.0-known-issues.md](../release/0.2.0-known-issues.md).
 
 ## M0 exit state
 

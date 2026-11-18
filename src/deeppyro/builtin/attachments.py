@@ -44,7 +44,7 @@ class AttachmentsPlugin(Plugin):
 
     provide = "attachments"
     plugin_id = "attachments"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "image attachment storage (validation, normalization, references)"
     inject: ClassVar[list[str]] = ["config"]
 

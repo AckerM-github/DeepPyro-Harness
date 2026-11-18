@@ -120,8 +120,9 @@ class FakeContext:
         return service_require(self._service_map(), service)
 
     def effect(self, callback: Any, label: str = "") -> Any:
+        # Production semantics: record the teardown callback; never run it now.
         self.effects.append(label)
-        return callback()
+        return callback
 
 
 class FakeAgent:

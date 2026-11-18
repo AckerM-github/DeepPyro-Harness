@@ -43,7 +43,7 @@ class GreetTool(BaseTool):
 
 class GreetPlugin(Plugin):
     plugin_id = "greet"
-    version = "0.1.0"
+    version = "0.2.0"
     api_version = 3
     inject = ("tools", "prompt", "commands")   # 字符串仍允许；生产插件推荐契约类，见 §3
 
@@ -114,8 +114,8 @@ v3 只有一个 mount 形状：`setup(self)` 唯一，v1/v2 签名已删除（AD
 | `ctx.require(Contract)` | `T` | `ServiceNotFoundError`（`ServiceTypeError` 表示契约未绑定） |
 
 v3 已移除字符串形式：`ctx.get("name")` / `ctx.has("name")` 抛 `TypeError`；`ctx.service(...)` 不存在。
-宿主级 `App.service(name)` / `App.get(str)` / `App.has_service(str)` 仅作为 deprecated embedder/test 辅助保留，
-插件上下文够不到它们。
+宿主级同样只接受契约类：`App.get(Contract)` / `App.require(Contract)`；过渡期的 `App.service(name)` /
+`App.get(str)` / `App.has_service(name)` 已按 KI-035 删除（回归见 `tests/api/test_services.py`）。
 
 类型化快捷属性：`ctx.tools`、`ctx.prompt`、`ctx.commands`、`ctx.llm`、`ctx.presets`。`ctx.ui` 在没有 TUI 时返回
 `_NoopUi`（`available=False`，所有方法返回 `False`），headless 插件无需特判。
@@ -210,7 +210,7 @@ my-bundle/
 [bundle]
 id = "greet-bundle"
 name = "Greet bundle"
-version = "0.1.0"
+version = "0.2.0"
 api_version = 3          # 必须等于 deeppyro.api.API_VERSION；其它值报 CompositionError
 order = 50               # 同层用户 bundle 按 (order, id) 应用
 critical = false         # 外部 bundle 默认 false：失败只记 app.failures，不中止 boot
@@ -290,24 +290,31 @@ await app.dispose()
 摘自 `docs/spec/plugin-core.md` §9，并补充 0.2.0 语境。完整状态见
 [`docs/release/0.2.0-known-issues.md`](../release/0.2.0-known-issues.md)（KI-019/KI-021）：
 
-- settings 写入下次 boot 生效（volatile 字段除外）；settings 无跨进程锁，重写用户 manifest 会丢注释。
+- settings 写入在跨进程文件锁内做 CAS+merge（Windows `msvcrt` / POSIX `fcntl`，默认 5s 超时，超时抛 `SettingsLockTimeout`）；
+  用户 manifest 采用行级编辑，保留注释、键顺序与未知键（无变化时字节不变）。仍有“需重启才生效”的字段。
+  实现见 `src/deeppyro/plugins/file_lock.py` 与 `plugins/manifest_store.py`。
 - `bundle install` 只做结构校验；第三方代码下次 boot 才执行，无签名、无沙箱；移除 bundle 不会停掉已加载插件。
+  可选 `[bundle].digest = "sha256:…"` 可按磁盘字节钉住 bundle，不匹配时拒绝启动（见 `docs/guides/bundle-digest.md`）。
 - 插件进程内运行、加载后即受信，没有 OS 级隔离；插件可以访问同进程服务。
 - `api_version` 是单整数门禁，不是协商协议。
 - live config 更新仅限 volatile，不重启 fiber、不写盘。
 - 普通 host 风格插件类（非 `deeppyro.api.Plugin`）没有 `volatile`/`on_config`，只能 boot 时配置。
 - bundle 仅 TOML（无 YAML / `!!js` 表达式）；include 只 TOML/JSON。
 - group 子行不能被 patch 单独寻址；group 容器加载后静态。
-- TUI slot 贡献 append-only：消息渲染后新增的 conversation row 不会被重渲染。
-- 切换 preset 会重建 live agent，但不改写当前会话 header 的 `agentPreset`。
-- 0.2.0 默认仍走 v4 会话；native schema 1 只在 native loop（`--native-loop` / `DEEPPYRO_NATIVE_LOOP=1`）下写入。
-  插件不要假设只有一种会话格式；v4 预计 0.3 移除。
+- TUI slot 贡献 append-only：注册只能追加，重复 `(kind, id)` 抛 `SlotError`（错误文本含双方 plugin id），
+  后注册者不能替换或重排已有贡献；消息渲染后新增的 conversation row 不会被重渲染。
+- 切换 preset 会重建 live agent，但不改写当前会话 header：TUI `SessionLayer` 在应用前后快照并断言 header
+  不变（违规抛 `DeeppyroError` 并回滚切换），只有新会话或显式 fork 才写入新的 `agentPreset`。
+- preset 的 `model` 在注册（`add()`）与应用（`resolve()`）时按 `[providers]` 配置校验：默认
+  `ConfigWarning`，`DEEPPYRO_STRICT_CONFIG` 下为 `ConfigError`；未知 provider/model 不再等下一次请求才失败。
+- headless 默认写 native schema 1（`--legacy-v4` 回退），TUI 交互仍写 v4；插件不要假设只有一种会话格式。
+  两种格式可用 `dpyro migrate` 转换但不 dual-write、不互读；v4 预计 0.3 移除。
 
 ## 8. 参考
 
 - `src/deeppyro/api/plugin.py`、`context.py`、`services.py`、`types.py`：本文的代码级事实来源。
 - `src/deeppyro/kernel/composition.py`：bundle/row/patch 的校验与合并实现。
-- `src/deeppyro/bundles/core/bundle.toml`：42 个内置插件行。
+- `src/deeppyro/bundles/core/bundle.toml`：46 个内置插件行。
 - `docs/spec/plugin-core.md`：组合内核与 v3 契约的完整规格。
 - `docs/spec/plugin-platform.md`：插件包安装单元（`plugin.toml`）与 composer 层序。
 - `docs/plugins/migration-v2-v3.md`：v2 → v3 迁移与 0.2.0 破坏性变更清单。

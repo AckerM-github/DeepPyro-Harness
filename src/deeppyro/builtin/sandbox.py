@@ -33,7 +33,7 @@ class SandboxPlugin(Plugin):
     provide = "sandbox"
     inject: ClassVar[list[str]] = ["config"]
     plugin_id = "sandbox"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "sandbox policy, execution provider, and approvals"
 
     def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:

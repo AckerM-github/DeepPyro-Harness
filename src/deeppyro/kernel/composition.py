@@ -219,6 +219,21 @@ def _satisfies(version: str, constraint: str, *, origin: str) -> bool:
     return left != right
 
 
+def version_satisfies(version: str, constraint: str, *, origin: str = "version requirement") -> bool:
+    """Whether `version` satisfies a bundle-style `constraint` (never raises).
+
+    Unlike the internal checker this is a predicate for manifests: malformed
+    constraints or versions simply do not match, so capability diagnostics can
+    report them instead of aborting boot.
+    """
+    if not constraint or _CONSTRAINT_RE.match(constraint) is None:
+        return False
+    try:
+        return _satisfies(version, constraint, origin=origin)
+    except CompositionError:
+        return False
+
+
 def _parse_requirements(
     raw: list[str | RequirementEntry],
     *,

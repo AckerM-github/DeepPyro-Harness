@@ -36,7 +36,7 @@ class WorkingDirectoryPlugin(Plugin):
 
     provide = "working_directory"
     plugin_id = "working-directory"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "per-session committed working directory and the working_directory tool"
     inject: ClassVar[list[str]] = ["sessions", "tools"]
 

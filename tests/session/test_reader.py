@@ -1,9 +1,10 @@
-"""Reader and zstd framing tests against the real session fixtures."""
+"""Reader and zstd framing tests against the session fixtures."""
 
 from __future__ import annotations
 
 import itertools
 import json
+import os
 import pathlib
 from collections import Counter
 
@@ -13,12 +14,6 @@ from deeppyro.core.errors import SessionError
 from deeppyro.core.wire import LogRecord
 from deeppyro.session import events, layout, reader, writer
 from tests.session import support
-
-if not (support.FIXTURES / "manifest.json").is_file():
-    pytest.skip(
-        "real DSH fixtures not present; run: node tools/gen_fixtures.mjs",
-        allow_module_level=True,
-    )
 
 MANIFEST = support.manifest_by_file()
 TYPE_SAMPLES = support.load_manifest()["typeSamples"]
@@ -157,17 +152,23 @@ def test_discover_session_files_supports_flat_and_nested_layouts(tmp_path: pathl
     assert nested.resolve() in discovered
 
 
-def test_zstd_roundtrip_of_a_large_real_log(tmp_path: pathlib.Path) -> None:
-    source = support.SESSIONS_DIR / "session-18982fa0-64ab-4f8b-bf36-f70a6f67b44b.jsonl"
+def test_zstd_roundtrip_of_a_large_log(tmp_path: pathlib.Path) -> None:
+    header = support.header("session-large")
+    events = [
+        support.event(
+            "llm/retry",
+            seq,
+            {"payload": os.urandom(640).hex()},
+            time=1_700_000_000_000 + seq * 1000,
+        )
+        for seq in range(620)
+    ]
+    source = tmp_path / "large.jsonl"
+    writer.write_new_session(source, header, events)
     original = reader.read_session_file(source)
     assert len(original.records) > 500
     target = tmp_path / "large.jsonl.zstd"
-    writer.write_new_session(
-        target,
-        original.header,
-        [writer.event_to_dict(record) for record in original.records],
-        zstd=True,
-    )
+    writer.write_new_session(target, original.header, events, zstd=True)
     assert target.stat().st_size > 200_000
     restored = reader.read_session_file(target)
     assert restored.header == original.header
@@ -176,3 +177,17 @@ def test_zstd_roundtrip_of_a_large_real_log(tmp_path: pathlib.Path) -> None:
     ]
     assert restored.trimmed is False
     assert restored.truncated is False
+
+
+def test_fixture_root_prefers_real_fixtures_when_available(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    synthetic = support.SYNTHETIC_FIXTURES
+    monkeypatch.setattr(support, "REAL_FIXTURES", tmp_path / "missing")
+    assert support.fixture_root() == synthetic
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(support, "REAL_FIXTURES", real)
+    assert support.fixture_root() == real

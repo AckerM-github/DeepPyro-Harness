@@ -16,9 +16,9 @@
 | 5 | `CapabilityManifest` 成为插件契约的一部分 | 能力治理、审计、成本 | ✅ M3 已实现 |
 | 6 | `bundle.api_version` 必须为 3 | 所有 bundle | ✅ M3 已实现 |
 | 7 | 配置 canonical 键改 snake_case | `config.toml`、插件 `Config` | ⚠️ 0.2.0 仍读取 camelCase alias，0.3 移除 |
-| 8 | 会话日志新增 native schema 1；v4 仍为默认 | 读会话的插件 | ⚠️ 0.2.0 两种格式并存，v4 预计 0.3 移除 |
-| 9 | 去品牌门禁（`rg -i dsh src` 接近 0） | `src/`、测试 fixtures | ⚠️ 未达标：379 行 / 91 文件 |
-| 10 | Node/TypeScript fixtures 退役，CI 不安装 Node | 测试、fixtures | ⚠️ 部分完成：native fixtures 已入库，旧资产仍在 |
+| 8 | 会话日志新增 native schema 1；headless 自 0.2.0 起默认 native，TUI 交互仍写 v4 | 读会话的插件 | ⚠️ 两种格式并存、不 dual-write、可用 `dpyro migrate` 转换；v4 预计 0.3 移除 |
+| 9 | 去品牌门禁（`rg -i dsh src` 接近 0） | `src/`、测试 fixtures | ⚠️ 未达标：377 行 / 94 文件（0.3 随 v4 清理） |
+| 10 | Node/TypeScript fixtures 退役，CI 不安装 Node | 测试、fixtures | ⚠️ 部分完成：合成 fixtures 已入库（46 文件），真实录制基线仍为未跟踪的 26.6MB |
 
 范围澄清：**session schema 不属于插件 API**。v3 只覆盖插件契约
 （mount/inject/service typing/CapabilityManifest）；会话模型由 native schema 1 单独拥有（ADR D4）。

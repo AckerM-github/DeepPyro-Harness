@@ -1,6 +1,6 @@
 # DSH 去品牌审计（0.2.0）
 
-> **状态**：历史审计（0.2.0） · **结论**：未达标，379 行/91 文件留待 0.3 随 v4 清理 · **最后核对**：2026-11-18
+> **状态**：历史审计（0.2.0） · **结论**：未达标，377 行/94 文件留待 0.3 随 v4 清理 · **最后核对**：2026-11-18（第二轮修复后重测）
 
 > 目标：为 0.2.0 的去品牌门禁（ADR D5 M5：`rg -i dsh src` 接近 0）提供可复核的现状盘点与清理建议。
 > 范围：本审计只统计与建议，**不改 `src` 代码**，实际清理留给后续版本。
@@ -13,7 +13,8 @@
 - 原计划大部分命中随 **M2（v4 会话/事件移除）** 消失；但 M2 的范围只到 native loop，**v4 退出被显式推迟到 0.3**，
   因此 `core/event_catalog.py`、`core/wire.py`、`core/events.py`、`session/events.py` 仍然存在。
 - 0.2.0 目标状态：`src` 零业务含义的 dsh 引用；允许保留的只有**历史 provenance 说明**（且不进入产品路径）。
-- **当前未达标**：`src` 大小写不敏感命中 **379 行 / 91 个文件**（集成线实测，排除 `__pycache__`）。
+- **当前未达标**：`src` 大小写不敏感命中 **377 行 / 94 个文件**（2026-11-18 第二轮修复后实测，排除 `__pycache__`）。
+  去品牌本轮只处理了**面向模型的文案**（sandbox policy 提示等），协议/事件目录/技能兼容目录留待 0.3。
   0.2.0 按 release candidate 发布，本项作为 0.3 的清理目标。
 
 ## 2. 审计方法（可复现）
@@ -24,16 +25,16 @@
 # 大小写不敏感（ADR 门禁口径）
 Get-ChildItem -Recurse src -File | Select-String -Pattern 'dsh' -CaseSensitive:$false |
   Measure-Object -Line
-# 379 行，91 个文件（排除 __pycache__）
+# 377 行，94 个文件（排除 __pycache__）
 
 # 大小写敏感拆分（用于解释口径差异）
 Get-ChildItem -Recurse src -File | Select-String -Pattern 'dsh' -CaseSensitive | Measure-Object -Line   # 133
-Get-ChildItem -Recurse src -File | Select-String -Pattern 'DSH' -CaseSensitive | Measure-Object -Line   # 262
-# 133 + 262 = 395 > 379：有 16 行同一行同时含 dsh 与 DSH（注释 + 协议名）。
+Get-ChildItem -Recurse src -File | Select-String -Pattern 'DSH' -CaseSensitive | Measure-Object -Line   # 260
+# 133 + 260 = 393 > 377：有 16 行同一行同时含 dsh 与 DSH（注释 + 协议名）。
 ```
 
 说明：lead 任务书里“约 133 处”是**小写 `dsh` 的行数**；ADR 门禁用的是 `-i` 不区分大小写，
-所以 0.2.0 的验收数字应以 **379 行** 为起点，最终目标接近 0。
+所以 0.2.0 的验收数字应以 **377 行** 为起点，最终目标接近 0。
 
 ### 2.2 Token 级计数（Python `tokenize`，只看 `src/**/*.py`）
 
@@ -41,22 +42,22 @@ Get-ChildItem -Recurse src -File | Select-String -Pattern 'DSH' -CaseSensitive |
 
 | token 类型 | 数量 | 说明 |
 | --- | --- | --- |
-| `COMMENT` | 54 | 注释里的对照说明/来源标注 |
-| `STRING` | 262 | 含 docstring、事件 producer 路径、错误/提示文案、路径字符串 |
+| `COMMENT` | 55 | 注释里的对照说明/来源标注 |
+| `STRING` | 259 | 含 docstring、事件 producer 路径、错误/提示文案、路径字符串 |
 | `NAME` | 33 | 标识符（变量/常量名） |
 | `FSTRING_MIDDLE` | 3 | f-string 文本片段 |
-| **合计** | **352** | 分布在 **90** 个 `.py` 文件 |
+| **合计** | **350** | 分布在 **90** 个 `.py` 文件 |
 
-字符串细分：其中 **94 个**是 `@deepseek-ai/dsh-<pkg>/lib/index.js:<line>` 形式的 producer 路径，
+字符串细分：其中 **92 个**是 `@deepseek-ai/dsh-<pkg>/lib/index.js:<line>` 形式的 producer 路径，
 几乎全部来自生成文件 `core/event_catalog.py`。
 
 ### 2.3 其他目录（不属本审计整改范围，供 M5 门禁参考）
 
 | 目录 | 行命中（-i） | 说明 |
 | --- | --- | --- |
-| `tests/` | 95 | 测试名/fixture/断言随 M2 语音重写；M5 要求 0 skip |
-| `docs/` | 669 | 文档允许引用历史；`docs/spec/README.md` 已标状态 |
-| `src/` | 379 | 本审计对象 |
+| `tests/` | 90（43 文件） | 测试名/fixture/断言随 M2 重写；M5 要求 0 skip |
+| `docs/` | 642（50 文件） | 文档允许引用历史；`docs/spec/README.md` 已标状态 |
+| `src/` | 377（94 文件） | 本审计对象 |
 
 ## 3. 分类与处置建议
 

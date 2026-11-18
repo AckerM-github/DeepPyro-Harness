@@ -29,6 +29,8 @@ from deeppyro.builtin.agent_presets import (
     AgentPresetsPlugin,
     builtin_presets,
 )
+from deeppyro.builtin.presets import PresetsPlugin
+from deeppyro.builtin.prompt_service import PromptPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.kernel import boot
 from deeppyro.prompt import PromptContext
@@ -81,7 +83,7 @@ async def test_agent_presets_plugin_registers_the_dsh_preset_set(tmp_path: Path)
     app = await boot(_config(tmp_path), manifest_paths=[])
     try:
         assert app.started["agent-presets"] == "ACTIVE"
-        presets = app.service("presets")
+        presets = app.require(PresetsPlugin)
         assert {"standard", PTC_PRESET_ID, MINIMAL_PRESET_ID, CORDIS_PRESET_ID, TEAM_PRESET_ID} <= set(
             presets.ids()
         )
@@ -95,7 +97,7 @@ async def test_agent_presets_plugin_registers_the_dsh_preset_set(tmp_path: Path)
 async def test_ptc_preset_fields(tmp_path: Path) -> None:
     app = await boot(_config(tmp_path), manifest_paths=[])
     try:
-        preset = app.service("presets").resolve(PTC_PRESET_ID)
+        preset = app.require(PresetsPlugin).resolve(PTC_PRESET_ID)
         assert preset.id == PTC_PRESET_ID
         assert preset.name == "PTC"
         assert preset.description == (
@@ -116,7 +118,7 @@ async def test_ptc_preset_fields(tmp_path: Path) -> None:
 async def test_minimal_preset_fields(tmp_path: Path) -> None:
     app = await boot(_config(tmp_path), manifest_paths=[])
     try:
-        preset = app.service("presets").resolve(MINIMAL_PRESET_ID)
+        preset = app.require(PresetsPlugin).resolve(MINIMAL_PRESET_ID)
         expected_shell = "pwsh" if os.name == "nt" else "bash"
         assert preset.id == MINIMAL_PRESET_ID
         assert preset.name == "Minimal"
@@ -135,7 +137,7 @@ async def test_minimal_preset_fields(tmp_path: Path) -> None:
 async def test_cordis_preset_fields(tmp_path: Path) -> None:
     app = await boot(_config(tmp_path), manifest_paths=[])
     try:
-        preset = app.service("presets").resolve(CORDIS_PRESET_ID)
+        preset = app.require(PresetsPlugin).resolve(CORDIS_PRESET_ID)
         assert preset.id == CORDIS_PRESET_ID
         assert preset.name == "Cordis"
         assert preset.description == "standard tools plus plugin authoring and cordis guidance"
@@ -152,7 +154,7 @@ async def test_cordis_preset_fields(tmp_path: Path) -> None:
 async def test_minimal_persona_section_is_scoped_to_the_minimal_preset(tmp_path: Path) -> None:
     app = await boot(_config(tmp_path), manifest_paths=[])
     try:
-        prompt = app.service("prompt")
+        prompt = app.require(PromptPlugin)
         sections = prompt.sections(scope=MINIMAL_PRESET_ID)
         persona = next(section for section in sections if section.name == MINIMAL_PERSONA_SECTION)
         assert persona.order == MINIMAL_PERSONA_ORDER
@@ -174,7 +176,7 @@ async def test_minimal_persona_section_is_scoped_to_the_minimal_preset(tmp_path:
 async def test_cordis_guide_section_is_scoped_to_the_cordis_preset(tmp_path: Path) -> None:
     app = await boot(_config(tmp_path), manifest_paths=[])
     try:
-        prompt = app.service("prompt")
+        prompt = app.require(PromptPlugin)
         sections = prompt.sections(scope=CORDIS_PRESET_ID)
         guide = next(section for section in sections if section.name == CORDIS_GUIDE_SECTION)
         assert guide.order == CORDIS_GUIDE_ORDER
@@ -191,8 +193,8 @@ async def test_cordis_guide_section_is_scoped_to_the_cordis_preset(tmp_path: Pat
 async def test_plugin_dispose_removes_presets_and_scoped_sections(tmp_path: Path) -> None:
     app = await boot(_config(tmp_path), manifest_paths=[])
     try:
-        presets = app.service("presets")
-        prompt = app.service("prompt")
+        presets = app.require(PresetsPlugin)
+        prompt = app.require(PromptPlugin)
         assert PTC_PRESET_ID in presets.ids()
         assert MINIMAL_PERSONA_SECTION in _section_names(prompt, MINIMAL_PRESET_ID)
 

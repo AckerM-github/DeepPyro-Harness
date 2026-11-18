@@ -42,7 +42,7 @@ class MyConfig(BaseModel):
 
 class MyPlugin(Plugin):
     plugin_id = "my-plugin"
-    version = "0.1.0"
+    version = "0.2.0"
     api_version = 3              # must equal deeppyro.api.API_VERSION (3) or the mount is rejected
     inject = ("tools",)          # service names, or contract classes such as CommandsPlugin
     Config = MyConfig            # optional pydantic model; row.config is validated into it
@@ -106,7 +106,7 @@ A bundle is a directory with `bundle.toml`:
 [bundle]
 id = "my-bundle"
 name = "My bundle"
-version = "0.1.0"
+version = "0.2.0"
 api_version = 3     # must equal deeppyro.api.API_VERSION; omitted means 3
 order = 50          # applied after lower order bundles
 critical = false    # default for external bundles
@@ -379,15 +379,24 @@ class GreetPlugin(Plugin):
 ## 9. Known limits
 
 - Settings writes take effect on the next boot unless the changed field is volatile for that
-  plugin (section 6.3); the settings store has no cross-process lock and rewrites the user
-  manifest without preserving comments.
+  plugin (section 6.3). Writes now run inside a cross-process file lock (`plugins/file_lock.py`,
+  `msvcrt` on Windows / `fcntl` elsewhere, 5s default, `SettingsLockTimeout` on timeout) and the
+  user manifest is edited line-by-line, preserving comments, key order and unknown keys.
 - `bundle install` only validates structure; the third-party code runs on the next boot, with no
-  signature or sandbox. Removing a bundle does not stop an already-loaded plugin.
-- Plugin status/conversation slots are append-only: a conversation row contributed after a
-  message was rendered is not re-rendered by the host.
+  signature or sandbox. Removing a bundle does not stop an already-loaded plugin. A bundle may
+  optionally pin itself with `[bundle].digest = "sha256:…"`, checked against the on-disk bytes at
+  boot (`docs/guides/bundle-digest.md`).
+- Plugin slot contributions are append-only in two senses: registration can only add, so a
+  duplicate `(kind, id)` raises `SlotError` naming both owners (no replace/reorder), and a
+  conversation row contributed after a message was rendered is not re-rendered by the host.
+  Theme/locale maps and `clear()` remain host-level state rather than slot replacement.
 - Preset switching rebuilds the live agent but does not rewrite the current session header, so
-  `agentPreset` keeps the value the session was created with; only new sessions record the new id.
-- Preset `model` overrides skip config validation; an unknown model id fails on the next request.
+  `agentPreset` keeps the value the session was created with; only new sessions (or forks) record
+  the new id. The TUI `SessionLayer` snapshot/assert now enforces this: a preset application that
+  mutates an existing header raises `DeeppyroError` and the switch rolls back.
+- Preset `model` overrides are validated when the preset is registered and resolved, against the
+  `[providers]` configuration: a `ConfigWarning` by default (strict `DEEPPYRO_STRICT_CONFIG`
+  raises `ConfigError`); unknown provider/model no longer waits for the next request.
 - Plugins run in-process and are trusted once loaded; there is no OS-level isolation.
 - `Plugin.api_version` and `bundle.api_version` must equal the host `API_VERSION` (3); there
   is no negotiation protocol and no v1/v2 compatibility shim (ADR 0001 section 7).

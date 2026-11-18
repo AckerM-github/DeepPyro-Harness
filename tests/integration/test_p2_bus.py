@@ -50,10 +50,11 @@ class FakeCtx:
         return service_require(self._services, service)
 
     def effect(self, execute: Any, label: str = "anonymous") -> Any:
-        dispose = execute()
+        # Production semantics: effect() only records a teardown callback; the
+        # callback runs at dispose time, never during setup.
         self.effects.append(label)
-        self.disposers.append(dispose)
-        return dispose
+        self.disposers.append(execute)
+        return execute
 
     def emit(self, *args: Any, **kwargs: Any) -> None:
         self.emitted.append((args, kwargs))

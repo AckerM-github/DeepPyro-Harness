@@ -37,7 +37,7 @@ class ApprovalPolicyPlugin(Plugin):
     """Turn [approval].hookMode into approval/request answers."""
 
     plugin_id = "approval-policy"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "answer approval/request from [approval] hookMode"
     inject: ClassVar[list[str]] = ["hooks", "config"]
 
@@ -60,10 +60,9 @@ class ApprovalPolicyPlugin(Plugin):
 
     def setup(self) -> None:
         hooks = self.ctx.require(HookService)
-        self.ctx.effect(
-            lambda: hooks.on(APPROVAL_REQUEST, self._on_request),
-            label="approval-policy",
-        )
+        # Subscribe eagerly: effect() only records a teardown callback.
+        self._dispose = hooks.on(APPROVAL_REQUEST, self._on_request)
+        self.ctx.effect(self._dispose, label="approval-policy")
 
     async def _on_request(self, payload: HookPayload, next_step: HookNext) -> Any:
         """Answer when configured, otherwise continue the waterfall unchanged."""

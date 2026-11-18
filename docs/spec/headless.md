@@ -1,10 +1,11 @@
 # headless 一次性模式（deeppyro/headless.py）
 
-> **状态**：现行（native opt-in） · **层级**：CLI 功能规格 · **最后核对**：2026-11-18
-> 默认路径仍走 v4；`--native-loop` / `DEEPPYRO_NATIVE_LOOP` 走 native schema 1。契约入口：[native/schema.md](../native/schema.md)。
+> **状态**：现行（native 默认） · **层级**：CLI 功能规格 · **最后核对**：2026-11-18
+> 0.2.0 起 `run_once` 默认走 native schema 1 + `AgentLoop`；`--legacy-v4` 回退 v4，`--native-loop` 为弃用别名。
+> 契约入口：[native/schema.md](../native/schema.md)；操作指南：[guides/native-loop-default.md](../guides/native-loop-default.md)。
 
-> 所有者：Lead。默认 v4 路径的契约事实源是 [INTERFACES.md](INTERFACES.md)（迁移参考）；
-> native 路径以 [native/schema.md](../native/schema.md) 为准。本文件记录 headless 的 API、事件与取舍。
+> 所有者：Lead。native 路径（默认）以 [native/schema.md](../native/schema.md) 为准；`--legacy-v4` 的 v4 路径
+> 以 [INTERFACES.md](INTERFACES.md)（迁移参考）为事实源。本文件记录 headless 的 API、事件与取舍。
 > 交互式产品形态见 [tui.md](tui.md)。
 
 ## 1. 定位
@@ -14,12 +15,15 @@
 不 import 已删除的 `deeppyro.cli`。
 
     dpyro --headless "prompt" [--model M] [--provider P] [--preset P] [--json] [--cwd DIR]
-        [--max-steps N] [--permission-mode MODE] [--approval-policy POLICY] [--native-loop]
+        [--max-steps N] [--permission-mode MODE] [--approval-policy POLICY]
+        [--legacy-v4 | --native-loop(deprecated)]
     echo "prompt" | dpyro --headless --json
 
-`--native-loop`（或 `DEEPPYRO_NATIVE_LOOP=1|true|yes|on`）选择 native schema 1 + `AgentLoop`；
-只影响 `run_once`，默认仍走 v4。native 路径不创建 v4 session-service bindings，`--max-steps` 映射为
-native budget；细节见 [native/schema.md §5.5](../native/schema.md)。
+路径选择（只影响 `run_once`）：默认 native schema 1 + `AgentLoop`；`--legacy-v4`（或
+`DEEPPYRO_NATIVE_LOOP=0|false|no|off`）回退 v4；`--native-loop` 仍被接受但已弃用（会打
+`DeprecationWarning`），等价于默认。`--legacy-v4` 与 `--native-loop` 互斥（argparse 退出码 2）。
+native 路径不创建 v4 session-service bindings，`--max-steps` 映射为 native budget；细节见
+[native/schema.md §5.5](../native/schema.md)。
 
 参数为空（或 stdin 为空）→ 退出码 2；`--max-steps 0` → 2；`--preset` 未知 → stderr
 `error: unknown agent preset: '<id>'`、退出码 2（在 boot 建 agent 之前失败）。

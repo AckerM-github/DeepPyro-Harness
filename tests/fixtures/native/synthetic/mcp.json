@@ -1,0 +1,367 @@
+{
+  "case_id": "mcp",
+  "capability": "mcp",
+  "title": "an MCP tool call keeps its mcp__server__tool name and token usage lives in the trace",
+  "coverage": "covered",
+  "limitations": [
+    "neither vocabulary records MCP lifecycle facts (mcp/server-connected); the differential can only prove the tool seam",
+    "the recorded baseline has no MCP traffic; this pair is hand-authored"
+  ],
+  "v4": {
+    "header": {
+      "type": "session",
+      "version": 4,
+      "id": "session-00000000-0000-4000-8000-000000000014",
+      "createdAt": 1794000000000,
+      "isSeeded": false,
+      "delegationDepth": 0
+    },
+    "records": [
+      {
+        "type": "user/message",
+        "seq": 0,
+        "time": 1794000001000,
+        "data": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Look up hello.txt through the demo MCP server."
+            }
+          ],
+          "source": {
+            "kind": "user"
+          },
+          "id": "msg_0000000000000041"
+        },
+        "surfaceOp": "append"
+      },
+      {
+        "type": "assistant/message",
+        "seq": 1,
+        "time": 1794000002000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "id": "msg_0000000000000042",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "tool-call",
+                "id": "call_00000000000000b1",
+                "name": "mcp__demo__lookup",
+                "arguments": "{\"path\":\"hello.txt\"}"
+              }
+            ],
+            "created_at": 1794000002000,
+            "source": {
+              "kind": "model",
+              "provider": "deepseek",
+              "model": "deepseek-flash"
+            }
+          },
+          "usage": {
+            "inputTokens": 10,
+            "outputTokens": 5,
+            "cacheReadTokens": 2,
+            "cacheWriteTokens": 0,
+            "totalTokens": 15
+          }
+        },
+        "surfaceOp": "append"
+      },
+      {
+        "type": "tool/call",
+        "seq": 2,
+        "time": 1794000002100,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "callId": "call_00000000000000b1",
+          "name": "mcp__demo__lookup",
+          "arguments": "{\"path\":\"hello.txt\"}"
+        }
+      },
+      {
+        "type": "tool/result",
+        "seq": 3,
+        "time": 1794000003000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "role": "tool",
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"content\":\"hello from mcp\"}"
+              }
+            ],
+            "source": {
+              "kind": "tool",
+              "callId": "call_00000000000000b1"
+            },
+            "toolCallId": "call_00000000000000b1",
+            "isError": false,
+            "id": "msg_0000000000000043"
+          }
+        },
+        "surfaceOp": "append",
+        "sourceEventSeqs": [
+          2
+        ]
+      },
+      {
+        "type": "assistant/message",
+        "seq": 4,
+        "time": 1794000004000,
+        "data": {
+          "turn": 1,
+          "step": 2,
+          "message": {
+            "id": "msg_0000000000000044",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "The MCP server returned hello from mcp."
+              }
+            ],
+            "created_at": 1794000004000,
+            "source": {
+              "kind": "model",
+              "provider": "deepseek",
+              "model": "deepseek-flash"
+            }
+          },
+          "usage": {
+            "inputTokens": 20,
+            "outputTokens": 6,
+            "cacheReadTokens": 8,
+            "cacheWriteTokens": 0,
+            "totalTokens": 26
+          }
+        },
+        "surfaceOp": "append"
+      }
+    ]
+  },
+  "native": {
+    "session_id": "session-00000000-0000-4000-8000-000000000014",
+    "created_at": 1794000000000,
+    "events": [
+      {
+        "type": "turn.started",
+        "run_id": "run_4444444444444444",
+        "turn_id": "turn_4444444444444444",
+        "trace_id": "44444444444444444444444444444444",
+        "data": {}
+      },
+      {
+        "type": "user.message",
+        "turn_id": "turn_4444444444444444",
+        "data": {
+          "message": {
+            "id": "msg_0000000000000041",
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Look up hello.txt through the demo MCP server."
+              }
+            ],
+            "created_at": 1794000001000,
+            "source": {
+              "kind": "user"
+            }
+          }
+        }
+      },
+      {
+        "type": "step.started",
+        "run_id": "run_4444444444444444",
+        "turn_id": "turn_4444444444444444",
+        "step_id": "step_0000000000000411",
+        "trace_id": "44444444444444444444444444444444",
+        "data": {}
+      },
+      {
+        "type": "assistant.message",
+        "run_id": "run_4444444444444444",
+        "turn_id": "turn_4444444444444444",
+        "step_id": "step_0000000000000411",
+        "trace_id": "44444444444444444444444444444444",
+        "data": {
+          "message": {
+            "id": "msg_0000000000000042",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "tool_call",
+                "id": "call_00000000000000b1",
+                "name": "mcp__demo__lookup",
+                "arguments": "{\"path\":\"hello.txt\"}"
+              }
+            ],
+            "created_at": 1794000002000,
+            "source": {
+              "kind": "model",
+              "provider": "deepseek",
+              "model": "deepseek-flash"
+            }
+          },
+          "finish_reason": "tool_calls"
+        }
+      },
+      {
+        "type": "tool.call",
+        "run_id": "run_4444444444444444",
+        "turn_id": "turn_4444444444444444",
+        "step_id": "step_0000000000000411",
+        "trace_id": "44444444444444444444444444444444",
+        "data": {
+          "call_id": "call_00000000000000b1",
+          "name": "mcp__demo__lookup",
+          "arguments": "{\"path\":\"hello.txt\"}"
+        }
+      },
+      {
+        "type": "tool.result",
+        "run_id": "run_4444444444444444",
+        "turn_id": "turn_4444444444444444",
+        "step_id": "step_0000000000000411",
+        "trace_id": "44444444444444444444444444444444",
+        "data": {
+          "call_id": "call_00000000000000b1",
+          "message": {
+            "id": "msg_0000000000000043",
+            "role": "tool",
+            "content": [
+              {
+                "type": "text",
+                "text": "{\"content\":\"hello from mcp\"}"
+              }
+            ],
+            "created_at": 1794000003000,
+            "source": {
+              "kind": "tool",
+              "call_id": "call_00000000000000b1"
+            },
+            "tool_call_id": "call_00000000000000b1"
+          }
+        }
+      },
+      {
+        "type": "step.ended",
+        "run_id": "run_4444444444444444",
+        "turn_id": "turn_4444444444444444",
+        "step_id": "step_0000000000000411",
+        "trace_id": "44444444444444444444444444444444",
+        "data": {}
+      },
+      {
+        "type": "step.started",
+        "run_id": "run_4444444444444444",
+        "turn_id": "turn_4444444444444444",
+        "step_id": "step_0000000000000412",
+        "trace_id": "44444444444444444444444444444444",
+        "data": {}
+      },
+      {
+        "type": "assistant.message",
+        "run_id": "run_4444444444444444",
+        "turn_id": "turn_4444444444444444",
+        "step_id": "step_0000000000000412",
+        "trace_id": "44444444444444444444444444444444",
+        "data": {
+          "message": {
+            "id": "msg_0000000000000044",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "The MCP server returned hello from mcp."
+              }
+            ],
+            "created_at": 1794000004000,
+            "source": {
+              "kind": "model",
+              "provider": "deepseek",
+              "model": "deepseek-flash"
+            }
+          },
+          "finish_reason": "stop"
+        }
+      },
+      {
+        "type": "step.ended",
+        "run_id": "run_4444444444444444",
+        "turn_id": "turn_4444444444444444",
+        "step_id": "step_0000000000000412",
+        "trace_id": "44444444444444444444444444444444",
+        "data": {}
+      },
+      {
+        "type": "turn.ended",
+        "run_id": "run_4444444444444444",
+        "turn_id": "turn_4444444444444444",
+        "trace_id": "44444444444444444444444444444444",
+        "data": {
+          "reason": {
+            "kind": "completed"
+          }
+        }
+      }
+    ]
+  },
+  "trace": {
+    "records": [
+      {
+        "type": "run",
+        "run_id": "run_4444444444444444",
+        "trace_id": "44444444444444444444444444444444",
+        "session_id": "session-00000000-0000-4000-8000-000000000014",
+        "started_at": 1794000000000,
+        "provider": "deepseek",
+        "model": "deepseek-flash"
+      },
+      {
+        "type": "model_call",
+        "trace_id": "44444444444444444444444444444444",
+        "span_id": "span_bbbbbbbbbbbbbbbb",
+        "run_id": "run_4444444444444444",
+        "turn_id": "turn_4444444444444444",
+        "step_id": "step_0000000000000411",
+        "provider": "deepseek",
+        "model": "deepseek-flash",
+        "prompt_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cached_input_tokens": 2,
+        "latency_ms": 120,
+        "finish_reason": "tool_calls",
+        "retry_count": 0,
+        "ts": 1794000002200
+      },
+      {
+        "type": "model_call",
+        "trace_id": "44444444444444444444444444444444",
+        "span_id": "span_cccccccccccccccc",
+        "run_id": "run_4444444444444444",
+        "turn_id": "turn_4444444444444444",
+        "step_id": "step_0000000000000412",
+        "provider": "deepseek",
+        "model": "deepseek-flash",
+        "prompt_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "input_tokens": 20,
+        "output_tokens": 6,
+        "cached_input_tokens": 8,
+        "latency_ms": 300,
+        "finish_reason": "stop",
+        "retry_count": 0,
+        "ts": 1794000004200
+      }
+    ]
+  }
+}

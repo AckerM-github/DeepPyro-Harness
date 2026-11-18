@@ -34,7 +34,7 @@ class PromptExtensionPlugin(Plugin):
     """Append [prompt].extension to the rendered system prompt."""
 
     plugin_id = "prompt-extension"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "append configured text to the assembled system prompt"
     inject: ClassVar[list[str]] = ["hooks", "config"]
 
@@ -50,10 +50,9 @@ class PromptExtensionPlugin(Plugin):
 
     def setup(self) -> None:
         hooks = self.ctx.require(HookService)
-        self.ctx.effect(
-            lambda: hooks.on(SYSTEM_PROMPT_ASSEMBLE, self._on_assemble),
-            label="prompt-extension",
-        )
+        # Subscribe eagerly: effect() only records a teardown callback.
+        self._dispose = hooks.on(SYSTEM_PROMPT_ASSEMBLE, self._on_assemble)
+        self.ctx.effect(self._dispose, label="prompt-extension")
 
     async def _on_assemble(self, payload: HookPayload, next_step: HookNext) -> Any:
         """Run the downstream chain first, then append the extension text."""

@@ -1,8 +1,9 @@
 name: native-replay
 
-# M4 offline track: replay the recorded native fixtures and score the 20 golden
-# evals. It never contacts a provider, and the job is deliberately non-blocking
-# (continue-on-error) so fixture drift cannot hold up the four mandatory gates.
+# M4/M5 offline track: replay the recorded native fixtures, score the 20 golden
+# evals, and run the synthetic native/v4 differential matrix (KI-011). The job is
+# a real gate: it never contacts a provider and depends only on checked-in
+# fixtures, so fixture drift and coverage gaps must fail the PR here.
 on:
   push:
     branches: [main]
@@ -18,10 +19,9 @@ concurrency:
 
 jobs:
   offline:
-    name: offline replay + golden eval
+    name: offline replay + golden eval + differential matrix
     runs-on: windows-latest
-    continue-on-error: true
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -34,12 +34,16 @@ jobs:
       - run: uv sync --locked
       - name: replay recorded native fixtures and score golden evals
         run: uv run python scripts/record_replay.py --json native-replay-report.json
-      - name: eval and replay unit tests
-        run: uv run python -m pytest tests/eval -q
-      - name: upload offline report
+      - name: print synthetic native/v4 differential coverage matrix
+        run: uv run python scripts/differential_matrix.py --json native-differential-matrix.json
+      - name: eval, replay and native differential tests
+        run: uv run python -m pytest tests/eval tests/native
+      - name: upload offline reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-replay-report-${{ matrix.python-version }}
-          path: native-replay-report.json
+          path: |
+            native-replay-report.json
+            native-differential-matrix.json
           if-no-files-found: warn

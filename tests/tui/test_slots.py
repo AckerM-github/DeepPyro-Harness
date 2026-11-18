@@ -11,6 +11,7 @@ from deeppyro.core.errors import DeeppyroError
 from deeppyro.tui.slots import (
     CONVERSATION,
     PANEL,
+    SCREEN,
     SETTINGS,
     STATUS,
     SlotError,
@@ -384,3 +385,107 @@ def test_resolve_slot_registry_variants() -> None:
 
 def test_slot_error_is_deeppyro_error() -> None:
     assert issubclass(SlotError, DeeppyroError)
+
+
+#: One legal registrar per slot kind: (kind, register(registry, plugin_id)).
+_KIND_REGISTRARS: list[Any] = [
+    (
+        STATUS,
+        lambda registry, plugin_id: registry.add_status_item(
+            lambda context: "status", id="shared", plugin_id=plugin_id
+        ),
+    ),
+    (
+        CONVERSATION,
+        lambda registry, plugin_id: registry.add_conversation_row(
+            lambda event: True, lambda event: "row", id="shared", plugin_id=plugin_id
+        ),
+    ),
+    (
+        PANEL,
+        lambda registry, plugin_id: registry.add_panel(
+            "Shared", lambda context: "panel", id="shared", plugin_id=plugin_id
+        ),
+    ),
+    (
+        SETTINGS,
+        lambda registry, plugin_id: registry.add_settings_page(
+            "Shared", lambda context: "settings", id="shared", plugin_id=plugin_id
+        ),
+    ),
+    (
+        SCREEN,
+        lambda registry, plugin_id: registry.add_screen(
+            "shared", renderer=lambda context: "screen", plugin_id=plugin_id
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize(("kind", "register"), _KIND_REGISTRARS)
+def test_slot_registration_is_append_only_for_every_kind(kind: str, register: Any) -> None:
+    """A second registration of (kind, id) fails and names both plugin owners."""
+    registry = SlotRegistry()
+    register(registry, "first-plugin")
+    existing = registry.get(kind, "shared")
+    assert existing is not None
+
+    with pytest.raises(SlotError) as excinfo:
+        register(registry, "second-plugin")
+
+    message = str(excinfo.value)
+    assert f"duplicate {kind} slot id 'shared'" in message
+    assert "'first-plugin'" in message
+    assert "'second-plugin'" in message
+    # The first registration survives untouched: no replace, no reorder.
+    assert registry.get(kind, "shared") is existing
+    assert registry.list() == [existing]
+
+
+def test_legal_appends_keep_existing_relative_order() -> None:
+    registry = SlotRegistry()
+    registry.add_status_item(lambda context: "one", order=100, id="one")
+    registry.add_status_item(lambda context: "three", order=300, id="three")
+    before = [item.id for item in registry.status_items()]
+
+    dispose = registry.add_status_item(lambda context: "two", order=200, id="two", plugin_id="late")
+
+    after = [item.id for item in registry.status_items()]
+    assert before == ["one", "three"]
+    assert after == ["one", "two", "three"]
+    assert [item.id for item in registry.status_items() if item.id in before] == before
+
+    dispose()
+    assert [item.id for item in registry.status_items()] == before
+
+
+def test_re_registering_the_same_order_does_not_reorder_existing_rows() -> None:
+    registry = SlotRegistry()
+    registry.add_status_item(lambda context: "alpha", order=100, id="alpha")
+    registry.add_status_item(lambda context: "beta", order=100, id="beta")
+
+    with pytest.raises(SlotError, match="duplicate status slot id 'beta'"):
+        registry.add_status_item(lambda context: "beta-v2", order=0, id="beta")
+
+    assert [item.id for item in registry.status_items()] == ["alpha", "beta"]
+
+
+def test_duplicate_default_ids_from_titles_are_rejected() -> None:
+    registry = SlotRegistry()
+    registry.add_panel("Same Panel", lambda context: "one")
+    with pytest.raises(SlotError, match="duplicate panel slot id 'same-panel'"):
+        registry.add_panel("Same Panel", lambda context: "two", plugin_id="other")
+
+
+def test_clear_is_a_host_reset_not_a_plugin_replace() -> None:
+    """clear() drops every contribution; there is no per-contribution replace."""
+    registry = SlotRegistry(plugin_id="host")
+    registry.add_status_item(lambda context: "one", id="one", plugin_id="plugin-a")
+    registry.add_status_item(lambda context: "two", id="two", plugin_id="plugin-a")
+    assert len(registry) == 2
+
+    registry.clear()
+
+    assert len(registry) == 0
+    registry.add_status_item(lambda context: "fresh", id="one", plugin_id="plugin-b")
+    assert registry.get(STATUS, "one") is not None

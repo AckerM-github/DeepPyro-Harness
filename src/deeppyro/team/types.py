@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+
+from deeppyro.subagent.types import SubagentUsage
 
 #: A member that still occupies one of the limited team slots.
 LIVE_PHASES = ("spawning", "running", "idle")
@@ -42,6 +45,61 @@ class MemberInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class MemberRun:
+    """One measured member turn and the provider usage it consumed.
+
+    The team folds these runs out of the lead session log (record type
+    "team/usage", written as an ignorable fact), so per-run usage survives a
+    cold resume.  A failed or cancelled turn still carries the partial usage
+    that reached the provider before it stopped.
+    """
+
+    run_id: str
+    member_id: str
+    usage: SubagentUsage
+    ok: bool = True
+    cancelled: bool = False
+    error: str = ""
+    created_at: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "runId": self.run_id,
+            "memberId": self.member_id,
+            "usage": self.usage.to_dict(),
+            "ok": self.ok,
+            "cancelled": self.cancelled,
+            "error": self.error,
+            "createdAt": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: object) -> MemberRun:
+        if not isinstance(raw, dict):
+            raise ValueError("member run must be a mapping")
+        usage = raw.get("usage")
+        return cls(
+            run_id=_run_text(raw.get("runId") or raw.get("run_id")),
+            member_id=_run_text(raw.get("memberId") or raw.get("member_id")),
+            usage=SubagentUsage.from_dict(usage) if isinstance(usage, dict) else SubagentUsage(),
+            ok=bool(raw.get("ok", True)),
+            cancelled=bool(raw.get("cancelled", False)),
+            error=_run_text(raw.get("error")),
+            created_at=_run_int(raw.get("createdAt") or raw.get("created_at")),
+        )
+
+
+def _run_text(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _run_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value
+
+
+@dataclass(frozen=True, slots=True)
 class TaskInfo:
     """Snapshot of one item on the shared team task board."""
 
@@ -69,5 +127,6 @@ __all__ = [
     "TASK_ACTIONS",
     "TASK_STATUSES",
     "MemberInfo",
+    "MemberRun",
     "TaskInfo",
 ]

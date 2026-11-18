@@ -471,7 +471,7 @@ class SlotsPlugin(Plugin):
     """
 
     plugin_id = "slots"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "TUI slot registry: status items, conversation rows, panels, settings, screens"
     inject: ClassVar[list[str]] = []
 

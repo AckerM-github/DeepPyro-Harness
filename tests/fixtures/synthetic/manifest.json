@@ -1,0 +1,607 @@
+{
+  "generatedAt": 1700000000000,
+  "sourceRoot": "tests/fixtures/synthetic",
+  "sessions": [
+    {
+      "id": "session-11111111-1111-4111-8111-111111111111",
+      "file": "session-11111111-1111-4111-8111-111111111111.jsonl",
+      "source": "session-11111111-1111-4111-8111-111111111111.jsonl",
+      "cwd": "C:\\work",
+      "agentPreset": "standard",
+      "delegationDepth": 0,
+      "parentSession": null,
+      "origin": null,
+      "createdAt": 1700000000000,
+      "recordCount": 15,
+      "keptCount": 15,
+      "decodedSize": 2577,
+      "trimmed": false,
+      "badLines": 0,
+      "seqBreaks": 0,
+      "types": {
+        "assistant/message": 2,
+        "model/selection": 1,
+        "session/title": 1,
+        "step/end": 2,
+        "step/start": 2,
+        "system/message": 1,
+        "tool/call": 1,
+        "tool/result": 1,
+        "turn/end": 1,
+        "turn/start": 1,
+        "user/message": 2
+      }
+    },
+    {
+      "id": "session-22222222-2222-4222-8222-222222222222",
+      "file": "session-22222222-2222-4222-8222-222222222222.jsonl",
+      "source": "session-22222222-2222-4222-8222-222222222222.jsonl",
+      "cwd": "C:\\work",
+      "agentPreset": "standard",
+      "delegationDepth": 0,
+      "parentSession": null,
+      "origin": null,
+      "createdAt": 1700000000000,
+      "recordCount": 3,
+      "keptCount": 3,
+      "decodedSize": 644,
+      "trimmed": true,
+      "badLines": 0,
+      "seqBreaks": 1,
+      "types": {
+        "turn/start": 1,
+        "user/message": 2
+      }
+    },
+    {
+      "id": "session-33333333-3333-4333-8333-333333333333",
+      "file": "session-33333333-3333-4333-8333-333333333333.jsonl",
+      "source": "session-33333333-3333-4333-8333-333333333333.jsonl",
+      "cwd": "C:\\work",
+      "agentPreset": "standard",
+      "delegationDepth": 0,
+      "parentSession": null,
+      "origin": null,
+      "createdAt": 1700000000000,
+      "recordCount": 7,
+      "keptCount": 7,
+      "decodedSize": 1194,
+      "trimmed": false,
+      "badLines": 0,
+      "seqBreaks": 0,
+      "types": {
+        "assistant/message": 1,
+        "step/end": 1,
+        "step/start": 1,
+        "system/message": 1,
+        "turn/end": 1,
+        "turn/start": 1,
+        "user/message": 1
+      }
+    }
+  ],
+  "typeSamples": {
+    "permission_preset": {
+      "type": "permission/preset",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "permission/preset",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "sandbox_mode": {
+      "type": "sandbox/mode",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "sandbox/mode",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "approval_policy": {
+      "type": "approval/policy",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "approval/policy",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "agent_inbox_spliced": {
+      "type": "agent/inbox/spliced",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "agent/inbox/spliced",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "turn_start": {
+      "type": "turn/start",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "turn/start",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "step_start": {
+      "type": "step/start",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "step/start",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "system_message": {
+      "type": "system/message",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "system/message",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "id": "msg_system",
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "system prompt"
+              }
+            ],
+            "source": {
+              "kind": "system-prompt"
+            }
+          }
+        },
+        "surfaceOp": "append"
+      }
+    },
+    "user_message": {
+      "type": "user/message",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "user/message",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {
+          "id": "msg_user",
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ],
+          "source": {
+            "kind": "user"
+          }
+        },
+        "surfaceOp": "append"
+      }
+    },
+    "request_header": {
+      "type": "request/header",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "request/header",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {
+          "header": {
+            "tools": [
+              {
+                "name": "read",
+                "description": "read a file",
+                "parameters": {
+                  "type": "object"
+                }
+              }
+            ],
+            "adapterDefaults": {
+              "temperature": 0
+            }
+          }
+        }
+      }
+    },
+    "request_context": {
+      "type": "request/context",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "request/context",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "session_title": {
+      "type": "session/title",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "session/title",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "session_title_llm_request": {
+      "type": "session/title-llm-request",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "session/title-llm-request",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "session_log_deepseek_delivery_accepted": {
+      "type": "session-log-deepseek/delivery-accepted",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "session-log-deepseek/delivery-accepted",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "assistant_message": {
+      "type": "assistant/message",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "assistant/message",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "id": "msg_assistant",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "answer"
+              },
+              {
+                "type": "tool-call",
+                "id": "call_1",
+                "name": "read",
+                "arguments": "{}"
+              }
+            ],
+            "source": {
+              "kind": "model",
+              "provider": "deepseek",
+              "model": "deepseek-chat"
+            }
+          }
+        },
+        "surfaceOp": "append"
+      }
+    },
+    "step_end": {
+      "type": "step/end",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "step/end",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "turn_end": {
+      "type": "turn/end",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "turn/end",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "tool_call": {
+      "type": "tool/call",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "tool/call",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "tool_result": {
+      "type": "tool/result",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "tool/result",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "id": "msg_tool",
+            "role": "tool",
+            "toolCallId": "call_1",
+            "isError": false,
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ],
+            "source": {
+              "kind": "tool",
+              "callId": "call_1"
+            }
+          }
+        },
+        "surfaceOp": "append"
+      }
+    },
+    "job_registered": {
+      "type": "job/registered",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "job/registered",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "job_settled": {
+      "type": "job/settled",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "job/settled",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "web_deepseek_search_llm_request": {
+      "type": "web/deepseek-search-llm-request",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "web/deepseek-search-llm-request",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "developer_message": {
+      "type": "developer/message",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "developer/message",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "id": "msg_developer",
+            "role": "developer",
+            "content": [],
+            "source": {
+              "kind": "system-prompt"
+            }
+          }
+        },
+        "surfaceOp": "append"
+      }
+    },
+    "agent_preset_selected": {
+      "type": "agent-preset/selected",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "agent-preset/selected",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "subagent_descriptor": {
+      "type": "subagent/descriptor",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "subagent/descriptor",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "tool_ptc_dispatch_start": {
+      "type": "tool/ptc-dispatch-start",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "tool/ptc-dispatch-start",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "tool_ptc_dispatch": {
+      "type": "tool/ptc-dispatch",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "tool/ptc-dispatch",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "model_selection": {
+      "type": "model/selection",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "model/selection",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "session_end_seed": {
+      "type": "session/end-seed",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "session/end-seed",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "assistant_attempt": {
+      "type": "assistant/attempt",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "assistant/attempt",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "llm_retry": {
+      "type": "llm/retry",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "llm/retry",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "llm_retry_started": {
+      "type": "llm/retry-started",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "llm/retry-started",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "working_directory_change": {
+      "type": "working-directory/change",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "working-directory/change",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "command_run": {
+      "type": "command/run",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "command/run",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "command_done": {
+      "type": "command/done",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "command/done",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "approval_asked": {
+      "type": "approval/asked",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "approval/asked",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "approval_decided": {
+      "type": "approval/decided",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "approval/decided",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "workspace_changes": {
+      "type": "workspace/changes",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "workspace/changes",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "deliverables_presented": {
+      "type": "deliverables/presented",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "deliverables/presented",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "todo_write": {
+      "type": "todo/write",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "todo/write",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "team_task": {
+      "type": "team/task",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "team/task",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "team_member": {
+      "type": "team/member",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "team/member",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    },
+    "subagent_catalog": {
+      "type": "subagent/catalog",
+      "sessionId": "session-11111111-1111-4111-8111-111111111111",
+      "sample": {
+        "type": "subagent/catalog",
+        "seq": 0,
+        "time": 1700000000000,
+        "data": {}
+      }
+    }
+  }
+}

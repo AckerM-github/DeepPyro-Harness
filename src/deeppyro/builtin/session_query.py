@@ -41,7 +41,7 @@ class SessionQueryPlugin(Service):
     provide = "session_query"
     inject: ClassVar[list[str]] = ["sessions"]
     plugin_id = "session-query"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "read-only session log queries"
     Config = SessionQueryConfig
 

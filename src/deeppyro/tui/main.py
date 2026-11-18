@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
 from collections.abc import Sequence
 
 from deeppyro.runtime_env import INTERNAL_PTC_WORKER, INTERNAL_SANDBOX_RUNNER
@@ -44,10 +45,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cwd", default=None, help="workspace directory")
     parser.add_argument("--max-steps", type=int, default=None, help="tool steps per turn")
-    parser.add_argument(
+    backend = parser.add_mutually_exclusive_group()
+    backend.add_argument(
+        "--legacy-v4",
+        action="store_true",
+        help="run the one-shot prompt through the legacy v4 path (the native loop is the default)",
+    )
+    backend.add_argument(
         "--native-loop",
         action="store_true",
-        help="run the one-shot prompt through the M2 native agent loop",
+        help="deprecated alias: the native loop is the default (use --legacy-v4 for the v4 path)",
     )
     # Hidden: frozen-build self re-entry (see deeppyro.runtime_env).  REMAINDER
     # passes the payload -- runner options, or nothing for the PTC worker --
@@ -112,6 +119,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         from deeppyro.plugins.cli import main as plugin_main
 
         return plugin_main(raw[1:])
+    # `dpyro migrate ...` is likewise a management subcommand; it converts
+    # session logs on disk and must not boot the runtime or a model provider.
+    if raw and raw[0] == "migrate":
+        from deeppyro.session.migrate_cli import main as migrate_main
+
+        return migrate_main(raw[1:])
     parser = build_parser()
     args = parser.parse_args(raw)
     internal = _parsed_internal(args)
@@ -125,8 +138,33 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     migrate_legacy_layout()
 
+    # Backend selection: the native loop is the default.  --legacy-v4 pins the
+    # frozen v4 path (KI-010); --native-loop is a deprecated alias that pins
+    # native explicitly, kept until the v4 path is retired.
+    native_loop: bool | None = None
+    if args.native_loop:
+        warnings.warn(
+            "--native-loop is deprecated: the native loop is the headless default; "
+            "use --legacy-v4 to run the legacy v4 path",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        print(
+            "warning: --native-loop is deprecated; the native loop is the default. "
+            "Use --legacy-v4 for the legacy v4 path.",
+            file=sys.stderr,
+        )
+        native_loop = True
+    elif args.legacy_v4:
+        native_loop = False
+
     headless = bool(args.headless or args.prompt)
     if not headless:
+        if native_loop is not None:
+            print(
+                "note: the TUI still runs the v4 path; --legacy-v4/--native-loop only affect --headless",
+                file=sys.stderr,
+            )
         from deeppyro.tui.app import DeepPyroApp
 
         app = DeepPyroApp(cwd=args.cwd, provider=args.provider, model=args.model)
@@ -149,7 +187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         json_output=bool(args.json),
         cwd=args.cwd,
         max_steps=args.max_steps,
-        native_loop=args.native_loop,
+        native_loop=native_loop,
     )
 
 

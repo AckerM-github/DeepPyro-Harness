@@ -48,7 +48,8 @@ class StubContext:
         raise AssertionError("domain events must not fall back to the runtime dispatcher")
 
     def effect(self, execute: Any, label: str = "") -> Any:  # pragma: no cover - unused
-        return execute()
+        # Production semantics: effect() only stores a teardown callback.
+        return execute
 
 
 def make_agent(tmp_path, script, hooks: HookService):

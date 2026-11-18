@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from deeppyro.builtin.skills import SKILLS_PROMPT_ORDER
+from deeppyro.builtin.prompt_service import PromptPlugin
+from deeppyro.builtin.skills import SKILLS_PROMPT_ORDER, SkillsPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config
 from deeppyro.kernel.app import create_app
 from deeppyro.kernel.manifest import PluginSpec
@@ -61,18 +63,18 @@ async def test_plugin_wires_service_tool_and_prompt_section(tmp_path: Path) -> N
     write_skill(project / ".dsh" / "skills", "demo", description="Demo skill")
     app = await _boot(_SKILLS_ROW)
     try:
-        service = app.service("skills")
+        service = app.require(SkillsPlugin)
         assert isinstance(service.registry, SkillRegistry)
         assert [item.name for item in service.list(project)] == ["demo"]
         assert service.snapshot(project).errors == ()
 
-        tools = app.service("tools")
+        tools = app.require(ToolsPlugin)
         assert len(tools.tool_factories) == 1
         factory = tools.tool_factories[0][0]
         built = factory(None, str(project))
         assert [tool.name for tool in built] == ["skill"]
 
-        prompt = app.service("prompt")
+        prompt = app.require(PromptPlugin)
         assert len(prompt.sections) == 1
         name, order, renderer, plugin_id = prompt.sections[0]
         assert name == "skills"
@@ -97,7 +99,7 @@ async def test_plugin_row_config_overrides_global_table(tmp_path: Path) -> None:
     )
     app = await _boot(row)
     try:
-        service = app.service("skills")
+        service = app.require(SkillsPlugin)
         assert service.skills_config.custom_skill_dirs == [str(external)]
         assert [item.name for item in service.list(project)] == ["outside"]
     finally:
@@ -108,7 +110,7 @@ async def test_prompt_section_swallows_render_errors(tmp_path: Path, monkeypatch
     project = make_project(tmp_path)
     app = await _boot(_SKILLS_ROW)
     try:
-        service = app.service("skills")
+        service = app.require(SkillsPlugin)
 
         class BoomRegistry:
             def render_catalog(self, *args: Any, **kwargs: Any) -> str:

@@ -31,7 +31,7 @@
     [package]
     id = "dpyro-im"                 # 必须等于目录名
     name = "DeepPyro IM"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "QQ/Discord bridge"
     module = "dpyro_im"             # 也可以是 "dpyro_im.plugin:ImPlugin"
     class = "ImPlugin"
@@ -70,7 +70,7 @@
 ### 2.2 旧版扁平格式（继续支持）
 
     name = "Demo Plugin"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "a demo plugin"
     module = "demo_plugin"
     class = "DemoPlugin"

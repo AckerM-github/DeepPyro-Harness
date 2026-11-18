@@ -61,10 +61,11 @@ class FakeCtx:
         return service_require(self._services, service)
 
     def effect(self, execute: Any, label: str = "anonymous") -> Any:
-        dispose = execute()
+        # Production semantics: effect() only records a teardown callback; the
+        # callback runs at dispose time, never during setup.
         self.effects.append(label)
-        self.disposers.append(dispose)
-        return dispose
+        self.disposers.append(execute)
+        return execute
 
 
 def make_config(retry: dict[str, Any] | None = None) -> Config:
@@ -123,7 +124,7 @@ def test_plugin_metadata() -> None:
     plugin = LlmRetryPlugin.__new__(LlmRetryPlugin)
     assert LlmRetryPlugin.provide == "retryPolicy"
     assert LlmRetryPlugin.plugin_id == "llm-retry"
-    assert LlmRetryPlugin.version == "0.1.0"
+    assert LlmRetryPlugin.version == "0.2.0"
     assert "hooks" in LlmRetryPlugin.inject and "config" in LlmRetryPlugin.inject
     assert LlmRetryPlugin.description
     assert not hasattr(plugin, "policy") or plugin.policy is None

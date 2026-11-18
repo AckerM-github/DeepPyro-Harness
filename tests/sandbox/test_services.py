@@ -114,7 +114,7 @@ def test_writable_roots_include_the_workspace_additional_roots_and_temporary_are
 def test_sandbox_and_approval_policy_text_matches_dsh(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     read_only = SandboxPolicyService(default_mode="read-only", workspace_root=workspace).resolve(None)
-    assert sandbox_policy_text(read_only).startswith("Current DSH file policy: read-only.")
+    assert sandbox_policy_text(read_only).startswith("Current DeepPyro file policy: read-only.")
     danger = SandboxPolicyService(default_mode="danger-full-access", workspace_root=workspace).resolve(None)
     assert "does not restrict file modifications" in sandbox_policy_text(danger)
     write = SandboxPolicyService(default_mode="workspace-write", workspace_root=workspace).resolve(None)

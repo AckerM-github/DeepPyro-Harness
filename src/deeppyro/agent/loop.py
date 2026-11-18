@@ -62,6 +62,7 @@ from deeppyro.agent.native_provider import (
     build_request,
 )
 from deeppyro.agent.run_state import RunState, RunStatus, ToolCallCheckpoint
+from deeppyro.api.services import ServiceBag
 from deeppyro.core.ids import (
     new_message_id,
     new_run_id,
@@ -89,6 +90,7 @@ from deeppyro.core.protocols import (
     ToolResult,
     Usage,
 )
+from deeppyro.observability.protocols import TraceExportSink, TurnUsage, UsageSink
 from deeppyro.observability.trace import (
     ModelCallRecord,
     RunRecord,
@@ -179,6 +181,13 @@ class AgentLoop:
         self._cost_per_million_tokens = cost_per_million_tokens
         self._permission = permission
         self._services: dict[str, Any] = dict(services or {})
+        self._usage_sink = ServiceBag(self._services).get(UsageSink)
+        self._trace_export = ServiceBag(self._services).get(TraceExportSink)
+        self._turn_input_tokens = 0
+        self._turn_output_tokens = 0
+        self._turn_cached_tokens = 0
+        self._turn_latency_ms = 0
+        self._turn_cost = 0.0
         self._cancel = asyncio.Event()
         self._running = False
         self._run_id: str | None = None
@@ -335,19 +344,26 @@ class AgentLoop:
         self._last_checkpoint_path = None
         self._last_assistant_text = ""
         self._last_finish_reason = None
+        self._turn_input_tokens = 0
+        self._turn_output_tokens = 0
+        self._turn_cached_tokens = 0
+        self._turn_latency_ms = 0
+        self._turn_cost = 0.0
         view = fold(session.header, session.events)
         self._last_message_id = view.last_message_id
+        run_record = RunRecord(
+            run_id=self._run_id,
+            trace_id=self._trace_id,
+            session_id=session.header.id,
+            started_at=self._started,
+            provider=self._provider_name,
+            model=self._model,
+        )
         if self._trace_store is not None:
-            self._trace_store.create_run(
-                RunRecord(
-                    run_id=self._run_id,
-                    trace_id=self._trace_id,
-                    session_id=session.header.id,
-                    started_at=self._started,
-                    provider=self._provider_name,
-                    model=self._model,
-                )
-            )
+            self._trace_store.create_run(run_record)
+        if self._trace_export is not None:
+            with contextlib.suppress(Exception):
+                self._trace_export.export_trace_record(run_record)
         self._append_run_event(EventKind.RUN_STARTED, {})
         self._emit_run_started(resume=resume)
 
@@ -446,6 +462,12 @@ class AgentLoop:
             cost = self._cost_for(response.usage)
             self._record_model_trace(plan, payload, response, cost)
             tracker.record_model(response.usage, latency_ms=response.latency_ms, cost_usd=cost)
+            usage = response.usage
+            self._turn_input_tokens += usage.input_tokens
+            self._turn_output_tokens += usage.output_tokens
+            self._turn_cached_tokens += usage.cached_input_tokens or 0
+            self._turn_latency_ms += response.latency_ms
+            self._turn_cost += cost
             assistant_message, assistant_ts = self._assistant_message(response)
             self._append_step_event(
                 EventKind.ASSISTANT_MESSAGE,
@@ -549,6 +571,31 @@ class AgentLoop:
         tokens = usage.total_tokens or (usage.input_tokens + usage.output_tokens)
         return float(tokens) / 1_000_000.0 * self._cost_per_million_tokens
 
+    def _report_usage(self, stop_reason: str) -> None:
+        """Report the finished turn to the injected usage sink, if any."""
+        sink = self._usage_sink
+        if sink is None or self._turn_id is None:
+            return
+        usage = TurnUsage(
+            provider=self._provider_name,
+            model=self._model,
+            session_id=self._session.header.id,
+            turn=self._turn_index,
+            input_tokens=self._turn_input_tokens,
+            output_tokens=self._turn_output_tokens,
+            cached_tokens=self._turn_cached_tokens,
+            latency_ms=self._turn_latency_ms,
+            stop_reason=stop_reason,
+            step=self._step_index or None,
+            cost=self._turn_cost,
+            ts=now_ms(),
+            run_id=self._run_id,
+            trace_id=self._trace_id,
+            source="native",
+        )
+        with contextlib.suppress(Exception):
+            sink.record_turn(usage)
+
     def _record_model_trace(
         self,
         plan: ContextPlan,
@@ -557,31 +604,35 @@ class AgentLoop:
         cost: float,
     ) -> None:
         store = self._trace_store
-        if store is None:
+        export = self._trace_export
+        if store is None and export is None:
             return
         run_id, trace_id, turn_id, step_id = self._require_ids()
-        store.append(
-            ModelCallRecord(
-                trace_id=trace_id,
-                span_id=new_span_id(),
-                run_id=run_id,
-                turn_id=turn_id,
-                step_id=step_id,
-                provider=self._provider_name,
-                model=self._model,
-                prompt_hash=prompt_hash(payload),
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                latency_ms=response.latency_ms,
-                finish_reason=response.finish_reason,
-                retry_count=0,
-                ts=now_ms(),
-                cached_input_tokens=response.usage.cached_input_tokens,
-                reasoning_tokens=response.usage.reasoning_tokens,
-                cost_usd=cost if cost > 0 else None,
-                context_message_ids=plan.source_message_ids,
-            )
+        record = ModelCallRecord(
+            trace_id=trace_id,
+            span_id=new_span_id(),
+            run_id=run_id,
+            turn_id=turn_id,
+            step_id=step_id,
+            provider=self._provider_name,
+            model=self._model,
+            prompt_hash=prompt_hash(payload),
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            latency_ms=response.latency_ms,
+            finish_reason=response.finish_reason,
+            retry_count=0,
+            ts=now_ms(),
+            cached_input_tokens=response.usage.cached_input_tokens,
+            reasoning_tokens=response.usage.reasoning_tokens,
+            cost_usd=cost if cost > 0 else None,
+            context_message_ids=plan.source_message_ids,
         )
+        if store is not None:
+            store.append(record)
+        if export is not None:
+            with contextlib.suppress(Exception):
+                export.export_trace_record(record)
 
     # ---------------------------------------------------------- tool calling
 
@@ -715,27 +766,31 @@ class AgentLoop:
 
     def _record_tool_trace(self, call: NativeToolCall, outcome: ToolOutcome) -> None:
         store = self._trace_store
-        if store is None:
+        export = self._trace_export
+        if store is None and export is None:
             return
         run_id, trace_id, turn_id, step_id = self._require_ids()
-        store.append(
-            ToolCallRecord(
-                trace_id=trace_id,
-                span_id=new_span_id(),
-                run_id=run_id,
-                turn_id=turn_id,
-                step_id=step_id,
-                call_id=call.call_id,
-                tool=call.name,
-                args_hash=self._arguments_hash(call.arguments),
-                result_size=len(outcome.result.text.encode("utf-8")),
-                is_error=outcome.result.is_error,
-                retry_count=0,
-                latency_ms=outcome.duration_ms,
-                ts=now_ms(),
-                idempotency_key=self._idempotency_key(call),
-            )
+        record = ToolCallRecord(
+            trace_id=trace_id,
+            span_id=new_span_id(),
+            run_id=run_id,
+            turn_id=turn_id,
+            step_id=step_id,
+            call_id=call.call_id,
+            tool=call.name,
+            args_hash=self._arguments_hash(call.arguments),
+            result_size=len(outcome.result.text.encode("utf-8")),
+            is_error=outcome.result.is_error,
+            retry_count=0,
+            latency_ms=outcome.duration_ms,
+            ts=now_ms(),
+            idempotency_key=self._idempotency_key(call),
         )
+        if store is not None:
+            store.append(record)
+        if export is not None:
+            with contextlib.suppress(Exception):
+                export.export_trace_record(record)
 
     def _checkpoint_calls(
         self, calls: Sequence[NativeToolCall], outcomes: Sequence[ToolOutcome]
@@ -997,6 +1052,8 @@ class AgentLoop:
     # ------------------------------------------------------------- finalize
 
     def _finalize_success(self) -> None:
+        with contextlib.suppress(Exception):
+            self._report_usage(self._last_finish_reason or "stop")
         self._close_open_step()
         if self._turn_open:
             self._append_turn_event(EventKind.TURN_ENDED, {"reason": {"kind": "completed"}})
@@ -1008,6 +1065,9 @@ class AgentLoop:
         self._emit_run_finished(RunStatus.COMPLETED, {"kind": "completed"})
 
     def _finalize_abort(self, status: RunStatus, reason: Mapping[str, object]) -> None:
+        stop_reason = reason.get("kind")
+        with contextlib.suppress(Exception):
+            self._report_usage(str(stop_reason) if stop_reason is not None else status.value)
         with contextlib.suppress(Exception):
             self._close_open_step()
         if self._turn_open:

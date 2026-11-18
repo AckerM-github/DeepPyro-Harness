@@ -30,7 +30,8 @@ import inspect
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any, TypeVar, overload
+from pathlib import Path
+from typing import Any, TypeVar
 
 from deeppyro.api import (
     API_VERSION,
@@ -44,13 +45,23 @@ from deeppyro.api import (
     inject_names,
     invoke_setup,
 )
+from deeppyro.api.capabilities import build_manifest
 from deeppyro.api.services import contract_path, service_name
 from deeppyro.config import Config, load_config
+from deeppyro.kernel.capabilities import (
+    IMPLICIT_SERVICES,
+    CapabilityRegistry,
+    CapabilityReport,
+    inspect_bundle_digests,
+)
 from deeppyro.kernel.composition import (
     Composition,
     CompositionError,
     PluginRow,
+    core_bundle_path,
     default_composition,
+    discover_plugin_bundles,
+    discover_user_bundles,
     resolve_row,
     row_to_spec,
     rows_from_specs,
@@ -214,9 +225,26 @@ def _mount_context(ctx: RuntimeContext, row: PluginRow) -> RuntimeContext:
     return mount_ctx
 
 
-def _mount(ctx: RuntimeContext, row: PluginRow, plugin: Any, config: dict[str, Any]) -> Fiber:
+def _row_manifest(row: PluginRow, cls: type | None) -> Any | None:
+    """Build the capability manifest the capability registry indexed for a row."""
+    if cls is None:
+        return None
+    try:
+        return build_manifest(cls)
+    except Exception as exc:  # noqa: BLE001 - reported as a capability diagnostic later
+        log.warning("plugin %s: cannot derive a capability manifest: %s", row.id, exc)
+        return None
+
+
+def _mount(
+    ctx: RuntimeContext,
+    row: PluginRow,
+    plugin: Any,
+    config: dict[str, Any],
+    manifest: Any | None = None,
+) -> Fiber:
     """Mount a plugin on ctx after applying the row's isolate/intercept layers."""
-    return _mount_context(ctx, row).mount(plugin, config)
+    return _mount_context(ctx, row).mount(plugin, config, manifest=manifest)
 
 
 def _record_only(row: PluginRow, parent: MountRecord | None, critical: bool) -> MountRecord:
@@ -282,7 +310,7 @@ async def _mount_row(
         return record
     try:
         plugin, plugin_config, _ = _plugin_for(row, record)
-        fiber = _mount(parent_ctx, row, plugin, plugin_config)
+        fiber = _mount(parent_ctx, row, plugin, plugin_config, _row_manifest(row, record.cls))
         fibers.append(fiber)
         record.fiber = fiber
         await fiber
@@ -322,6 +350,7 @@ class App:
         *,
         composition: Composition | None = None,
         records: list[MountRecord] | None = None,
+        capabilities: CapabilityRegistry | None = None,
     ) -> None:
         self.ctx = ctx
         self.config = config
@@ -335,6 +364,7 @@ class App:
             ]
         self._records = records
         self._top = [record for record in records if record.parent is None]
+        self._capabilities = capabilities
         #: Plugin rows that failed to load while non-critical.
         self.failures: list[PluginStatus] = []
         #: Plugin ids whose config changed but could not be applied live.
@@ -353,6 +383,23 @@ class App:
     @property
     def composition(self) -> Composition | None:
         return self._composition
+
+    @property
+    def capabilities(self) -> CapabilityRegistry | None:
+        """The kernel capability registry (manifests, dependency validation)."""
+        return self._capabilities
+
+    def capability_report(self) -> CapabilityReport:
+        """Validate the capability graph against the services live right now."""
+        registry = self._capabilities
+        if registry is None:
+            return CapabilityReport()
+        live = {record.name for record in self.ctx.service_records()}
+        return registry.report(available_services=IMPLICIT_SERVICES | live)
+
+    def capability_dict(self) -> dict[str, Any]:
+        """Render the capability report as plain JSON-compatible data."""
+        return self.capability_report().to_dict()
 
     @property
     def mount_records(self) -> tuple[MountRecord, ...]:
@@ -478,36 +525,24 @@ class App:
         return "pending"
 
     # -- service access ----------------------------------------------------
-    def _service_value(self, name: str) -> Any | None:
-        """Return the active value for a service name, or None.
+    def get(self, service: type[T]) -> T | None:
+        """Return an active service by contract class, or None when absent.
 
-        The runtime context returns None for unknown or inactive services
-        instead of raising, so a falsy value stays distinguishable from a
-        missing one.
-        """
-        return self.ctx.get(name)
-
-    @overload
-    def get(self, service: str) -> Any | None: ...
-
-    @overload
-    def get(self, service: type[T]) -> T | None: ...
-
-    def get(self, service: str | type[Any]) -> Any | None:
-        """Return an active service by contract class (or legacy name).
-
-        The typed form returns None when the service is absent and also when
+        The typed form returns None both when the service is absent and when
         the class is not a known contract, so optional lookups never raise.
-        The string form is a host-level compatibility helper for embedders and
-        tests; API v3 plugins call PluginContext.get(Contract) instead.
+        Services are keyed by contract class only: there is no name-based
+        lookup on App, matching PluginContext.get(Contract) in API v3.
         """
-        if isinstance(service, str):
-            return self._service_value(service)
+        if not isinstance(service, type):
+            raise TypeError(
+                "App.get() is typed in API v3; pass a service contract class "
+                f"(for example app.get(SomeService)), got {service!r}"
+            )
         try:
             name = service_name(service)
         except ServiceTypeError:
             return None
-        return self._service_value(name)
+        return self.ctx.get(name)
 
     def require(self, service: type[T]) -> T:
         """Return the active service for a contract class, or raise.
@@ -518,7 +553,7 @@ class App:
                 registered it (a PluginDependencyError and LookupError).
         """
         name = service_name(service)
-        value = self._service_value(name)
+        value = self.ctx.get(name)
         if value is None:
             raise ServiceNotFoundError(
                 f"service {name!r} ({contract_path(service)}) is not registered or not active",
@@ -526,22 +561,6 @@ class App:
                 contract=service,
             )
         return value
-
-    def service(self, name: str) -> Any:
-        """Return an active service by name, or raise LookupError.
-
-        Host-level compatibility helper only: API v3 plugins read services
-        through typed contract classes (PluginContext.require/get), and host
-        code should prefer the typed App.require(Contract).  This named form
-        stays available to embedders and tests that address services by name.
-        """
-        value = self._service_value(name)
-        if value is None:
-            raise LookupError(f"service {name!r} is not registered or not active")
-        return value
-
-    def has_service(self, name: str) -> bool:
-        return self._service_value(name) is not None
 
     @property
     def started(self) -> dict[str, str]:
@@ -644,6 +663,25 @@ def _attach_kernel(app: App) -> None:
         log.exception("kernel runtime service failed to attach to the app")
 
 
+def _bundle_digest_paths(bundle_paths: Iterable[str]) -> list[Path]:
+    """Every bundle.toml the default composition loads, in load order."""
+    ordered: list[Path] = []
+
+    def add(candidate: Path) -> None:
+        resolved = candidate / "bundle.toml" if candidate.is_dir() else candidate
+        if resolved not in ordered:
+            ordered.append(resolved)
+
+    add(core_bundle_path())
+    for item in bundle_paths:
+        add(Path(item))
+    for path in discover_user_bundles():
+        add(path)
+    for path in discover_plugin_bundles():
+        add(path)
+    return ordered
+
+
 async def create_app(
     config: Config | dict[str, Any] | None = None,
     *,
@@ -671,17 +709,45 @@ async def create_app(
             can disable it.
     """
     resolved = _resolve_config(config)
+    plugin_specs = tuple(plugins)
+    bundle_path_specs = tuple(bundle_paths)
+    # Only the default composition loads bundle.toml files: with explicit plugin
+    # specs the core/user bundles are not loaded, so pinning their digests would
+    # describe files this boot never read.
+    boot_from_bundles = composition is None and not plugin_specs
     if composition is None:
         composition = _build_composition(
-            plugins,
+            plugin_specs,
             manifest_paths,
             extra_plugins,
-            bundle_paths,
+            bundle_path_specs,
             activate_plugins=activate_plugins,
         )
 
     ctx = RuntimeContext.create_root()
     provide_config(ctx, resolved)
+
+    # Capability validation runs before the first plugin mounts: two live
+    # providers of one service or an unsatisfiable version requirement refuse
+    # boot with both plugin ids named; every other issue (missing/pending
+    # dependencies, unreadable manifests) is a diagnostic, because a single
+    # missing provider leaves its dependents PENDING instead of failing boot.
+    capabilities = CapabilityRegistry()
+    ctx.attach_capabilities(capabilities)
+    capabilities.index_composition(composition)
+    if boot_from_bundles:
+        # Record (never rewrite) the sha256 of every bundle.toml this boot loaded.
+        # A declared [bundle].digest is verified against those bytes; an unpinned
+        # bundle is recorded as unverified and keeps booting.  A mismatch is a
+        # fatal issue, caught by the report().ok check below.
+        capabilities.record_bundle_digests(inspect_bundle_digests(_bundle_digest_paths(bundle_path_specs)))
+    boot_report = capabilities.report(available_services=IMPLICIT_SERVICES)
+    if not boot_report.ok:
+        raise KernelBootError(
+            "capability validation failed: " + "; ".join(issue.message for issue in boot_report.fatal_issues)
+        )
+    for issue in boot_report.issues:
+        log.debug("capability diagnostic: %s", issue.message)
 
     fibers: list[Fiber] = []
     records: list[MountRecord] = []
@@ -705,7 +771,19 @@ async def create_app(
         await _dispose_all(fibers)
         raise
 
-    app = App(ctx, rows, fibers, resolved, composition=composition, records=records)
+    for record in records:
+        if record.fiber is not None and not record.error and not record.row.group:
+            capabilities.mark_active(record.row.id)
+
+    app = App(
+        ctx,
+        rows,
+        fibers,
+        resolved,
+        composition=composition,
+        records=records,
+        capabilities=capabilities,
+    )
     app.failures = failures
     _attach_kernel(app)
     return app

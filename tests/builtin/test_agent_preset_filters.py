@@ -31,10 +31,13 @@ from deeppyro.api import (
     PromptSection,
 )
 from deeppyro.builtin.agents import AgentsPlugin
+from deeppyro.builtin.presets import PresetsPlugin
 from deeppyro.builtin.prompt_service import PromptPlugin
+from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.core.protocols import TextDelta, ToolResult
 from deeppyro.kernel import boot
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.prompt import PromptContext, build_system_prompt
 from deeppyro.tools.base import BaseTool, make_parameters
 from deeppyro.tools.registry import RESERVED_TOOL_NAMES, ToolRegistry
@@ -356,7 +359,7 @@ def _config(tmp_path: Path) -> Config:
 async def test_create_wires_filters_presentation_and_runtime_context(tmp_path: Path) -> None:
     app = await boot(_config(tmp_path))
     try:
-        presets = app.service("presets")
+        presets = app.require(PresetsPlugin)
         presets.add(PresetSpec(id="ptc-lite", name="PTC Lite", presentation=AGENT_PRESENTATION_PTC))
         presets.add(
             PresetSpec(
@@ -367,9 +370,9 @@ async def test_create_wires_filters_presentation_and_runtime_context(tmp_path: P
                 runtime_context=False,
             )
         )
-        agents = app.service("agents")
+        agents = app.require(AgentsPlugin)
         registry = _registry("echo", "run_code", "plugin_manager", "subagent")
-        session = app.service("sessions").create(str(tmp_path))
+        session = app.require(SessionsPlugin).create(str(tmp_path))
 
         standard = agents.create(
             session=session,
@@ -419,17 +422,17 @@ async def test_create_wires_filters_presentation_and_runtime_context(tmp_path: P
 async def test_build_prompt_forwards_the_preset_prompt_allowlist(tmp_path: Path) -> None:
     app = await boot(_config(tmp_path))
     try:
-        app.service("presets").add(
+        app.require(PresetsPlugin).add(
             PresetSpec(id="minimal", name="Minimal", prompt_sections=("identity", "tools"))
         )
         recorder = _RecordingPrompt()
         plugin = object.__new__(AgentsPlugin)
         plugin._ctx = _PluginCtx()
-        plugin._presets = app.service("presets")
+        plugin._presets = app.require(PresetsPlugin)
         plugin._prompt_service = recorder
         plugin._tools = None
-        plugin._agent_config = app.service("config").value.agent
-        session = app.service("sessions").create(str(tmp_path))
+        plugin._agent_config = app.require(KernelConfig).value.agent
+        session = app.require(SessionsPlugin).create(str(tmp_path))
         provider = ScriptedProvider([ScriptedTurn(events=[TextDelta("hi"), finish("stop")])])
 
         agent = plugin.create(

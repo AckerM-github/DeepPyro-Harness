@@ -12,11 +12,16 @@ from typing import Any
 
 from deeppyro.agent import AgentOptions, AgentSession
 from deeppyro.builtin.activity import ActivityService
+from deeppyro.builtin.inspect import InspectPlugin
+from deeppyro.builtin.plugin_manager import PluginManagerPlugin
+from deeppyro.builtin.settings import SettingsPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.jobs import JobsService
 from deeppyro.kernel import boot
 from deeppyro.session import SessionStore
 from deeppyro.team.manager import TeamService
+from deeppyro.tui.slots import SlotRegistry
 from tests.integration.fake_provider import Response, ScriptedProvider, tool_response
 
 SLOTS_SOURCE = 'from deeppyro.api import Plugin\nfrom deeppyro.tui.slots import SlotRegistry\n\n\nclass DemoslotsPlugin(Plugin):\n    plugin_id = "demo-slots"\n    version = "0.1.0"\n    inject = ["slots"]\n\n    def setup(self):\n        registry = self.ctx.require(SlotRegistry)\n        registry.add_status_item(lambda context: "demo: on", id="demo-status", plugin_id="demo-slots")\n        registry.add_panel("Demo panel", lambda context: None, id="demo-panel", plugin_id="demo-slots")\n'
@@ -41,11 +46,15 @@ class _Sink:
 async def test_plugin_tools_run_with_kernel_services(tmp_path: Path) -> None:
     app = await boot(_config())
     try:
-        registry = app.service("tools").registry_for(tmp_path)
+        registry = app.require(ToolsPlugin).registry_for(tmp_path)
         for name in ("plugin_manager", "plugin_inspect", "settings_read", "settings_write"):
             assert name in registry, name
 
-        services = {name: app.service(name) for name in ("plugin_manager", "inspect", "settings")}
+        services = {
+            "plugin_manager": app.require(PluginManagerPlugin),
+            "inspect": app.require(InspectPlugin),
+            "settings": app.require(SettingsPlugin),
+        }
         store = SessionStore(tmp_path / "sessions")
         session = store.create(tmp_path)
         provider = ScriptedProvider(
@@ -80,28 +89,28 @@ async def test_plugin_tools_run_with_kernel_services(tmp_path: Path) -> None:
 async def test_runtime_services_expose_manager_objects(tmp_path: Path) -> None:
     """The service registry must expose managers, not the plugin wrappers.
 
-    Regression: JobsPlugin used to inherit the Service base, so service("jobs")
-    returned the plugin object (which has no start/list) and every job tool
-    failed with "'JobsPlugin' object has no attribute 'start'".
+    Regression: JobsPlugin used to inherit the Service base, so the jobs
+    contract returned the plugin object (which has no start/list) and every job
+    tool failed with "'JobsPlugin' object has no attribute 'start'".
     """
 
     app = await boot(_config())
     try:
-        jobs = app.service("jobs")
-        team = app.service("team")
-        activity = app.service("activity")
+        jobs = app.require(JobsService)
+        team = app.require(TeamService)
+        activity = app.require(ActivityService)
         assert isinstance(jobs, JobsService)
         assert callable(jobs.start) and callable(jobs.list)
         assert isinstance(team, TeamService)
         assert callable(team.spawn) and callable(team.tasks)
         assert isinstance(activity, ActivityService)
         assert callable(activity.refresh)
-        registry = app.service("tools").registry_for(tmp_path)
+        registry = app.require(ToolsPlugin).registry_for(tmp_path)
         assert "job_list" in registry
         # Team tools are scoped to the explicit team preset, so they are absent
         # from the host-wide registry but present in the team composition.
         assert "team_task_list" not in registry
-        team_registry = app.service("tools").registry_for(tmp_path, scope="team")
+        team_registry = app.require(ToolsPlugin).registry_for(tmp_path, scope="team")
         assert "team_task_list" in team_registry
     finally:
         await app.stop()
@@ -114,7 +123,7 @@ async def test_external_bundle_registers_tui_slots(tmp_path: Path) -> None:
     (bundle_dir / "demo_slots.py").write_text(SLOTS_SOURCE, encoding="utf-8")
     app = await boot(_config(), bundle_paths=[str(bundle_dir)])
     try:
-        registry = app.service("slots")
+        registry = app.require(SlotRegistry)
         assert [item.id for item in registry.status_items()] == ["demo-status"]
         assert [item.id for item in registry.panels()] == ["demo-panel"]
         assert app.started["demo-slots"] == "ACTIVE"

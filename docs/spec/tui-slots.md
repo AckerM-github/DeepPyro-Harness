@@ -97,6 +97,23 @@ names both owners, for example:
 duplicate status slot id 'clock': owned by 'plugin-a', also registered by 'plugin-b'
 ```
 
+The registry is **append-only**: there is no replace, upsert or reorder
+method. Registration can only add a new `(kind, id)`; a second registration
+of the same key raises `SlotError` and leaves the first contribution
+untouched. Queries sort by `(order, id)`, so appending a contribution never
+changes the relative order of contributions that already exist.
+`SlotContribution` is a frozen dataclass and its `metadata` mapping belongs
+to the registering plugin; the host never mutates either. Declarative
+`ui.toml` packages follow the same rule: a duplicate declaration is recorded
+as that package's load error and skipped, while the earlier registration
+stays live (first registration wins; see section 6).
+
+The auxiliary maps are host-level state, not slot registrations: `set_theme`
+replaces the whole token map (packages merge their tokens before calling it),
+`add_locale` merges keys with later keys winning, and `clear()` is a host
+shutdown/test reset that drops slots, theme and locale. No plugin API can
+replace another plugin's slot in place.
+
 `SlotRegistry` uses an `RLock` around mutations/reads. Registration normally
 happens on the kernel boot thread, but a plugin may add items from a worker;
 reads are safe.
@@ -164,7 +181,7 @@ registry as the `slots` service:
 ```python
 class SlotsPlugin(Plugin):
     plugin_id = "slots"
-    version = "0.1.0"
+    version = "0.2.0"
     inject = ()
 
     def __init__(self, ctx, config):
@@ -202,7 +219,7 @@ from deeppyro.api import Plugin
 
 class ClockPlugin(Plugin):
     plugin_id = "clock"
-    version = "0.1.0"
+    version = "0.2.0"
     inject = ("slots",)
 
     def setup(self) -> None:
@@ -748,7 +765,7 @@ want localized text. `"!key"` interpolation is intentionally not implemented
 [bundle]
 id = "acme"
 name = "Acme UI"
-version = "0.1.0"
+version = "0.2.0"
 api_version = 3
 ```
 

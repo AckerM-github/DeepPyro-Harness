@@ -120,7 +120,7 @@ class LlmRetryPlugin(Plugin):
 
     provide = "retryPolicy"
     plugin_id = "llm-retry"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "retry policy service plus agent/request-error retry consumer"
     inject: ClassVar[list[str]] = ["hooks", "config"]
 
@@ -139,10 +139,10 @@ class LlmRetryPlugin(Plugin):
         hooks = self.ctx.require(HookService)
         self._hooks = hooks
         self.ctx.provide("retryPolicy", self._policy)
-        self.ctx.effect(
-            lambda: hooks.on(AGENT_REQUEST_ERROR, self._on_request_error),
-            label="agent-request-error",
-        )
+        # Subscribe eagerly: effect() only records a teardown callback, so the
+        # hooks.on() call itself must happen here, not inside the lambda.
+        self._dispose = hooks.on(AGENT_REQUEST_ERROR, self._on_request_error)
+        self.ctx.effect(self._dispose, label="agent-request-error")
 
     async def _on_request_error(
         self, payload: dict[str, Any], next_step: Callable[[], Awaitable[Any]]

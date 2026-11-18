@@ -14,7 +14,7 @@ class HooksPlugin(Plugin):
 
     provide = "hooks"
     plugin_id = "hooks"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "runtime hook service for agent and tool pipeline interception"
     inject: ClassVar[list[str]] = []
 

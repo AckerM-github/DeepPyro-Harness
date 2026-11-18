@@ -20,12 +20,14 @@ plugin and the TUI inspector:
 * mounted_plugins() -> list[dict] returns every composition row with its live
   state (active, failed, disabled, overridden, restart-required).
 * apply_plugin_config(plugin_id, config) -> bool applies a config patch to an
-  already mounted plugin when every changed field is listed in the plugin's
-  volatile class attribute. It returns False without touching the instance
-  when the plugin is unknown or unmounted, when it declares no volatile
-  fields, when the patch changes a non-volatile field, or when the new config
-  is invalid. A rejected row is reported as restart-required so the UI can ask
-  the user to restart instead.
+  already mounted plugin when every changed field is runtime-safe: the plugin's
+  volatile class attribute plus the config fields that match the shared
+  runtime-safe whitelist (log/trace/debug levels and timing/retry/concurrency
+  limits, see deeppyro.api.capabilities.LIVE_CONFIG_TOKENS). It returns False
+  without touching the instance when the plugin is unknown or unmounted, when
+  it declares no live fields, when the patch changes a non-live field, or when
+  the new config is invalid. A rejected row is reported as restart-required so
+  the UI can ask the user to restart instead.
 
 Non-volatile configuration still needs a restart: bundle rows are the source of
 truth at boot and hot-reloading a module is out of scope (see
@@ -40,6 +42,7 @@ import logging
 from typing import Any, ClassVar
 
 from deeppyro.api import PluginConfig, PluginContext, Service
+from deeppyro.api.capabilities import live_config_fields
 from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.kernel.config_values import config_dict
 
@@ -62,7 +65,7 @@ class KernelRuntime(Service):
 
     provide: ClassVar[str] = "kernel"
     plugin_id: ClassVar[str] = "kernel"
-    version: ClassVar[str] = "0.1.0"
+    version: ClassVar[str] = "0.2.0"
     description: ClassVar[str] = "Kernel runtime: mounted plugin registry and live config"
     inject: ClassVar[tuple[type[Any], ...]] = (KernelConfig,)
 
@@ -135,9 +138,17 @@ class KernelRuntime(Service):
         if cls is None:
             return False
         declared = getattr(cls, "volatile", None)
-        volatile: tuple[str, ...] = tuple(declared) if declared else ()
+        live: list[str] = []
+        if isinstance(declared, str):
+            live.append(declared)
+        elif declared:
+            live.extend(str(name) for name in declared)
+        for name in live_config_fields(cls):
+            if name not in live:
+                live.append(name)
+        volatile = tuple(live)
         if not volatile:
-            self._mark_restart(app, plugin_id, "declares no volatile fields")
+            self._mark_restart(app, plugin_id, "declares no live or volatile fields")
             return False
         instance = record.instance
         current = config_dict(getattr(instance, "config", None) if instance is not None else record.config)
@@ -154,7 +165,7 @@ class KernelRuntime(Service):
             self._mark_restart(
                 app,
                 plugin_id,
-                "non-volatile field(s) changed: " + ", ".join(non_volatile),
+                "non-live field(s) changed: " + ", ".join(non_volatile),
             )
             return False
         merged = copy.deepcopy(current)

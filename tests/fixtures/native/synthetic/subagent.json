@@ -1,0 +1,261 @@
+{
+  "case_id": "subagent",
+  "capability": "subagent",
+  "title": "a subagent spawn keeps its child id in the tool result while the catalog records stay non-surface",
+  "coverage": "covered",
+  "limitations": [
+    "native schema 1 has no subagent lifecycle event; only the tool seam and message text carry the child id",
+    "the recorded baseline has no subagent traffic; this pair is hand-authored"
+  ],
+  "v4": {
+    "header": {
+      "type": "session",
+      "version": 4,
+      "id": "session-00000000-0000-4000-8000-000000000016",
+      "createdAt": 1794000000000,
+      "isSeeded": false,
+      "delegationDepth": 0
+    },
+    "records": [
+      {
+        "type": "user/message",
+        "seq": 0,
+        "time": 1794000001000,
+        "data": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Spawn a subagent to summarize hello.txt."
+            }
+          ],
+          "source": {
+            "kind": "user"
+          },
+          "id": "msg_0000000000000061"
+        },
+        "surfaceOp": "append"
+      },
+      {
+        "type": "assistant/message",
+        "seq": 1,
+        "time": 1794000002000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "tool-call",
+                "id": "call_00000000000000d1",
+                "name": "subagent",
+                "arguments": "{\"task\":\"summarize hello.txt\"}"
+              }
+            ],
+            "source": {
+              "kind": "model",
+              "provider": "deepseek",
+              "model": "deepseek-flash"
+            },
+            "id": "msg_0000000000000062"
+          }
+        },
+        "surfaceOp": "append"
+      },
+      {
+        "type": "subagent/catalog",
+        "seq": 2,
+        "time": 1794000002100,
+        "data": {
+          "version": 0,
+          "childId": "child-0001",
+          "childCreatedAt": 1794000002050,
+          "mode": "continuable",
+          "label": "hello summarizer"
+        }
+      },
+      {
+        "type": "subagent/descriptor",
+        "seq": 3,
+        "time": 1794000002200,
+        "data": {
+          "version": 3,
+          "childId": "child-0001",
+          "mode": "continuable",
+          "provider": "spawn",
+          "label": "hello summarizer",
+          "agentProvider": "deepseek",
+          "agentModel": "deepseek-flash"
+        }
+      },
+      {
+        "type": "tool/call",
+        "seq": 4,
+        "time": 1794000002300,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "callId": "call_00000000000000d1",
+          "name": "subagent",
+          "arguments": "{\"task\":\"summarize hello.txt\"}"
+        }
+      },
+      {
+        "type": "tool/result",
+        "seq": 5,
+        "time": 1794000003000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "role": "tool",
+            "content": [
+              {
+                "type": "text",
+                "text": "spawned child-0001: hello summary"
+              }
+            ],
+            "source": {
+              "kind": "tool",
+              "callId": "call_00000000000000d1"
+            },
+            "toolCallId": "call_00000000000000d1",
+            "isError": false,
+            "id": "msg_0000000000000063"
+          }
+        },
+        "surfaceOp": "append",
+        "sourceEventSeqs": [
+          4
+        ]
+      }
+    ]
+  },
+  "native": {
+    "session_id": "session-00000000-0000-4000-8000-000000000016",
+    "created_at": 1794000000000,
+    "events": [
+      {
+        "type": "turn.started",
+        "run_id": "run_6666666666666666",
+        "turn_id": "turn_6666666666666666",
+        "trace_id": "66666666666666666666666666666666",
+        "data": {}
+      },
+      {
+        "type": "user.message",
+        "turn_id": "turn_6666666666666666",
+        "data": {
+          "message": {
+            "id": "msg_0000000000000061",
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Spawn a subagent to summarize hello.txt."
+              }
+            ],
+            "created_at": 1794000001000,
+            "source": {
+              "kind": "user"
+            }
+          }
+        }
+      },
+      {
+        "type": "step.started",
+        "run_id": "run_6666666666666666",
+        "turn_id": "turn_6666666666666666",
+        "step_id": "step_6000000000000000",
+        "trace_id": "66666666666666666666666666666666",
+        "data": {}
+      },
+      {
+        "type": "assistant.message",
+        "run_id": "run_6666666666666666",
+        "turn_id": "turn_6666666666666666",
+        "step_id": "step_6000000000000000",
+        "trace_id": "66666666666666666666666666666666",
+        "data": {
+          "message": {
+            "id": "msg_0000000000000062",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "tool_call",
+                "id": "call_00000000000000d1",
+                "name": "subagent",
+                "arguments": "{\"task\":\"summarize hello.txt\"}"
+              }
+            ],
+            "created_at": 1794000002000,
+            "source": {
+              "kind": "model",
+              "provider": "deepseek",
+              "model": "deepseek-flash"
+            }
+          },
+          "finish_reason": "tool_calls"
+        }
+      },
+      {
+        "type": "tool.call",
+        "run_id": "run_6666666666666666",
+        "turn_id": "turn_6666666666666666",
+        "step_id": "step_6000000000000000",
+        "trace_id": "66666666666666666666666666666666",
+        "data": {
+          "call_id": "call_00000000000000d1",
+          "name": "subagent",
+          "arguments": "{\"task\":\"summarize hello.txt\"}"
+        }
+      },
+      {
+        "type": "tool.result",
+        "run_id": "run_6666666666666666",
+        "turn_id": "turn_6666666666666666",
+        "step_id": "step_6000000000000000",
+        "trace_id": "66666666666666666666666666666666",
+        "data": {
+          "call_id": "call_00000000000000d1",
+          "message": {
+            "id": "msg_0000000000000063",
+            "role": "tool",
+            "content": [
+              {
+                "type": "text",
+                "text": "spawned child-0001: hello summary"
+              }
+            ],
+            "created_at": 1794000003000,
+            "source": {
+              "kind": "tool",
+              "call_id": "call_00000000000000d1"
+            },
+            "tool_call_id": "call_00000000000000d1"
+          }
+        }
+      },
+      {
+        "type": "step.ended",
+        "run_id": "run_6666666666666666",
+        "turn_id": "turn_6666666666666666",
+        "step_id": "step_6000000000000000",
+        "trace_id": "66666666666666666666666666666666",
+        "data": {}
+      },
+      {
+        "type": "turn.ended",
+        "run_id": "run_6666666666666666",
+        "turn_id": "turn_6666666666666666",
+        "trace_id": "66666666666666666666666666666666",
+        "data": {
+          "reason": {
+            "kind": "completed"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -23,7 +23,7 @@ from typing import Protocol, runtime_checkable
 
 from deeppyro.subagent.errors import SubagentError
 from deeppyro.subagent.manager import SubagentService
-from deeppyro.subagent.types import SubagentResult
+from deeppyro.subagent.types import SubagentResult, SubagentUsage, sum_usages
 
 MAX_WORKERS = 2
 DEFAULT_MAX_ROUNDS = 8
@@ -165,6 +165,7 @@ class WorkerOutcome:
     done: bool = False
     failed: bool = False
     error: str | None = None
+    usage: SubagentUsage | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.summary, str):
@@ -177,6 +178,8 @@ class WorkerOutcome:
             raise SupervisorError("worker outcome cannot be both done and failed")
         if self.error is not None and not isinstance(self.error, str):
             raise SupervisorError("worker outcome error must be a string or None")
+        if self.usage is not None and not isinstance(self.usage, SubagentUsage):
+            raise SupervisorError("worker outcome usage must be a SubagentUsage or None")
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-compatible representation."""
@@ -187,6 +190,7 @@ class WorkerOutcome:
             "done": self.done,
             "failed": self.failed,
             "error": self.error,
+            "usage": None if self.usage is None else self.usage.to_dict(),
         }
 
 
@@ -246,6 +250,19 @@ class SupervisorResult:
         """True when the run was cancelled."""
         return self.status is SupervisorStatus.CANCELLED
 
+    @property
+    def usage(self) -> SubagentUsage:
+        """Provider usage reported by every worker run, aggregated.
+
+        A run whose worker reports no usage contributes nothing, so a supervisor
+        over plain workers yields zero counters.
+        """
+        return sum_usages(
+            run.outcome.usage
+            for run in self.runs
+            if run.outcome is not None and run.outcome.usage is not None
+        )
+
     def latest_summaries(self) -> tuple[tuple[str, str], ...]:
         """The latest summary per worker, sorted by worker id."""
         latest: dict[str, str] = {}
@@ -265,6 +282,7 @@ class SupervisorResult:
             "rounds": self.rounds,
             "reason": self.reason,
             "runs": [run.to_dict() for run in self.runs],
+            "usage": self.usage.to_dict(),
             "summaries": [
                 {"worker_id": worker_id, "summary": summary} for worker_id, summary in self.latest_summaries()
             ],
@@ -613,10 +631,9 @@ class Supervisor:
 class SubagentServiceWorker:
     """Adapt a SubagentService to the Worker protocol.
 
-    Only the wall-clock budget is enforced outside the child agent for this
-    adapter: SubagentService has no step/token accounting hooks yet, so outcomes
-    report zero steps and tokens until the subagent lifecycle exposes counters
-    (recorded as an M4 open item in ADR section 6.4).
+    Outcomes carry the child run's measured usage (provider-reported tokens,
+    latency, retries and steps), so supervisor step/token budgets are checked
+    against real provider counters rather than estimates.
     """
 
     def __init__(self, service: SubagentService) -> None:
@@ -635,11 +652,15 @@ class SubagentServiceWorker:
             assignment.objective,
             description=assignment.objective,
         )
+        usage = result.usage
         return WorkerOutcome(
             summary=result.text,
+            steps=usage.steps if usage is not None else 0,
+            tokens=usage.total_tokens if usage is not None else 0,
             done=not result.is_error,
             failed=result.is_error,
             error=result.error or None,
+            usage=usage,
         )
 
 

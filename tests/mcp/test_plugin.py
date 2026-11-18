@@ -33,8 +33,9 @@ class StubContext:
         raise KeyError(name)
 
     def effect(self, execute: Any, label: str | None = None) -> Any:
+        # Production semantics: record the teardown callback; never run it now.
         self.effects.append((execute, label or ""))
-        return execute()
+        return execute
 
     def register_tool(self, factory: Any, **kwargs: Any) -> None:
         self.registered.append(factory)

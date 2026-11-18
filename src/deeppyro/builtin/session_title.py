@@ -76,7 +76,7 @@ class SessionTitlePlugin(Plugin):
     """Upgrade the derived title of a session with one LLM gist."""
 
     plugin_id = "session-title"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "name a session from its first exchange (one small request)"
     inject: ClassVar[tuple[str, ...]] = ("hooks", "llm", "config")
 
@@ -91,10 +91,9 @@ class SessionTitlePlugin(Plugin):
         if not self.options.enabled:
             return
         hooks = self.ctx.require(HookService)
-        self.ctx.effect(
-            lambda: hooks.on(AGENT_TURN_STOPPING, self._on_turn_stopping),
-            label="session-title",
-        )
+        # Subscribe eagerly: effect() only records a teardown callback.
+        self._dispose = hooks.on(AGENT_TURN_STOPPING, self._on_turn_stopping)
+        self.ctx.effect(self._dispose, label="session-title")
 
     async def close(self) -> None:
         """Drop in-flight title requests."""

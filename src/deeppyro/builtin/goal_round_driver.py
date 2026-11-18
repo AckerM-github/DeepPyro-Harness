@@ -78,7 +78,7 @@ class GoalRoundDriverPlugin(Plugin):
     """Attach the goal round driver when ``[goal] driver`` is enabled."""
 
     plugin_id = "goal-round-driver"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "opt-in automatic goal rounds for armed goals"
     inject: ClassVar[list[str]] = ["hooks", "agents"]
 

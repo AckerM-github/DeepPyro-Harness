@@ -342,7 +342,7 @@ async def test_changed_runtime_context_appends_a_new_snapshot(tmp_path: Path) ->
 
     first_runtime = runtime_records()
     assert len(first_runtime) == 1
-    assert "Current DSH file policy: workspace-write." in first_runtime[0].data["content"][0]["text"]
+    assert "Current DeepPyro file policy: workspace-write." in first_runtime[0].data["content"][0]["text"]
 
     permission.preset = "read-only"
     permission.policy = SandboxPolicy("read-only", permission.policy.workspace_root)
@@ -350,8 +350,8 @@ async def test_changed_runtime_context_appends_a_new_snapshot(tmp_path: Path) ->
 
     runtime = runtime_records()
     assert len(runtime) == 2
-    assert "Current DSH file policy: workspace-write." in runtime[0].data["content"][0]["text"]
-    assert "Current DSH file policy: read-only." in runtime[1].data["content"][0]["text"]
+    assert "Current DeepPyro file policy: workspace-write." in runtime[0].data["content"][0]["text"]
+    assert "Current DeepPyro file policy: read-only." in runtime[1].data["content"][0]["text"]
     assert runtime[1].surfaceOp == "append"
 
     # The policy lives in the runtime-context snapshot, so the system prompt stays stable.

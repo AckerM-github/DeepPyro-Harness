@@ -16,7 +16,7 @@ class SessionsPlugin(Service):
     provide = "sessions"
     inject: ClassVar[list[str]] = ["config"]
     plugin_id = "sessions"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "durable session log store"
 
     def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:

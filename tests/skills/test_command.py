@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from deeppyro.builtin.commands import CommandsPlugin
 from deeppyro.builtin.skills import SkillsPlugin
 from deeppyro.config import Config
 from deeppyro.kernel.app import create_app
@@ -75,7 +76,7 @@ async def _boot() -> Any:
 
 
 def _spec(app: Any, name: str) -> Any:
-    return next(spec for spec in app.service("commands").all() if spec.name == name)
+    return next(spec for spec in app.require(CommandsPlugin).all() if spec.name == name)
 
 
 async def test_command_is_registered_with_usage(tmp_path: Path) -> None:

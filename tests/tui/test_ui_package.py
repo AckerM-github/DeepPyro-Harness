@@ -369,3 +369,43 @@ def test_slots_plugin_scan_failure_is_not_fatal() -> None:
     assert plugin.ui_packages == []
     assert plugin.ui_summary == "no UI packages"
     assert "cannot scan UI packages" in plugin.ui_errors[0]
+
+
+def test_installed_ui_packages_cannot_replace_an_existing_slot(tmp_path: Path) -> None:
+    """A later package re-declaring (kind, id) is refused; the first one wins."""
+    root = tmp_path / "bundles"
+    first_module = unique_module("ui_good")
+    second_module = unique_module("ui_good")
+    write_bundle(
+        root,
+        "a-first",
+        bundle_id="first",
+        module_name=first_module,
+        ui_toml=f'[[status]]\nid = "clock"\nrenderer = "{first_module}:clock"\n',
+    )
+    write_bundle(
+        root,
+        "b-second",
+        bundle_id="second",
+        module_name=second_module,
+        module_source='def clock(context):\n    return "second-tick"\n',
+        ui_toml=f'[[status]]\nid = "clock"\nrenderer = "{second_module}:clock"\n',
+    )
+    registry = SlotRegistry()
+
+    reports = load_installed_ui_packages(registry, root=root)
+
+    assert [report.id for report in reports] == ["first", "second"]
+    first, second = reports
+    assert first.ok, first.errors
+    assert first.slot_ids == ("clock",)
+    assert not second.ok
+    assert "duplicate status slot id 'clock'" in second.errors[0]
+    assert "'first'" in second.errors[0]
+    assert "'second'" in second.errors[0]
+
+    contribution = registry.get(STATUS, "clock")
+    assert contribution is not None
+    assert contribution.plugin_id == "first"
+    assert call_slot_factory(contribution.factory, {}) == "tick"
+    assert [item.id for item in registry.status_items()] == ["clock"]

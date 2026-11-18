@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+from pydantic import BaseModel
 
+from deeppyro.api import Plugin
 from deeppyro.api.errors import PluginConfigError
 from deeppyro.kernel.manifest import PluginSpec
 from deeppyro.plugins import (
@@ -18,6 +20,7 @@ from deeppyro.plugins import (
     manifest_revision,
     mask_secrets,
     plugin_config_schema,
+    plugin_live_fields,
     plugin_volatile_fields,
     read_manifest,
     save_user_manifest,
@@ -40,6 +43,23 @@ class DirConfig(BaseModel):
 class DirPlugin(Plugin):
     plugin_id = "dir-plugin"
     Config = DirConfig
+"""
+
+
+LIVE_PLUGIN_MODULE = """
+from pydantic import BaseModel
+from deeppyro.api import Plugin
+
+
+class LiveSettings(BaseModel):
+    log_level: str = "info"
+    timeout: int = 5
+    model: str = "m"
+
+
+class LivePlugin(Plugin):
+    plugin_id = "live-settings"
+    Config = LiveSettings
 """
 
 
@@ -297,3 +317,49 @@ def test_invalid_manifest_raises_plugin_error(tmp_path: Path) -> None:
     path.write_text("not valid toml = =", encoding="utf-8")
     with pytest.raises(PluginError, match="cannot read plugin manifest"):
         SettingsStore(manifest_path=path).describe("demo-plugin")
+
+
+def test_plugin_live_fields_merges_whitelist_and_declared_volatile() -> None:
+    class LiveConfig(BaseModel):
+        log_level: str = "info"
+        temperature: float = 0.0
+
+    class LivePlugin(Plugin):
+        Config = LiveConfig
+        volatile = ("temperature",)
+
+    assert plugin_live_fields(LivePlugin) == ("temperature", "log_level")
+
+
+def test_write_classifies_live_and_restart_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEEPPYRO_HOME", str(tmp_path / "home"))
+    plugins_dir = tmp_path / "plugins"
+    write_plugin(
+        plugins_dir / "live-settings",
+        name="Live Settings",
+        module="live_settings_module",
+        class_name="LivePlugin",
+        provides=None,
+        module_source=LIVE_PLUGIN_MODULE,
+    )
+    monkeypatch.syspath_prepend(str(plugins_dir))
+    manifest = tmp_path / "plugins.toml"
+    store = SettingsStore(manifest_path=manifest)
+
+    described = store.describe("live-settings")
+    assert described["live_fields"] == ["log_level", "timeout"]
+    assert described["volatile_fields"] == []
+    assert described["apply"] == "next-boot"
+
+    live = store.write("live-settings", {"log_level": "debug"}, store.revision)
+    assert live["live_changed"] == ["log_level"]
+    assert live["restart_fields"] == []
+    assert live["volatile_fields"] == ["log_level", "timeout"]
+    assert live["volatile_changed"] == ["log_level"]
+
+    restart = store.write("live-settings", {"model": "other"}, store.revision)
+    assert restart["live_changed"] == []
+    assert restart["restart_fields"] == ["model"]
+    assert restart["volatile_changed"] == []
+    specs = read_manifest(manifest)
+    assert specs[0].config == {"log_level": "debug", "model": "other"}

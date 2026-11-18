@@ -11,12 +11,16 @@ deeppyro modules.
 from __future__ import annotations
 
 from .capabilities import (
+    LIVE_CONFIG_TOKENS,
     SANDBOX_MODES,
     CapabilityManifest,
     RiskLevel,
+    ServiceRequirement,
     TokenCost,
     ToolCapability,
     build_manifest,
+    is_live_config_key,
+    live_config_fields,
     tool_capability,
 )
 from .context import PluginContext
@@ -68,6 +72,7 @@ __all__ = [
     "CORDIS_PRESET_ID",
     "DEFAULT_PRESET_ID",
     "LEGACY_DEFAULT_PRESET_ID",
+    "LIVE_CONFIG_TOKENS",
     "MINIMAL_PRESET_ID",
     "PLUGIN_AUTHORING_TOOL_NAMES",
     "PTC_PRESET_ID",
@@ -94,6 +99,7 @@ __all__ = [
     "Service",
     "ServiceBag",
     "ServiceNotFoundError",
+    "ServiceRequirement",
     "ServiceTypeError",
     "TokenCost",
     "ToolCapability",
@@ -102,6 +108,8 @@ __all__ = [
     "build_manifest",
     "inject_names",
     "invoke_setup",
+    "is_live_config_key",
+    "live_config_fields",
     "lookup_service",
     "require_service",
     "resolve_injections",

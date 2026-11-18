@@ -17,6 +17,7 @@ from deeppyro.team.types import (
     TASK_ACTIONS,
     TASK_STATUSES,
     MemberInfo,
+    MemberRun,
     TaskInfo,
 )
 
@@ -33,6 +34,7 @@ __all__ = [
     "TASK_ACTIONS",
     "TASK_STATUSES",
     "MemberInfo",
+    "MemberRun",
     "TaskInfo",
     "TeamError",
     "TeamService",

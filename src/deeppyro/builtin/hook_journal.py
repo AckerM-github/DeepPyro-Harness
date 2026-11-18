@@ -35,7 +35,7 @@ class HookJournalPlugin(Plugin):
     """Persist hook dispatch lifecycles into the session of the dispatching agent."""
 
     plugin_id = "hook-journal"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "journal hook dispatches into the executing agent session log"
     inject: ClassVar[list[str]] = ["hooks"]
 
@@ -45,7 +45,9 @@ class HookJournalPlugin(Plugin):
 
     def setup(self) -> None:
         hooks = self.ctx.require(HookService)
-        self.ctx.effect(lambda: hooks.add_observer(self._observe), label="hook-journal")
+        # Subscribe eagerly: effect() only records a teardown callback.
+        self._dispose = hooks.add_observer(self._observe)
+        self.ctx.effect(self._dispose, label="hook-journal")
 
     def _observe(self, observation: HookObservation) -> None:
         """Record one observation, skipping hot hooks and payloads without an agent."""

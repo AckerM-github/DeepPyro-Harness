@@ -14,6 +14,8 @@ import httpx
 import pytest
 import respx
 
+from deeppyro.builtin.inspect import InspectPlugin
+from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.kernel.app import App
 from deeppyro.kernel.bundle import boot
@@ -46,7 +48,7 @@ async def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[
 
 
 async def test_inspect_providers_include_configured_models(app: App) -> None:
-    providers = {row["name"]: row for row in app.service("inspect").providers()}
+    providers = {row["name"]: row for row in app.require(InspectPlugin).providers()}
     assert "local" in providers
     assert providers["local"]["models"] == [
         {
@@ -67,10 +69,10 @@ async def test_inspect_providers_include_discovered_models(app: App) -> None:
             json={"data": [{"id": "m", "name": "Listed M"}, {"id": "extra", "name": "Extra"}]},
         )
     )
-    listed = await app.service("llm").list_models("local")
+    listed = await app.require(LlmPlugin).list_models("local")
     assert [info.id for info in listed] == ["m", "extra"]
 
-    providers = {row["name"]: row for row in app.service("inspect").providers()}
+    providers = {row["name"]: row for row in app.require(InspectPlugin).providers()}
     rows = providers["local"]["models"]
     assert [row["id"] for row in rows] == ["m", "extra"]
     by_id = {row["id"]: row for row in rows}
@@ -83,7 +85,7 @@ async def test_inspect_providers_include_discovered_models(app: App) -> None:
 @respx.mock
 async def test_llm_service_model_info(app: App) -> None:
     respx.get(LOCAL_LISTING_URL).mock(return_value=httpx.Response(404, text="not found"))
-    llm = app.service("llm")
+    llm = app.require(LlmPlugin)
     info = await llm.model_info("local", "m")
     assert info is not None
     assert info.name == "Model M"

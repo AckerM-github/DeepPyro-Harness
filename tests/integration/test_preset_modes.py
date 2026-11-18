@@ -19,6 +19,9 @@ from deeppyro.api import (
     PTC_PRESET_ID,
     TEAM_PRESET_ID,
 )
+from deeppyro.builtin.agents import AgentsPlugin
+from deeppyro.builtin.presets import PresetsPlugin
+from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.kernel import boot
 from deeppyro.prompt import PromptContext
@@ -52,8 +55,8 @@ def _prompt_context(tmp_path: Path) -> PromptContext:
 
 
 def _agent_for(app: Any, tmp_path: Path, preset_id: str) -> Any:
-    sessions = app.service("sessions")
-    agents = app.service("agents")
+    sessions = app.require(SessionsPlugin)
+    agents = app.require(AgentsPlugin)
     session = sessions.create(str(tmp_path), agent_preset=preset_id)
     return agents.create(
         session=session,
@@ -68,7 +71,7 @@ def _agent_for(app: Any, tmp_path: Path, preset_id: str) -> Any:
 async def test_core_bundle_registers_the_standard_ptc_minimal_and_cordis_presets(tmp_path: Path) -> None:
     app = await boot(_config(tmp_path))
     try:
-        presets = app.service("presets")
+        presets = app.require(PresetsPlugin)
         assert presets.ids() == [
             DEFAULT_PRESET_ID,
             PTC_PRESET_ID,

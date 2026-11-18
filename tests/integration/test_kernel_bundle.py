@@ -10,7 +10,13 @@ from pathlib import Path
 
 import pytest
 
+from deeppyro.builtin.agents import AgentsPlugin
+from deeppyro.builtin.llm import LlmPlugin
+from deeppyro.builtin.sandbox import SandboxPlugin
+from deeppyro.builtin.sessions import SessionsPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
+from deeppyro.jobs import JobsService
 from deeppyro.kernel import boot
 
 
@@ -43,22 +49,22 @@ async def app(tmp_path: Path):
 
 
 async def test_bundle_services_are_available(app) -> None:
-    for name in ("llm", "sandbox", "tools", "jobs"):
-        assert app.has_service(name), name
-    assert not app.has_service("sessions")
-    assert not app.has_service("agents")
+    for contract in (LlmPlugin, SandboxPlugin, ToolsPlugin, JobsService):
+        assert app.require(contract) is not None, contract
+    assert app.get(SessionsPlugin) is None
+    assert app.get(AgentsPlugin) is None
     assert app.config.agent.provider == "local"
 
 
 async def test_llm_service_resolves_configured_provider(app) -> None:
-    llm = app.service("llm")
+    llm = app.require(LlmPlugin)
     provider = llm.provider("local")
     assert provider.name == "local"
     await provider.aclose()
 
 
 async def test_sandbox_service_builds_gate_for_workspace(app, tmp_path: Path) -> None:
-    gate = app.service("sandbox").gate(tmp_path)
+    gate = app.require(SandboxPlugin).gate(tmp_path)
     # workspace-write preset allows writes inside the workspace
 
     decision = gate.check_write(tmp_path / "a.txt") if hasattr(gate, "check_write") else None
@@ -66,10 +72,10 @@ async def test_sandbox_service_builds_gate_for_workspace(app, tmp_path: Path) ->
 
 
 async def test_tools_service_builds_registry_for_workspace(app, tmp_path: Path) -> None:
-    registry = app.service("tools").registry_for(tmp_path)
+    registry = app.require(ToolsPlugin).registry_for(tmp_path)
     names = set(registry.names()) if hasattr(registry, "names") else set()
     assert "read" in names or "read_file" in names
     assert "job_list" in names
     # a second workspace gets independent instances
-    other = app.service("tools").registry_for(tmp_path / "other")
+    other = app.require(ToolsPlugin).registry_for(tmp_path / "other")
     assert other is not registry

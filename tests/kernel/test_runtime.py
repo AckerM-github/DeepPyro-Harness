@@ -32,7 +32,7 @@ async def test_kernel_runtime_reports_mounted_plugins() -> None:
     try:
         assert app.mount_record("kernel").cls is KernelRuntime
         assert app.started["kernel"] == "ACTIVE"
-        kernel = app.service("kernel")
+        kernel = app.require(KernelRuntime)
         mounted = kernel.mounted_plugins()
         assert [plugin["id"] for plugin in mounted] == ["kernel", "vol"]
         assert {plugin["state"] for plugin in mounted} == {"active"}
@@ -47,7 +47,7 @@ async def test_kernel_runtime_reports_mounted_plugins() -> None:
 async def test_apply_plugin_config_updates_volatile_field() -> None:
     app = await _boot((PluginRow(id="vol", plugin=f"{DUMMY}:VolatilePlugin", config={"threshold": 2}),))
     try:
-        kernel = app.service("kernel")
+        kernel = app.require(KernelRuntime)
         assert kernel.apply_plugin_config("vol", {"threshold": 9}) is True
         record = app.mount_record("vol")
         assert record.instance.config.threshold == 9
@@ -64,7 +64,7 @@ async def test_apply_plugin_config_updates_volatile_field() -> None:
 async def test_apply_plugin_config_rejects_non_volatile_change() -> None:
     app = await _boot((PluginRow(id="vol", plugin=f"{DUMMY}:VolatilePlugin", config={"threshold": 2}),))
     try:
-        kernel = app.service("kernel")
+        kernel = app.require(KernelRuntime)
         assert kernel.apply_plugin_config("vol", {"label": "other"}) is False
         assert app.restart_required == {"vol"}
         states = {state["id"]: state for state in app.row_states()}
@@ -80,7 +80,7 @@ async def test_apply_plugin_config_rejects_non_volatile_change() -> None:
 async def test_apply_plugin_config_without_volatile_fields_requires_restart() -> None:
     app = await _boot((PluginRow(id="plain", plugin=f"{DUMMY}:NonVolatilePlugin", config={"threshold": 1}),))
     try:
-        kernel = app.service("kernel")
+        kernel = app.require(KernelRuntime)
         assert kernel.apply_plugin_config("plain", {"threshold": 3}) is False
         assert app.restart_required == {"plain"}
         states = {state["id"]: state for state in app.row_states()}
@@ -92,7 +92,7 @@ async def test_apply_plugin_config_without_volatile_fields_requires_restart() ->
 async def test_apply_plugin_config_unknown_plugin_returns_false() -> None:
     app = await _boot((PluginRow(id="vol", plugin=f"{DUMMY}:VolatilePlugin", config={"threshold": 2}),))
     try:
-        kernel = app.service("kernel")
+        kernel = app.require(KernelRuntime)
         assert kernel.apply_plugin_config("nope", {"threshold": 4}) is False
         assert app.restart_required == frozenset()
     finally:
@@ -102,7 +102,7 @@ async def test_apply_plugin_config_unknown_plugin_returns_false() -> None:
 async def test_apply_plugin_config_rejects_invalid_value_without_restart() -> None:
     app = await _boot((PluginRow(id="vol", plugin=f"{DUMMY}:VolatilePlugin", config={"threshold": 2}),))
     try:
-        kernel = app.service("kernel")
+        kernel = app.require(KernelRuntime)
         assert kernel.apply_plugin_config("vol", {"threshold": "not-an-int"}) is False
         assert app.restart_required == frozenset()
         states = {state["id"]: state for state in app.row_states()}
@@ -115,7 +115,7 @@ async def test_apply_plugin_config_rejects_invalid_value_without_restart() -> No
 async def test_apply_plugin_config_same_values_is_applied_and_clears_restart() -> None:
     app = await _boot((PluginRow(id="vol", plugin=f"{DUMMY}:VolatilePlugin", config={"threshold": 2}),))
     try:
-        kernel = app.service("kernel")
+        kernel = app.require(KernelRuntime)
         assert kernel.apply_plugin_config("vol", {"label": "other"}) is False
         assert app.restart_required == {"vol"}
         assert kernel.apply_plugin_config("vol", {"threshold": 2}) is True
@@ -132,7 +132,7 @@ async def test_mounted_plugins_lists_disabled_rows() -> None:
         )
     )
     try:
-        kernel = app.service("kernel")
+        kernel = app.require(KernelRuntime)
         mounted = {plugin["id"]: plugin for plugin in kernel.mounted_plugins()}
         assert mounted["off"]["state"] == "disabled"
         assert mounted["off"]["disabled"] is True
@@ -152,7 +152,7 @@ async def test_apply_plugin_config_rejects_group_rows() -> None:
         )
     )
     try:
-        kernel = app.service("kernel")
+        kernel = app.require(KernelRuntime)
         assert kernel.apply_plugin_config("group", {"threshold": 5}) is False
     finally:
         await app.stop()

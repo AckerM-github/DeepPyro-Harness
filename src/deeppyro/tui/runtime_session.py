@@ -7,8 +7,56 @@ from typing import Any
 
 from deeppyro.api import AGENT_MODE_TEAM, DEFAULT_PRESET_ID
 from deeppyro.builtin.presets import PresetsPlugin
+from deeppyro.core.errors import DeeppyroError
 from deeppyro.tui.runtime_schedule import ScheduleLayer
 from deeppyro.tui.runtime_support import await_maybe, logger
+
+#: Session header fields that preset application must never rewrite. The v4
+#: wire header has no model/system field, but a host header may grow one, so
+#: the snapshot covers every field whose presence would change session meaning.
+_HEADER_FIELDS = (
+    "id",
+    "createdAt",
+    "cwd",
+    "isSeeded",
+    "delegationDepth",
+    "agentPreset",
+    "parentSession",
+    "origin",
+    "model",
+    "system",
+)
+
+
+def _session_header_snapshot(session: Any) -> tuple[Any, dict[str, Any]]:
+    """Capture the header object and the fields a preset must leave untouched."""
+    header = getattr(session, "header", None)
+    return header, {name: getattr(header, name, None) for name in _HEADER_FIELDS}
+
+
+def _assert_session_header_unchanged(
+    session: Any,
+    snapshot: tuple[Any, dict[str, Any]],
+    *,
+    preset: str | None,
+) -> None:
+    """Reject a preset application that rewrote an existing session header.
+
+    The header records what the session was created as: preset application may
+    rebuild the live agent, but changing cwd/model/system (or the preset id in
+    the header) is reserved for creating a new session or an explicit fork.
+    """
+    header, values = snapshot
+    current = getattr(session, "header", None)
+    changed = [name for name, value in values.items() if getattr(current, name, None) != value]
+    if current is not header:
+        changed.insert(0, "header")
+    if changed:
+        raise DeeppyroError(
+            f"agent preset {preset!r} rewrote the session header ({', '.join(changed)}); "
+            "applying a preset must not change an existing session header — "
+            "create a new session or fork to change cwd/model/system"
+        )
 
 
 class SessionLayer(ScheduleLayer):
@@ -29,6 +77,7 @@ class SessionLayer(ScheduleLayer):
         return session
 
     async def _attach(self, session: Any) -> None:
+        header_snapshot = _session_header_snapshot(session)
         options = self.agents.options(
             model=self.model,
             context_window=self.context_window,
@@ -45,6 +94,7 @@ class SessionLayer(ScheduleLayer):
             preset=self.agent_preset,
             preset_revision=self.preset_revision,
         )
+        _assert_session_header_unchanged(session, header_snapshot, preset=self.agent_preset)
         close_agent = getattr(self.agent, "aclose", None)
         if close_agent is not None:
             await await_maybe(close_agent())

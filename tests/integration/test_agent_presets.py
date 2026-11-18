@@ -12,6 +12,11 @@ from typing import Any
 import pytest
 
 from deeppyro.api import PresetPluginRow, PresetSpec
+from deeppyro.builtin.agents import AgentsPlugin
+from deeppyro.builtin.presets import PresetsPlugin
+from deeppyro.builtin.prompt_service import PromptPlugin
+from deeppyro.builtin.sessions import SessionsPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.core.errors import DeeppyroError
 from deeppyro.kernel import boot
@@ -103,7 +108,7 @@ async def test_preset_scopes_tools_and_prompt_sections(tmp_path: Path) -> None:
     (bundle_dir / "preset_plugin.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
     app = await boot(_config(tmp_path), bundle_paths=[str(bundle_dir)])
     try:
-        presets = app.service("presets")
+        presets = app.require(PresetsPlugin)
         ids = presets.ids()
         assert "standard" in ids
         assert "reviewer" in ids
@@ -113,7 +118,7 @@ async def test_preset_scopes_tools_and_prompt_sections(tmp_path: Path) -> None:
         with pytest.raises(DeeppyroError):
             presets.resolve("nope")
 
-        tools = app.service("tools")
+        tools = app.require(ToolsPlugin)
         default_tools = tools.registry_for(tmp_path)
         assert "shared_ping" in default_tools
         assert "review_note" not in default_tools
@@ -123,7 +128,7 @@ async def test_preset_scopes_tools_and_prompt_sections(tmp_path: Path) -> None:
         result = await scoped_tools.get("review_note").run({"note": "ok"}, None)
         assert result.text == "noted: ok"
 
-        prompt_service = app.service("prompt")
+        prompt_service = app.require(PromptPlugin)
         prompt_context = _prompt_context(tmp_path)
         default_prompt = prompt_service.build([], prompt_context)
         assert "## Review mode" not in default_prompt
@@ -142,14 +147,14 @@ async def test_agents_apply_the_selected_preset(tmp_path: Path) -> None:
     (bundle_dir / "preset_plugin.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
     app = await boot(_config(tmp_path), bundle_paths=[str(bundle_dir)])
     try:
-        sessions = app.service("sessions")
+        sessions = app.require(SessionsPlugin)
         session = sessions.create(str(tmp_path), agent_preset="reviewer")
         assert session.header.agentPreset == "reviewer"
 
-        agents = app.service("agents")
+        agents = app.require(AgentsPlugin)
         options = agents.options()
         assert options.model == ""
-        registry = app.service("tools").registry_for(tmp_path, scope="reviewer")
+        registry = app.require(ToolsPlugin).registry_for(tmp_path, scope="reviewer")
         agent = agents.create(
             session=session,
             provider=object(),
@@ -170,7 +175,7 @@ async def test_agents_apply_the_selected_preset(tmp_path: Path) -> None:
         default_agent = agents.create(
             session=default_session,
             provider=object(),
-            registry=app.service("tools").registry_for(tmp_path),
+            registry=app.require(ToolsPlugin).registry_for(tmp_path),
             options=agents.options(),
             sink=DummySink(),
             cwd=str(tmp_path),
@@ -195,7 +200,7 @@ async def test_preset_realm_activates_and_live_agent_keeps_its_revision(tmp_path
     (bundle_dir / "realm_plugin.py").write_text(REALM_PLUGIN_SOURCE, encoding="utf-8")
     app = await boot(_config(tmp_path), bundle_paths=[str(bundle_dir)])
     try:
-        presets = app.service("presets")
+        presets = app.require(PresetsPlugin)
         # Realms are materialized eagerly by the registry; hosts await them
         # before creating agents so realm contributions are visible.
         await presets.ensure_all()
@@ -204,8 +209,8 @@ async def test_preset_realm_activates_and_live_agent_keeps_its_revision(tmp_path
         failures = presets.realm_failures("realm-writer")
         assert failures == []
 
-        sessions = app.service("sessions")
-        agents = app.service("agents")
+        sessions = app.require(SessionsPlugin)
+        agents = app.require(AgentsPlugin)
         session = sessions.create(str(tmp_path), agent_preset="realm-writer")
         agent = agents.create(
             session=session,

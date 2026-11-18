@@ -13,7 +13,7 @@ class PromptCorePlugin(Plugin):
 
     inject: ClassVar[list[str]] = ["prompt"]
     plugin_id = "prompt-core"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "core system prompt sections"
 
     def setup(self) -> None:

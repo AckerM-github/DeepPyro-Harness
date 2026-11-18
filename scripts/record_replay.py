@@ -1,8 +1,10 @@
 """Offline replay and golden eval driver.
 
 The driver only reads tracked fixtures and recorded outcomes: it never imports a
-provider client and never opens a network connection.  It is used by the
-non-blocking native CI workflow and can be run locally with:
+provider client and never opens a network connection.  This is replay, not
+recording (re-recording the baseline needs the external capture harness; see
+docs/native/coverage.md).  It is a blocking step of the native CI workflow and
+can be run locally with:
 
     python scripts/record_replay.py
     python scripts/record_replay.py replay

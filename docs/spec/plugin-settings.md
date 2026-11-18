@@ -35,7 +35,7 @@ manifest_path 缺省为 deeppyro.paths.plugins_manifest_path()（~/.dpro/plugins
 | write(plugin_id, patch, expected_revision) | dict | 校验 + CAS + 原子写入；冲突抛 SettingsConflict，校验失败抛 PluginConfigError；返回字段含 volatile_fields/volatile_changed |
 | effective_config(plugin_id) | dict | 未掩码的完整生效配置，仅供进程内 live apply 等内部调用，不得进入 agent 工具输出 |
 
-SettingsPlugin（@src/deeppyro/builtin/settings.py）是 Service，provide = settings，plugin_id = settings，version = 0.1.0，构造时创建 SettingsStore()；属性 revision 与方法 describe/read/write 委托 store。它不注入其它服务，方法调用时按需读取磁盘与 composition；write 在 volatile 变更时通过 ctx.get(KernelRuntime) 调用 kernel 服务的 apply_plugin_config（见第 10 节）。
+SettingsPlugin（@src/deeppyro/builtin/settings.py）是 Service，provide = settings，plugin_id = settings，version = 0.2.0，构造时创建 SettingsStore()；属性 revision 与方法 describe/read/write 委托 store。它不注入其它服务，方法调用时按需读取磁盘与 composition；write 在 volatile 变更时通过 ctx.get(KernelRuntime) 调用 kernel 服务的 apply_plugin_config（见第 10 节）。
 
 ## 3. revision 与 CAS
 

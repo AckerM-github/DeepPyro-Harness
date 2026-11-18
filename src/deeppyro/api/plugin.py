@@ -39,7 +39,7 @@ old hook into `setup(self)` and read `self.ctx` / `self.config`.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel
@@ -87,6 +87,11 @@ class Plugin:
     #: Services this plugin depends on, as contract classes or plain service
     #: names. Contract classes are resolved to their provide name at mount time.
     inject: ClassVar[Sequence[str | type[Any]]] = ()
+    #: Version constraints for injected services, for example
+    #: `{"tools": ">=0.2"}`. Enforced by the kernel capability validation.
+    requires_versions: ClassVar[Mapping[str, str]] = {}
+    #: Event names this plugin emits or observes (capability manifest only).
+    events: ClassVar[tuple[str, ...]] = ()
 
     # -- capability governance (read by api.capabilities) ------------------
     #: Coarse blast radius of the plugin.

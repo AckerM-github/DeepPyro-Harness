@@ -4,7 +4,9 @@ import pytest
 
 from deeppyro.config import Config
 from deeppyro.kernel.app import KernelBootError, create_app
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.kernel.manifest import PluginSpec
+from tests.kernel.plugins_dummy import CounterPlugin
 
 
 def _config() -> Config:
@@ -27,9 +29,9 @@ async def test_create_app_loads_plugins_and_services() -> None:
         ),
     )
     try:
-        assert app.service("counter").n == 5
-        assert app.service("counter").inc() == 6
-        assert app.service("config").value.agent.model == "m"
+        assert app.require(CounterPlugin).n == 5
+        assert app.require(CounterPlugin).inc() == 6
+        assert app.require(KernelConfig).value.agent.model == "m"
         assert app.started["counter"] == "ACTIVE"
     finally:
         await app.stop()
@@ -58,7 +60,7 @@ disabled = true
         manifest_paths=(str(manifest),),
     )
     try:
-        assert app.service("counter").n == 9
+        assert app.require(CounterPlugin).n == 9
         assert app.started == {"counter": "ACTIVE"}
         assert "consumer" not in app.started
     finally:
@@ -71,7 +73,7 @@ async def test_stop_removes_services() -> None:
         plugins=(PluginSpec(id="counter", name="tests.kernel.plugins_dummy:CounterPlugin"),),
     )
     await app.stop()
-    assert not app.has_service("counter")
+    assert app.get(CounterPlugin) is None
 
 
 async def test_row_states_report_patched_and_disabled_plugins(tmp_path: Path) -> None:

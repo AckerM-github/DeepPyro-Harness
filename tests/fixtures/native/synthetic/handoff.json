@@ -1,0 +1,11 @@
+{
+  "case_id": "handoff",
+  "capability": "handoff",
+  "title": "multi-agent handoff record type is absent from both vocabularies",
+  "coverage": "xfail",
+  "xfail_reason": "KI-011: neither session v4 nor native schema 1 records a multi-agent handoff today; v4 has no handoff/* record type, native 5.2 reserves the subagent/team events, and Task/Handoff are unwired (KI-017)",
+  "limitations": [
+    "no handoff/* record type in session v4 (core/wire.py RECORD_TYPES)",
+    "no subagent.started/finished or team.* event implemented in native schema 1"
+  ]
+}

@@ -38,7 +38,7 @@ TUI：@src/deeppyro/tui/screens/plugins.py 提供 PluginScreen（ModalScreen[str
 (b) 用户插件目录：默认为 ~/.dpro/plugins/（deeppyro.paths.plugins_dir()；DEEPPYRO_PLUGINS_DIR 可覆盖；显式传入 manifest 时默认用 manifest 同级的 plugins/）。每个插件一个子目录 <name>/，必须含 plugin.toml：
 
     name = "Demo Plugin"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "a demo plugin"
     module = "demo_plugin"
     class = "DemoPlugin"
@@ -149,7 +149,7 @@ remove(id)：bundle 保护。entry point 来源抛 PluginRemovalError（提示�
 
 bundle 生命周期门面：list_bundles()、install_bundle(source, *, force=False)、remove_bundle(bundle_id)、set_bundle(bundle_id, enabled) 委托 BundleStore；create_bundle(dest, bundle_id, name="", *, api_version=API_VERSION) 与 bundle_template(bundle_id="demo-bundle", name="", *, api_version=API_VERSION) 委托 @template.py（前者生成脚手架目录并返回 Path，后者只返回文本 dict，不落盘）。
 
-脚手架：bundle id 使用与 BundleStore 相同的规则（公有 validate_bundle_id 可复用：strip 后非空，不能是 . 或 ..，不能含 /、反斜杠、冒号或 NUL）。生成 bundle.toml（version=0.1.0、order=500、critical=false，单行插件 id=bundle_id、plugin="plugin.py:<Pascal>Plugin"）、plugin.py（示例 Config、volatile 字段、inject 与 register_tool 示例工具 sample_greeting）与 README.md。create_bundle 在临时目录写完三个文件后先用 kernel.composition.load_bundle 校验，再复制到目标；目标必须不存在或为空目录，api_version 非法时校验失败且不留下目标。
+脚手架：bundle id 使用与 BundleStore 相同的规则（公有 validate_bundle_id 可复用：strip 后非空，不能是 . 或 ..，不能含 /、反斜杠、冒号或 NUL）。生成 bundle.toml（version=0.2.0、order=500、critical=false，单行插件 id=bundle_id、plugin="plugin.py:<Pascal>Plugin"）、plugin.py（示例 Config、volatile 字段、inject 与 register_tool 示例工具 sample_greeting）与 README.md。create_bundle 在临时目录写完三个文件后先用 kernel.composition.load_bundle 校验，再复制到目标；目标必须不存在或为空目录，api_version 非法时校验失败且不留下目标。
 
 清单写盘（@manifest_store.py）：dump_manifest 只输出 [[plugins]] 表，字段按 id、name、disabled、config、before、after 顺序，无值字段省略；config 以内联表输出；字符串用 JSON 转义（TOML basic string 子集）；不支持的值类型抛 ManifestWriteError。save_user_manifest 在目标同目录创建命名临时文件，写完 flush + os.fsync 后 os.replace；内容为空时删除清单文件；失败清理临时文件并抛 ManifestWriteError。读取统一走 kernel load_manifest，因此 merge/别名/错误文本与 kernel 一致。
 
@@ -179,11 +179,11 @@ effective_config(plugin_id)：返回未掩码的完整生效配置，仅供进�
 
 掩码规则：字段名（大小写不敏感）包含 key、token、secret、password 中任意一个子串即视为 secret，递归处理嵌套 dict/list，非 None 值替换为 ***。注意这是启发式：maxTokens 因包含 token 会被掩码（展示为 ***，写回时保持原值），而叫 credential 的字段不会被掩码。
 
-SettingsPlugin：provide = settings，plugin_id = settings，version = 0.1.0，inject = []。构造时创建 SettingsStore()；属性 revision；方法 describe/read/write 委托 store。write 额外做 volatile live apply：若 changed 含插件类声明的 volatile 字段，取 ctx.require(KernelRuntime)（kernel 服务）的 apply_plugin_config(plugin_id, effective_config(plugin_id))；成功且没有非 volatile 变更时返回 applied_live=True、restart_required=False、apply="live"；存在非 volatile 变更、kernel 服务缺失、返回 False 或抛异常时回退 applied_live=False、restart_required=True、apply=next-boot，配置仍已落盘且异常不外抛。
+SettingsPlugin：provide = settings，plugin_id = settings，version = 0.2.0，inject = []。构造时创建 SettingsStore()；属性 revision；方法 describe/read/write 委托 store。write 额外做 volatile live apply：若 changed 含插件类声明的 volatile 字段，取 ctx.require(KernelRuntime)（kernel 服务）的 apply_plugin_config(plugin_id, effective_config(plugin_id))；成功且没有非 volatile 变更时返回 applied_live=True、restart_required=False、apply="live"；存在非 volatile 变更、kernel 服务缺失、返回 False 或抛异常时回退 applied_live=False、restart_required=True、apply=next-boot，配置仍已落盘且异常不外抛。
 
 ## 7. 检视服务：InspectPlugin
 
-InspectPlugin（provide = inspect，plugin_id = inspect，version = 0.1.0，inject = []）只读访问当前进程的运行时服务表，不 import kernel.app。所有方法在依赖服务缺失时抛 PluginDependencyError。
+InspectPlugin（provide = inspect，plugin_id = inspect，version = 0.2.0，inject = []）只读访问当前进程的运行时服务表，不 import kernel.app。所有方法在依赖服务缺失时抛 PluginDependencyError。
 
 | 方法 | 返回 |
 | --- | --- |
@@ -215,7 +215,7 @@ InspectPlugin（provide = inspect，plugin_id = inspect，version = 0.1.0，inje
 
 安全提示：plugin_manager 的描述明确写出 install 会把第三方 bundle 复制到用户目录并在下一次 boot 执行其代码，因此该调用需要人工批准；工具不提供任何签名校验或沙箱。
 
-PluginToolsPlugin：普通 Plugin（不是 Service），plugin_id = plugin-tools，version = 0.1.0，inject = [tools]；setup 调用 self.ctx.register_tool(lambda _cfg, _workspace: plugin_tools()) 注册五个工具。它不修改 builtin_tools()，是否暴露给会话由 bundle 行与 runtime 接线决定。
+PluginToolsPlugin：普通 Plugin（不是 Service），plugin_id = plugin-tools，version = 0.2.0，inject = [tools]；setup 调用 self.ctx.register_tool(lambda _cfg, _workspace: plugin_tools()) 注册五个工具。它不修改 builtin_tools()，是否暴露给会话由 bundle 行与 runtime 接线决定。
 
 ## 9. 内置 bundle 行与集成点
 

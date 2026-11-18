@@ -21,7 +21,7 @@ class ToolsPlugin(Service):
     provide = "tools"
     inject: ClassVar[list[str]] = ["config"]
     plugin_id = "tools"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "tool contribution registry"
 
     def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:
@@ -123,7 +123,7 @@ class BuiltinToolsPlugin(Plugin):
 
     inject: ClassVar[list[str]] = ["tools"]
     plugin_id = "tools-builtin"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "built-in read/write/edit/glob/grep/shell/web/todo/present tools"
 
     def setup(self) -> None:

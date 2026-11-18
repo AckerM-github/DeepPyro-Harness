@@ -156,6 +156,24 @@ spec.revision            # 1 (standard has revision 0 and does not consume the c
 - The `standard` preset always exists at revision 0 and never needs realm activation. The other
   built-in presets are also row-less, so `ensure()` returns immediately for them.
 
+### Model validation
+
+`PresetSpec.model` is checked against the host's `[providers]` configuration when a preset is
+registered (`add()`) and again when it is resolved for use (`resolve()`):
+
+- the provider checked is `[agent].provider`; an unknown provider name is reported;
+- when that provider declares a `models` list, the declared model must be one of its ids;
+- a provider that declares no `models` list is a wildcard and accepts any model id;
+- severity mirrors the configuration lint: a `ConfigWarning` by default and a `ConfigError`
+  when strict configuration is on (`DEEPPYRO_STRICT_CONFIG`, the same switch the config loader
+  reads). The message names the preset, model and provider, for example:
+  `preset 'reviewer' model 'reviewer-model' is not offered by provider 'local' (offers: m)`.
+
+Warn mode does not reject the registration: the preset stays registered and the problem is
+reported once per `(preset, model)` pair. Hosts without a `config` service (unit-test doubles)
+skip the check. Application still honors an explicit caller model: the preset model is only used
+when `options.model` is empty.
+
 ## 4. Declaring realm rows
 
 ```python
@@ -205,6 +223,20 @@ agent = agents.create(..., preset="reviewer")
   telling the caller to await `presets.ensure()`; this turns a silent missing-tool bug into an
   explicit contract error.
 - `materialized_revisions()` lists realm keys for diagnostics.
+
+### Preset application never rewrites an existing session header
+
+Applying or switching a preset rebuilds the live agent but **must not** rewrite the header of a
+session that already exists. The header is written once by `session.create()`; a preset switch
+only appends an `agent-preset/selected` record (§9), which is what makes the selection survive
+resume. Only a new session or an explicit fork writes a header with the new `agentPreset`.
+
+The TUI `SessionLayer` enforces this: `_attach()` snapshots the header before
+`agents.create()` and raises `DeeppyroError` ("... rewrote the session header ...") if a preset
+application changed it; `_switch_preset()` then rolls the switch back to the previous preset and
+revision. The guard covers the fields the header carries (v4: `id`, `createdAt`, `cwd`,
+`isSeeded`, `delegationDepth`, `agentPreset`, `parentSession`, `origin`), plus `model` and
+`system` for hosts whose header schema carries them.
 
 ## 6. Contribution visibility
 

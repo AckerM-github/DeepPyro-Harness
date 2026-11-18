@@ -4,7 +4,8 @@
 >
 > 交互 TUI 已完整实现（FIGlet 启动页、每 turn 一个统一 AgentProcess、全屏思考查看器、对话流、活动栏、
 > 多行输入与 slash 补全、选择器、审批、插件管理/槽位、后台任务、团队面板与任务板、状态栏）；全量测试
-> 3690 passed、ruff 全绿。**TUI 默认仍走 v4**；`--native-loop` 只影响 `run_once`，交互 TUI 未迁移 native。
+> 全量 pytest 通过、ruff 全绿。**TUI 交互路径仍走 v4**（0.2.0 未迁移）；headless 一次性模式已默认 native，
+> 但 TUI 既不写也不读 native 会话（`/sessions`、`/resume` 只见 v4 会话）。
 
 ## 1. 形态与范围
 

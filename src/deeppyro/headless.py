@@ -8,6 +8,9 @@ without duplicating the terminal UI. Two output modes exist:
   the model streams, followed by a compact footer;
 * --json: one compact JSON object per line (NDJSON) on stdout, nothing else.
 
+The default backend is the native agent loop (schema 1 sessions); the legacy
+v4 backend is still selectable with --legacy-v4 or DEEPPYRO_NATIVE_LOOP=0.
+
 Exit codes are part of the contract:
 
 * 0  success
@@ -61,6 +64,7 @@ from deeppyro.builtin.schedule import SchedulePlugin
 from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.builtin.settings import SettingsPlugin
 from deeppyro.builtin.tools import ToolsPlugin
+from deeppyro.builtin.usage import UsageService
 from deeppyro.config import Config, ProviderConfig, load_config
 from deeppyro.core.errors import ConfigError, DeeppyroError
 from deeppyro.core.ids import new_session_id
@@ -69,6 +73,7 @@ from deeppyro.hooks.service import HookService
 from deeppyro.jobs import JobsService
 from deeppyro.llm.retry import RetryPolicy
 from deeppyro.memory import MemoryService
+from deeppyro.observability.protocols import TraceExportSink
 from deeppyro.observability.trace import TraceStore
 from deeppyro.paths import sessions_dir
 from deeppyro.ptc import PtcRuntime
@@ -91,9 +96,12 @@ DEFAULT_CONTEXT_WINDOW = 32768
 THINKING_MARKER = "· thinking"
 USAGE_KEYS = ("input", "output", "cached")
 
-#: Opt-in switch for the M2 native loop (also exposed as --native-loop).
+#: Path switch for the M2 native loop. The native loop is the default since
+#: the 0.2.0 default flip; a falsy value selects the legacy v4 path and mirrors
+#: the deprecated --native-loop alias (the reverse switch is --legacy-v4).
 NATIVE_LOOP_ENV = "DEEPPYRO_NATIVE_LOOP"
 NATIVE_LOOP_TRUTHY = frozenset({"1", "true", "yes", "on"})
+NATIVE_LOOP_FALSY = frozenset({"0", "false", "no", "off"})
 
 
 class UnknownPresetError(ConfigError):
@@ -118,16 +126,24 @@ def read_stdin_prompt() -> str:
         return ""
 
 
-def native_loop_enabled(flag: bool = False) -> bool:
+def native_loop_enabled(flag: bool | None = None) -> bool:
     """Return whether the M2 native loop replaces the v4 headless path.
 
-    An explicit CLI flag wins; otherwise ``DEEPPYRO_NATIVE_LOOP`` enables the
-    native loop. The default headless path is unchanged.
+    The native loop is the default since the 0.2.0 default flip. Precedence:
+
+    1. an explicit ``flag`` wins — ``False`` pins the legacy v4 path
+       (``--legacy-v4`` and library callers), ``True`` pins native;
+    2. otherwise ``DEEPPYRO_NATIVE_LOOP`` selects the path: ``1/true/yes/on``
+       native, ``0/false/no/off`` the legacy v4 path;
+    3. an unset or unrecognized env value keeps the native default.
     """
-    if flag:
-        return True
+    if flag is not None:
+        return flag
     value = os.environ.get(NATIVE_LOOP_ENV, "")
-    return value.strip().lower() in NATIVE_LOOP_TRUTHY
+    value = value.strip().lower()
+    if value in NATIVE_LOOP_TRUTHY:
+        return True
+    return value not in NATIVE_LOOP_FALSY
 
 
 def compact_text(text: str, *, max_lines: int = 3, max_chars: int = 300) -> str:
@@ -637,6 +653,8 @@ class HeadlessRuntime:
             ("attachments", AttachmentStore),
             ("schedule", SchedulePlugin),
             ("memory", MemoryService),
+            ("usage", UsageService),
+            ("trace_export", TraceExportSink),
             ("ptc", PtcRuntime),
         )
         for name, contract in contracts:
@@ -797,15 +815,18 @@ def run_once(
     json_output: bool = False,
     cwd: str | None = None,
     max_steps: int | None = None,
-    native_loop: bool = False,
+    native_loop: bool | None = None,
     config: Config | None = None,
     console: Console | None = None,
 ) -> int:
     """Run one turn and return the documented exit code.
 
     Args:
-        native_loop: Opt in to the M2 native loop; DEEPPYRO_NATIVE_LOOP has
-            the same effect and the default v4 path stays untouched.
+        native_loop: Path selection. ``None`` (the default) runs the native
+            loop unless ``DEEPPYRO_NATIVE_LOOP`` selects the legacy v4 path;
+            ``True`` pins the native loop and ``False`` pins v4. The CLI maps
+            ``--legacy-v4`` to ``False`` and the deprecated ``--native-loop``
+            alias to ``True``.
     """
     ui = console or Console()
     if max_steps is not None and max_steps < 1:

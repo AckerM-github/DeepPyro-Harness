@@ -16,7 +16,7 @@ class SubagentPlugin(Plugin):
     """Provide the subagent service and register the agent-facing subagent tool."""
 
     plugin_id = "subagent"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "default subagent: one-shot child agents for self-contained tasks"
     inject: ClassVar[list[str]] = ["agents", "sessions", "sandbox", "tools"]
 

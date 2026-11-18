@@ -1,7 +1,7 @@
 [bundle]
 id = "core"
 name = "DeepPyro core"
-version = "0.1.0"
+version = "0.2.0"
 order = 0
 critical = true
 
@@ -24,6 +24,12 @@ plugin = "deeppyro.builtin.llm:LlmPlugin"
 [[plugins]]
 id = "sessions"
 plugin = "deeppyro.builtin.sessions:SessionsPlugin"
+
+# v4 <-> native session migration; inert until something calls it.
+[[plugins]]
+id = "session-migrate"
+plugin = "deeppyro.session.migrate_service:SessionMigratePlugin"
+critical = false
 
 [[plugins]]
 id = "session-query"
@@ -153,6 +159,17 @@ id = "memory"
 plugin = "deeppyro.builtin.memory:MemoryPlugin"
 critical = false
 
+# Per-turn token/latency ledger (KI-018) and the optional OTLP trace exporter.
+[[plugins]]
+id = "usage"
+plugin = "deeppyro.builtin.usage:UsageService"
+critical = false
+
+[[plugins]]
+id = "telemetry"
+plugin = "deeppyro.observability.telemetry:TelemetryPlugin"
+critical = false
+
 [[plugins]]
 id = "commands"
 plugin = "deeppyro.builtin.commands:CommandsPlugin"
@@ -177,6 +194,12 @@ plugin = "deeppyro.builtin.team:TeamPlugin"
 [[plugins]]
 id = "subagent"
 plugin = "deeppyro.builtin.subagent:SubagentPlugin"
+
+# Task / handoff surface (KI-017): six-state task machine + handoff tool.
+[[plugins]]
+id = "task"
+plugin = "deeppyro.builtin.task_tools:TaskPlugin"
+critical = false
 
 [[plugins]]
 id = "activity"

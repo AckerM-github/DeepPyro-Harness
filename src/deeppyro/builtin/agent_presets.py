@@ -95,7 +95,7 @@ class AgentPresetsPlugin(Plugin):
     """Registers the built-in PTC, Minimal and Cordis agent presets."""
 
     plugin_id = "agent-presets"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "built-in agent presets: PTC, Minimal and Cordis"
     inject: ClassVar[list[str]] = ["presets", "prompt"]
 

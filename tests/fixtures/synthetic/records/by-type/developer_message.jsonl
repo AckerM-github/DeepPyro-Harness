@@ -1,0 +1,1 @@
+{"type":"developer/message","seq":0,"time":1700000000000,"data":{"turn":1,"step":1,"message":{"id":"msg_developer","role":"developer","content":[],"source":{"kind":"system-prompt"}}},"surfaceOp":"append"}

@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from deeppyro.memory.backend import (
     DEFAULT_SEARCH_LIMIT,
+    MAX_DEDUPE_KEY_LENGTH,
     PROVENANCE_FIELDS,
     MemoryBackend,
     MemoryBackendStatus,
     MemoryProvenance,
     MemoryRecord,
     MemorySearchHit,
+    MemoryWriteReceipt,
     format_timestamp,
     hash_content,
     utc_now,
+    validate_dedupe_key,
 )
 from deeppyro.memory.errors import (
     MemoryAmbiguousMatchError,
@@ -59,6 +62,7 @@ __all__ = [
     "DEFAULT_IMPORTANCE",
     "DEFAULT_SEARCH_LIMIT",
     "IMPORTANCES",
+    "MAX_DEDUPE_KEY_LENGTH",
     "PROJECTION_FILENAMES",
     "PROVENANCE_FIELDS",
     "SCHEMA_VERSION",
@@ -91,10 +95,12 @@ __all__ = [
     "MemoryStoreError",
     "MemoryTarget",
     "MemoryValidationError",
+    "MemoryWriteReceipt",
     "SqliteMemoryBackend",
     "default_memory_db_path",
     "format_timestamp",
     "hash_content",
     "open_memory_backend",
     "utc_now",
+    "validate_dedupe_key",
 ]

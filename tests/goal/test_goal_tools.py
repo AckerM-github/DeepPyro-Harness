@@ -29,7 +29,8 @@ class StubContext:
         raise KeyError(name)
 
     def effect(self, execute: Any, label: str) -> None:
-        self.disposers.append(execute())
+        # Production semantics: record the teardown callback; never run it now.
+        self.disposers.append(execute)
 
     def provide(self, name: str, service: Any) -> None:
         self.provided[name] = service
@@ -122,6 +123,9 @@ def test_positive_int_reads_mapping_and_attributes() -> None:
 def test_setup_registers_a_disposer_for_the_session_loader() -> None:
     plugin, ctx = build()
     assert len(ctx.disposers) == 1
-    # configure(load=None) returns None, so the effect has nothing to undo
-    assert ctx.disposers[0] is None
+    # The loader is wired eagerly; effect() only records the teardown callback.
+    assert plugin.service._loader is not None
+    assert callable(ctx.disposers[0])
+    ctx.disposers[0]()
+    # configure(load=None) is a late-binding no-op, so the loader keeps working.
     assert plugin._load("session-missing") == []

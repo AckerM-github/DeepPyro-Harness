@@ -6,6 +6,7 @@ from typing import Any
 
 from deeppyro.api import TEAM_PRESET_ID
 from deeppyro.builtin.team import TeamPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.kernel import PluginSpec, boot
 from deeppyro.team import TeamService
@@ -86,9 +87,9 @@ async def test_team_plugin_boots_in_kernel() -> None:
     app = await boot(config, extra_plugins=[spec])
     try:
         assert "team" in app.started
-        service = app.service("team")
+        service = app.require(TeamService)
         assert isinstance(service, TeamService)
-        tools = app.service("tools")
+        tools = app.require(ToolsPlugin)
         # Team tools belong to the explicit team preset, never the host set.
         host_names = tools.names("C:/work")
         assert [name for name in host_names if name.startswith("team_")] == []

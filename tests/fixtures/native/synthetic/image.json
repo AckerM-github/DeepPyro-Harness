@@ -1,0 +1,162 @@
+{
+  "case_id": "image",
+  "capability": "image",
+  "title": "image input reaches both message histories unchanged",
+  "coverage": "covered",
+  "limitations": [
+    "the recorded baseline has no image traffic; this pair is hand-authored",
+    "session v4 image parts carry no media_type, so the native image/png declaration has no v4 counterpart"
+  ],
+  "v4": {
+    "header": {
+      "type": "session",
+      "version": 4,
+      "id": "session-00000000-0000-4000-8000-000000000011",
+      "createdAt": 1794000000000,
+      "isSeeded": false,
+      "delegationDepth": 0
+    },
+    "records": [
+      {
+        "type": "user/message",
+        "seq": 0,
+        "time": 1794000001000,
+        "data": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "What does this screenshot show?"
+            },
+            {
+              "type": "image",
+              "attachment": "D:/dshworkspace/fixtures/native/screenshot.png"
+            }
+          ],
+          "source": {
+            "kind": "user"
+          },
+          "id": "msg_0000000000000011"
+        },
+        "surfaceOp": "append"
+      },
+      {
+        "type": "assistant/message",
+        "seq": 1,
+        "time": 1794000002000,
+        "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "id": "msg_0000000000000012",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "It shows the native session matrix."
+              }
+            ],
+            "created_at": 1794000002000,
+            "source": {
+              "kind": "model",
+              "provider": "deepseek",
+              "model": "deepseek-flash"
+            }
+          }
+        },
+        "surfaceOp": "append"
+      }
+    ]
+  },
+  "native": {
+    "session_id": "session-00000000-0000-4000-8000-000000000011",
+    "created_at": 1794000000000,
+    "events": [
+      {
+        "type": "turn.started",
+        "run_id": "run_1111111111111111",
+        "turn_id": "turn_1111111111111111",
+        "trace_id": "11111111111111111111111111111111",
+        "data": {}
+      },
+      {
+        "type": "user.message",
+        "turn_id": "turn_1111111111111111",
+        "data": {
+          "message": {
+            "id": "msg_0000000000000011",
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "What does this screenshot show?"
+              },
+              {
+                "type": "image",
+                "attachment": "D:/dshworkspace/fixtures/native/screenshot.png",
+                "media_type": "image/png"
+              }
+            ],
+            "created_at": 1794000001000,
+            "source": {
+              "kind": "user"
+            }
+          }
+        }
+      },
+      {
+        "type": "step.started",
+        "run_id": "run_1111111111111111",
+        "turn_id": "turn_1111111111111111",
+        "step_id": "step_1000000000000000",
+        "trace_id": "11111111111111111111111111111111",
+        "data": {}
+      },
+      {
+        "type": "assistant.message",
+        "run_id": "run_1111111111111111",
+        "turn_id": "turn_1111111111111111",
+        "step_id": "step_1000000000000000",
+        "trace_id": "11111111111111111111111111111111",
+        "data": {
+          "message": {
+            "id": "msg_0000000000000012",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "It shows the native session matrix."
+              }
+            ],
+            "created_at": 1794000002000,
+            "source": {
+              "kind": "model",
+              "provider": "deepseek",
+              "model": "deepseek-flash"
+            }
+          },
+          "finish_reason": "stop"
+        }
+      },
+      {
+        "type": "step.ended",
+        "run_id": "run_1111111111111111",
+        "turn_id": "turn_1111111111111111",
+        "step_id": "step_1000000000000000",
+        "trace_id": "11111111111111111111111111111111",
+        "data": {}
+      },
+      {
+        "type": "turn.ended",
+        "run_id": "run_1111111111111111",
+        "turn_id": "turn_1111111111111111",
+        "trace_id": "11111111111111111111111111111111",
+        "data": {
+          "reason": {
+            "kind": "completed"
+          }
+        }
+      }
+    ]
+  }
+}

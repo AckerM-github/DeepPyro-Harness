@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from deeppyro.api.errors import PluginConfigError
+from deeppyro.builtin.settings import SettingsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.kernel.app import App
 from deeppyro.kernel.bundle import boot
@@ -60,7 +61,7 @@ async def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[
 
 
 async def test_describe_exposes_schema_and_masked_values(app: App) -> None:
-    settings = app.service("settings")
+    settings = app.require(SettingsPlugin)
 
     described = settings.describe("demo-plugin")
 
@@ -76,13 +77,13 @@ async def test_describe_exposes_schema_and_masked_values(app: App) -> None:
 
 
 async def test_describe_plugin_without_config(app: App) -> None:
-    described = app.service("settings").describe("llm")
+    described = app.require(SettingsPlugin).describe("llm")
     assert described["schema"] is None
     assert described["values"] == {}
 
 
 async def test_read_and_write_round_trip(app: App, tmp_path: Path) -> None:
-    settings = app.service("settings")
+    settings = app.require(SettingsPlugin)
     before = settings.read("demo-plugin")
 
     written = settings.write("demo-plugin", {"model": "other-model"}, before["revision"])
@@ -102,7 +103,7 @@ async def test_read_and_write_round_trip(app: App, tmp_path: Path) -> None:
 
 
 async def test_write_rejects_stale_revision(app: App) -> None:
-    settings = app.service("settings")
+    settings = app.require(SettingsPlugin)
     revision = settings.read("demo-plugin")["revision"]
     settings.write("demo-plugin", {"temperature": 0.5}, revision)
 
@@ -111,7 +112,7 @@ async def test_write_rejects_stale_revision(app: App) -> None:
 
 
 async def test_write_validates_against_config_model(app: App) -> None:
-    settings = app.service("settings")
+    settings = app.require(SettingsPlugin)
     revision = settings.read("demo-plugin")["revision"]
 
     with pytest.raises(PluginConfigError, match="temperature"):
@@ -119,19 +120,19 @@ async def test_write_validates_against_config_model(app: App) -> None:
 
 
 async def test_write_masked_secret_keeps_stored_value(app: App) -> None:
-    settings = app.service("settings")
+    settings = app.require(SettingsPlugin)
     revision = settings.read("demo-plugin")["revision"]
 
     settings.write("demo-plugin", {"apiKey": "***", "model": "other-model"}, revision)
 
-    described = app.service("settings").describe("demo-plugin")
+    described = app.require(SettingsPlugin).describe("demo-plugin")
     assert described["values"]["apiKey"] == "***"
     assert described["values"]["model"] == "other-model"
 
 
 async def test_unknown_plugin_raises(app: App) -> None:
     with pytest.raises(PluginNotFoundError):
-        app.service("settings").describe("does-not-exist")
+        app.require(SettingsPlugin).describe("does-not-exist")
 
 
 class FakeKernel:
@@ -155,7 +156,7 @@ def attach_kernel(monkeypatch: pytest.MonkeyPatch, kernel: FakeKernel) -> None:
 
 
 async def test_volatile_write_applies_live(app: App, monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = app.service("settings")
+    settings = app.require(SettingsPlugin)
     kernel = FakeKernel()
     attach_kernel(monkeypatch, kernel)
     before = settings.read("demo-plugin")
@@ -176,7 +177,7 @@ async def test_volatile_write_applies_live(app: App, monkeypatch: pytest.MonkeyP
 
 
 async def test_non_volatile_write_still_needs_restart(app: App, monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = app.service("settings")
+    settings = app.require(SettingsPlugin)
     kernel = FakeKernel()
     attach_kernel(monkeypatch, kernel)
     before = settings.read("demo-plugin")
@@ -190,7 +191,7 @@ async def test_non_volatile_write_still_needs_restart(app: App, monkeypatch: pyt
 
 
 async def test_mixed_write_applies_live_but_keeps_restart(app: App, monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = app.service("settings")
+    settings = app.require(SettingsPlugin)
     kernel = FakeKernel()
     attach_kernel(monkeypatch, kernel)
     before = settings.read("demo-plugin")
@@ -208,7 +209,7 @@ async def test_mixed_write_applies_live_but_keeps_restart(app: App, monkeypatch:
 
 
 async def test_failed_live_apply_falls_back_to_restart(app: App, monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = app.service("settings")
+    settings = app.require(SettingsPlugin)
     kernel = FakeKernel(error=RuntimeError("kernel busy"))
     attach_kernel(monkeypatch, kernel)
     before = settings.read("demo-plugin")
@@ -223,7 +224,7 @@ async def test_failed_live_apply_falls_back_to_restart(app: App, monkeypatch: py
 
 
 async def test_kernel_rejection_falls_back_to_restart(app: App, monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = app.service("settings")
+    settings = app.require(SettingsPlugin)
     kernel = FakeKernel(result=False)
     attach_kernel(monkeypatch, kernel)
     before = settings.read("demo-plugin")
@@ -235,7 +236,7 @@ async def test_kernel_rejection_falls_back_to_restart(app: App, monkeypatch: pyt
 
 
 async def test_volatile_write_applies_through_real_kernel(app: App) -> None:
-    settings = app.service("settings")
+    settings = app.require(SettingsPlugin)
     before = settings.read("demo-plugin")
 
     written = settings.write("demo-plugin", {"temperature": 0.75}, before["revision"])

@@ -16,7 +16,7 @@ class LlmPlugin(Service):
     provide = "llm"
     inject: ClassVar[list[str]] = ["config"]
     plugin_id = "llm"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "LLM provider registry"
 
     def __init__(self, ctx: PluginContext, config: PluginConfig) -> None:

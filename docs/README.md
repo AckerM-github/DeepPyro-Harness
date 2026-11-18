@@ -26,7 +26,7 @@
 | --- | --- | --- | --- |
 | 契约 | [native/schema.md](native/schema.md)、[adr/](adr/) | 冻结的 native schema 与架构决策 | schema / ADR 优先 |
 | 现行规格 | [spec/](spec/) | 已实现行为的功能规格 | 以代码与测试为准；与契约冲突时以契约为准 |
-| 过渡规格 | [spec/loop.md](spec/loop.md)、[spec/events.md](spec/events.md)、[spec/hooks.md](spec/hooks.md) | 默认 v4 与 native 并存的现状 | 只用于理解现状，不得据此扩展 |
+| 过渡规格 | [spec/loop.md](spec/loop.md)、[spec/events.md](spec/events.md)、[spec/hooks.md](spec/hooks.md) | headless 默认 native、TUI 仍走 v4 的并存现状 | 只用于理解现状，不得据此扩展 |
 | 冻结迁移 | [spec/INTERFACES.md](spec/INTERFACES.md)、[spec/session.md](spec/session.md) | 旧 DSH v4 数据形状 | 不能作为新代码依据；0.3 删除 |
 | 历史证据 | [spec/dsh-event-catalog.md](spec/dsh-event-catalog.md)、[spec/dsh-event-catalog-unresolved.md](spec/dsh-event-catalog-unresolved.md) | 外部 harness 逆向/生成材料 | 不是运行期契约；0.3 删除 |
 | 历史研究 | [archive/](archive/) | 已完成的计划、审计与研究 | 只用于追溯，不再维护 |
@@ -40,7 +40,8 @@
 | 目录 | 内容 | 入口 |
 | --- | --- | --- |
 | [spec/](spec/) | 38 篇规格 + 状态索引（39 个文件） | [spec/README.md](spec/README.md) |
-| [native/](native/) | schema 1 契约与实现/录制说明 | [native/schema.md](native/schema.md) |
+| [native/](native/) | schema 1 契约、实现/录制说明、覆盖与重录说明 | [native/schema.md](native/schema.md)、[native/coverage.md](native/coverage.md) |
+| [guides/](guides/) | 面向使用者的操作指南：native 默认化、会话迁移、bundle digest、Windows 沙箱边界 | [guides/native-loop-default.md](guides/native-loop-default.md) |
 | [adr/](adr/) | 架构决策记录 | [ADR 0001](adr/0001-three-track-native-agent.md) |
 | [plugins/](plugins/) | 插件作者指南与 v2→v3 迁移 | [plugins/README.md](plugins/README.md) |
 | [release/](release/) | 0.2.0 发布说明、已知问题总表、去品牌审计 | [release/0.2.0.md](release/0.2.0.md) |
@@ -52,12 +53,13 @@
 
 ## 4. 状态标签
 
-每篇现行/过渡规格标题下都必须有状态块，至少包含“状态、层级、最后核对”。基础状态有 7 种；括号内可加范围/里程碑限定（如 `API v3`、`M4 已扩展`），限定词不改变基础状态：
+每篇现行/过渡规格标题下都必须有状态块，至少包含“状态、层级、最后核对”。基础状态有 8 种；括号内可加范围/里程碑限定（如 `API v3`、`M4 已扩展`），限定词不改变基础状态：
 
 - **当前契约**：native schema 1 或经 ADR 冻结的决策；新代码可以依赖。
 - **现行（0.2.0 保留）**：已实现、与 native 方向一致；以代码为准。
-- **现行（过渡：v4 待移除）**：默认路径仍是 v4，native 为 opt-in；只用于理解现状。
-- **现行（native opt-in）**：默认 v4，显式开关走 native。
+- **现行（过渡：v4 待移除）**：同一版本内 headless 已默认 native、TUI 仍走 v4；只用于理解现状。
+- **现行（native 默认）**：headless 默认 native，`--legacy-v4` 可回退。
+- **现行（native opt-in）**：默认 v4，显式开关走 native（0.2.0 仅 TUI 交互路径仍属此类）。
 - **冻结：迁移参考**：只用于读旧数据或写迁移说明，0.3 删除。
 - **历史证据（0.2.0 保留，0.3 删除）**：生成/逆向材料，不是运行期契约。
 - **历史文档（非契约）**：已归档，不再维护。
@@ -92,3 +94,4 @@
 | 日期 | 变更 |
 | --- | --- |
 | 2026-11-18 | 建立本入口；删除 14 篇已完成计划；归档 6 篇历史研究；38 篇规格 + 索引全部补齐状态头；重写 spec 索引、ADR/native/release 状态与链接。 |
+| 2026-11-18 | 新增 [guides/](guides/) 目录（4 篇操作指南）；状态标签区分“native 默认”与“TUI 仍 v4”；目录地图补 guides 行。 |

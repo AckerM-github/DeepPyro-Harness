@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from deeppyro.builtin.inspect import InspectPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.kernel.app import App
 from deeppyro.kernel.bundle import boot
@@ -71,7 +72,7 @@ async def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[
 
 
 async def test_services_reports_live_services(app: App) -> None:
-    rows = app.service("inspect").services()
+    rows = app.require(InspectPlugin).services()
     by_name = {row["name"]: row for row in rows}
 
     assert {"config", "llm", "sessions", "sandbox", "tools", "prompt", "commands", "agents"} <= set(by_name)
@@ -82,7 +83,7 @@ async def test_services_reports_live_services(app: App) -> None:
 
 
 async def test_plugins_joins_composition_and_runtime(app: App) -> None:
-    rows = app.service("inspect").plugins()
+    rows = app.require(InspectPlugin).plugins()
     by_id = {row["id"]: row for row in rows}
 
     assert {"llm", "agents", "tools-builtin", "settings", "inspect"} <= set(by_id)
@@ -96,7 +97,7 @@ async def test_plugins_joins_composition_and_runtime(app: App) -> None:
 
 
 async def test_tools_lists_builtin_and_contributed_tools(app: App, tmp_path: Path) -> None:
-    rows = app.service("inspect").tools(tmp_path)
+    rows = app.require(InspectPlugin).tools(tmp_path)
     names = {row["name"] for row in rows}
 
     assert {"read", "write", "edit", "glob", "grep", "pwsh"} <= names
@@ -108,7 +109,7 @@ async def test_tools_lists_builtin_and_contributed_tools(app: App, tmp_path: Pat
 
 
 async def test_prompt_sections_commands_and_providers(app: App) -> None:
-    inspect = app.service("inspect")
+    inspect = app.require(InspectPlugin)
 
     sections = inspect.prompt_sections()
     names = [section["name"] for section in sections]
@@ -124,7 +125,7 @@ async def test_prompt_sections_commands_and_providers(app: App) -> None:
 
 
 async def test_config_schema_for_plugins(app: App) -> None:
-    inspect = app.service("inspect")
+    inspect = app.require(InspectPlugin)
 
     demo = inspect.config_schema("demo-plugin")
     assert demo["target"] == DEMO_TARGET
@@ -137,7 +138,7 @@ async def test_config_schema_for_plugins(app: App) -> None:
 
 
 async def test_config_schema_reports_volatile_fields(app: App) -> None:
-    demo = app.service("inspect").config_schema("demo-plugin")
+    demo = app.require(InspectPlugin).config_schema("demo-plugin")
 
     assert demo["volatile_fields"] == ["temperature"]
 
@@ -145,7 +146,7 @@ async def test_config_schema_reports_volatile_fields(app: App) -> None:
 async def test_events_lists_wire_record_types(app: App) -> None:
     from deeppyro.core.wire import MESSAGE_PROJECTION_TYPES, RECORD_TYPES, SURFACE_EVENT_TYPES
 
-    rows = app.service("inspect").events()
+    rows = app.require(InspectPlugin).events()
     types = [row["type"] for row in rows]
 
     assert len(types) == len(set(types))
@@ -162,7 +163,7 @@ async def test_events_lists_wire_record_types(app: App) -> None:
 
 
 async def test_slots_and_theme_are_optional(app: App) -> None:
-    inspect = app.service("inspect")
+    inspect = app.require(InspectPlugin)
 
     slots = inspect.slots()
     assert isinstance(slots, list)
@@ -174,7 +175,7 @@ async def test_slots_and_theme_are_optional(app: App) -> None:
 
 
 async def test_guide_covers_extension_workflow(app: App) -> None:
-    guide = app.service("inspect").guide()
+    guide = app.require(InspectPlugin).guide()
 
     assert "插件开发指南" in guide
     assert "bundle.toml" in guide
@@ -185,7 +186,7 @@ async def test_guide_covers_extension_workflow(app: App) -> None:
 
 
 async def test_plugins_merges_mounted_loader_state(app: App) -> None:
-    rows = app.service("inspect").plugins()
+    rows = app.require(InspectPlugin).plugins()
     by_id = {row["id"]: row for row in rows}
 
     assert all("loader_state" in row for row in rows)
@@ -204,7 +205,7 @@ async def test_plugins_merges_synthetic_mounted_rows(app: App, monkeypatch: pyte
 
     monkeypatch.setattr(InspectPlugin, "_mounted_plugins", fake_mounted)
 
-    rows = app.service("inspect").plugins()
+    rows = app.require(InspectPlugin).plugins()
     by_id = {row["id"]: row for row in rows}
 
     assert by_id["llm"]["loader_state"] == "restart-required"

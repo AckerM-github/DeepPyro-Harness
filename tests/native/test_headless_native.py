@@ -1,4 +1,4 @@
-"""Headless one-shot mode through the M2 native loop switch."""
+"""Headless one-shot mode through the M2 native loop (the default since 0.2.0)."""
 
 from __future__ import annotations
 
@@ -11,8 +11,11 @@ import pytest
 from rich.console import Console
 
 from deeppyro import headless
+from deeppyro.builtin.usage import UsageService
 from deeppyro.core.ids import new_session_id
 from deeppyro.core.protocols import Finish, TextDelta, ToolCallArgsDelta, ToolCallStart
+from deeppyro.observability.protocols import TraceExportSink
+from deeppyro.observability.trace import ModelCallRecord, RunRecord
 from deeppyro.session.fold import fold
 from deeppyro.session.schema import EventKind, NativeCodec
 from deeppyro.tools.registry import ToolRegistry
@@ -61,6 +64,42 @@ def _events(stream: io.StringIO) -> list[dict[str, Any]]:
     return [json.loads(line) for line in stream.getvalue().splitlines()]
 
 
+class RecordingUsageSink:
+    """UsageSink double: collects one TurnUsage per finished native turn."""
+
+    def __init__(self) -> None:
+        self.records: list[Any] = []
+
+    def record_turn(self, usage: Any, /) -> object:
+        self.records.append(usage)
+        return usage
+
+
+class RecordingTraceExport:
+    """TraceExportSink double: collects the records the loop already persisted."""
+
+    def __init__(self) -> None:
+        self.records: list[Any] = []
+
+    def export_trace_record(self, record: Any, /) -> None:
+        self.records.append(record)
+
+
+class ObservabilityKernelApp:
+    """Kernel app double resolving only the two observability contracts."""
+
+    def __init__(self, usage: RecordingUsageSink, trace_export: RecordingTraceExport) -> None:
+        self._usage = usage
+        self._trace_export = trace_export
+
+    def get(self, contract: type[Any]) -> Any:
+        if contract is UsageService:
+            return self._usage
+        if contract is TraceExportSink:
+            return self._trace_export
+        return None
+
+
 @pytest.fixture()
 def native_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("DEEPPYRO_SESSION_DIR", str(tmp_path / "sessions"))
@@ -70,36 +109,49 @@ def native_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def test_native_loop_enabled_reads_flag_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_native_loop_enabled_defaults_to_native(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(headless.NATIVE_LOOP_ENV, raising=False)
-    assert headless.native_loop_enabled() is False
+    assert headless.native_loop_enabled() is True
     assert headless.native_loop_enabled(True) is True
+    assert headless.native_loop_enabled(False) is False
     for value in ("1", "true", "YES", " on "):
         monkeypatch.setenv(headless.NATIVE_LOOP_ENV, value)
         assert headless.native_loop_enabled() is True
-    monkeypatch.setenv(headless.NATIVE_LOOP_ENV, "0")
-    assert headless.native_loop_enabled() is False
-    assert headless.native_loop_enabled(True) is True
+    for value in ("0", "false", "NO", " off "):
+        monkeypatch.setenv(headless.NATIVE_LOOP_ENV, value)
+        assert headless.native_loop_enabled() is False
+        assert headless.native_loop_enabled(True) is True
+    monkeypatch.setenv(headless.NATIVE_LOOP_ENV, "bogus")
+    assert headless.native_loop_enabled() is True
 
 
-def test_cli_exposes_and_forwards_native_loop_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert build_parser().parse_args(["hi"]).native_loop is False
-    assert build_parser().parse_args(["hi", "--native-loop"]).native_loop is True
+def test_cli_exposes_the_backend_switches() -> None:
+    parser = build_parser()
+    default = parser.parse_args(["hi"])
+    assert default.native_loop is False
+    assert default.legacy_v4 is False
+    assert parser.parse_args(["hi", "--native-loop"]).native_loop is True
+    assert parser.parse_args(["hi", "--legacy-v4"]).legacy_v4 is True
+    with pytest.raises(SystemExit):
+        parser.parse_args(["hi", "--native-loop", "--legacy-v4"])
 
-    captured: dict[str, Any] = {}
+
+def test_cli_forwards_the_backend_choice(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[dict[str, Any]] = []
 
     def fake_run_once(prompt: str, **kwargs: Any) -> int:
-        captured["prompt"] = prompt
-        captured.update(kwargs)
+        captured.append({"prompt": prompt, **kwargs})
         return headless.EXIT_OK
 
     import deeppyro.paths as paths_module
 
     monkeypatch.setattr(paths_module, "migrate_legacy_layout", lambda: {})
     monkeypatch.setattr(headless, "run_once", fake_run_once)
-    assert cli_main(["hi", "--native-loop"]) == headless.EXIT_OK
-    assert captured["prompt"] == "hi"
-    assert captured["native_loop"] is True
+    assert cli_main(["hi"]) == headless.EXIT_OK
+    with pytest.warns(DeprecationWarning):
+        assert cli_main(["hi", "--native-loop"]) == headless.EXIT_OK
+    assert cli_main(["hi", "--legacy-v4"]) == headless.EXIT_OK
+    assert [entry["native_loop"] for entry in captured] == [None, True, False]
 
 
 async def test_native_headless_run_persists_native_session(native_dirs: Path) -> None:
@@ -219,9 +271,8 @@ async def test_native_headless_reports_budget_exceeded(native_dirs: Path) -> Non
     assert finished and finished[-1].data["status"] == "failed"
 
 
-def test_run_once_routes_to_native_loop_when_enabled(
-    native_dirs: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_once_defaults_to_native_loop(native_dirs: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No switch and no env var: the native loop is the headless default."""
     provider = ScriptedProvider(
         [ScriptedTurn(events=[TextDelta("native answer"), finish("stop"), usage(2, 1)])]
     )
@@ -231,11 +282,103 @@ def test_run_once_routes_to_native_loop_when_enabled(
         return runtime
 
     monkeypatch.setattr(headless, "boot_runtime", fake_boot)
-    monkeypatch.setenv(headless.NATIVE_LOOP_ENV, "1")
     console, stream = _console()
     code = headless.run_once("say hello", console=console)
     assert code == headless.EXIT_OK
     assert "native answer" in stream.getvalue()
+    assert runtime.closed is True
+    assert len(list((native_dirs / "sessions").glob("*.jsonl"))) == 1
+
+
+def test_run_once_native_reports_usage_and_trace_export(
+    native_dirs: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The native run hands the loop the usage/trace_export services by protocol name.
+
+    Regression: the service mapping used to register the telemetry plugin under
+    the plugin id only, so AgentLoop resolved no TraceExportSink and export was
+    silently empty.
+    """
+    provider = ScriptedProvider(
+        [ScriptedTurn(events=[TextDelta("native answer"), finish("stop"), usage(5, 2)])]
+    )
+    usage_sink = RecordingUsageSink()
+    trace_export = RecordingTraceExport()
+    runtime = headless.HeadlessRuntime(
+        # cfg is not read by the native path; the kernel app double owns services
+        cfg=None,
+        cwd=native_dirs,
+        kernel_app=ObservabilityKernelApp(usage_sink, trace_export),
+        provider_name=provider.name,
+        model="fake-model",
+        context_window=32768,
+        store=None,
+        provider=provider,
+        registry=ToolRegistry(()),
+        permission=None,
+        agents=None,
+        preset="standard",
+    )
+
+    async def fake_boot(**kwargs: Any) -> headless.HeadlessRuntime:
+        return runtime
+
+    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
+    console, stream = _console()
+    assert headless.run_once("say hello", console=console) == headless.EXIT_OK
+    assert "native answer" in stream.getvalue()
+
+    # usage: one TurnUsage for the single native turn, with live counters
+    assert len(usage_sink.records) == 1
+    turn = usage_sink.records[0]
+    assert turn.source == "native"
+    assert turn.provider == provider.name
+    assert turn.model == "fake-model"
+    assert (turn.input_tokens, turn.output_tokens) == (5, 2)
+    assert turn.stop_reason == "stop"
+    files = sorted((native_dirs / "sessions").glob("*.jsonl"))
+    assert len(files) == 1
+    assert turn.session_id == NativeCodec.read(files[0]).header.id
+    # trace export: the run record and the model-call record reach the sink
+    assert [type(record) for record in trace_export.records] == [RunRecord, ModelCallRecord]
+
+
+def test_run_once_native_loop_false_forces_legacy_v4(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit False wins over the env var (--legacy-v4 pinning)."""
+    captured: dict[str, Any] = {}
+
+    async def fake_run_async(prompt: str, **kwargs: Any) -> int:
+        captured.update({"prompt": prompt, **kwargs})
+        return headless.EXIT_OK
+
+    monkeypatch.setattr(headless, "_run_async", fake_run_async)
+    monkeypatch.setenv(headless.NATIVE_LOOP_ENV, "1")
+    console, _stream = _console()
+    code = headless.run_once("legacy please", native_loop=False, console=console)
+    assert code == headless.EXIT_OK
+    assert captured["native_loop"] is False
+
+
+def test_cli_default_runs_the_native_loop(
+    native_dirs: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """dpyro --headless PROMPT with no switch lands on the native loop."""
+    provider = ScriptedProvider(
+        [ScriptedTurn(events=[TextDelta("native answer"), finish("stop"), usage(2, 1)])]
+    )
+    runtime = FakeNativeRuntime(provider)
+
+    async def fake_boot(**kwargs: Any) -> FakeNativeRuntime:
+        return runtime
+
+    import deeppyro.paths as paths_module
+
+    monkeypatch.setattr(headless, "boot_runtime", fake_boot)
+    monkeypatch.setattr(paths_module, "migrate_legacy_layout", lambda: {})
+    assert cli_main(["--headless", "say hello"]) == headless.EXIT_OK
+    assert "native answer" in capsys.readouterr().out
     assert runtime.closed is True
     assert len(list((native_dirs / "sessions").glob("*.jsonl"))) == 1
 

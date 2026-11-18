@@ -30,7 +30,7 @@ def test_runtime_context_sections_include_runtime_facts(tmp_path: Path) -> None:
     sections = runtime_context_sections(
         make_context(
             tmp_path,
-            sandbox_policy_text="Current DSH file policy: workspace-write.",
+            sandbox_policy_text="Current DeepPyro file policy: workspace-write.",
             approval_policy_text="Approval prompts are enabled.",
         )
     )
@@ -46,7 +46,7 @@ def test_runtime_context_sections_include_runtime_facts(tmp_path: Path) -> None:
     assert "session-runtime" in text
     assert "workspace-write" not in text
     assert "ask" not in text
-    assert sections[1]["text"] == "Current DSH file policy: workspace-write."
+    assert sections[1]["text"] == "Current DeepPyro file policy: workspace-write."
     assert sections[2]["text"] == "Approval prompts are enabled."
 
 

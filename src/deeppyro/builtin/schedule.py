@@ -53,7 +53,7 @@ class SchedulePlugin(Service):
 
     provide = "schedule"
     plugin_id = "schedule"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "scheduled reminders with persistent storage and a single timer"
     inject: ClassVar[list[str]] = ["config", "tools", "prompt"]
 

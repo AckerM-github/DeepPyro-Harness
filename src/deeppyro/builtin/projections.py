@@ -282,7 +282,7 @@ class ProjectionsPlugin(Plugin):
     """Kernel plugin exposing the shared projections service."""
 
     plugin_id = "projections"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "session projections and durable sidecar checkpoints"
     inject: ClassVar[list[str]] = []
 

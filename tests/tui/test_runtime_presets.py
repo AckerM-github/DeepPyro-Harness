@@ -10,6 +10,7 @@ import pytest
 
 from deeppyro.api import PluginDependencyError
 from deeppyro.core.errors import DeeppyroError
+from deeppyro.session.store import SessionStore
 from deeppyro.tui.runtime import TuiRuntime
 from tests.service_doubles import service_lookup, service_require
 
@@ -477,3 +478,118 @@ async def test_set_agent_preset_same_canonical_id_is_a_no_op() -> None:
     assert switched == "standard"
     assert runtime.agent_preset == "standard"
     assert runtime.session.records == []
+
+
+@pytest.mark.asyncio
+async def test_applying_a_preset_leaves_the_existing_session_header_untouched() -> None:
+    opened = FakeSession("standard")
+    opened.header.cwd = "D:/work/project"
+    opened.header.model = "fake-1"
+    opened.header.system = "You are DeepPyro."
+    runtime = make_runtime(store=FakeStore(opened), presets=FakePresets(), agents=FakeAgents())
+    await runtime.open_session("session-test")
+    before = dict(vars(opened.header))
+
+    switched = await runtime.set_agent_preset("ptc")
+
+    assert switched == "ptc"
+    assert runtime.agent_preset == "ptc"
+    assert vars(opened.header) == before
+    assert opened.header.agentPreset == "standard"
+    assert opened.header.cwd == "D:/work/project"
+    assert opened.header.model == "fake-1"
+    assert opened.header.system == "You are DeepPyro."
+    assert opened.records[-1].data == {"preset": "ptc", "mode": "default"}
+
+
+@pytest.mark.asyncio
+async def test_new_session_records_the_switched_preset_in_its_header() -> None:
+    store = FakeStore(FakeSession())
+    runtime = make_runtime(store=store, presets=FakePresets(), agents=FakeAgents())
+    await runtime.ensure_presets()
+    first = await runtime.new_session()
+    assert first.header.agentPreset == "standard"
+
+    await runtime.set_agent_preset("ptc")
+
+    # Switching never rewrites the header of the session already on screen...
+    assert runtime.session.header.agentPreset == "standard"
+    # ...only a new session created afterwards records the new id.
+    second = await runtime.new_session()
+    assert store.created[-1] is second
+    assert second.header.agentPreset == "ptc"
+    assert runtime.agent_preset == "ptc"
+
+
+class HeaderRewritingAgents(FakeAgents):
+    """A preset plugin that illegally rewrites the session header during create."""
+
+    def create(self, **kwargs: Any) -> FakeAgent:
+        kwargs["session"].header.cwd = "D:/elsewhere"
+        return super().create(**kwargs)
+
+
+class PresetSwitchHeaderRewritingAgents(FakeAgents):
+    """Rewrites the header only for the preset switched to mid-session."""
+
+    def create(self, **kwargs: Any) -> FakeAgent:
+        if kwargs.get("preset") == "ptc":
+            kwargs["session"].header.model = "smuggled"
+        return super().create(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_preset_application_rejects_a_header_rewrite() -> None:
+    runtime = make_runtime(
+        store=FakeStore(FakeSession("standard")),
+        presets=FakePresets(),
+        agents=HeaderRewritingAgents(),
+    )
+
+    with pytest.raises(DeeppyroError, match="rewrote the session header") as excinfo:
+        await runtime.open_session("session-test")
+
+    message = str(excinfo.value)
+    assert "'standard'" in message
+    assert "cwd" in message
+    assert "create a new session or fork" in message
+
+
+@pytest.mark.asyncio
+async def test_preset_switch_rolls_back_when_the_header_would_change() -> None:
+    runtime = make_runtime(
+        store=FakeStore(FakeSession()), presets=FakePresets(), agents=PresetSwitchHeaderRewritingAgents()
+    )
+    runtime.session = FakeSession("standard")
+    old_agent = FakeAgent(0)
+    runtime.agent = old_agent
+    runtime.agent_preset = "standard"
+    runtime.preset_revision = None
+
+    with pytest.raises(DeeppyroError, match="rewrote the session header"):
+        await runtime.set_agent_preset("ptc")
+
+    assert runtime.agent_preset == "standard"
+    assert runtime.agent is old_agent
+    assert not old_agent.closed
+
+
+@pytest.mark.asyncio
+async def test_persisted_session_header_survives_a_preset_switch(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    created = store.create(tmp_path, agent_preset="standard")
+    before = created.header
+    runtime = make_runtime(store=store, presets=FakePresets(), agents=FakeAgents())
+
+    opened = await runtime.open_session(created.session_id)
+
+    await runtime.set_agent_preset("ptc")
+    assert opened.header.agentPreset == "standard"
+    assert opened.header.cwd == before.cwd
+    assert opened.header.createdAt == before.createdAt
+
+    reloaded = store.open(created.session_id)
+    assert reloaded.header.id == before.id
+    assert reloaded.header.cwd == before.cwd
+    assert reloaded.header.agentPreset == "standard"
+    assert reloaded.header.createdAt == before.createdAt

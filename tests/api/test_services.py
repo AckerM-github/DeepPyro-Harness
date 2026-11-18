@@ -4,8 +4,8 @@ The cases below pin the promises of the typed shell: a Service subclass binds
 its own contract to its provide name, typed lookups reach it both through the
 App and through PluginContext, the lookup helpers also work on a raw runtime
 context, and two containers never leak a same-named service into each other.
-Plugin-facing string lookup is gone in API v3; only the host-level App.service
-compatibility helper is still pinned below.
+String lookup is gone in API v3: both App and PluginContext accept contract
+classes only, and a regression test pins that absence.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from deeppyro.config import Config
 from deeppyro.core.bus import EventBus
 from deeppyro.core.payload import field_of
 from deeppyro.hooks import HookService
-from deeppyro.kernel.app import create_app
+from deeppyro.kernel.app import App, create_app
 from deeppyro.kernel.manifest import PluginSpec
 
 MODULE = __name__
@@ -144,7 +144,7 @@ def test_explicit_binding_aliases_a_legacy_name() -> None:
 # -- app level typed lookups --------------------------------------------
 
 
-async def test_app_resolves_contracts_and_string_aliases() -> None:
+async def test_app_resolves_typed_contracts() -> None:
     app = await _boot(
         _spec("widget", "WidgetPlugin"),
         _spec("looker", "LookerPlugin"),
@@ -153,10 +153,7 @@ async def test_app_resolves_contracts_and_string_aliases() -> None:
     try:
         assert app.get(WidgetPlugin).label == "widget"
         assert app.require(WidgetPlugin).label == "widget"
-        assert app.service("widget").label == "widget"
-        assert app.has_service("widget") is True
         assert app.get(HookService) is None
-        assert app.has_service("hooks") is False
         assert app.require(LookerPlugin).seen_label() == "widget"
     finally:
         await app.stop()
@@ -173,8 +170,6 @@ async def test_app_require_reports_the_missing_contract() -> None:
         with pytest.raises(ServiceTypeError):
             app.require(UnboundContract)
         assert app.get(UnboundContract) is None
-        with pytest.raises(LookupError, match="not registered or not active"):
-            app.service("hooks")
     finally:
         await app.stop()
 
@@ -185,8 +180,8 @@ async def test_two_containers_keep_a_same_named_service_apart() -> None:
     try:
         assert first.require(WidgetPlugin).label == "one"
         assert second.require(WidgetPlugin).label == "two"
-        assert first.get("widget").label == "one"
-        assert second.get("widget").label == "two"
+        assert first.get(WidgetPlugin).label == "one"
+        assert second.get(WidgetPlugin).label == "two"
     finally:
         await first.stop()
         await second.stop()
@@ -241,10 +236,26 @@ async def test_string_only_plugin_stays_reachable() -> None:
     bind_service_type(LegacyContract, "legacy-service")
     app = await _boot(_spec("legacy", "LegacyStringPlugin"))
     try:
-        assert app.service("legacy-service") == "legacy-value"
-        assert app.get("legacy-service") == "legacy-value"
         assert app.get(LegacyContract) == "legacy-value"
         assert app.require(LegacyContract) == "legacy-value"
+    finally:
+        await app.stop()
+
+
+# -- name-based helpers are gone ----------------------------------------
+
+
+async def test_app_has_no_name_based_service_helpers() -> None:
+    """API v3 removed the string accepting lookup helpers from App."""
+    app = await _boot(_spec("widget", "WidgetPlugin"))
+    try:
+        assert not hasattr(App, "service")
+        assert not hasattr(App, "has_service")
+        assert not hasattr(App, "_service_value")
+        with pytest.raises(TypeError, match="typed in API v3"):
+            app.get("widget")
+        with pytest.raises(AttributeError):
+            _ = app.service
     finally:
         await app.stop()
 

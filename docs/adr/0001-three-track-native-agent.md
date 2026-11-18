@@ -2,6 +2,7 @@
 
 - **Status:** Accepted; M0–M4 deliverables complete (2026-11-17); M5 documentation/release complete and 0.2.0 RC prepared (2026-11-18, §6.5; untagged); decisions locked in §7.
 - **Date:** 2026-11-17 (updated 2026-11-18 for 0.2.0)
+- **0.2.0 update (2026-11-18, after the fix round):** headless now defaults to the native loop (`--legacy-v4` to opt out); TUI interaction still runs v4. String service lookup is gone from `App` as well (typed `get`/`require` only), so §1's “deprecated host-level helpers” no longer exist. `core.wire` has **39** importers / 45 imports, all on the v4 path, and is frozen (deprecation note + boundary tests). Capability manifests, settings file locking, bundle digests, `dpyro migrate`, usage ledger, trace/OTLP export, long-term memory tools, live eval and Task/Handoff are wired. Residual scope is tracked in `docs/release/0.2.0-known-issues.md`; the numbers below describe the ADR-time state.
 - **Owners:** Lead (integration), lane P/Y/A owners as assigned in §6
 - **Supersedes:** the implicit "DSH-compatible port" direction recorded in `docs/spec/INTERFACES.md` §0
 - **Related:** external research report `deeppyro-native-python-agent-research.md` (three-track revision), `docs/native/schema.md` (native schema 1, M0), `docs/release/0.2.0-known-issues.md` (0.2.0 residual index)
@@ -197,7 +198,7 @@ M1 deliberately does **not** wire these modules into `agent/`, the CLI, the TUI,
 
 ## 6.2 M2 deliverables and exit checklist
 
-Status: **complete for the loop/contract scope (2026-11-17)**. M2 wires the native `AgentLoop`, `ContextPlan`, `RunState`/checkpoint, budget/cancellation and trace emission. The v4 runtime stays the default product path; headless exposes an explicit `DEEPPYRO_NATIVE_LOOP=1` / `--native-loop` switch. TUI migration and the v4 provider port remain M3+ work.
+Status: **complete for the loop/contract scope (2026-11-17)**. M2 wires the native `AgentLoop`, `ContextPlan`, `RunState`/checkpoint, budget/cancellation and trace emission. At M2 the v4 runtime was still the default product path and headless exposed an explicit `DEEPPYRO_NATIVE_LOOP=1` / `--native-loop` switch. **0.2.0 changed the default:** headless runs native unless `--legacy-v4` (or `DEEPPYRO_NATIVE_LOOP=0|false|no|off`) is given, and `--native-loop` is a deprecated alias; TUI migration and the v4 provider port remain M3+/0.3 work.
 
 - [x] `src/deeppyro/agent/loop.py` (1030 lines): one native conversation per `run()`. Input is native `Message`; each step builds a `ContextPlan`, converts through the adapter boundary, streams the existing `LlmProvider`, writes one native `assistant.message`, dispatches tool calls through the existing `ToolRegistry`/`Tool` protocol (parallel-safe batches in `asyncio.TaskGroup`), appends native `tool.result` messages and terminates with `turn.ended` + `run.finished`. Only `NativeSession` is written; no v4 session and no dual write.
 - [x] `src/deeppyro/agent/context_plan.py`: frozen slots `ContextPlan(system, messages, tools, estimated_tokens, source_message_ids)`, pure deterministic `build_context_plan()`, deep-copied tool schemas; every provider request is built from a plan.
@@ -244,9 +245,10 @@ with positional parameters, is rejected at load time with a migration hint.
   `inject` accepts `type[Service]`. Plugin-facing `PluginContext.get/require/has` take a
   contract class only; strings raise `TypeError`, and `PluginContext.__getattr__` /
   `RuntimeContext.__getattr__` no longer resolve services. `rg` over `src/` finds zero
-  string service lookups. Host-level `App.service(name)`, `App.get(name)` and
-  `has_service(name)` are retained **only** as deprecated non-plugin helpers for embedders and
-  the test suite; the plugin contract cannot reach them.
+  string service lookups. The host-level `App` takes contract classes only as well
+  (`App.get(Contract)` / `App.require(Contract)`): the transitional `App.service(name)`,
+  `App.get(name)` and `has_service(name)` helpers were deleted in KI-035 after migrating every
+  call site, and `tests/api/test_services.py` pins that they stay absent.
 - [x] CapabilityManifest: new `api/capabilities.py` (frozen slots dataclasses
   `CapabilityManifest`, `ToolCapability`, `TokenCost`, `RiskLevel`,
   `build_manifest`/`tool_capability`) records plugin id/version, services provided and

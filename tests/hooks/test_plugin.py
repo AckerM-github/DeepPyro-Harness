@@ -57,7 +57,7 @@ async def test_hooks_plugin_boots_in_kernel() -> None:
     app = await boot(config, extra_plugins=[spec])
     try:
         assert "hooks" in app.started
-        service = app.service("hooks")
+        service = app.require(HookService)
         assert isinstance(service, HookService)
 
         calls: list[dict[str, Any]] = []
@@ -71,6 +71,11 @@ async def test_hooks_plugin_boots_in_kernel() -> None:
         assert result == {"kind": "allow"}
         assert calls == [{"turn": 1, "step": 1}]
         dispose()
-        assert service.has(AGENT_PRE_STEP) is False
+        # Other builtins in the default bundle (usage, telemetry, ...) may keep
+        # their own agent/pre-step listeners, so assert our disposer removed
+        # *our* handler instead of the whole hook.
+        calls.clear()
+        await service.waterfall(AGENT_PRE_STEP, {"turn": 2, "step": 1}, {"kind": "allow"})
+        assert calls == []
     finally:
         await app.stop()

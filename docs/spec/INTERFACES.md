@@ -403,7 +403,8 @@ Lead 负责：`core`、`config`、集成测试（`tests/integration`）、端到
   （mount 适配）。没有 vendored 框架、没有反射层、没有 prototype 链。
 - 不可插件化的核心：`core/wire.py`、`core/protocols.py`、`session/**`、`kernel/**`、`api/**`。
   其余全部是插件：`builtin/**` 是默认插件集，TUI/headless 是宿主。
-- 领域模块禁止 import 运行时内部；`kernel/**` 是唯一装配层；前端只通过 `App.service(name)` 取服务。
+- 领域模块禁止 import 运行时内部；`kernel/**` 是唯一装配层；前端只通过 `App.require(Contract)` /
+  `App.get(Contract)` 取服务（KI-035 已删除字符串 helper）。
 - 生命周期：inject 服务缺失时 fiber 保持 `PENDING`，服务提供后自动加载；effects 逆序、幂等、
   async teardown 会被 await；运行时不发任何 plumbing 事件，事件只有 `core.bus.EventBus`。
 

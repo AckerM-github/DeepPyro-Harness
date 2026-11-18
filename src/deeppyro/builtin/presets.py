@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import warnings
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -39,7 +40,10 @@ from deeppyro.api import (
     Service,
     inject_names,
     invoke_setup,
+    lookup_service,
 )
+from deeppyro.config import Config, ConfigWarning, _strict_requested
+from deeppyro.core.errors import ConfigError
 
 logger = logging.getLogger("deeppyro.presets")
 
@@ -181,6 +185,66 @@ class PresetsPlugin(Service):
         self._next_revision = 1
         #: (preset id, revision) -> realm materialization state
         self._realms: dict[tuple[str, int], _RealmState] = {}
+        #: (preset id, model) pairs already reported as a ConfigWarning
+        self._model_issues: set[tuple[str, str]] = set()
+
+    # -- model validation -------------------------------------------------
+    def _host_config(self) -> Config | None:
+        """Return the host config service value, when this bundle has one.
+
+        The service lookup is deferred: presets must work in isolated hosts
+        (and in tests) that boot without the kernel config plugin.
+        """
+        from deeppyro.kernel.config_service import KernelConfig
+
+        service = lookup_service(self.ctx, KernelConfig)
+        if service is None:
+            return None
+        value = getattr(service, "value", None)
+        return value if isinstance(value, Config) else None
+
+    def _preset_model_issue(self, preset_id: str, model: str) -> str | None:
+        """Return why one preset model override cannot be validated, or None."""
+        if not model:
+            return None
+        config = self._host_config()
+        if config is None:
+            return None
+        provider_name = config.agent.provider
+        provider = config.providers.get(provider_name)
+        if provider is None:
+            return (
+                f"preset {preset_id!r} declares model {model!r}, but provider "
+                f"{provider_name!r} is not configured"
+            )
+        available = [str(entry.id) for entry in (provider.models or [])]
+        if available and model not in available:
+            return (
+                f"preset {preset_id!r} model {model!r} is not offered by provider "
+                f"{provider_name!r} (offers: {', '.join(available)})"
+            )
+        return None
+
+    def _lint_preset_model(self, preset_id: str, model: str) -> None:
+        """Check a preset's model override against the host provider config.
+
+        Mirrors config lint: a mismatch is a ConfigWarning by default and a
+        hard ConfigError when strict mode is on (DEEPPYRO_STRICT_CONFIG, the
+        same switch config lint reads). "Not declared" means "any model the
+        provider accepts": a provider without a models list is a wildcard.
+        The check runs on registration and on each resolve (application), so a
+        config edit made after registration is caught before the next request.
+        """
+        issue = self._preset_model_issue(preset_id, model)
+        if issue is None:
+            return
+        if _strict_requested({}, None):
+            raise ConfigError(f"invalid preset model: {issue}")
+        key = (preset_id, model)
+        if key in self._model_issues:
+            return
+        self._model_issues.add(key)
+        warnings.warn(issue, ConfigWarning, stacklevel=2)
 
     # -- registration ----------------------------------------------------
     def add(self, preset: PresetSpec, *, plugin_id: str = "") -> Any:
@@ -195,6 +259,7 @@ class PresetsPlugin(Service):
         preset_id = (preset.id or "").strip()
         if not preset_id:
             raise PluginDependencyError("preset id must not be empty")
+        self._lint_preset_model(preset_id, (preset.model or "").strip())
         revision = self._next_revision
         self._next_revision += 1
         stored = replace(
@@ -286,6 +351,7 @@ class PresetsPlugin(Service):
                 raise PluginDependencyError(
                     f"unknown agent preset revision: {wanted!r} revision {revision} (available: {available})"
                 )
+        self._lint_preset_model(spec.id, (spec.model or "").strip())
         self._schedule(spec)
         return spec
 

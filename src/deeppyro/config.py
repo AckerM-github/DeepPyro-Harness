@@ -7,8 +7,10 @@ import os
 import re
 import tempfile
 import tomllib
+import warnings
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -161,6 +163,131 @@ class ModelProfile(BaseModel):
         )
 
 
+class ConfigWarning(UserWarning):
+    """A configuration key that is accepted today but is probably unintended."""
+
+
+_STRICT_CONFIG_ENV = "DEEPPYRO_STRICT_CONFIG"
+_STRICT_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_STRICT_KEYS = ("strict_config", "strictConfig")
+
+
+def _strict_requested(document: Mapping[str, Any], strict: bool | None) -> bool:
+    """Resolve the strict switch: explicit argument, environment, then the file.
+
+    Strict mode rejects deprecated camelCase aliases and unknown keys inside the
+    schema tables instead of warning about them.
+    """
+    if strict is not None:
+        return bool(strict)
+    env = os.environ.get(_STRICT_CONFIG_ENV)
+    if env is not None and env.strip().lower() in _STRICT_TRUTHY:
+        return True
+    for key in _STRICT_KEYS:
+        declared = document.get(key)
+        if declared is None:
+            continue
+        if isinstance(declared, str):
+            return declared.strip().lower() in _STRICT_TRUTHY
+        return bool(declared)
+    return False
+
+
+def _dotted(path: str, key: str) -> str:
+    return f"{path}.{key}" if path else key
+
+
+def _model_type(annotation: Any) -> type[BaseModel] | None:
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    return None
+
+
+def _lint_value(annotation: Any, value: Any, path: str, issues: list[tuple[str, str]]) -> None:
+    """Walk one value according to the declared annotation."""
+    model = _model_type(annotation)
+    if model is not None:
+        if isinstance(value, Mapping):
+            _lint_model(model, value, path, issues)
+        return
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin in (list, tuple) and args and isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _lint_value(args[0], item, f"{path}[{index}]", issues)
+        return
+    if origin is dict and len(args) == 2 and isinstance(value, Mapping):
+        for key, item in value.items():
+            _lint_value(args[1], item, _dotted(path, str(key)), issues)
+
+
+def _lint_model(
+    model: type[BaseModel],
+    data: Mapping[str, Any],
+    path: str,
+    issues: list[tuple[str, str]],
+    *,
+    allow_unknown: bool = False,
+) -> None:
+    aliases = {info.alias: name for name, info in model.model_fields.items() if info.alias}
+    for key, value in data.items():
+        info = model.model_fields.get(key)
+        field_path = _dotted(path, key)
+        if info is None:
+            canonical = aliases.get(key)
+            if canonical is None:
+                if allow_unknown:
+                    continue
+                issues.append(
+                    (
+                        "unknown",
+                        f"unknown configuration key {field_path!r} for {model.__name__}: "
+                        "it is accepted today but ignored by the schema",
+                    )
+                )
+                continue
+            issues.append(
+                (
+                    "alias",
+                    f"configuration key {field_path!r} is a deprecated camelCase alias; "
+                    f"rename it to {_dotted(path, canonical)!r}",
+                )
+            )
+            info = model.model_fields[canonical]
+        _lint_value(info.annotation, value, field_path, issues)
+
+
+def lint_config(document: Mapping[str, Any], *, strict: bool | None = None) -> list[str]:
+    """Check a parsed config document for deprecated aliases and unknown keys.
+
+    camelCase aliases are reported with a :class:`DeprecationWarning` that names
+    the full dotted path and the suggested snake_case spelling; they keep working
+    until 0.3.  Unknown keys inside the schema tables (`[agent]`,
+    `[providers.*]`, model capability/cost tables) are reported with
+    :class:`ConfigWarning`, because pydantic would otherwise swallow the typo.
+
+    Strict mode raises :class:`ConfigError` listing every issue instead of
+    warning.  Strictness resolves from the explicit *strict* argument, then the
+    `DEEPPYRO_STRICT_CONFIG` environment variable, then a top-level
+    `strict_config` key in the document.
+
+    Top-level tables the schema does not know (plugin configuration such as
+    `[sandbox]`, `[retry]` or `[[mcp.servers]]`) are legitimate plugin
+    configuration and are never reported.  Returns the issue messages.
+    """
+    issues: list[tuple[str, str]] = []
+    _lint_model(Config, document, "", issues, allow_unknown=True)
+    messages = [message for _kind, message in issues]
+    if _strict_requested(document, strict):
+        if messages:
+            raise ConfigError("invalid configuration: " + "; ".join(messages))
+        return []
+    for kind, message in issues:
+        category = DeprecationWarning if kind == "alias" else ConfigWarning
+        warnings.warn(message, category, stacklevel=2)
+    return messages
+
+
 # User-scoped locations live under one home directory (DSH-style, ~/.dpro).
 # DEEPPYRO_HOME overrides the root; DEEPPYRO_CONFIG and DEEPPYRO_SESSION_DIR
 # override individual paths at call time.
@@ -271,14 +398,30 @@ def session_dir(cfg: Config | None = None) -> Path:
     return paths.sessions_dir()
 
 
-def load_config(path: Path | None = None, create: bool = True) -> Config:
+def load_config(
+    path: Path | None = None,
+    create: bool = True,
+    *,
+    strict: bool | None = None,
+) -> Config:
+    """Load the configuration file, linting deprecated aliases and unknown keys.
+
+    *strict* overrides the `DEEPPYRO_STRICT_CONFIG` environment variable and the
+    file's top-level `strict_config` key; see :func:`lint_config`.
+    """
     p = path or config_path()
     if not p.exists():
         if not create:
             return Config()
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(DEFAULT_TOML, encoding="utf-8")
-    data: dict[str, Any] = tomllib.loads(p.read_text(encoding="utf-8"))
+    try:
+        data: dict[str, Any] = tomllib.loads(p.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"invalid config file {p}: {exc}") from exc
+    lint_config(data, strict=strict)
+    for key in _STRICT_KEYS:
+        data.pop(key, None)
     return Config.model_validate(data)
 
 
@@ -397,12 +540,14 @@ __all__ = [
     "DEFAULT_TOML",
     "AgentConfig",
     "Config",
+    "ConfigWarning",
     "ModelCapabilities",
     "ModelConfig",
     "ModelCost",
     "ModelProfile",
     "ProviderConfig",
     "config_path",
+    "lint_config",
     "load_config",
     "save_agent_selection",
     "session_dir",

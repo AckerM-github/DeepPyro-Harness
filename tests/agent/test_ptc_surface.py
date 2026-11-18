@@ -20,9 +20,14 @@ from deeppyro.agent import AgentOptions, AgentSession
 from deeppyro.api import TEAM_PRESET_ID
 from deeppyro.api.services import ServiceTypeError, service_name
 from deeppyro.builtin.agents import AgentsPlugin
+from deeppyro.builtin.presets import PresetsPlugin
+from deeppyro.builtin.prompt_service import PromptPlugin
+from deeppyro.builtin.sessions import SessionsPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.core.protocols import TextDelta, ToolCallArgsDelta, ToolCallStart, ToolResult
 from deeppyro.kernel import boot
+from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.ptc import RunCodeTool
 from deeppyro.tools.registry import ToolRegistry
 
@@ -246,28 +251,37 @@ class _FakePtc:
         self.mode = mode
 
 
+class _RawContext:
+    """Name-based stand-in for the kernel runtime context (PluginContext.raw)."""
+
+    def __init__(self, ptc: Any) -> None:
+        self._ptc = ptc
+
+    def get(self, name: str) -> Any | None:
+        return self._ptc if name == "ptc" else None
+
+
 class _PluginContext:
     """Plugin context over a booted app with a fake ptc service."""
 
     def __init__(self, app: Any, ptc: Any) -> None:
         self._app = app
-        self._ptc = ptc
+        self._raw = _RawContext(ptc)
 
-    def service(self, name: str) -> Any:
-        return self._app.service(name)
+    @property
+    def raw(self) -> _RawContext:
+        return self._raw
 
-    def get(self, service: str | type[Any]) -> Any | None:
-        if isinstance(service, str):
-            name = service
-        else:
-            try:
-                name = service_name(service)
-            except ServiceTypeError:
-                return None
-        if name == "ptc":
-            return self._ptc
+    def get(self, service: type[Any]) -> Any | None:
         try:
-            return self._app.service(name)
+            name = service_name(service)
+        except ServiceTypeError:
+            return None
+        value = self._raw.get(name)
+        if value is not None:
+            return value
+        try:
+            return self._app.require(service)
         except Exception:  # noqa: BLE001 - optional service lookup
             return None
 
@@ -292,10 +306,10 @@ def _plugin(app: Any, ptc: Any) -> AgentsPlugin:
     """
     plugin = object.__new__(AgentsPlugin)
     plugin._ctx = _PluginContext(app, ptc)
-    plugin._presets = app.service("presets")
-    plugin._prompt_service = app.service("prompt")
-    plugin._tools = app.service("tools")
-    plugin._agent_config = app.service("config").value.agent
+    plugin._presets = app.require(PresetsPlugin)
+    plugin._prompt_service = app.require(PromptPlugin)
+    plugin._tools = app.require(ToolsPlugin)
+    plugin._agent_config = app.require(KernelConfig).value.agent
     return plugin
 
 
@@ -308,7 +322,7 @@ def _config(tmp_path: Path) -> Config:
 
 
 def _create(agent_service: AgentsPlugin, app: Any, tmp_path: Path, **kwargs: Any) -> Any:
-    session = app.service("sessions").create(str(tmp_path))
+    session = app.require(SessionsPlugin).create(str(tmp_path))
     return agent_service.create(
         session=session,
         provider=object(),
@@ -322,7 +336,7 @@ def _create(agent_service: AgentsPlugin, app: Any, tmp_path: Path, **kwargs: Any
 async def test_agents_plugin_surface_selection(tmp_path: Path) -> None:
     app = await boot(_config(tmp_path))
     try:
-        base = app.service("tools").registry_for(tmp_path)
+        base = app.require(ToolsPlugin).registry_for(tmp_path)
         other = base.names()[0]
         registry = ToolRegistry([base.get(other), RunCodeTool()])
 
@@ -341,7 +355,7 @@ async def test_agents_plugin_surface_selection(tmp_path: Path) -> None:
         assert team._surface is team._registry
 
         # Native mode (real ptc service default) keeps every tool.
-        native = _create(app.service("agents"), app, tmp_path, registry=registry)
+        native = _create(app.require(AgentsPlugin), app, tmp_path, registry=registry)
         assert native.surface_registry is None
         assert native._surface is native._registry
 

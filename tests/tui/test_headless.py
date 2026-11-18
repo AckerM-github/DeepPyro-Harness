@@ -1,4 +1,4 @@
-"""Headless one-shot mode: sinks, validation and the run_once exit codes."""
+"""Headless one-shot mode: sinks, validation and the run_once exit codes (legacy v4 path)."""
 
 from __future__ import annotations
 
@@ -134,6 +134,14 @@ def patch_runtime(monkeypatch: pytest.MonkeyPatch, runtime: Any) -> None:
         return runtime
 
     monkeypatch.setattr(headless, "boot_runtime", fake_boot)
+
+
+# The native loop is the headless default since the 0.2.0 flip.  This module
+# pins the legacy v4 run_once contract, so it selects v4 explicitly; the
+# native default is covered by tests/native/test_headless_native.py.
+@pytest.fixture(autouse=True)
+def _legacy_v4_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(headless.NATIVE_LOOP_ENV, "0")
 
 
 # --------------------------------------------------------------------------
@@ -924,6 +932,77 @@ def test_cli_forwards_the_permission_flags_to_run_once(monkeypatch: pytest.Monke
     assert code == 0
     assert seen[0]["permission_mode"] == "danger-full-access"
     assert seen[0]["approval_policy"] == "ask"
+
+
+def test_build_parser_exposes_the_backend_switches() -> None:
+    from deeppyro.tui.main import build_parser
+
+    parser = build_parser()
+    default = parser.parse_args(["--headless", "hi"])
+    assert default.native_loop is False
+    assert default.legacy_v4 is False
+    assert parser.parse_args(["--headless", "hi", "--legacy-v4"]).legacy_v4 is True
+    assert parser.parse_args(["--headless", "hi", "--native-loop"]).native_loop is True
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--headless", "hi", "--legacy-v4", "--native-loop"])
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected", "deprecated"),
+    [
+        ((), None, False),
+        (("--legacy-v4",), False, False),
+        (("--native-loop",), True, True),
+    ],
+)
+def test_cli_maps_the_backend_switches(
+    monkeypatch: pytest.MonkeyPatch,
+    recwarn: pytest.WarningsRecorder,
+    flags: tuple[str, ...],
+    expected: bool | None,
+    deprecated: bool,
+) -> None:
+    import deeppyro.paths
+    import deeppyro.tui.main as cli
+
+    seen: list[dict[str, Any]] = []
+
+    def fake_run_once(prompt: str, **kwargs: Any) -> int:
+        seen.append({"prompt": prompt, **kwargs})
+        return 0
+
+    monkeypatch.setattr(deeppyro.paths, "migrate_legacy_layout", lambda: None)
+    monkeypatch.setattr(headless, "run_once", fake_run_once)
+
+    assert cli.main(["--headless", "hi", *flags]) == 0
+
+    assert seen[0]["native_loop"] is expected
+    deprecations = [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
+    if deprecated:
+        assert deprecations
+    else:
+        assert not deprecations
+
+
+def test_cli_legacy_v4_overrides_the_env_switch(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--legacy-v4 wins over DEEPPYRO_NATIVE_LOOP=1 and runs the v4 loop."""
+    import deeppyro.paths
+    import deeppyro.tui.main as cli
+
+    agent = FakeAgent([{"type": "final", "text": "v4 answer"}])
+    runtime = FakeRuntime(agent)
+    patch_runtime(monkeypatch, runtime)
+    monkeypatch.setattr(deeppyro.paths, "migrate_legacy_layout", lambda: None)
+    monkeypatch.setenv(headless.NATIVE_LOOP_ENV, "1")
+
+    assert cli.main(["--headless", "hi", "--legacy-v4"]) == headless.EXIT_OK
+
+    captured = capsys.readouterr()
+    assert runtime.store.created == ["D:\\work"]
+    assert agent.sent == ["hi"]
+    assert "v4 answer" in captured.out
 
 
 def test_run_once_forwards_permission_flags_to_boot(monkeypatch: pytest.MonkeyPatch) -> None:

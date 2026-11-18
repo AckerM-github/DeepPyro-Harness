@@ -84,7 +84,7 @@ async def check_write(
     action: str = "write",
     tool: str | None = None,
 ) -> None:
-    """Authorize a write strictly by the DSH file policy (no prompt)."""
+    """Authorize a write strictly by the DeepPyro file policy (no prompt)."""
     gate = gate_for(ctx)
     mode = await prepare_escalation(ctx, args, subject="write", tool=tool)
     policy = gate.policy

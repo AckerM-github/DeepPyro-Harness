@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +31,13 @@ from deeppyro.subagent.errors import SubagentError
 from deeppyro.subagent.types import (
     DEFAULT_CONTEXT_WINDOW,
     MAX_LIVE_RUNS,
+    USAGE_RECORD_TYPE,
+    USAGE_VERSION,
     SubagentActivation,
     SubagentResult,
+    SubagentUsage,
+    sum_usages,
+    usage_from_records,
 )
 
 _ORPHAN = ""
@@ -118,7 +124,12 @@ class SubagentService:
         self._parent_agent: Any = None
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._child_agents: dict[str, Any] = {}
+        self._child_sessions: dict[str, Session] = {}
+        self._activations: dict[str, SubagentActivation] = {}
         self._active_ids: set[str] = set()
+        self._usages: dict[str, SubagentUsage] = {}
+        self._baselines: dict[str, SubagentUsage] = {}
+        self._usage_sink: Any = None
         self._live = 0
         self._labels = 0
         self._closed = False
@@ -156,6 +167,7 @@ class SubagentService:
         preset_revision: int | None = None,
         services: dict[str, Any] | None = None,
         ask: Any = None,
+        usage_sink: Any = None,
     ) -> None:
         """Attach the live parent-session context used to spawn children."""
         self._cwd = Path(cwd)
@@ -168,6 +180,8 @@ class SubagentService:
         self._preset_revision = preset_revision
         self._services = dict(services or {})
         self._ask = ask
+        if usage_sink is not None:
+            self._usage_sink = usage_sink
 
     def bind_session(self, session: Session | None) -> None:
         """Bind the parent session that receives subagent catalog/descriptor records."""
@@ -270,6 +284,10 @@ class SubagentService:
             inherited_event_count = None
         provider_name = _provider_name(resolved_provider)
         child_id = child_session.session_id
+        # a fork starts from seed records inherited from the parent; only records
+        # appended during this run count towards the child's usage
+        self._baselines[child_id] = usage_from_records(list(getattr(child_session, "records", ()) or ()))
+        self._child_sessions[child_id] = child_session
         label = self._next_label(name)
         agent = self._create_agent(
             child_session,
@@ -297,6 +315,7 @@ class SubagentService:
             mode=mode,
             created_at=int(child_session.header.createdAt),
         )
+        self._activations[child_id] = activation
         self._live += 1
         self._active_ids.add(child_id)
         self._child_agents[child_id] = agent
@@ -316,7 +335,8 @@ class SubagentService:
         *,
         notify: bool,
     ) -> SubagentResult:
-        result: SubagentResult
+        started = time.perf_counter()
+        result: SubagentResult | None = None
         try:
             try:
                 reply = await agent.send(prompt)
@@ -344,13 +364,126 @@ class SubagentService:
                     mode=activation.mode,
                     text=reply if isinstance(reply, str) else str(reply or ""),
                 )
+            usage = self._measure_usage(agent, activation, started)
+            result.usage = usage
+            self._publish_usage(activation, usage)
             if notify:
                 await self._notify_parent(result)
             return result
         finally:
+            if result is None:
+                # a cancelled child still reports the usage it already spent
+                with contextlib.suppress(Exception):
+                    self._publish_usage(activation, self._measure_usage(agent, activation, started))
             self._release(activation.child_id)
+            self._activations.pop(activation.child_id, None)
+            self._baselines.pop(activation.child_id, None)
+            self._child_sessions.pop(activation.child_id, None)
             agent = self._child_agents.pop(activation.child_id, None)
             await self._close_agent(agent)
+
+    # -- usage ----------------------------------------------------------
+    def usage(self, child_id: str | None = None) -> SubagentUsage | None:
+        """Provider usage of one child run, or the aggregate over every finished run.
+
+        Args:
+            child_id: A child id from a SubagentActivation.  Omit to aggregate.
+
+        Returns:
+            The measured usage, or None when no run has finished yet.
+        """
+        if child_id is not None:
+            return self._usages.get(child_id)
+        if not self._usages:
+            return None
+        return sum_usages(self._usages.values())
+
+    def _child_records(self, agent: Any, child_id: str) -> list[Any]:
+        """The child session records, preferring the live session the agent appends to."""
+        session = getattr(agent, "session", None)
+        if session is None:
+            session = self._child_sessions.get(child_id)
+        records = getattr(session, "records", None)
+        if records is None:
+            store = getattr(self._sessions, "store", None)
+            opener = getattr(store, "open", None)
+            if callable(opener):
+                try:
+                    records = getattr(opener(child_id), "records", None)
+                # boundary: the sessions store is a duck-typed plugin backend
+                except Exception:  # noqa: BLE001
+                    records = None
+        return list(records or ())
+
+    def _measure_usage(self, agent: Any, activation: SubagentActivation, started: float) -> SubagentUsage:
+        """Fold the child session's provider records into usage; latency is measured here."""
+        latency_ms = max(0, round((time.perf_counter() - started) * 1000))
+        try:
+            records = self._child_records(agent, activation.child_id)
+        # boundary: measuring usage must never mask the child's result
+        except Exception:  # noqa: BLE001
+            records = []
+        return usage_from_records(
+            records,
+            model=activation.model,
+            provider=activation.provider,
+            latency_ms=latency_ms,
+            baseline=self._baselines.get(activation.child_id),
+        )
+
+    def _publish_usage(self, activation: SubagentActivation, usage: SubagentUsage) -> None:
+        """Remember one run's usage, journal it as a parent fact and offer it to the sink."""
+        self._usages[activation.child_id] = usage
+        self._append_record(
+            USAGE_RECORD_TYPE,
+            {
+                "version": USAGE_VERSION,
+                "childId": activation.child_id,
+                "sessionId": activation.session_id,
+                "mode": activation.mode,
+                "usage": usage.to_dict(),
+                "at": now_ms(),
+            },
+            ignorable=True,
+        )
+        self._report_usage(usage)
+
+    def _report_usage(self, usage: SubagentUsage) -> None:
+        sink = self._usage_sink
+        if sink is None:
+            sink = self._services.get("usage")
+        record = getattr(sink, "record", None)
+        if not callable(record):
+            return
+        if not any((usage.input_tokens, usage.output_tokens, usage.cached_tokens, usage.retries)):
+            return
+        try:
+            record(
+                provider=usage.provider,
+                model=usage.model,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cached_tokens=usage.cached_tokens,
+            )
+        # boundary: the usage sink is an optional decoupled Protocol implementation
+        except Exception:
+            logger.warning("failed to report subagent usage", exc_info=True)
+
+    def _publish_usage_fallback(self, child_id: str) -> None:
+        """Record usage for a child cancelled before its run body ever executed."""
+        activation = self._activations.pop(child_id, None)
+        child_session = self._child_sessions.pop(child_id, None)
+        baseline = self._baselines.pop(child_id, None)
+        if activation is None or child_id in self._usages:
+            return
+        records = list(getattr(child_session, "records", ()) or ())
+        usage = usage_from_records(
+            records,
+            model=activation.model,
+            provider=activation.provider,
+            baseline=baseline,
+        )
+        self._publish_usage(activation, usage)
 
     def _on_task_done(self, child_id: str, task: asyncio.Task[Any]) -> None:
         self._release(child_id)
@@ -385,6 +518,7 @@ class SubagentService:
             agent = self._child_agents.pop(child_id, None)
             if agent is not None:
                 await self._close_agent(agent)
+            self._publish_usage_fallback(child_id)
             self._tasks.pop(child_id, None)
         return len(tasks)
 
@@ -569,15 +703,23 @@ class SubagentService:
                 await result
 
     # -- records --------------------------------------------------------
-    def _append_record(self, record_type: str, data: dict[str, Any]) -> None:
-        self._append_record_on(self._parent, record_type, data)
+    def _append_record(self, record_type: str, data: dict[str, Any], *, ignorable: bool = False) -> None:
+        self._append_record_on(self._parent, record_type, data, ignorable=ignorable)
 
-    def _append_record_on(self, session: Any, record_type: str, data: dict[str, Any]) -> None:
+    def _append_record_on(
+        self,
+        session: Any,
+        record_type: str,
+        data: dict[str, Any],
+        *,
+        ignorable: bool = False,
+    ) -> None:
         append = getattr(session, "append", None)
         if append is None:
             return
+        envelope: dict[str, Any] = {"ignorable": True} if ignorable else {}
         try:
-            append(record_type, data)
+            append(record_type, data, **envelope)
         # boundary: the parent session is a duck-typed object; bookkeeping append failures are not fatal
         except Exception:
             logger.warning("failed to append %s record", record_type, exc_info=True)

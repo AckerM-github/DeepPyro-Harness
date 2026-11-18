@@ -1,0 +1,1 @@
+{"type":"request/header","seq":0,"time":1700000000000,"data":{"header":{"tools":[{"name":"read","description":"read a file","parameters":{"type":"object"}}],"adapterDefaults":{"temperature":0}}}}

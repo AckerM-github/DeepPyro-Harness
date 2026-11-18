@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from deeppyro.builtin.llm import LlmPlugin
+from deeppyro.builtin.sessions import SessionsPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.kernel import (
     DEFAULT_PLUGINS,
@@ -19,6 +22,7 @@ EXPECTED_ORDER = [
     "kernel",
     "llm",
     "sessions",
+    "session-migrate",
     "session-query",
     "sandbox",
     "tools",
@@ -46,12 +50,15 @@ EXPECTED_ORDER = [
     "ptc",
     "agent-presets",
     "memory",
+    "usage",
+    "telemetry",
     "commands",
     "commands-builtin",
     "skills",
     "agents",
     "team",
     "subagent",
+    "task",
     "activity",
     "projections",
     "slots",
@@ -115,6 +122,7 @@ config = { start = 5 }
         "llm",
         "echo",
         "sessions",
+        "session-migrate",
         "session-query",
         "sandbox",
         "tools",
@@ -142,12 +150,15 @@ config = { start = 5 }
         "ptc",
         "agent-presets",
         "memory",
+        "usage",
+        "telemetry",
         "commands",
         "commands-builtin",
         "skills",
         "agents",
         "team",
         "subagent",
+        "task",
         "activity",
         "projections",
         "slots",
@@ -168,13 +179,14 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
     )
     app = await boot(_config(), manifest_paths=[str(manifest)])
     try:
-        assert app.has_service("llm")
-        assert not app.has_service("sessions")
-        assert not app.has_service("tools")
+        assert app.get(LlmPlugin) is not None
+        assert app.get(SessionsPlugin) is None
+        assert app.get(ToolsPlugin) is None
         # Every loaded row is listed in bundle order; disabled rows are absent.
         assert list(app.started) == [
             "kernel",
             "llm",
+            "session-migrate",
             "session-query",
             "goal",
             "goal-round-driver",
@@ -200,11 +212,14 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
             "ptc",
             "agent-presets",
             "memory",
+            "usage",
+            "telemetry",
             "commands",
             "commands-builtin",
             "skills",
             "team",
             "subagent",
+            "task",
             "activity",
             "projections",
             "slots",
@@ -241,7 +256,7 @@ async def test_boot_skips_disabled_plugins(tmp_path: Path) -> None:
         assert app.started["commands-builtin"] == "ACTIVE"
     finally:
         await app.stop()
-    assert not app.has_service("llm")
+    assert app.get(LlmPlugin) is None
 
 
 async def test_boot_fails_with_missing_domain_module() -> None:

@@ -6,7 +6,7 @@
 > 发布范围与遗留项见 [0.2.0-known-issues.md](../release/0.2.0-known-issues.md)。
 > 权威契约：native schema 1 + ADR。与 ADR 冲突时以 ADR 为准；与 schema 冲突时以 schema 为准。
 
-本目录同时存在三类文档：**native schema 1 的当前契约**、**默认 v4 路径的现行/过渡规格**、
+本目录同时存在三类文档：**native schema 1 的当前契约**、**headless 已默认 native / TUI 仍走 v4 的现行与过渡规格**、
 **只用于迁移或历史追溯的冻结材料**。读任何一篇之前先看标题下的状态块，再决定能否依赖其中的字段、
 类型和事件名。
 
@@ -17,12 +17,13 @@
 | `当前契约` | native schema 1 或经 ADR 冻结的现行契约 | ✅ 可以 |
 | `现行（0.2.0 保留）` | 已实现、与 native 方向一致，0.2.0 继续有效 | ✅ 可以（以代码为准） |
 | `现行（过渡：v4 待移除）` | 已实现，但仍描述 v4 wire / DSH 形状或计划在 0.3 替换的机制 | ⚠️ 只可用于理解现状，不得据此扩展 |
-| `现行（native opt-in）` | 默认 v4，显式开关走 native | ⚠️ 默认路径与 native 路径行为不同 |
+| `现行（native 默认）` | headless 默认 native，`--legacy-v4` 回退；TUI 交互仍 v4 | ⚠️ 两条路径行为不同 |
+| `现行（native opt-in）` | 0.2.0 仅 TUI 交互路径：默认 v4，显式开关走 native | ⚠️ 默认路径与 native 路径行为不同 |
 | `冻结：迁移参考` | 描述旧 DSH v4 数据形状，仅供读旧数据/写迁移说明 | ❌ 不行 |
 | `历史证据（0.2.0 保留，0.3 删除）` | DSH 逆向产物/事件目录，不是运行期契约 | ❌ 不行 |
 | `历史文档（非契约）` | 已移入 [docs/archive/](../archive/) 的计划/研究 | ❌ 不行 |
 
-括号内是范围/里程碑限定（如 `API v3`、`M3 已调整`、`M4 已扩展`、`native opt-in`），不改变基础状态；`goal.md` 的 `现行契约（goal 域冻结）` 表示该域按 FROZEN 规则维护。
+括号内是范围/里程碑限定（如 `API v3`、`M3 已调整`、`M4 已扩展`、`native 默认`），不改变基础状态；`goal.md` 的 `现行契约（goal 域冻结）` 表示该域按 FROZEN 规则维护。
 
 ## 2. 唯一契约入口
 
@@ -52,13 +53,13 @@
 | [compact-blocks.md](compact-blocks.md) | 压缩块 | `现行（0.2.0 保留）` | 与 native `compaction.done.covers` 对齐（ADR §7-4） |
 | [frozen-distribution.md](frozen-distribution.md) | PyInstaller 打包 | `现行（0.2.0 保留）` | core bundle 字符串行对静态分析不可见 |
 | [goal.md](goal.md) | goal 域 | `现行契约（goal 域冻结）` | FROZEN M0 2026-11-16；goal 域唯一契约 |
-| [headless.md](headless.md) | headless CLI | `现行（native opt-in）` | 参数/退出码/NDJSON 形状保持；`--native-loop` 走 `AgentLoop`，默认仍 v4 |
+| [headless.md](headless.md) | headless CLI | `现行（native 默认）` | 参数/退出码/NDJSON 形状保持；默认走 `AgentLoop`，`--legacy-v4` 回退，`--native-loop` 为弃用别名 |
 | [im-plugin.md](im-plugin.md) | IM 插件 | `现行（0.2.0 保留）` | 实现在仓库外 `dpyro-im` |
 | [image-budget.md](image-budget.md) | 图片预算 | `现行（0.2.0 保留）` | |
 | [image-offload.md](image-offload.md) | 图片卸载 | `现行（0.2.0 保留）` | |
 | [image-request.md](image-request.md) | 图片请求 | `现行（0.2.0 保留）` | |
 | [mcp.md](mcp.md) | MCP client | `现行（0.2.0 保留）` | 对齐 `dsh-mcp-client` 资源语义 |
-| [memory.md](memory.md) | runtime memory | `现行（M4 已扩展）` | SQLite FTS5 backend 已落地；long-term 未暴露为工具、未自动写入 |
+| [memory.md](memory.md) | runtime memory | `现行（M4 已扩展）` | SQLite FTS5 backend 已落地；`memory_search`/`memory_add` 按 preset 只读/可写注册，无 embedding |
 | [plugin-core.md](plugin-core.md) | 插件/组合契约 | `现行（API v3）` | 当前 `API_VERSION = 3`；v1/v2 硬切 |
 | [plugin-platform.md](plugin-platform.md) | 插件安装/打包 | `现行（API v3）` | `plugin.toml` 安装单元 + entry points/bundle v3 |
 | [plugin-settings.md](plugin-settings.md) | settings CAS | `现行（0.2.0 保留）` | |
@@ -66,22 +67,22 @@
 | [ptc.md](ptc.md) | PTC | `现行（0.2.0 保留）` | 对齐默认 native |
 | [schedule.md](schedule.md) | 定时任务 | `现行（0.2.0 保留）` | P1 |
 | [skills.md](skills.md) | skills | `现行（0.2.0 保留）` | P1 只读 |
-| [subagent.md](subagent.md) | 子 agent | `现行（M4 已扩展）` | supervisor + 2 workers 已落地；未接真实 subagent 生命周期 |
-| [tui.md](tui.md) | TUI 总览 | `现行（0.2.0 保留）` | 交互 TUI 仍走 v4；native 仅 `--native-loop` 的 `run_once` |
+| [subagent.md](subagent.md) | 子 agent | `现行（M4 已扩展）` | supervisor + 2 workers 已落地；结果与 supervisor 汇总携带 usage |
+| [tui.md](tui.md) | TUI 总览 | `现行（native opt-in）` | 交互 TUI 仍走 v4（默认），不读取 native 会话；native 仅 headless `run_once` |
 | [tui-slots.md](tui-slots.md) | TUI slots | `现行（0.2.0 保留）` | layer E 已实现 |
 | [tui-contributions.md](tui-contributions.md) | TUI 贡献 | `现行（0.2.0 保留）` | P2 |
 | [tui-input.md](tui-input.md) | TUI 输入 | `现行（0.2.0 保留）` | |
 | [tui-widgets.md](tui-widgets.md) | TUI widgets | `现行（0.2.0 保留）` | |
 
-## 4. 过渡规格（默认 v4 + native 并存）
+## 4. 过渡规格（headless 默认 native，TUI 仍 v4）
 
 | 文档 | 状态 | 现状 | 0.3 计划 |
 | --- | --- | --- | --- |
-| [loop.md](loop.md) | `现行（过渡：v4 待移除）` | v4 loop 仍为默认；native `AgentLoop` 已实现并通过 10 例差分，走 `--native-loop` | 切换默认后重写为 `AgentLoop` 文档 |
+| [loop.md](loop.md) | `现行（过渡：v4 待移除）` | headless 已默认 `AgentLoop`；v4 loop 仍服务 TUI 交互路径，`--legacy-v4` 可回退 | v4 退出后重写为 `AgentLoop` 文档 |
 | [events.md](events.md) | `现行（过渡：v4 待移除）` | v4 仍走 HookService；native loop 使用 27 个 `EventKind` 与 typed events | 切换后重写 |
 | [hooks.md](hooks.md) | `现行（过渡：v4 待移除）` | P1 bus 与 19 个 well-known hook 名仍用于 v4；native loop 用 typed `AgentHooks`/`events.py` | 切换后统一，删除 cordis 语义描述 |
-| [projection.md](projection.md) | `现行（过渡：v4 待移除）` | v4 的 projection/checkpoint 仍服务默认会话；native 使用 `session/fold.py` 的纯 fold | 切换默认后重写或移植 native fold |
-| [session-query.md](session-query.md) | `现行（过渡：v4 待移除）` | v4 的只读 summary/surface/event/trace 查询仍服务默认会话；native 尚无等价 query 层 | 随 v4 重写或移植 |
+| [projection.md](projection.md) | `现行（过渡：v4 待移除）` | v4 的 projection/checkpoint 仍服务 TUI 会话；native 使用 `session/fold.py` 的纯 fold | v4 退出后重写或移植 native fold |
+| [session-query.md](session-query.md) | `现行（过渡：v4 待移除）` | v4 的只读 summary/surface/event/trace 查询仍服务 TUI 会话；native 尚无等价 query 层 | 随 v4 重写或移植 |
 
 ## 5. 冻结与历史证据（0.2.0 保留，0.3 删除）
 
@@ -117,7 +118,8 @@ p1-bus、preset-modes、sandbox-alignment）。删除清单与追溯方式见 [d
 | 目录 | 文件数 | 内容 |
 | --- | --- | --- |
 | `docs/spec/` | 39 | 38 篇规格 + 本索引（29 现行 + 5 过渡 + 4 冻结/历史） |
-| `docs/native/` | 2 | `schema.md`（契约正文）、`README.md`（实现与录制状态） |
+| `docs/native/` | 3 | `schema.md`（契约正文）、`README.md`（实现与录制状态）、`coverage.md`（差分覆盖与重录） |
 | `docs/adr/` | 1 | 三线 ADR |
 | `docs/archive/` | 7 | 6 篇历史文档 + 归档索引 |
-| `docs/` 总计 | 56 | spec/native/adr/plugins/release/ops/archive + 文档地图 |
+| `docs/guides/` | 4 | native 默认化、会话迁移、bundle digest、Windows 沙箱边界 |
+| `docs/` 总计 | 61 | spec/native/adr/guides/plugins/release/ops/archive + 文档地图 |

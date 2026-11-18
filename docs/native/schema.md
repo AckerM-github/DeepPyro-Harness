@@ -4,12 +4,12 @@
 | --- | --- |
 | 文档 | `docs/native/schema.md` |
 | Schema 版本 | `1`（header 字段 `schema:1`） |
-| 状态 | M0 冻结、M1–M2 实现完成；M3/M4 未改 schema；0.2.0 RC 以 native opt-in 交付（2026-11-18，未打 tag） |
+| 状态 | M0 冻结、M1–M2 实现完成；M3/M4 未改 schema；0.2.0 RC 以 headless 默认 native / TUI 仍 v4 交付（2026-11-18，未打 tag） |
 | Owner | Lane Y（`core/`、`session/`、`agent/`、`prompt/`、`compact/`） |
 | 取代 | `docs/spec/session.md`（`session.v4`） |
 | 权威来源 | `docs/adr/0001-three-track-native-agent.md`（Accepted；M0–M4 完成）；研究报告 `deeppyro-native-python-agent-research.md` §3.3–3.5、§5.3、§9.3–9.5 |
 | M1 落点 | `src/deeppyro/core/messages.py`、`src/deeppyro/session/schema.py`、`src/deeppyro/session/fold.py`、`src/deeppyro/observability/trace.py` |
-| M2 落点 | `src/deeppyro/agent/{loop,run_state,checkpoint,budget,context_plan,events,native_provider}.py`；`session/schema.py` 增加 3 个 run 事件；headless `DEEPPYRO_NATIVE_LOOP` / `--native-loop` 开关（默认仍走 v4） |
+| M2 落点 | `src/deeppyro/agent/{loop,run_state,checkpoint,budget,context_plan,events,native_provider}.py`；`session/schema.py` 增加 3 个 run 事件；headless `DEEPPYRO_NATIVE_LOOP` / `--legacy-v4` 开关（native 为默认，`--native-loop` 为弃用别名） |
 | 冲突处理 | 与 ADR 冲突时以 ADR 为准；偏差在 §12 显式记录 |
 
 ## 1. 状态与范围
@@ -52,7 +52,7 @@ M1 起产品只写、只读 native schema 1；以下为 review 硬门槛：
 
 ## 2. 物理格式
 ### 2.1 路径与命名
-- 默认目录 `~/.dpro/sessions/`；环境变量 `DEEPPYRO_SESSIONS_DIR` 可覆盖（与其他 `DEEPPYRO_*` 一致）。
+- 默认目录 `~/.dpro/sessions/`；环境变量 `DEEPPYRO_SESSION_DIR` 可覆盖（与其他 `DEEPPYRO_*` 一致）。
 - 会话文件 `<sessions_dir>/<id>.jsonl`，扁平，没有每个会话的子目录（ADR D2；报告 §3.8）。
 - `id` 同时是文件名主干：`^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`，沿用 `new_session_id()` 的 `session-<uuid4>`，文件名安全。
 - 不存在 `session.v4.jsonl`、`.zstd`、`meta.json`、`projectKey` 分片目录。

@@ -26,6 +26,11 @@ from deeppyro.api import (
     PresetPluginRow,
     PresetSpec,
 )
+from deeppyro.builtin.agents import AgentsPlugin
+from deeppyro.builtin.presets import PresetsPlugin
+from deeppyro.builtin.prompt_service import PromptPlugin
+from deeppyro.builtin.sessions import SessionsPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.core.errors import DeeppyroError
 from deeppyro.kernel.app import App
@@ -275,9 +280,9 @@ async def _boot(tmp_path: Path, bundle_dir: Path) -> App:
 
 
 def _make_agent(app: App, tmp_path: Path, preset: str | None = None) -> Any:
-    sessions = app.service("sessions")
+    sessions = app.require(SessionsPlugin)
     session = sessions.create(str(tmp_path), agent_preset=preset)
-    agents = app.service("agents")
+    agents = app.require(AgentsPlugin)
     return agents.create(
         session=session,
         provider=object(),
@@ -297,7 +302,7 @@ async def test_preset_revisions_are_immutable(tmp_path: Path) -> None:
     )
     app = await _boot(tmp_path, bundle_dir)
     try:
-        presets = app.service("presets")
+        presets = app.require(PresetsPlugin)
         assert "standard" in presets.ids()
         assert "writer" in presets.ids()
         first = presets.resolve("writer")
@@ -352,10 +357,10 @@ async def test_scope_and_revision_filtering(tmp_path: Path) -> None:
     )
     app = await _boot(tmp_path, bundle_dir)
     try:
-        presets = app.service("presets")
+        presets = app.require(PresetsPlugin)
         await presets.ensure_all()
         revision = presets.resolve("writer").revision
-        tools = app.service("tools")
+        tools = app.require(ToolsPlugin)
 
         scoped = tools.registry_for(str(tmp_path), scope="writer", revision=revision)
         assert {"writer_note", "realm_note"} <= set(scoped.names())
@@ -367,7 +372,7 @@ async def test_scope_and_revision_filtering(tmp_path: Path) -> None:
         assert "realm_note" not in tools.registry_for(str(tmp_path))
         assert "realm_note" not in tools.registry_for(str(tmp_path), scope="other", revision=revision)
 
-        prompt_service = app.service("prompt")
+        prompt_service = app.require(PromptPlugin)
         context = _prompt_context(tmp_path)
         pinned = prompt_service.build([], context, scope="writer", revision=revision)
         assert "## Realm hint" in pinned
@@ -387,7 +392,7 @@ async def test_live_agent_keeps_its_revision(tmp_path: Path) -> None:
     )
     app = await _boot(tmp_path, bundle_dir)
     try:
-        presets = app.service("presets")
+        presets = app.require(PresetsPlugin)
         await presets.ensure_all()
         first_revision = presets.resolve("writer").revision
         first = _make_agent(app, tmp_path, preset="writer")
@@ -436,7 +441,7 @@ async def test_failed_realm_row_is_isolated(tmp_path: Path) -> None:
     )
     app = await _boot(tmp_path, bundle_dir)
     try:
-        presets = app.service("presets")
+        presets = app.require(PresetsPlugin)
         await presets.ensure("broken")
         assert presets.is_materialized("broken")
         failures = presets.realm_failures("broken")
@@ -444,7 +449,7 @@ async def test_failed_realm_row_is_isolated(tmp_path: Path) -> None:
         assert "MissingPlugin" in failures[0].error or "missing_plugin.py" in failures[0].error
 
         revision = presets.resolve("broken").revision
-        tools = app.service("tools").registry_for(str(tmp_path), scope="broken", revision=revision)
+        tools = app.require(ToolsPlugin).registry_for(str(tmp_path), scope="broken", revision=revision)
         assert "realm_note" in tools.names()
     finally:
         await app.stop()
@@ -459,10 +464,10 @@ async def test_realm_tool_may_collide_with_host_tool(tmp_path: Path) -> None:
     )
     app = await _boot(tmp_path, bundle_dir)
     try:
-        presets = app.service("presets")
+        presets = app.require(PresetsPlugin)
         await presets.ensure("collide")
         revision = presets.resolve("collide").revision
-        registry = app.service("tools").registry_for(str(tmp_path), scope="collide", revision=revision)
+        registry = app.require(ToolsPlugin).registry_for(str(tmp_path), scope="collide", revision=revision)
         assert registry.names().count("shared_host") == 1
         result = await registry.get("shared_host").run({}, None)
         assert result.text == "host"
@@ -479,7 +484,7 @@ async def test_realm_contributions_are_removed_with_the_revision(tmp_path: Path)
     )
     app = await _boot(tmp_path, bundle_dir)
     try:
-        presets = app.service("presets")
+        presets = app.require(PresetsPlugin)
         await presets.ensure("writer")
         first = presets.resolve("writer")
         first_revision = first.revision
@@ -500,7 +505,7 @@ async def test_realm_contributions_are_removed_with_the_revision(tmp_path: Path)
         assert presets.revision_of("writer") == first_revision
         assert presets.revisions("writer") == [first_revision]
         assert presets.is_materialized("writer", first_revision)
-        tools = app.service("tools")
+        tools = app.require(ToolsPlugin)
         assert (
             "realm_note" in tools.registry_for(str(tmp_path), scope="writer", revision=first.revision).names()
         )
@@ -521,7 +526,7 @@ async def test_builtin_presets_offer_standard_and_explicit_team_mode(tmp_path: P
     )
     app = await _boot(tmp_path, bundle_dir)
     try:
-        presets = app.service("presets")
+        presets = app.require(PresetsPlugin)
         standard = presets.resolve()
         assert standard.id == "standard"
         assert standard.name == "Standard"
@@ -569,8 +574,8 @@ async def test_agent_mode_filters_delegation_tools(tmp_path: Path) -> None:
     )
     app = await _boot(tmp_path, bundle_dir)
     try:
-        sessions = app.service("sessions")
-        agents = app.service("agents")
+        sessions = app.require(SessionsPlugin)
+        agents = app.require(AgentsPlugin)
         all_names = [*TEAM_TOOL_NAMES, *SUBAGENT_TOOL_NAMES, "read"]
         registry = ToolRegistry([_named_tool(name) for name in all_names])
 

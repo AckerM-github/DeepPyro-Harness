@@ -11,6 +11,7 @@ from deeppyro.memory.backend import (
     MemoryBackendStatus,
     MemoryRecord,
     MemorySearchHit,
+    MemoryWriteReceipt,
 )
 from deeppyro.memory.errors import MemoryBackendUnavailableError
 from deeppyro.memory.store import MemoryStore
@@ -105,6 +106,52 @@ class MemoryService:
             tags=tags,
             created_at=created_at,
         )
+
+    def upsert_long_term(
+        self,
+        content: str,
+        *,
+        key: str | None = None,
+        source_session_id: str | None = None,
+        source_message_id: str | None = None,
+        run_id: str | None = None,
+        importance: str = DEFAULT_IMPORTANCE,
+        tags: Sequence[str] = (),
+        created_at: str | None = None,
+    ) -> MemoryWriteReceipt:
+        """Write one long-term memory record, overwriting the record for a key.
+
+        With a dedupe key the record occupying that key is replaced in place
+        (same id) so repeated facts update instead of piling up duplicates; the
+        receipt reports whether a new record was created. Without a key this is
+        an append-only write.
+
+        Raises:
+            MemoryBackendUnavailableError: when no backend is attached.
+        """
+        backend = self._require_backend()
+        if key is None:
+            record = backend.write(
+                content,
+                source_session_id=source_session_id,
+                source_message_id=source_message_id,
+                run_id=run_id,
+                importance=importance,
+                tags=tags,
+                created_at=created_at,
+            )
+            return MemoryWriteReceipt(record=record, created=True)
+        record, created = backend.upsert(
+            content,
+            dedupe_key=key,
+            source_session_id=source_session_id,
+            source_message_id=source_message_id,
+            run_id=run_id,
+            importance=importance,
+            tags=tags,
+            created_at=created_at,
+        )
+        return MemoryWriteReceipt(record=record, created=created)
 
     def search_long_term(
         self,

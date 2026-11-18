@@ -2,6 +2,14 @@
 
 Field names are the exact on-disk camelCase names from DSH session.v4.jsonl.
 Do not rename them: the log is a compatibility contract.
+
+Deprecated (KI-010): this module is the v4 protocol layer. The native agent
+loop uses ``deeppyro.core.messages`` and ``deeppyro.session.schema`` instead
+and must not import this module; ``deeppyro.agent.native_provider`` is the
+only sanctioned new seam (it adapts the v4 model catalog for the native
+loop). The remaining v4 stack retires after the 0.3 provider port, and this
+module is deleted with it; ``tests/integration/test_wire_boundary.py`` pins
+the boundary so new native imports fail CI before then.
 """
 
 from __future__ import annotations

@@ -11,7 +11,7 @@ this branch): which features DeepPyro actually used, and what replaced them.
   storing dependents for cordis' reactive injection epochs.  Native: one
   :class:`ServiceContainer` keyed by ``(name, isolate token)``; ownership is the
   :class:`~deeppyro.kernel.container.Disposer` registered on the providing fiber.
-* ``ctx.reflect`` — only 5 uses: kernel ``App._service_value``, api
+* ``ctx.reflect`` — only 5 uses: kernel typed service lookup, api
   ``PluginContext._lookup``, ``builtin/inspect.services()`` and two helpers.
   None needs a reflection layer: a plain container lookup and a container
   snapshot replace it.  ``ctx.reflect`` is gone.

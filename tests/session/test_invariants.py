@@ -1,4 +1,4 @@
-"""Cross-cutting invariants over all real session fixtures."""
+"""Cross-cutting invariants over the session fixtures."""
 
 from __future__ import annotations
 
@@ -14,12 +14,6 @@ from deeppyro.session import Session, SessionStore, read_session_file
 from deeppyro.session.derive import APPEND, REPLACE, fold_surface, plan_surface_transition
 from deeppyro.session.events import KNOWN_EVENT_TYPES, SURFACE_EVENTS
 from tests.session import support
-
-if not support.FIXTURES.is_dir():
-    pytest.skip(
-        "real DSH fixtures not present; run: node tools/gen_fixtures.mjs",
-        allow_module_level=True,
-    )
 
 MESSAGE_ROLES = {"system", "user", "assistant", "tool", "developer"}
 
@@ -187,7 +181,7 @@ def test_derived_messages_are_valid_wire_messages(
 def test_manifest_aggregates_match_observed_logs(fixture_sessions: list[tuple[Path, Any]]) -> None:
     manifest = support.load_manifest()
     by_file = {entry["file"]: entry for entry in manifest["sessions"]}
-    assert len(fixture_sessions) == 30
+    assert len(fixture_sessions) == len(manifest["sessions"])
     total_records = sum(len(read.records) for _path, read in fixture_sessions)
     total_expected = sum(
         by_file[path.name]["keptCount"]
@@ -196,7 +190,9 @@ def test_manifest_aggregates_match_observed_logs(fixture_sessions: list[tuple[Pa
         for path, _read in fixture_sessions
     )
     assert total_records == total_expected
-    assert sum(1 for _path, read in fixture_sessions if read.trimmed) == 4
+    assert sum(1 for _path, read in fixture_sessions if read.trimmed) == sum(
+        1 for entry in manifest["sessions"] if entry["trimmed"]
+    )
     assert sum(1 for _path, read in fixture_sessions if read.truncated) == 0
     types = Counter(record.type for _path, read in fixture_sessions for record in read.records)
     assert set(types) <= KNOWN_EVENT_TYPES
@@ -211,6 +207,7 @@ def test_manifest_aggregates_match_observed_logs(fixture_sessions: list[tuple[Pa
     )
 
 
+@support.requires_real_fixtures
 def test_fixture_statistics_are_stable() -> None:
     path = support.SESSIONS_DIR / "session-d745f174-c79f-4b69-a147-d6c57947e3f7.jsonl"
     read = read_session_file(path)

@@ -30,6 +30,7 @@ from deeppyro.memory.backend import (
     utc_now,
     validate_content,
     validate_created_at,
+    validate_dedupe_key,
     validate_importance,
     validate_limit,
     validate_memory_id,
@@ -49,7 +50,7 @@ from deeppyro.paths import deeppyro_home
 DB_FILENAME = "memory.sqlite3"
 
 #: On-disk schema version tracked in PRAGMA user_version.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: The standalone FTS5 index table name.
 FTS_TABLE = "memory_search"
@@ -68,7 +69,8 @@ _SCHEMA_STATEMENTS = (
         run_id TEXT,
         created_at TEXT NOT NULL,
         importance TEXT NOT NULL,
-        tags TEXT NOT NULL DEFAULT '[]'
+        tags TEXT NOT NULL DEFAULT '[]',
+        dedupe_key TEXT
     )
     """,
     """
@@ -84,6 +86,14 @@ _SCHEMA_STATEMENTS = (
     )
     """,
 )
+
+#: Partial unique index backing dedupe-key upserts; created after the legacy
+#: table upgrade because ALTER TABLE must land before the index exists.
+_DEDUPE_KEY_INDEX = """
+    CREATE UNIQUE INDEX IF NOT EXISTS memory_records_dedupe_key
+        ON memory_records (dedupe_key)
+        WHERE dedupe_key IS NOT NULL
+    """
 
 
 def default_memory_db_path() -> Path:
@@ -173,33 +183,21 @@ class SqliteMemoryBackend:
     ) -> MemoryRecord:
         """Persist one memory record with provenance and return the stored record."""
         self._ensure_open()
-        checked_content = validate_content(content)
-        checked_importance = validate_importance(importance)
-        checked_tags = validate_tags(tags)
-        timestamp = (
-            validate_created_at(created_at) if created_at is not None else format_timestamp(self._clock())
+        checked_content, provenance = self._prepare_record(
+            content,
+            source_session_id=source_session_id,
+            source_message_id=source_message_id,
+            run_id=run_id,
+            importance=importance,
+            tags=tags,
+            created_at=created_at,
         )
-        for name, value in (
-            ("source_session_id", source_session_id),
-            ("source_message_id", source_message_id),
-            ("run_id", run_id),
-        ):
-            if value is not None and (not isinstance(value, str) or not value):
-                raise MemoryValidationError(f"memory {name} must be a non-empty string or null")
         record = MemoryRecord(
             id="mem_" + uuid.uuid4().hex[:16],
             content=checked_content,
-            provenance=MemoryProvenance(
-                content_sha256=hash_content(checked_content),
-                created_at=timestamp,
-                importance=checked_importance,
-                source_session_id=source_session_id,
-                source_message_id=source_message_id,
-                run_id=run_id,
-                tags=checked_tags,
-            ),
+            provenance=provenance,
         )
-        indexed_tags = " ".join(checked_tags)
+        indexed_tags = " ".join(provenance.tags)
         try:
             with self._conn:
                 self._conn.execute(
@@ -228,6 +226,105 @@ class SqliteMemoryBackend:
         except sqlite3.Error as exc:
             raise MemoryBackendError(f"cannot write long-term memory record: {exc}") from exc
         return record
+
+    def upsert(
+        self,
+        content: str,
+        *,
+        dedupe_key: str,
+        source_session_id: str | None = None,
+        source_message_id: str | None = None,
+        run_id: str | None = None,
+        importance: str = "normal",
+        tags: Sequence[str] = (),
+        created_at: str | None = None,
+    ) -> tuple[MemoryRecord, bool]:
+        """Insert or overwrite the record occupying one dedupe key.
+
+        Returns the stored record and True when it was created, False when the
+        existing record for that key was refreshed in place (same id).
+        """
+        self._ensure_open()
+        checked_key = validate_dedupe_key(dedupe_key)
+        if checked_key is None:
+            raise MemoryValidationError("memory dedupe key must be a non-empty string")
+        checked_content, provenance = self._prepare_record(
+            content,
+            source_session_id=source_session_id,
+            source_message_id=source_message_id,
+            run_id=run_id,
+            importance=importance,
+            tags=tags,
+            created_at=created_at,
+            dedupe_key=checked_key,
+        )
+        indexed_tags = " ".join(provenance.tags)
+        encoded_tags = json.dumps(list(provenance.tags), ensure_ascii=False)
+        try:
+            with self._conn:
+                row = self._conn.execute(
+                    "SELECT id FROM memory_records WHERE dedupe_key = ?",
+                    (checked_key,),
+                ).fetchone()
+                created = row is None
+                record_id = "mem_" + uuid.uuid4().hex[:16] if created else str(row["id"])
+                if created:
+                    self._conn.execute(
+                        """
+                        INSERT INTO memory_records (
+                            id, content, content_sha256, source_session_id,
+                            source_message_id, run_id, created_at, importance, tags,
+                            dedupe_key
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            record_id,
+                            checked_content,
+                            provenance.content_sha256,
+                            provenance.source_session_id,
+                            provenance.source_message_id,
+                            provenance.run_id,
+                            provenance.created_at,
+                            provenance.importance,
+                            encoded_tags,
+                            checked_key,
+                        ),
+                    )
+                else:
+                    self._conn.execute(
+                        "DELETE FROM memory_search WHERE memory_id = ?",
+                        (record_id,),
+                    )
+                    self._conn.execute(
+                        """
+                        UPDATE memory_records SET
+                            content = ?, content_sha256 = ?, source_session_id = ?,
+                            source_message_id = ?, run_id = ?, created_at = ?,
+                            importance = ?, tags = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            checked_content,
+                            provenance.content_sha256,
+                            provenance.source_session_id,
+                            provenance.source_message_id,
+                            provenance.run_id,
+                            provenance.created_at,
+                            provenance.importance,
+                            encoded_tags,
+                            record_id,
+                        ),
+                    )
+                self._conn.execute(
+                    "INSERT INTO memory_search (memory_id, body, tags) VALUES (?, ?, ?)",
+                    (record_id, checked_content, indexed_tags),
+                )
+        except sqlite3.Error as exc:
+            raise MemoryBackendError(f"cannot write long-term memory record: {exc}") from exc
+        return (
+            MemoryRecord(id=record_id, content=checked_content, provenance=provenance),
+            created,
+        )
 
     def search(
         self,
@@ -324,6 +421,43 @@ class SqliteMemoryBackend:
             size_bytes=size_bytes,
         )
 
+    def _prepare_record(
+        self,
+        content: str,
+        *,
+        source_session_id: str | None,
+        source_message_id: str | None,
+        run_id: str | None,
+        importance: str,
+        tags: Sequence[str],
+        created_at: str | None,
+        dedupe_key: str | None = None,
+    ) -> tuple[str, MemoryProvenance]:
+        """Validate one write and build its content plus provenance."""
+        checked_content = validate_content(content)
+        checked_importance = validate_importance(importance)
+        checked_tags = validate_tags(tags)
+        timestamp = (
+            validate_created_at(created_at) if created_at is not None else format_timestamp(self._clock())
+        )
+        for name, value in (
+            ("source_session_id", source_session_id),
+            ("source_message_id", source_message_id),
+            ("run_id", run_id),
+        ):
+            if value is not None and (not isinstance(value, str) or not value):
+                raise MemoryValidationError(f"memory {name} must be a non-empty string or null")
+        return checked_content, MemoryProvenance(
+            content_sha256=hash_content(checked_content),
+            created_at=timestamp,
+            importance=checked_importance,
+            source_session_id=source_session_id,
+            source_message_id=source_message_id,
+            run_id=run_id,
+            tags=checked_tags,
+            dedupe_key=dedupe_key,
+        )
+
     def _migrate(self) -> None:
         version = self.schema_version
         if version > SCHEMA_VERSION:
@@ -332,6 +466,11 @@ class SqliteMemoryBackend:
             )
         for statement in _SCHEMA_STATEMENTS:
             self._conn.execute(statement)
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(memory_records)")}
+        if "dedupe_key" not in columns:
+            # Schema 1 databases predate the dedupe column; upgrade in place.
+            self._conn.execute("ALTER TABLE memory_records ADD COLUMN dedupe_key TEXT")
+        self._conn.execute(_DEDUPE_KEY_INDEX)
         self._conn.commit()
         if version < SCHEMA_VERSION:
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -346,6 +485,11 @@ class SqliteMemoryBackend:
         if missing:
             raise MemoryBackendCorruptError(
                 f"long-term memory database at {self._path} lacks table {missing[0]}"
+            )
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(memory_records)")}
+        if "dedupe_key" not in columns:
+            raise MemoryBackendCorruptError(
+                f"long-term memory database at {self._path} lacks column dedupe_key"
             )
 
     def _ensure_open(self) -> None:
@@ -368,6 +512,7 @@ class SqliteMemoryBackend:
                 source_message_id=row["source_message_id"],
                 run_id=row["run_id"],
                 tags=tuple(str(tag) for tag in tags),
+                dedupe_key=row["dedupe_key"],
             )
         except MemoryValidationError as exc:
             raise MemoryBackendCorruptError(f"long-term memory record {row['id']} is corrupt: {exc}") from exc

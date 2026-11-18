@@ -234,12 +234,13 @@ team row):
     id = 'subagent'
     plugin = 'deeppyro.builtin.subagent:SubagentPlugin'
 
-Runtime wiring (TuiRuntime._configure_subagent and
-HeadlessRuntime._configure_subagent): resolve kernel_app.service('subagent'),
-call configure() with the live parent context after boot and after every
-new/open session, call bind_session(), call bind_parent(agent) when the parent
-agent exists, and await close() during runtime shutdown so in-flight children
-are cancelled.
+Runtime wiring: both hosts resolve the typed contract with
+kernel_app.get(SubagentService) (TuiRuntime.__init__, and headless.py right
+after boot; the string kernel_app.service('subagent') form no longer exists,
+see KI-035). TuiRuntime._configure_subagent then calls configure() with the
+live parent context after boot and after every new/open session, calls
+bind_session(), calls bind_parent(agent) when the parent agent exists, and
+awaits close() during runtime shutdown so in-flight children are cancelled.
 
 ## 8. Settlement notices
 

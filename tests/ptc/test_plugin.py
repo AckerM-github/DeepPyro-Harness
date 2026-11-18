@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from deeppyro.api import PTC_PRESET_ID, inject_names
+from deeppyro.builtin.prompt_service import PromptPlugin
 from deeppyro.builtin.ptc import (
     PTC_ONLY_INSTRUCTION,
     PTC_ONLY_ORDER,
@@ -17,6 +18,7 @@ from deeppyro.builtin.ptc import (
     PTC_SDK_SECTION,
     PtcPlugin,
 )
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.core.errors import ConfigError
 from deeppyro.core.protocols import ToolSchema
@@ -208,11 +210,11 @@ async def test_kernel_native_mode_scopes_ptc_contributions_to_the_preset(tmp_pat
     app = await boot(_config(tmp_path), manifest_paths=[])
     try:
         assert app.started["ptc"] == "ACTIVE"
-        tools = app.service("tools")
+        tools = app.require(ToolsPlugin)
         assert "run_code" in tools.registry_for(tmp_path, scope=PTC_PRESET_ID).names()
         assert "run_code" not in tools.registry_for(tmp_path).names()
 
-        prompt = app.service("prompt")
+        prompt = app.require(PromptPlugin)
         scoped_names = {section.name for section in prompt.sections(scope=PTC_PRESET_ID)}
         assert {PTC_ONLY_SECTION, PTC_SDK_SECTION} <= scoped_names
         global_names = {section.name for section in prompt.sections()}
@@ -227,14 +229,14 @@ async def test_kernel_boot_activates_ptc_after_the_prompt_service(tmp_path: Path
     app = await boot(_ptc_config(tmp_path), manifest_paths=[])
     try:
         assert app.started["ptc"] == "ACTIVE"
-        service = app.service("ptc")
+        service = app.require(PtcRuntime)
         assert service.mode == "ptc"
-        tools = app.service("tools")
+        tools = app.require(ToolsPlugin)
         registry = tools.registry_for(tmp_path)
         assert "run_code" in list(registry.names())
         assert "run_code" in tools.registry_for(tmp_path, scope=PTC_PRESET_ID).names()
 
-        prompt = app.service("prompt")
+        prompt = app.require(PromptPlugin)
         global_names = [section.name for section in prompt.sections()]
         scoped_names = [section.name for section in prompt.sections(scope=PTC_PRESET_ID)]
         assert [name for name in global_names if name in (PTC_ONLY_SECTION, PTC_SDK_SECTION)] == [

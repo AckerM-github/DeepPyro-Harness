@@ -94,7 +94,7 @@ class HookObservabilityPlugin(Plugin):
     """Log every dispatched hook; the in-tree reference consumer."""
 
     plugin_id = "hook-observability"
-    version = "0.1.0"
+    version = "0.2.0"
     description = "log each runtime hook dispatch"
     inject: ClassVar[list[str]] = ["hooks"]
 
@@ -106,12 +106,10 @@ class HookObservabilityPlugin(Plugin):
     def setup(self) -> None:
         hooks = self.ctx.require(HookService)
         for name in OBSERVED_HOOKS:
-            handler = self._handler(name)
-            disposer = self.ctx.effect(
-                lambda h=handler, n=name: hooks.on(n, h),
-                f"observe:{name}",
-            )
+            # Subscribe eagerly and hand the disposer to effect() for teardown.
+            disposer = hooks.on(name, self._handler(name))
             self._disposers.append(disposer)
+            self.ctx.effect(disposer, f"observe:{name}")
 
     def snapshot(self) -> dict[str, int]:
         """Return how many events of each observed hook have been seen."""

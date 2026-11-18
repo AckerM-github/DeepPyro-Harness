@@ -10,6 +10,7 @@ deeppyro.kernel.composition.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from typing import Any, cast
 
@@ -19,6 +20,8 @@ from deeppyro.api import API_VERSION
 
 __all__ = [
     "BUNDLE_KEYS",
+    "DIGEST_PATTERN",
+    "DIGEST_PREFIX",
     "ROW_KEYS",
     "BundleDocument",
     "BundleMeta",
@@ -45,8 +48,17 @@ ROW_KEYS = frozenset(
         "include",
     }
 )
+#: Prefix of a pinned bundle content digest: ``sha256:`` plus 64 lowercase
+#: hex characters.  The digest covers the raw bytes of bundle.toml with the
+#: declared digest value itself replaced by an all-zero placeholder, so pinning
+#: a digest does not need a self-referential hash (see
+#: docs/guides/bundle-digest.md).
+DIGEST_PREFIX = "sha256:"
+#: Pattern a declared ``[bundle].digest`` value must match.
+DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+
 #: Keys accepted in the [bundle] table.
-BUNDLE_KEYS = frozenset({"id", "name", "version", "api_version", "order", "critical", "requires"})
+BUNDLE_KEYS = frozenset({"id", "name", "version", "api_version", "order", "critical", "requires", "digest"})
 
 
 def _non_empty(value: str) -> str:
@@ -82,11 +94,23 @@ class BundleMeta(BaseModel):
     order: int = 0
     critical: bool = False
     requires: list[str | RequirementEntry] = Field(default_factory=list)
+    #: Optional pin of the bundle.toml raw bytes (see docs/guides/bundle-digest.md).
+    digest: str | None = None
 
     @field_validator("id")
     @classmethod
     def _check_id(cls, value: str) -> str:
         return _non_empty(value)
+
+    @field_validator("digest")
+    @classmethod
+    def _check_digest(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not DIGEST_PATTERN.fullmatch(normalized):
+            raise ValueError("digest must be 'sha256:' followed by 64 lowercase hex characters")
+        return normalized
 
     @field_validator("api_version")
     @classmethod

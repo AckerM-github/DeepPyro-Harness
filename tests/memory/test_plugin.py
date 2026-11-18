@@ -16,7 +16,10 @@ from deeppyro.builtin.memory import (
     SNAPSHOT_NOTE,
     MemoryPlugin,
     render_memory_snapshot,
+    writes_allowed,
 )
+from deeppyro.builtin.prompt_service import PromptPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config
 from deeppyro.kernel.app import create_app
 from deeppyro.kernel.manifest import PluginSpec
@@ -31,19 +34,19 @@ _FAKE_ROWS = (
 )
 
 
-def _config() -> Config:
-    return Config.model_validate(
-        {
-            "agent": {"provider": "local", "model": "m"},
-            "providers": {
-                "local": {
-                    "api": "openai",
-                    "baseURL": "http://127.0.0.1:8000/v1",
-                    "models": [{"id": "m"}],
-                }
-            },
-        }
-    )
+def _config(**sections: Any) -> Config:
+    payload: dict[str, Any] = {
+        "agent": {"provider": "local", "model": "m"},
+        "providers": {
+            "local": {
+                "api": "openai",
+                "baseURL": "http://127.0.0.1:8000/v1",
+                "models": [{"id": "m"}],
+            }
+        },
+    }
+    payload.update(sections)
+    return Config.model_validate(payload)
 
 
 def _prompt_context() -> PromptContext:
@@ -65,16 +68,22 @@ async def _boot() -> Any:
 async def test_plugin_wires_service_tool_and_prompt_section(isolated_home: Path) -> None:
     app = await _boot()
     try:
-        service = app.service("memory")
+        service = app.require(MemoryService)
         assert isinstance(service, MemoryService)
         assert service.store.root == isolated_home / "memory"
 
-        tools = app.service("tools")
-        assert len(tools.tool_factories) == 1
-        factory = tools.tool_factories[0][0]
-        assert factory(None, ".")[0].name == "mnemon_runtime_memory"
+        tools = app.require(ToolsPlugin)
+        assert len(tools.tool_factories) == 2
+        assert tools.tool_factories[0][0](None, ".")[0].name == "mnemon_runtime_memory"
+        long_term_factory = tools.tool_factories[1][0]
+        assert [tool.name for tool in long_term_factory(None, ".")] == [
+            "memory_search",
+            "memory_add",
+        ]
+        read_only = _config(permission={"defaultPreset": "read-only"})
+        assert [tool.name for tool in long_term_factory(read_only, ".")] == ["memory_search"]
 
-        prompt = app.service("prompt")
+        prompt = app.require(PromptPlugin)
         assert len(prompt.sections) == 1
         name, order, renderer, plugin_id = prompt.sections[0]
         assert name == MEMORY_PROMPT_SECTION == "memory-runtime"
@@ -89,8 +98,8 @@ async def test_plugin_wires_service_tool_and_prompt_section(isolated_home: Path)
 async def test_prompt_section_renders_snapshot() -> None:
     app = await _boot()
     try:
-        service = app.service("memory")
-        prompt = app.service("prompt")
+        service = app.require(MemoryService)
+        prompt = app.require(PromptPlugin)
         renderer = prompt.sections[0][2]
 
         service.remember("user", "prefers concise replies")
@@ -116,8 +125,8 @@ async def test_prompt_section_renders_snapshot() -> None:
 async def test_prompt_section_swallows_render_errors(monkeypatch: Any) -> None:
     app = await _boot()
     try:
-        service = app.service("memory")
-        renderer = app.service("prompt").sections[0][2]
+        service = app.require(MemoryService)
+        renderer = app.require(PromptPlugin).sections[0][2]
 
         def boom(*args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("boom")
@@ -125,7 +134,7 @@ async def test_prompt_section_swallows_render_errors(monkeypatch: Any) -> None:
         monkeypatch.setattr(service, "snapshot", boom)
 
         assert renderer([], _prompt_context()) == ""
-        assert app.service("memory") is service
+        assert app.require(MemoryService) is service
     finally:
         await app.stop()
 
@@ -133,17 +142,25 @@ async def test_prompt_section_swallows_render_errors(monkeypatch: Any) -> None:
 async def test_memory_survives_kernel_restart() -> None:
     first = await _boot()
     try:
-        first.service("memory").remember("user", "likes tea")
+        first.require(MemoryService).remember("user", "likes tea")
     finally:
         await first.stop()
 
     second = await _boot()
     try:
-        service = second.service("memory")
+        service = second.require(MemoryService)
         assert service.snapshot("user").text == "likes tea"
         assert service.revision == 1
     finally:
         await second.stop()
+
+
+def test_writes_allowed_follows_the_default_preset() -> None:
+    assert writes_allowed(None) is True
+    assert writes_allowed(_config(permission={"defaultPreset": "read-only"})) is False
+    assert writes_allowed(_config(permission={"defaultPreset": "workspace-write"})) is True
+    assert writes_allowed(_config(sandbox={"mode": "read-only"})) is False
+    assert writes_allowed(_config(sandbox={"mode": "danger-full-access"})) is True
 
 
 def test_render_memory_snapshot_unit(tmp_path: Path) -> None:

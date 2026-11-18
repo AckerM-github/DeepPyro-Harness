@@ -78,6 +78,7 @@ class RuntimeContext:
     """One scope in the plugin host's context tree."""
 
     __slots__ = (
+        "_capabilities",
         "_container",
         "_events",
         "_fiber",
@@ -104,6 +105,7 @@ class RuntimeContext:
         self._intercept = {name: dict(config) for name, config in (intercept or {}).items()}
         self._events = events if events is not None else _EventRegistry()
         self._logger: logging.Logger | None = None
+        self._capabilities: Any | None = None
 
     @classmethod
     def create_root(cls) -> RuntimeContext:
@@ -198,6 +200,55 @@ class RuntimeContext:
                 merged.update(config)
         return merged
 
+    # -- capabilities -----------------------------------------------------
+
+    def capability_isolate(self) -> tuple[str, ...]:
+        """Isolate names in scope for this context (outermost first)."""
+        names: list[str] = []
+        for context in reversed(self._chain()):
+            for name in context._isolate:
+                if name not in names:
+                    names.append(name)
+        return tuple(names)
+
+    def register_capability(
+        self,
+        manifest: Any,
+        *,
+        plugin_id: str = "",
+        origin: str = "",
+        state: str = "runtime",
+        isolate: Iterable[str] = (),
+    ) -> Any:
+        """Register a manifest for a host-style plugin mounted in this scope.
+
+        The registry lives on the root context (one per kernel); it is created
+        lazily so plain ``create_root()`` mounts also get manifest coverage.
+        """
+        root = self.root
+        registry = root._capabilities
+        if registry is None:
+            from deeppyro.kernel.capabilities import CapabilityRegistry
+
+            registry = CapabilityRegistry()
+            root._capabilities = registry
+        return registry.register(
+            manifest,
+            plugin_id=plugin_id,
+            origin=origin,
+            state=state,
+            isolate=isolate,
+        )
+
+    def attach_capabilities(self, registry: Any) -> None:
+        """Install the kernel-built capability registry on this context tree."""
+        self.root._capabilities = registry
+
+    @property
+    def capabilities(self) -> Any | None:
+        """The capability registry of this context tree, if one was attached."""
+        return self.root._capabilities
+
     # -- services ---------------------------------------------------------
 
     def provide(self, name: str, value: Any = None, check: Callable[[], Any] | None = None) -> Disposer:
@@ -275,15 +326,22 @@ class RuntimeContext:
             raise RuntimeError("context has no fiber to own an effect")
         return self._fiber.effect(execute, label=label)
 
-    def mount(self, plugin: Any, config: dict[str, Any] | None = None) -> Fiber:
+    def mount(
+        self,
+        plugin: Any,
+        config: dict[str, Any] | None = None,
+        *,
+        manifest: Any | None = None,
+    ) -> Fiber:
         """Mount a plugin (class, callable or host plugin dict) and return its fiber.
 
         This is the single mount path in API v3: ``PluginContext.mount`` and the
-        kernel/preset adapters all route here.
+        kernel/preset adapters all route here.  Host-style plugins derive and
+        register a capability manifest; composition rows pass theirs explicitly.
         """
         from deeppyro.kernel.host import mount
 
-        return mount(self, plugin, config)
+        return mount(self, plugin, config, manifest=manifest)
 
     def inject(self, inject: Iterable[str | type[Any]], callback: Callable[..., Any]) -> Fiber:
         """Mount a callback gated on ``inject`` dependencies (host helper)."""

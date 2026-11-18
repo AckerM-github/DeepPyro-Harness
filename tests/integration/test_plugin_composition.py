@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from deeppyro.builtin.commands import CommandsPlugin
+from deeppyro.builtin.llm import LlmPlugin
+from deeppyro.builtin.prompt_service import PromptPlugin
+from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, ModelConfig, ProviderConfig
 from deeppyro.kernel import boot
 from deeppyro.prompt import PromptContext
@@ -30,7 +34,7 @@ async def test_external_bundle_contributes_every_extension(tmp_path: Path) -> No
     (bundle_dir / "greet_plugin.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
     app = await boot(_config(), bundle_paths=[str(bundle_dir)])
     try:
-        tools = app.service("tools").registry_for(tmp_path)
+        tools = app.require(ToolsPlugin).registry_for(tmp_path)
         assert "greet" in tools
         result = await tools.get("greet").run({"who": "pyro"}, None)
         assert result.text == "hello pyro"
@@ -44,11 +48,11 @@ async def test_external_bundle_contributes_every_extension(tmp_path: Path) -> No
             approval_policy="ask",
             model="m",
         )
-        prompt = app.service("prompt").build([], prompt_context)
+        prompt = app.require(PromptPlugin).build([], prompt_context)
         assert "## Greeting" in prompt
 
-        assert "greet" in app.service("commands").names()
-        assert app.service("llm").provider("fake") is not None
+        assert "greet" in app.require(CommandsPlugin).names()
+        assert app.require(LlmPlugin).provider("fake") is not None
         assert app.started["greet"] == "ACTIVE"
     finally:
         await app.stop()
@@ -91,7 +95,7 @@ async def test_v2_plugin_is_rejected_with_a_migration_hint(tmp_path: Path) -> No
     try:
         failure = next(status for status in app.failures if status.id == "stamp")
         assert failure.state == "failed"
-        assert "stamp" not in app.service("tools").registry_for(tmp_path)
+        assert "stamp" not in app.require(ToolsPlugin).registry_for(tmp_path)
         assert "api_version 2" in failure.error
         assert "no compatibility shim" in failure.error
         assert "setup(self)" in failure.error

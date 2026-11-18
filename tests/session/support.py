@@ -12,14 +12,32 @@ from deeppyro.core.wire import LogRecord, Message, SessionHeader
 from deeppyro.session.events import normalize_event
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-FIXTURES = REPO_ROOT / "fixtures"
+REAL_FIXTURES = REPO_ROOT / "fixtures"
+SYNTHETIC_FIXTURES = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
+
+
+def fixture_root() -> pathlib.Path:
+    """Pick the fixture set: real sessions when present, synthetic otherwise."""
+    if (REAL_FIXTURES / "manifest.json").is_file():
+        return REAL_FIXTURES
+    if (SYNTHETIC_FIXTURES / "manifest.json").is_file():
+        return SYNTHETIC_FIXTURES
+    return REAL_FIXTURES
+
+
+FIXTURES = fixture_root()
+FIXTURE_SOURCE = "real" if FIXTURES == REAL_FIXTURES else "synthetic"
 SESSIONS_DIR = FIXTURES / "sessions"
 BY_TYPE_DIR = FIXTURES / "records" / "by-type"
 
+# Tests that assert statistics of (or read specific) real session logs keep
+# requiring the uncommitted real fixture set; everything else runs against the
+# committed synthetic fixtures when the real ones are absent.
 requires_fixtures = pytest.mark.skipif(
-    not FIXTURES.is_dir(),
+    not (REAL_FIXTURES / "manifest.json").is_file(),
     reason="privacy: real-session fixtures are not committed; run node tools/gen_fixtures.mjs",
 )
+requires_real_fixtures = requires_fixtures
 
 
 def load_manifest() -> dict[str, Any]:
