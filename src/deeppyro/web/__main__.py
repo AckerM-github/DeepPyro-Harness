@@ -43,6 +43,7 @@ async def _serve(args: argparse.Namespace) -> None:
         provider=args.provider,
         model=args.model,
         host=args.host,
+        ui=True,
     )
     host.print_banner()
     try:

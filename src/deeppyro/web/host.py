@@ -31,6 +31,8 @@ from deeppyro.web.service import (
     resolve_workspace,
 )
 from deeppyro.web.surface import RouteRegistry, WebSurface, default_surfaces
+from deeppyro.web.ui.api import UiContext
+from deeppyro.web.ui.server import UiServer
 from deeppyro.web.version import __version__
 from deeppyro.web.wire import CreateSessionRequest
 
@@ -48,7 +50,7 @@ class WebHost:
         *,
         token: str,
         service: WebSessionHost,
-        server: WebServer,
+        server: WebServer | UiServer,
         version: str,
         kernel_app: App | None = None,
         owns_kernel: bool = False,
@@ -82,6 +84,7 @@ class WebHost:
         surfaces: Iterable[WebSurface] = (),
         registry: RouteRegistry | None = None,
         version: str = __version__,
+        ui: bool = False,
     ) -> WebHost:
         """Start the loopback host, attach a session and return it.
 
@@ -99,7 +102,7 @@ class WebHost:
         app = kernel_app
         owns_kernel = False
         service: WebSessionHost | None = None
-        server: WebServer | None = None
+        server: WebServer | UiServer | None = None
         try:
             if app is None and services is None:
                 app = await boot(config if config is not None else load_config())
@@ -110,19 +113,28 @@ class WebHost:
                 services = resolve_host_services(app)
             service = WebSessionHost(services, default_cwd=workspace, version=version)
             await service.start()
-            routes = registry if registry is not None else RouteRegistry()
-            if registry is None:
-                for surface in default_surfaces(lambda: token):
+            if ui:
+                server = UiServer(
+                    token=token,
+                    service_provider=lambda: service,
+                    context=UiContext(token=token, version=version, kernel_app=app),
+                    host=bind,
+                    port=port,
+                )
+            else:
+                routes = registry if registry is not None else RouteRegistry()
+                if registry is None:
+                    for surface in default_surfaces(lambda: token):
+                        routes.add_surface(surface)
+                for surface in surfaces:
                     routes.add_surface(surface)
-            for surface in surfaces:
-                routes.add_surface(surface)
-            server = WebServer(
-                token=token,
-                registry=routes,
-                service_provider=lambda: service,
-                host=bind,
-                port=port,
-            )
+                server = WebServer(
+                    token=token,
+                    registry=routes,
+                    service_provider=lambda: service,
+                    host=bind,
+                    port=port,
+                )
             await server.start()
             initial: Mapping[str, Any]
             if session_id:
@@ -191,8 +203,8 @@ class WebHost:
         return self._service
 
     @property
-    def server(self) -> WebServer:
-        """The asyncio HTTP server."""
+    def server(self) -> WebServer | UiServer:
+        """The asyncio HTTP server (stdlib or ASGI)."""
         return self._server
 
     @property

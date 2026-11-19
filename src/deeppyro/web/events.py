@@ -25,6 +25,7 @@ class WebEventType(StrEnum):
     THINKING = "thinking"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    APPROVAL = "approval"
     FINAL = "final"
     USAGE = "usage"
     ERROR = "error"
@@ -99,6 +100,18 @@ class ToolResultEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class ApprovalEvent:
+    """A sandbox approval prompt appeared or was settled."""
+
+    session_id: str
+    approval_id: str
+    tool: str
+    summary: str
+    detail: str
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
 class FinalEvent:
     """The turn produced its final assistant text."""
 
@@ -133,6 +146,7 @@ WebEvent = (
     | ThinkingEvent
     | ToolCallEvent
     | ToolResultEvent
+    | ApprovalEvent
     | FinalEvent
     | UsageEvent
     | ErrorEvent
@@ -163,6 +177,12 @@ def to_wire(event: WebEvent) -> dict[str, JsonValue]:
             payload["call_id"] = event.call_id
             payload["is_error"] = event.is_error
             payload["text"] = event.text
+        case ApprovalEvent():
+            payload["approval_id"] = event.approval_id
+            payload["tool"] = event.tool
+            payload["summary"] = event.summary
+            payload["detail"] = event.detail
+            payload["status"] = event.status
         case UsageEvent():
             payload["input_tokens"] = event.input_tokens
             payload["output_tokens"] = event.output_tokens
@@ -186,6 +206,7 @@ _TYPE_BY_CLASS: dict[type[object], WebEventType] = {
     ThinkingEvent: WebEventType.THINKING,
     ToolCallEvent: WebEventType.TOOL_CALL,
     ToolResultEvent: WebEventType.TOOL_RESULT,
+    ApprovalEvent: WebEventType.APPROVAL,
     FinalEvent: WebEventType.FINAL,
     UsageEvent: WebEventType.USAGE,
     ErrorEvent: WebEventType.ERROR,
@@ -204,6 +225,7 @@ HEARTBEAT_FRAME = b": keep-alive\n\n"
 
 __all__ = [
     "HEARTBEAT_FRAME",
+    "ApprovalEvent",
     "ErrorEvent",
     "FinalEvent",
     "SessionEvent",

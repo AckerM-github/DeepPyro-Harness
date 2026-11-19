@@ -501,6 +501,12 @@ def _normalize_search_text(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
+def normalize_native_title(title: str) -> str:
+    """Normalize a session title, raising NativeQueryError when it cannot be used."""
+
+    return _normalize_title(title)
+
+
 def _normalize_title(title: str) -> str:
     if not isinstance(title, str):
         raise NativeQueryError(NATIVE_QUERY_INVALID_TITLE, "title must be a string")

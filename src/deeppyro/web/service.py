@@ -19,7 +19,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from deeppyro.agent.budget import BudgetExceeded
 from deeppyro.agent.errors import ProviderStreamError
@@ -43,6 +43,12 @@ from deeppyro.builtin.settings import SettingsPlugin
 from deeppyro.builtin.tools import ToolsPlugin
 from deeppyro.config import Config, ProviderConfig
 from deeppyro.core.errors import ConfigError
+from deeppyro.core.messages import (
+    MISSING_TOOL_RESULT_TEXT,
+    ImagePart,
+    ReasoningPart,
+    TextPart,
+)
 from deeppyro.hooks.service import HookService
 from deeppyro.jobs.manager import JobsService
 from deeppyro.kernel.config_service import KernelConfig
@@ -59,15 +65,21 @@ from deeppyro.sandbox.policy import (
     sandbox_policy_text,
 )
 from deeppyro.session.errors import SessionLockedError
-from deeppyro.session.fold import SessionState, fold
+from deeppyro.session.fold import SessionState, SessionView, fold
 from deeppyro.session.native_control import NewSession
 from deeppyro.session.native_index import NativeSessionInfo
-from deeppyro.session.native_query import NATIVE_QUERY_NOT_FOUND, NativeQueryError
+from deeppyro.session.native_query import (
+    NATIVE_QUERY_NOT_FOUND,
+    NativeQueryError,
+    normalize_native_title,
+)
 from deeppyro.subagent.manager import SubagentService
 from deeppyro.team.manager import TeamService
 from deeppyro.user_questions.service import UserQuestionsService
+from deeppyro.web.approvals import ApprovalBroker, ApprovalDecision, ApprovalPrompt
 from deeppyro.web.events import (
     HEARTBEAT_FRAME,
+    ApprovalEvent,
     ErrorEvent,
     FinalEvent,
     SessionEvent,
@@ -447,6 +459,10 @@ class WebSessionHost:
         self._binding: SessionBinding | None = None
         self._started = False
         self._closing = False
+        self._approvals = ApprovalBroker(
+            notify=self._approval_pending,
+            on_decided=self._approval_decided,
+        )
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -466,6 +482,21 @@ class WebSessionHost:
         binding = self._binding
         return None if binding is None else binding.session_id
 
+    @property
+    def services(self) -> HostServices:
+        """The resolved plugin services; read-only for API projections."""
+        return self._services
+
+    @property
+    def version(self) -> str:
+        """The DeepPyro version reported by health and bootstrap."""
+        return self._version
+
+    @property
+    def approvals(self) -> ApprovalBroker:
+        """The loopback approval broker the sandbox gate asks."""
+        return self._approvals
+
     async def start(self) -> None:
         """Materialize the preset realms the native agent needs."""
         if self._started:
@@ -482,6 +513,7 @@ class WebSessionHost:
             return
         self._closing = True
         await self._detach()
+        self._approvals.close()
         self._journal.close()
 
     # -- WebService protocol ----------------------------------------------
@@ -494,15 +526,41 @@ class WebSessionHost:
             "active_session_id": self.active_session_id,
         }
 
-    async def list_sessions(self) -> dict[str, Any]:
+    async def list_sessions(self, *, include_archived: bool = False) -> dict[str, Any]:
         """Session catalogue, newest first, from native facts."""
         infos = self._services.sessions.native_list(
-            include_archived=False,
+            include_archived=include_archived,
             limit=SESSION_LIST_LIMIT,
         )
         return {
             "sessions": [self._info_summary(info) for info in infos],
             "active_session_id": self.active_session_id,
+        }
+
+    async def facts(self, session_id: str | None = None) -> dict[str, Any]:
+        """Folded session facts for read-only commands and inspectors."""
+        target = session_id or self.active_session_id
+        if not target:
+            raise NotFound("no session is open")
+        info = self._native_info(target)
+        state: Any = None
+        view: SessionView | None = None
+        binding = self._binding
+        if binding is not None and binding.session_id == target:
+            view = cast(SessionView, binding.view.fold())
+            state = view.state
+        else:
+            try:
+                log = self._services.sessions.native_read(target)
+                view = fold(log.header, log.events)
+                state = view.state
+            except (NativeQueryError, OSError):
+                view = None
+                state = None
+        return {
+            "info": self._info_summary(info),
+            "state": _state_facts(state, view),
+            "active": self.active_session_id == target,
         }
 
     async def create_session(self, request: CreateSessionRequest) -> dict[str, Any]:
@@ -614,6 +672,113 @@ class WebSessionHost:
             "entries": entries,
             "active": active,
             "busy": bool(binding.host.busy) if active and binding is not None else False,
+        }
+
+    async def timeline(self, session_id: str) -> dict[str, Any]:
+        """The browser transcript: messages, joined tool results and live status.
+
+        The active session reads the in-memory native handle; any other session
+        is folded from its log read-only. Tool results are joined by call id so
+        the browser renders one tool card per call instead of two rows.
+        """
+        info = self._look(session_id)
+        binding = self._binding
+        active = binding is not None and binding.session_id == session_id
+        if active and binding is not None:
+            view = binding.view
+            messages = list(view.derive_messages())
+            state = view.fold().state
+            usage = binding.host.usage()
+            context_tokens = binding.host.context_tokens()
+            busy = bool(binding.host.busy)
+            pending = len(binding.pending)
+            provider = state.model.provider if state.model is not None else binding.provider
+            model = state.model.model if state.model is not None else binding.model
+            preset = state.preset.preset if state.preset is not None else binding.preset
+            permission = self._services.permission_presets.derive(view)
+            context_window = binding.context_window
+            title = state.title or info.title
+            cwd = str(state.cwd or binding.workspace)
+        else:
+            log = self._services.sessions.native_read(session_id)
+            view = fold(log.header, log.events)
+            messages = list(view.messages)
+            state = view.state
+            usage = {"input": 0, "output": 0, "cached": 0}
+            context_tokens = 0
+            busy = False
+            pending = 0
+            provider = state.model.provider if state.model is not None else None
+            model = state.model.model if state.model is not None else None
+            preset = state.preset.preset if state.preset is not None else (info.preset or DEFAULT_PRESET_ID)
+            permission = state.sandbox_mode
+            context_window = DEFAULT_CONTEXT_WINDOW
+            title = state.title or info.title
+            cwd = str(state.cwd or info.cwd)
+        return {
+            "session_id": session_id,
+            "title": title,
+            "cwd": cwd,
+            "active": active,
+            "busy": busy,
+            "pending": pending,
+            "readable": info.readable,
+            "archived": info.archived,
+            "provider": provider,
+            "model": model,
+            "preset": preset,
+            "permission_preset": permission,
+            "context_tokens": context_tokens,
+            "context_window": context_window,
+            "usage": {
+                "input_tokens": int(usage.get("input", 0)),
+                "output_tokens": int(usage.get("output", 0)),
+                "cached_input_tokens": int(usage.get("cached", 0)),
+            },
+            "messages": _timeline_messages(messages),
+        }
+
+    async def rename_session(self, session_id: str, title: str, *, source: str = "user") -> dict[str, Any]:
+        """Rename one session, writing through the live handle when attached."""
+        normalized = normalize_native_title(title)
+        binding = self._binding
+        try:
+            if binding is not None and binding.session_id == session_id:
+                binding.view.append("session/title", {"title": normalized, "source": source})
+                return {"session_id": session_id, "title": normalized, "active": True}
+            info = self._services.sessions.native_rename(session_id, normalized, source=source)
+        except NativeQueryError as exc:
+            raise self._native_error(exc) from exc
+        except OSError as exc:
+            raise Conflict(f"could not rename session {session_id}: {exc}") from exc
+        return {"session_id": session_id, "title": info.title, "active": False}
+
+    async def archive_session(self, session_id: str, *, archived: bool = True) -> dict[str, Any]:
+        """Archive or restore one session; an attached session is detached first."""
+        binding = self._binding
+        active = binding is not None and binding.session_id == session_id
+        if active:
+            await self._detach()
+        try:
+            state = self._services.sessions.native_archive(session_id, archived=archived)
+        except NativeQueryError as exc:
+            raise self._native_error(exc) from exc
+        except OSError as exc:
+            raise Conflict(f"could not update session {session_id}: {exc}") from exc
+        return {"session_id": session_id, "archived": state, "detached": active}
+
+    async def apply_permission(self, session_id: str, preset: str) -> dict[str, Any]:
+        """Switch the permission preset of the attached session without rebuilding it."""
+        binding = self._require_active(session_id)
+        try:
+            applied = self._services.permission_presets.apply(binding.view, preset)
+        except (KeyError, ValueError) as exc:
+            raise BadRequest(f"unknown permission preset: {preset}") from exc
+        return {
+            "session_id": session_id,
+            "permission_preset": applied,
+            "sandbox_mode": binding.view.fold().state.sandbox_mode,
+            "approval_policy": approval_policy_text(str(binding.view.fold().state.permission_policy or "")),
         }
 
     async def status(self, session_id: str) -> dict[str, Any]:
@@ -774,7 +939,7 @@ class WebSessionHost:
         spec: PresetSpec,
         record_selection: bool,
     ) -> SessionBinding:
-        gate = self._services.sandbox.gate(workspace, ask=_deny_approval)
+        gate = self._services.sandbox.gate(workspace, ask=self._ask_approval)
         gate.bind_session(view)
         _pin_permission(view, self._services.permission_presets)
         if record_selection:
@@ -825,6 +990,7 @@ class WebSessionHost:
         self._binding = None
         if binding is None:
             return
+        self._approvals.cancel_session(binding.session_id)
         binding.pending.clear()
         if binding.host.busy:
             with contextlib.suppress(Exception):
@@ -885,6 +1051,65 @@ class WebSessionHost:
             self._journal.publish(StatusEvent(session_id=session_id, phase=StatusPhase.DONE))
             if result.finish_reason == "length":
                 self._journal.publish(ErrorEvent(session_id=session_id, message="finish_reason: length"))
+        finally:
+            self._approvals.cancel_session(session_id)
+
+    async def _ask_approval(self, request: Any) -> bool:
+        binding = self._binding
+        if binding is None:
+            return False
+        return await self._approvals.ask(binding.session_id, request)
+
+    def _approval_pending(self, prompt: ApprovalPrompt) -> None:
+        self._journal.publish(
+            ApprovalEvent(
+                session_id=prompt.session_id,
+                approval_id=prompt.approval_id,
+                tool=prompt.tool,
+                summary=prompt.summary,
+                detail=prompt.detail,
+                status="pending",
+            )
+        )
+
+    def _approval_decided(self, prompt: ApprovalPrompt, decision: ApprovalDecision) -> None:
+        self._journal.publish(
+            ApprovalEvent(
+                session_id=prompt.session_id,
+                approval_id=prompt.approval_id,
+                tool=prompt.tool,
+                summary=prompt.summary,
+                detail=prompt.detail,
+                status=str(decision),
+            )
+        )
+
+    def pending_approvals(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        """Snapshot the approval prompts waiting for a browser decision."""
+        return [
+            {
+                "approval_id": prompt.approval_id,
+                "session_id": prompt.session_id,
+                "tool": prompt.tool,
+                "summary": prompt.summary,
+                "detail": prompt.detail,
+                "created_at": prompt.created_at,
+            }
+            for prompt in self._approvals.pending(session_id)
+        ]
+
+    def decide_approval(self, approval_id: str, decision: str) -> bool:
+        """Settle one pending approval; False when it was already settled."""
+        try:
+            return self._approvals.decide(approval_id, ApprovalDecision(decision))
+        except ValueError as exc:
+            raise BadRequest(f"unknown approval decision: {decision}") from exc
+
+    def _native_info(self, session_id: str) -> NativeSessionInfo:
+        try:
+            return self._services.sessions.native_look(session_id)
+        except (NativeQueryError, OSError) as exc:
+            raise NotFound(f"unknown session: {session_id}") from exc
 
     def _folded_state(self, session_id: str) -> SessionState | None:
         try:
@@ -893,8 +1118,9 @@ class WebSessionHost:
             return None
         return fold(log.header, log.events).state
 
-    @staticmethod
-    def _info_summary(info: NativeSessionInfo) -> dict[str, Any]:
+    def _info_summary(self, info: NativeSessionInfo) -> dict[str, Any]:
+        binding = self._binding
+        active = binding is not None and binding.session_id == info.id
         return {
             "session_id": info.id,
             "title": info.title,
@@ -903,8 +1129,11 @@ class WebSessionHost:
             "preset": info.preset,
             "created_at": info.created_at,
             "updated_at": info.updated_at,
-            "read_only": info.read_only,
+            "read_only": info.read_only and not active,
             "readable": info.readable,
+            "active": active,
+            "busy": bool(binding.host.busy) if active and binding is not None else False,
+            "archived": info.archived,
         }
 
     @staticmethod
@@ -919,6 +1148,148 @@ class WebSessionHost:
             "preset": binding.preset,
             "cwd": str(binding.workspace),
         }
+
+
+def _state_facts(state: SessionState | None, view: SessionView | None) -> dict[str, Any]:
+    """Serialise folded session facts into snake_case for the browser."""
+    if state is None:
+        return {}
+    goal = state.goal
+    return {
+        "title": state.title or "",
+        "cwd": state.cwd or "",
+        "model": (
+            {"provider": state.model.provider, "model": state.model.model}
+            if state.model is not None
+            else None
+        ),
+        "preset": (
+            {
+                "preset": state.preset.preset,
+                "mode": state.preset.mode,
+                "revision": state.preset.revision,
+            }
+            if state.preset is not None
+            else None
+        ),
+        "permission_policy": state.permission_policy,
+        "sandbox_mode": state.sandbox_mode,
+        "plan_mode": state.plan_mode,
+        "rounds_started": state.rounds_started,
+        "goal": (
+            {
+                "id": goal.id,
+                "revision": goal.revision,
+                "objective": goal.objective,
+                "phase": goal.phase,
+                "max_goal_rounds": goal.max_goal_rounds,
+                "blocked_reason": (
+                    {"code": goal.blocked_reason.code, "message": goal.blocked_reason.message}
+                    if goal.blocked_reason is not None
+                    else None
+                ),
+            }
+            if goal is not None
+            else None
+        ),
+        "todos": [{"content": item.content, "status": item.status} for item in state.todos],
+        "deliverables": [{"path": item.path, "description": item.description} for item in state.deliverables],
+        "tasks": (
+            [
+                {
+                    "task_id": task.task_id,
+                    "objective": task.objective,
+                    "status": task.status,
+                    "owner": task.owner,
+                    "created_at": task.created_at,
+                }
+                for task in view.tasks
+            ]
+            if view is not None
+            else []
+        ),
+        "handoffs": (
+            [
+                {
+                    "run_id": item.run_id,
+                    "task_id": item.task_id,
+                    "from_owner": item.from_owner,
+                    "to_owner": item.to_owner,
+                    "summary": item.summary,
+                    "open_items": list(item.open_items),
+                    "result_ok": item.result_ok,
+                    "result": item.result,
+                    "error": item.error,
+                    "created_at": item.created_at,
+                }
+                for item in view.handoffs
+            ]
+            if view is not None
+            else []
+        ),
+    }
+
+
+def _is_missing_tool_result(message: Any) -> bool:
+    """A synthetic repair result stands in for a tool call that has not finished."""
+    return (
+        getattr(message, "role", None) == "tool"
+        and getattr(getattr(message, "source", None), "kind", None) == "repair"
+        and message.text() == MISSING_TOOL_RESULT_TEXT
+    )
+
+
+def _timeline_messages(messages: list[Any]) -> list[dict[str, Any]]:
+    """Flatten native messages into the browser timeline with joined tool results."""
+    results = {
+        message.tool_call_id: message
+        for message in messages
+        if getattr(message, "tool_call_id", None) and not _is_missing_tool_result(message)
+    }
+    rendered: list[dict[str, Any]] = []
+    for message in messages:
+        if _is_missing_tool_result(message):
+            continue
+        calls: list[dict[str, Any]] = []
+        for call in message.tool_calls():
+            result = results.get(call.id)
+            calls.append(
+                {
+                    "id": call.id,
+                    "name": call.name,
+                    "arguments": call.arguments,
+                    "result": result.text() if result is not None else None,
+                    "is_error": bool(result.is_error) if result is not None else False,
+                    "pending": result is None,
+                }
+            )
+        images = [
+            {"attachment": part.attachment, "media_type": part.media_type}
+            for part in message.content
+            if isinstance(part, ImagePart)
+        ]
+        reasoning = "".join(part.text for part in message.content if isinstance(part, ReasoningPart))
+        source = {"kind": getattr(message.source, "kind", "")}
+        for name in ("provider", "model", "call_id", "plugin", "goal_id", "revision", "round"):
+            value = getattr(message.source, name, None)
+            if value is not None:
+                source[name] = value
+        rendered.append(
+            {
+                "id": message.id,
+                "role": message.role,
+                "created_at": message.created_at,
+                "text": message.text(),
+                "reasoning": reasoning,
+                "source": source,
+                "tool_call_id": message.tool_call_id,
+                "is_error": bool(message.is_error),
+                "tool_calls": calls,
+                "images": images,
+                "has_text": any(isinstance(part, TextPart) for part in message.content),
+            }
+        )
+    return rendered
 
 
 __all__ = [

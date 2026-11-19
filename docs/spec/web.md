@@ -1,6 +1,6 @@
 # web: the loopback web host for the native runtime
 
-> **状态**：现行（0.3.0） · **层级**：Web 宿主规格 · **最后核对**：2026-11-19
+> **状态**：现行（0.3.0 · P1） · **层级**：Web 宿主规格 · **最后核对**：2026-11-19
 > 实现：`src/deeppyro/web/`；使用指南：[guides/web-ui.md](../guides/web-ui.md)。
 > 关联契约：[native/schema.md](../native/schema.md)（schema 1 会话）、[loop.md](loop.md)（AgentLoop）、
 > [sandbox.md](sandbox.md)、[plugin-platform.md](plugin-platform.md)、[tui.md](tui.md)（splash F1 入口）。
@@ -8,57 +8,63 @@
 ## 1. 定位与范围（Scope）
 
 Web UI 是 native agent runtime 的**宿主/外壳（host and shell）**，不是第二个 agent 实现。
-浏览器页面只做三件事：把命令 POST 给宿主、用 EventSource 接收事件、用 transcript 回放事实。
-会话状态全部保存在 append-only 的 native session log（JSONL schema 1）中；Web 进程只持有一个
-§active binding§（当前挂接的会话）、一个有界发送队列和一个内存事件日志（journal）。进程重启后，
-浏览器凭 session id 重新回放，不依赖任何隐藏状态。
+浏览器只做三件事：把用户动作 POST 给宿主、用 EventSource 接收事件、用 timeline/transcript 回放事实。
+会话状态全部在 append-only 的 native session log（schema 1）里；Web 进程只持有一个
+§active binding§、一个有界发送队列、一个内存事件 journal 和一个审批 broker。进程重启后，
+浏览器凭 session id 重新回放，不依赖隐藏对话状态。
 
-0.3.0 范围：独立的 Web 宿主进程（stdlib-only）、单页前端、CLI、插件缝、TUI splash F1 接线、
-测试与本文档。**不包含**：工具审批 UI、远程访问/TLS、团队预设（web 运行时拒绝 team 模式，422/409）。
-core bundle **不包含** web 插件行：`WebHostPlugin` 由宿主/launcher 直接构造，不以 bundle 行挂载。
+0.3.0 的 P1 范围：真实 native 运行时的单会话 Web 宿主、Discord 密度的原创前端、SSE、
+工具调用卡、**工具审批 UI**、命令面板与 slash 命令、全量设置页、插件设置表单、CLI、
+TUI splash F1 接线、测试与本文档。**不包含**：多会话并行、远程访问/TLS、团队模式 UI、
+附件上传、compaction UI、退出命令（关闭浏览器标签即可）。
+
+core bundle **不包含** web 插件行：`WebHostPlugin` 由 launcher/集成方直接构造，不以 bundle 行挂载。
 
 硬性约束：
 
-- 只监听回环地址：只允许 `127.0.0.1`（`localhost` 归一化），没有外部绑定选项。
-- 只依赖标准库（服务器、前端、CLI）；`httpx` 仅用于测试，且已是既有 dev 依赖。
-- 不 import `deeppyro.tui`、不 import/使用任何已删除的 v4 会话/loop 模块；测试用 AST 守卫固定这两条。
-- 不新增运行时依赖，前端无构建步骤、无 CDN、无外部字体；资产是 Python 字符串常量，
-  因此打包成单文件可执行体时无需 pyproject/静态文件安装步骤。
+- 只监听回环地址：只接受 `127.0.0.1`（`localhost` 归一化），没有外部绑定开关。
+- 浏览器资产同源、无构建步骤、无 CDN、无外部字体；字体/图标随包分发。
+- 不 import `deeppyro.tui`、不 import 已删除的 v4 会话/loop 模块；测试用 AST 守卫固定。
+- 命令与设置只在 Python 侧执行，浏览器不直接写 config、不持有凭据明文。
 
 ## 2. 架构（Architecture）
 
     kernel boot (plugin composition)
       |
       +-- WebHostPlugin (Service, provide="web")      src/deeppyro/web/plugin.py
-      |     owns RouteRegistry + default WebSurfaces; setup() NEVER listens
+      |     owns RouteRegistry + WebSurfaces; setup() NEVER listens
       |     start() -> WebHost.start(...)   stop() -> WebHost.stop()
       |
-      +-- RouteRegistry (WebSurface Protocol)         src/deeppyro/web/surface.py
-      |     AssetSurface:  /, /assets/app.css, /assets/app.js
-      |     ApiSurface:    /api/... typed JSON + SSE
-      |     <- other plugins may register_surface()/register_routes()
+      +-- WebHost                                      src/deeppyro/web/host.py
+      |     WebSessionHost (runtime)  +  UiServer (P1) | WebServer (legacy stdlib)
       |
-      +-- WebServer (asyncio stdlib HTTP/1.1)         src/deeppyro/web/server.py
-      |     127.0.0.1 only, keep-alive, bearer token, Host/Origin checks,
-      |     body limits, security headers, chunked SSE, graceful shutdown
+      +-- UiServer (FastAPI + uvicorn)                 src/deeppyro/web/ui/server.py
+      |     127.0.0.1 only, loopback auth middleware, security headers,
+      |     server-rendered shell, /ui assets, /api/ui JSON + SSE
       |
-      +-- WebSessionHost (WebService)                 src/deeppyro/web/service.py
-            WebSessionHost wraps:
-              SessionsPlugin.native_*        (facts: create/open/list/transcript)
-              AgentsPlugin.host(session, build) -> NativeAgentHost
-              NativeSessionControl/NewSession (native session creation)
-              SandboxPlugin.gate + PermissionGate (permission facts)
-              PresetsPlugin.ensure (preset realm materialization)
-              WebAgentHooks -> EventJournal -> SSE (output tap only)
-              UsageSink / TraceExportSink in the AgentBuild services bag
-              (usage()/context_tokens() stay live through the native taps)
+      +-- WebSessionHost (WebService)                  src/deeppyro/web/service.py
+            SessionsPlugin.native_*        (facts: create/open/list/read/fold)
+            AgentsPlugin.host(session, build) -> NativeAgentHost
+            SandboxPlugin.gate + PermissionGate + ApprovalBroker
+            UsageSink / TraceExportSink in the AgentBuild services bag
+            WebAgentHooks -> EventJournal -> SSE
+            NativeSessionControl / fold (facts for settings/commands/inspector)
 
-    browser (vanilla JS shell)  --fetch()-->  /api/...   (commands)
-                                --EventSource--> /api/sessions/{id}/events (stream)
-                                --transcript--> /api/sessions/{id}/transcript (facts replay)
+    browser (server-rendered shell + vanilla JS)
+      --fetch()-->      /api/ui/...          (sessions, timeline, commands, settings)
+      --EventSource-->  /api/ui/sessions/{id}/events   (live turn + approvals)
+      --timeline-->     /api/ui/sessions/{id}/timeline (facts replay)
 
-一次 turn 的路径与 TUI 完全一致：`POST /messages` -> 有界队列 -> `NativeAgentHost.send()` ->
-AgentLoop 发出 `AgentHooks` 事件 -> `WebAgentHooks` 转成 typed wire event -> journal -> SSE。
+### 2.1 为什么是 FastAPI 而不是 NiceGUI 组件树
+
+P0 样机验证了 NiceGUI 能承载 Discord 风格的三栏布局；但 P1 需要**精确控制**
+四栏密度、消息分组、工具卡、审批卡、命令面板与设置表单，而 NiceGUI 的组件树
+会不断与自有 CSS/JS 争夺 DOM。最终采用 **FastAPI + 服务端渲染 shell + 同源
+vanilla JS**：Python 侧保留完整宿主/路由/校验/设置能力，视觉层完全可控。
+这是对 P0 选型的修正，不是隐藏的第二套运行时；NiceGUI 依赖已移除。
+
+一次 turn 的路径与 TUI 相同：`POST /messages` -> 有界队列 -> `NativeAgentHost.send()`
+-> AgentLoop 发出 `AgentHooks` 事件 -> `WebAgentHooks` 转 typed wire event -> journal -> SSE。
 中断走 `NativeAgentHost.interrupt()`（取消 native 任务），不靠关闭 socket。
 
 ## 3. 模块（Module map）
@@ -67,267 +73,241 @@ AgentLoop 发出 `AgentHooks` 事件 -> `WebAgentHooks` 转成 typed wire event 
 | --- | --- |
 | `security.py` | 令牌生成/比较、Host/Origin/Sec-Fetch-Site 校验、安全响应头、CSP、SSE 头 |
 | `wire.py` | 冻结 dataclass 请求/响应、`HttpError` 状态映射、JSON 解码与字段校验、body 上限 |
-| `events.py` | `WebEventType`/`StatusPhase` StrEnum、10 种 typed 事件、snake_case 序列化、SSE 帧 |
+| `events.py` | `WebEventType`/`StatusPhase` StrEnum、typed 事件（含 `ApprovalEvent`）、snake_case、SSE 帧 |
 | `journal.py` | 单调 seq 事件日志（容量 4096）、按 seq 回放、心跳、关闭语义 |
 | `hooks.py` | `WebAgentHooks`：`AgentHooks` 适配器（无 Textual），deltas/tool 事件 -> typed 事件 |
-| `surface.py` | `WebSurface` Protocol、`Route`、`RouteRegistry`、`WebService` Protocol、内置 surfaces |
-| `server.py` | stdlib asyncio HTTP/1.1 服务器：解析、鉴权、路由分发、SSE、keep-alive、关闭 |
-| `service.py` | `WebSessionHost`：native 会话附加/回放/发送/中断/状态/transcript/SSE |
-| `host.py` | `WebHost`：组合 service + server（可自 boot kernel），`start()`/`stop()` |
-| `launch.py` | 进程级启动器（`serve()` / `launch()`）：CLI 与 TUI splash 共用；启动宿主、打印 banner、`serve_forever`、关闭，返回 0（正常）/130（Ctrl-C） |
+| `approvals.py` | `ApprovalBroker`/`ApprovalPrompt`/`ApprovalDecision`：待审批、超时、取消、通知 |
+| `surface.py` | `WebSurface` Protocol、`Route`、`RouteRegistry`、`WebService` Protocol（扩展缝） |
+| `server.py` | 旧 stdlib asyncio HTTP/1.1 服务器（`ui=False`；测试与最小宿主继续使用） |
+| `service.py` | `WebSessionHost`：attach/resume/queue/send/interrupt/timeline/facts/approvals/settings 数据源 |
+| `host.py` | `WebHost`：组合 service + UiServer/WebServer（可自 boot kernel），`start()`/`stop()` |
+| `launch.py` | 进程级启动器（`serve()`/`launch()`）：CLI 与 TUI splash 共用；`ui=True` 为默认 |
 | `plugin.py` | `WebHostPlugin` + `WebHostConfig`：插件缝，`setup()` 不监听 |
-| `assets.py` | 单页 HTML/CSS/JS 字符串常量，token 模板注入 |
-| `__main__.py` | `python -m deeppyro.web` CLI |
-| `version.py` | `__version__`（独立模块，避免包初始化循环） |
+| `ui/auth.py` | token/HttpOnly cookie、Host/Origin/Sec-Fetch-Site、首次页面 303 去 token |
+| `ui/api.py` | `/api/ui/*` JSON 路由、命令分发、设置读写、审批决策、SSE |
+| `ui/commands.py` | 25 个 slash 命令的 Web 执行器（真实动作或诚实拒绝） |
+| `ui/settings.py` | `ConfigEditor`（文本级编辑 + 校验 + 原子写 + .bak）、`settings_payload`、provider 探活 |
+| `ui/server.py` | FastAPI app、安全/鉴权中间件、5 个页面路由、资产、`UiServer` 生命周期 |
+| `ui/shell.py` | 服务端渲染的 SPA 外壳（四栏骨架、稳定 ID、无数据 bootstrap） |
+| `ui/assets/app.css` | Discord 密度视觉（深色层级、四栏、消息/工具/审批/设置/响应式） |
+| `ui/assets/app.js` | 无框架前端：bootstrap、timeline、SSE、命令、设置、审批、toast |
+| `ui/assets/cyborg-mark.svg` | 原创半面罩机器标（rail/avatar/favicon） |
+| `__main__.py` / `version.py` | CLI 入口、独立版本常量 |
 
 ## 4. HTTP 路由（Routes）
 
-所有路由（**包括静态资产**）都要求令牌。两种携带方式：请求头
-`Authorization: Bearer <token>`，或查询参数 `?token=<token>`（EventSource 与页面资产链接
-无法设置请求头，因此使用查询参数；页面由宿主打印的 URL 打开时自动带上）。
+鉴权：所有页面、资产与 API 都要求 token。首次页面打开用 `?token=...`；`LoopbackAuthMiddleware`
+校验后 303 到去掉 token 的 URL，并设置 `dpyro_web`（HttpOnly、SameSite=Strict、Path=/）。
+后续请求用 cookie；测试/CLI 可用 `Authorization: Bearer <token>`。API 不重定向，直接 401/403 JSON。
+
+页面（同一 SPA，JS 读 `location.pathname`）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/` | 首页（当前或新会话） |
+| GET | `/c/{session_id}` | 指定会话 |
+| GET | `/palette` | 命令面板打开态 |
+| GET | `/settings` | 全屏设置 |
+| GET | `/settings/{section}` | 指定设置分区 |
+| GET | `/ui/{asset}` | app.css/app.js/cyborg-mark.svg/InterVariable.woff2 |
+
+P1 API：
 
 | 方法 | 路径 | 请求体 | 响应 |
 | --- | --- | --- | --- |
-| GET | `/` | - | 单页 HTML（token 已注入资产 URL） |
-| GET | `/assets/app.css` | - | CSS |
-| GET | `/assets/app.js` | - | JS |
-| GET | `/api/health` | - | `{status, version, active_session_id}` |
-| GET | `/api/sessions` | - | `{sessions:[...], active_session_id}`，新的在前，最多 50 条 |
-| POST | `/api/sessions` | 可选 `{cwd,preset,provider,model,title}` | 201 `{session_id,resumed,title,provider,model,preset,cwd}` |
-| GET | `/api/sessions/{id}` | - | 状态（见下） |
-| POST | `/api/sessions/{id}/resume` | `{}` | 200 绑定快照（同 create 的字段） |
-| GET | `/api/sessions/{id}/transcript` | - | `{session_id,title,readable,issues,entries:[{role,text,is_error,tool_names}],active,busy}` |
-| POST | `/api/sessions/{id}/messages` | `{text}`（1..100000 字符） | 202 `{session_id,accepted,queued}` |
-| POST | `/api/sessions/{id}/interrupt` | `{}` | `{session_id,interrupted,detail,dropped}` |
-| GET | `/api/sessions/{id}/events` | - | `text/event-stream`（SSE） |
+| GET | `/api/ui/bootstrap` | - | version/health/sessions/active_session_id/commands/presets/permissions/plugins/providers/defaults |
+| GET | `/api/ui/sessions` | - | `{sessions,active_session_id}`；active 行 `read_only=false`、`busy` |
+| GET | `/api/ui/sessions/{id}/timeline` | - | 对话时间线 + `journal_seq`（SSE 游标） |
+| POST | `/api/ui/sessions` | `{cwd?,preset?,provider?,model?,title?}` | 201 绑定快照 |
+| POST | `/api/ui/sessions/{id}/resume` | `{}` | 绑定快照 |
+| POST | `/api/ui/sessions/{id}/messages` | `{text}`（1..100000） | 202 `{accepted,queued}` |
+| POST | `/api/ui/sessions/{id}/interrupt` | `{}` | `{interrupted,detail,dropped}` |
+| POST | `/api/ui/sessions/{id}/rename` | `{title}` | 会话信息 |
+| POST | `/api/ui/sessions/{id}/archive` | `{archived?}` | 会话信息 |
+| POST | `/api/ui/sessions/{id}/permission` | `{preset}` | 应用后的权限 |
+| GET | `/api/ui/approvals?session_id=` | - | `{approvals:[{approval_id,tool,summary,detail,status,...}]}` |
+| POST | `/api/ui/approvals/{approval_id}` | `{decision: allow|deny|expire|cancel}` | `{settled:true}`；未知 404 |
+| POST | `/api/ui/commands` | `{name,args:[str],session_id?}` | `{status:ok|error|redirect,message?,redirect?,data?}` |
+| GET | `/api/ui/settings` | - | config/provider/agent/permissions/commands/plugins/sessions/web/about |
+| PATCH | `/api/ui/settings/agent` | provider/model/temperature/max_tokens/max_steps 的子集 | `{ok,config}` |
+| PATCH | `/api/ui/settings/provider/{name}` | base_url/api_key/api_key_env 的子集 | `{ok,config}` |
+| POST | `/api/ui/settings/providers/{name}/test` | `{}` | `{ok,detail,latency_ms}` |
+| POST | `/api/ui/settings/permission` | `{preset}` | `{ok,config}` |
+| GET | `/api/ui/plugins/{id}/settings` | - | 插件设置 schema/values/revision |
+| PUT | `/api/ui/plugins/{id}/settings` | `{values,expected_revision?}` | 写回 + live/restart 字段 |
 
-状态文档（active 会话）：`session_id, active, title, provider, model, preset, cwd,
-permission_preset, context_tokens, context_window, usage{input_tokens,output_tokens,
-cached_input_tokens}, busy, pending`。未挂接的会话返回同样的键，但 `active=false`、
-usage 为零、context_tokens 为 0（native 事实里没有按会话持久化的 token 账本）。
-
-错误统一为 JSON 信封 `{"error":{"code","message"}}`（405 额外带 `allow` 字段和 `Allow` 头），
-状态码：400 请求体非法、401 令牌缺失/错误、403 Host/Origin/Sec-Fetch-Site 被拒、
-404 路由或会话不存在、405 方法不允许、409 会话被锁定/团队预设/模型已不存在、
-413 body 超过 1 MiB、429 队列满、500 内部错误、503 宿主正在关闭。
-
-HTTP 语义：HTTP/1.1 keep-alive（HTTP/1.0 默认 close，显式 `Connection: close` 尊重）、
-HEAD 复用 GET 路由且只回头部、OPTIONS 返回 204 + `Allow`、请求行/头部上限 64 KiB、
-最多 128 个头、仅支持 `Content-Length`（拒绝 `Transfer-Encoding`）、空闲/写超时各 30 秒。
-服务器不终止 TLS：明文 loopback，仅本机可连。
+旧 `/api/*` 家族（`/api/health`、`/api/sessions...`、旧 SSE）保留给 stdlib 宿主与兼容客户端；
+P1 前端只使用 `/api/ui/*`。错误统一 `{"error":{"code","message"}}`：
+400 参数、401 token、403 Host/Origin、404 路由/会话/审批、405 方法、409 会话锁/设置版本冲突、
+413 body 超过 1 MiB、429 队列满、500 内部、503 服务缺失/关闭中。
 
 ## 5. 事件流与回放（SSE, replay）
 
-SSE 数据帧 = `id: <seq>` + `data: <json>`。每个事件都带 `seq`（单调递增）；
-浏览器重连时 EventSource 自动发送 `Last-Event-ID`，服务器同时接受 `?after=<seq>`，
-从 journal 中回放该 seq 之后的事件；没有事件时每 15 秒发送 `: keep-alive` 注释帧。
-事件类型（全 snake_case）：
+SSE 数据帧 = `id: <seq>` + `data: <json>`。浏览器重连时 EventSource 自动发送
+`Last-Event-ID`，同时接受 `?after=<seq>`，从 journal 回放该 seq 之后的事件；
+无事件时每 15 秒发送 `: keep-alive`。前端保存 `lastEventSeq`，连接 URL 使用
+`after=max(lastEventSeq, timeline.journal_seq)`，避免重连时重放已由 timeline 渲染的历史。
 
 | type | 字段 | 说明 |
 | --- | --- | --- |
-| `session` | `session_id` | 会话已挂接（create/resume） |
-| `status` | `phase` = `thinking`/`done`/`interrupted` | turn 生命周期 |
-| `step` | `turn, step` | agent 步进（诊断用） |
-| `text` | `text` | 助手可见文本增量 |
+| `session` | `session_id` | 会话已挂接 |
+| `status` | `phase=thinking/done/interrupted` | turn 生命周期 |
+| `step` | `turn,step` | 步进（诊断） |
+| `text` | `text` | 助手文本增量 |
 | `thinking` | `text` | 推理增量 |
-| `tool_call` | `call_id, name, arguments` | 工具开始（arguments 为字符串） |
-| `tool_result` | `call_id, is_error, text` | 工具结束 |
-| `final` | `text` | 助手最终文本（替换流式文本） |
-| `usage` | `input_tokens, output_tokens, cached_input_tokens` | turn 用量 |
-| `error` | `message` | provider/budget/长度截断等错误 |
+| `tool_call` | `call_id,name,arguments` | 工具开始 |
+| `tool_result` | `call_id,is_error,text` | 工具结束 |
+| `final` | `text` | 最终文本（替换流式文本） |
+| `usage` | `input_tokens,output_tokens,cached_input_tokens` | turn 用量 |
+| `approval` | `approval_id,tool,summary,detail,status` | 审批 pending/决策 |
+| `error` | `message` | provider/budget/长度截断等 |
 
-与 TUI sink 的 dict 契约（`docs/design/tui-native-runtime.md` 附录 A，camelCase：
-`sessionId/callId/isError/input,output,cached`）**有意不同**：Web wire 一律 snake_case、
-用量字段显式命名；TUI 契约不被改动，转换只发生在 `web/hooks.py` + `web/events.py`。
+回放语义：`/timeline` 从 native facts 重建完整对话（重启也在）；SSE journal 只是本次
+进程内的输出 tap（容量 4096），不承担历史。timeline 会把“无真实结果的工具调用”标为
+`pending=true`（例如等待审批），不把它误画成错误；`data-journal_seq` 是 SSE 的起点。
+turn 完成顺序与 TUI 一致：`final` -> `usage` -> `status done`；`finish_reason=length`
+在 done 后再补一条 error；中断产生 partial final + status interrupted，不产生 error。
 
-回放语义：`/transcript` 从 native facts 重建完整对话（进程重启也在）；
-SSE journal 只是本次进程内的输出 tap（容量 4096 个事件），不承担历史。
-因此“打开页面/重连”= 先 transcript 回放，再从 `after=0` 订阅；断线后按 seq 续订不重复不丢。
-turn 完成顺序与 TUI 一致：先 `final` 再 `usage` 再 `status done`；若 `finish_reason
-== "length"`，在 `done` 之后再补一条 `error "finish_reason: length"`；中断产生
-`final`（partial）+ `status interrupted`，不产生 `error`。
+## 6. 工具审批（Approvals）
 
-## 6. 安全模型（Security model）
+`WebSessionHost` 在 attach 时把 `PermissionGate` 的 ask 回调接到 `ApprovalBroker`。
+需要审批时：
 
-防线（全部在 server 分发前完成，顺序：Host/Origin -> token -> route）：
+1. Goan 的 gate 调用 `ask(session_id, ApprovalRequest)`，broker 生成 `approval_id`，
+   登记 pending 并发出 `ApprovalEvent(status="pending")`；turn 挂起等待。
+2. 浏览器 GET `/api/ui/approvals?session_id=...` 显示卡片（工具、摘要、详情、Allow once / Deny）。
+3. `POST /api/ui/approvals/{id}` 决策；broker 唤醒等待者，发出已结算事件；allow 后工具继续，
+   deny 后工具得到拒绝错误并继续收尾。
+4. turn 结束/detach/close 会 `cancel_session`，不会留下永久 pending。
 
-1. **只绑定回环**：`validate_bind_host()` 只接受 `127.0.0.1`/`localhost`，
-   其余值（`0.0.0.0`、`::`、LAN IP、域名）抛 `ValueError`；CLI 用 `parser.error`
-   拒绝并以退出码 2 结束；`WebServer` 不接受外部绑定参数。
-2. **每进程随机 bearer token**：`secrets.token_urlsafe(32)`，只打印一次在 URL 里
-   （`?token=...`），页面把它注入资产链接；缺失/错误一律 401，静态资产也不例外。
-   比较使用 `hmac.compare_digest`。
-3. **DNS rebinding / 跨站**：校验 `Host` 必须是回环名且端口等于绑定端口；
-   `Origin` 若存在必须是 `http://127.0.0.1:<port>` 或 `http://localhost:<port>`
-   （`null`/无 scheme 拒绝）；`Sec-Fetch-Site` 只允许 `same-origin`/`none`。
-   不返回 CORS 头，因此其他源的 fetch 读不到响应。
-4. **CSP 与响应头**：`default-src 'none'; script-src 'self'; style-src 'self';
-   connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none';
-   frame-ancestors 'none'`，外加 `X-Content-Type-Options: nosniff`、
-   `Referrer-Policy: no-referrer`、`X-Frame-Options: DENY`、COOP/CORP、
-   `Cache-Control: no-store`（含 secret URL 的页面不落缓存）。
-5. **无内联代码**：页面没有内联 script/style/事件属性，JS/CSS 是独立同源资产，CSP
-   不需要 `unsafe-inline`；测试静态守卫固定这一点。
-6. **XSS 安全渲染**：模型输出只用 `textContent`/`createElement` 渲染，前端代码中
-   没有 `innerHTML/outerHTML/insertAdjacentHTML/document.write/eval`（测试守卫）。
-7. **输入边界**：JSON 只接受对象；`text` 长度 1..100000；session id 校验字符集与长度；
-   body 上限 1 MiB；超限 413 且连接关闭。
+超时默认 300 秒（`ApprovalDecision.EXPIRE`）。审批摘要与详情来自 `sandbox.policy`，
+对越界写入会显示目标路径与所需权限；工具卡在等待期间保持 PENDING，不显示伪造的
+missing-result 错误。
 
-明文 HTTP 是有意选择：宿主只绑回环，TLS 没有信任边界收益；token 进入 URL/历史是本机
-单用户场景的可接受折衷（`Referrer-Policy: no-referrer` 且不提供跨源链接）。
+## 7. 命令与设置 UI 化（Commands & settings）
 
-**诚实缺口**：0.3.0 没有工具审批 UI。`PermissionGate` 使用一个始终拒绝的 ask 回调，
-因此需要审批的工具调用会被拒绝（错误显示在流里），不会静默放行。0.3.0 也不再派发
-`approval/asked`、`approval/decided` 总线事件（`hooks/types.py` 只保留一个 minor 的可导入常量）；
-native 会话用 `approval/policy` 与工具记录表达决策。
+**命令**：`ui/commands.py` 把 25 个 core command 映射到真实宿主动作：
 
-## 7. 生命周期与集成（Lifecycle）
+- 真实执行：`new`、`resume`、`sessions`、`rename`、`archive`、`unarchive`、`permission`、
+  `status`、`plan`、`goal`、`cwd`、`plugins`、`help`、`clear`。
+- 导航：`settings`、`panel`（跳设置分区）。
+- 只读：`provider`/`model`/`preset` 无参时显示当前值；带参跳设置并明确说明只影响新会话。
+- 诚实拒绝：`compact`、`jobs`、`team`、`thinking`、`hooks` 尚未接 Web 宿主时返回
+  `status=error` 与原因；`exit` 提示关闭标签页。绝不假装成功。
+- `archive` 当前会话时会新建一个 native 会话并在 `data.session_id` 返回新 id，前端据此跳转。
+
+**设置**：`ConfigEditor` 对 `~/.dpro/config.toml` 做**文本级**编辑（保留注释/顺序/未知插件表），
+每次写前用 `Config.model_validate` 全量校验，`NamedTemporaryFile` + fsync + `os.replace`
+原子落盘，并生成编号 `.bak`。API key 只报告 `api_key_set`，永不回传明文。写 config 不会热改
+已启动的 `KernelConfig`——前端明确提示“new turns only / restart 后完全生效”。
+
+插件设置来自 `SettingsPlugin`/`SettingsStore`：`GET` 返回 schema/values/revision，`PUT` 带
+`expected_revision` 做 CAS；`live` 字段热应用，`restart` 字段标记需要重启；冲突 409、
+未知插件 404、空 values 400。插件不提供 web 面板时，用 schema 表单兜底。
+
+## 8. 安全模型（Security model）
+
+1. **只绑定回环**：`validate_bind_host()` 只接受 `127.0.0.1`/`localhost`；CLI 拒绝其余值
+   并以 2 退出。没有外部绑定参数。
+2. **每进程随机 token**：`secrets.token_urlsafe(32)`；页面首次带 `?token=`，校验后换
+   HttpOnly/SameSite=Strict cookie 并 303 去 token；比较用 `hmac.compare_digest`。
+3. **同源**：Host 必须是回环名 + 绑定端口；Origin 若存在必须是同端口回环；
+   Sec-Fetch-Site 只允许 same-origin/none；不返回 CORS 头。
+4. **CSP**：`default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';
+   img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none';
+   frame-ancestors 'none'`，无 inline 授权；另有 nosniff/Referrer-Policy/X-Frame-Options/COOP/CORP。
+5. **XSS 安全渲染**：前端只用 `createElement/textContent`，无 `innerHTML/eval`；模型输出
+   走显式 markdown 渲染器，链接不外跳；测试守卫固定。
+6. **输入边界**：JSON 仅对象；text 1..100000；session id 校验；body 1 MiB；超限 413。
+7. **凭据**：API key 只写不读；设置快照仅 `api_key_set`；日志/错误消息脱敏。
+
+明文 HTTP 是有意选择：只绑回环，TLS 没有信任边界收益；token 首次进入 URL 后立即换成
+HttpOnly cookie（`Referrer-Policy: no-referrer`）。
+
+## 9. 生命周期与集成（Lifecycle）
 
 CLI：
 
     python -m deeppyro.web --port 0 --cwd PATH [--session ID] [--provider P] [--model M]
 
-- `--port 0` 选一个空闲 loopback 端口；启动后打印 banner：URL（带 token）、
-  “Localhost only”警告、session id、Ctrl-C 提示。
-- 不带 `--session` 时自动创建一个新 native 会话；带则 `resume` 该 id（被其他进程锁定
-  则 409）。Ctrl-C 触发优雅关闭：停止监听、关闭连接与 SSE 流、detach 会话、停止
-  自建 kernel。
+- `--port 0` 选空闲 loopback 端口；banner 打印 URL（带 token）、localhost-only 警告、
+  session id、Ctrl-C 提示。
+- 无 `--session` 时自动创建 native 会话；带则 resume（被其他进程锁定则 409，死进程锁会被回收）。
+- Ctrl-C 优雅关闭：停止监听、关闭 SSE/连接、detach 会话、停止自建 kernel。
 
-TUI splash 接线（0.3.0 已接线）：`tui/screens/splash.py` 的 **F1** 让 `DeepPyroApp.run()`
-返回 `"web"`；`tui/main.py:140-148` 随即调用 `deeppyro.web.launch.launch(...)`，本进程
-变成 Web 宿主并打印带 token 的 URL。**F2 / Enter / Escape** 进入终端 TUI，不调用 Web。
+TUI splash：**F1** 让 `DeepPyroApp.run()` 返回 `"web"`，`tui/main.py` 调
+`deeppyro.web.launch.launch(...)`，本进程变成 Web 宿主；**F2 / Enter** 进入终端 TUI。
 
-共享启动器 `src/deeppyro/web/launch.py` 同时服务 CLI 与 TUI splash：
+共享启动器 `web/launch.py`：
 
-    # web/launch.py（要点）
     async def serve(*, cwd=None, session_id=None, provider=None, model=None,
-                    port=0, host=LOCALHOST, banner=None) -> int:
-        web = await WebHost.start(port=port, cwd=cwd, session_id=session_id,
-                                  provider=provider, model=model, host=host,
-                                  version=__version__)
+                    port=0, host=LOCALHOST, banner=None, ui=True) -> None:
+        web = await WebHost.start(..., ui=ui)
+        web.print_banner(banner)
         try:
-            web.print_banner(banner)
             await web.serve_forever()
         finally:
             await web.stop()
-        return 0
 
     def launch(**kwargs) -> int:      # Ctrl-C -> 130，正常关闭 -> 0
-        ...
 
-`python -m deeppyro.web` 的 CLI 走同一个 `serve()`。TUI 已 boot 好 kernel 时也可以直接用
-`WebHost.start(kernel_app=...)`；但 0.3.0 的 splash 路径使用独立 launcher，不传已有 kernel。
-
-插件缝仍可显式挂载（示例，**不是** 0.3.0 core bundle 的内容）：
+插件缝（**不是** 0.3.0 core bundle 的内容）：
 
     [[plugins]]
     id = "web"
     plugin = "deeppyro.web.plugin:WebHostPlugin"
     # config = { autostart = false, port = 0 }
 
-挂载后插件处于惰性状态（`setup()` 绝不监听）；启动是显式动作：
-`plugin = app.get(WebHostPlugin)`，`host = await plugin.start(port=0, cwd=...)`，
-`await plugin.stop()`（kernel unmount 也会调用 `stop()`）。`WebHostConfig.autostart`
-目前只在显式 `start()` 中被读取，不会在 setup 期间自动监听。
+挂载后插件惰性（`setup()` 绝不监听）；`plugin.start(port=0, cwd=...)` 显式启动，
+`plugin.stop()`/unmount 关闭。`WebHost.start(ui=True)` 使用 P1 UiServer；
+`ui=False` 保留 stdlib WebServer（旧 API/测试）。
 
-核心 API（host.py）：
+## 10. 三条原则映射（Three principles）
 
-- `WebHost.start(*, kernel_app=None, services=None, config=None, port=0, cwd=None,
-  session_id=None, provider=None, model=None, host="127.0.0.1", token=None,
-  surfaces=(), registry=None) -> WebHost`：两样都不给时自行 `kernel.boot()` 并负责关闭；
-  已有 kernel 时只传 `kernel_app`；插件传 `services` + `registry` + 固定 `token`。
-- `host.url`（含 token，供打印/打开）、`host.base_url`（不含 token）、`host.token`、
-  `host.port`、`host.active_session_id`、`host.initial_session`。
-- `await host.serve_forever()`（直到关闭/取消）、`await host.stop()`（幂等）。
+**原则 1：一切皆插件。** Web 宿主是 `WebHostPlugin(Service, provide="web")`，由 bundle/manifest
+发现、注入、卸载；页面/API/设置都经插件边界取服务；`WebSurface`/`RouteRegistry` 允许第三方
+注册路由，无需改 `server.py`。缺口：kernel 尚无通用“交互表面”契约，splash 直接 import
+`deeppyro.web.launch`；当前扩展点是 web 包内 Protocol。
 
-## 8. 插件扩展缝（WebSurface / RouteRegistry）
+**原则 2：Pythonic。** 请求/响应/事件/命令/审批全是 frozen slotted dataclass；
+`WebSurface`/`WebService`/`UsageSink` 是 Protocol；`WebEventType`/`StatusPhase`/`ApprovalDecision`/
+`ShellView` 是 StrEnum；服务用 asyncio TaskGroup/async generator 和显式生命周期；
+HTTP JSON 一律 snake_case，camelCase 只存在于浏览器内部。
 
-`WebSurface` 是 `runtime_checkable` Protocol：`name: str` + `routes() -> Iterable[Route]`。
-`Route(method, pattern, handler, name)` 支持 `{param}` 路径段；`RouteRegistry` 拒绝重复的
-`(method, pattern)`，并负责 405 的 `Allow` 计算（GET 自动获得 HEAD/OPTIONS）。
-内置 surface = `default_surfaces(token_provider)`；另一个插件可以在不修改
-`server.py`/`surface.py` 的情况下：
+**原则 3：AI-native。** Web 层不拥有对话状态：会话 = native append-only facts，turn 事件来自
+同一个 `NativeAgentHost`/AgentLoop `AgentHooks` 流；timeline 先回放事实，再按 seq 订阅；
+usage/tokens/context 来自 native host 的 taps；审批是显式事实与显式决策；中断走
+`NativeAgentHost.interrupt()`。唯一内存状态是 binding、队列（8）、journal（4096）与审批 broker。
 
-    plugin = ctx.require(WebHostPlugin)          # 或注入后取用
-    plugin.register_surface(MyPanelSurface())     # 追加 GET /my/panel 等路由
-    await plugin.start()                          # 由宿主/集成点显式启动
+## 11. 限制与诚实缺口（Limitations）
 
-测试 `tests/web/test_server.py::test_custom_surface_route_is_served` 与
-`::test_plugin_is_inert_until_started` 固定该扩展点。`WebHostPlugin` 是普通 kernel
-Service（`provide="web"`），因此满足“一切皆插件”：没有特权第二应用路径、没有 TUI/v4 import。
+- 每个进程只挂接一个会话；多标签页 resume 会把 binding 移到新标签页，旧标签页的发送/中断失效。
+- 发送队列/审批/journal 都在内存，进程退出即丢失；历史只在 native log。
+- 无 TLS、仅本机单用户；token 首次进入 URL/历史，随后换成 HttpOnly cookie。
+- 团队模式（team preset）在 Web 运行时仍被拒绝（409），团队只在 TUI/headless 可用。
+- 未挂接会话的历史 usage/context 显示为 0（native facts 无按会话 token 账本）。
+- 无附件上传、无 compaction UI、无多会话并行、无移动端专门布局。
+- 无退出命令；关闭标签页/Ctrl-C 结束宿主。
+- `ui=False` 的 stdlib 宿主仍存在，但无 P1 的壳/命令/设置/审批；生产 launcher 默认 `ui=True`。
+- 浏览器需支持 ES2020 + EventSource + fetch（现代 Chromium/Firefox/Safari）。
 
-**最小未来 kernel hook（缺口，0.3.0 未做）**：kernel 目前没有“交互式表面/宿主”枚举契约
-（`ctx.ui` 是 post/notify 之类的 no-op UI 槽，不是路由注册表）。0.3.0 的 splash F1 通过
-`deeppyro.web.launch.launch()` 直接进入本宿主（`tui/main.py:140-148`），而不是经内核契约。
-若以后要让 splash 在不直接 import `deeppyro.web.host` 的情况下启动 Web，建议 kernel 增加一个
-通用的 `HostSurface`/`InteractiveSurface` 契约（提供 name、start()、url、stop()），由 Web 插件和
-TUI 共同实现；当前用 web 包内自有 `WebSurface` + 显式 `start()` 已足够，且不扩内核。
+## 12. 测试（Tests）
 
-## 9. 三条原则映射（Three principles）
+`tests/web/` 126 passed（本机 loopback，无外部网络）：
 
-**原则 1：一切皆插件。**
-Web 宿主是 `WebHostPlugin(Service, provide="web")`，由 bundle/manifest 像其他插件一样发现、
-注入、卸载；路由和 UI 面板通过 `WebSurface`/`RouteRegistry` 注册（`plugin.py` +
-`surface.py`），第三方插件无需改 `server.py`。测试断言 web 包不 import `textual`、
-不以 `deeppyro.v4` 前缀导入（历史守卫名）、无 aiohttp/flask/uvicorn/fastapi/starlette。缺口：kernel 尚无
-通用交互表面契约（见 §8），当前扩展点是 web 包内 Protocol，后续可提成内核契约。
-
-**原则 2：Pythonic，非 TypeScript 形态。**
-请求/响应/事件/路线全是冻结 slotted dataclass；`WebSurface`/`WebService` 是 Protocol；
-`Method`/`WebEventType`/`StatusPhase` 是 StrEnum；服务器用 asyncio streams、async generator
-和显式生命周期；HTTP JSON 一律 snake_case 并在边界校验（`from_payload`/`parse_session_id`），
-Python 侧不出现 camelCase，也没有 JS 式事件总线（journal 是 typed 单调日志）。
-camelCase 只允许存在于浏览器内部变量（原则原文允许“frontend JS may use camelCase only
-inside the browser”），wire 字段测试固定 snake_case。
-
-**原则 3：AI-native。**
-Web 层不拥有对话状态：会话 = native append-only facts（`SessionsPlugin.native_*`），
-turn 事件来自同一个 `NativeAgentHost`/AgentLoop `AgentHooks` 流，UI 先 `/transcript`
-回放事实再订阅 SSE；usage/tokens/context 来自 native host 的 `usage()`/`context_tokens()`
-（AgentBuild.services 中的 `usage`/`trace_export` sink 使其存活），不写进聊天消息；
-状态端点只读这些 sink/事实。重连靠 seq/`Last-Event-ID` + transcript 回放，服务器不需要
-隐藏的会话状态；中断走 `NativeAgentHost.interrupt()`，不靠 socket 关闭。唯一的内存状态是
-传输层的一个 binding + 有界队列（8 条），已在 §10 明示。
-
-## 10. 限制与诚实缺口（Limitations）
-
-- 无审批 UI：需要审批的工具被拒绝（见 §6 末）。
-- 每个进程只挂接一个会话；在另一个标签页 resume 会让旧标签页的 SSE 只收到该会话已发生
-  的事件（journal 按 session 过滤），发送/中断只对当前 binding 有效。
-- 发送队列是内存有界队列（8 条），进程退出即丢失；满载回 429。
-- SSE journal 仅本次进程有效（容量 4096），历史回放靠 `/transcript`；重启后旧 token 和
-  URL 失效。
-- 无 TLS、仅单用户/本机；token 出现在 URL/浏览器历史，仅适用于 loopback。
-- 团队预设（team mode）在 web 运行时被拒绝（409：`team mode is not available in the web runtime yet`）；
-  团队只在 TUI/headless 中可用。这里是 web 宿主的范围限制，不是 native 运行时缺口。
-- 未挂接会话的历史 usage/context 显示为 0（native 事实不含按会话 token 账本）。
-- 无 compaction UI、无附件上传、无 markdown 渲染（纯文本，有意收敛 XSS 面）。
-- core bundle 不含 web 插件行：宿主由 launcher/`WebHostPlugin` 直接构造（见 §7）。
-- 浏览器需支持 ES2020 + EventSource + fetch（现代 Chromium/Firefox/Safari 均可）。
-- `--host` 只接受回环值；不存在“暴露到局域网”的开关，这是产品约束而非遗漏。
-
-## 11. 测试（Tests）
-
-`tests/web/test_server.py`（真实 127.0.0.1 临时端口；无外部网络；不支持回环时整模块 skip）：
-绑定校验与 127.0.0.1 断言、token 401、Host/Origin/Sec-Fetch-Site 403、body 413、静态资产与
-CSP/安全头、404/405/Allow、400 非法 JSON、keep-alive 同连接两请求、自定义 surface、
-SSE 帧、API 到 service 的分发、优雅关闭释放端口、插件惰性与扩展点、wire snake_case、
-journal 回放、AST 导入守卫，以及用 `LlmPlugin.native_provider` 脚本化 provider +
-真实 kernel boot 的 create/send/stream/transcript/status、interrupt + 有界队列、
-resume/列表/未挂接会话 404、队列满 429、插件缝经 kernel 启动宿主（全程 loopback，无外部网络）。
-
-`tests/web/test_frontend.py`：页面无内联 script/style/事件属性、无外部 URL/CDN/字体、
-CSP 仅同源、token 注入与转义、CSS 响应式、JS 无 markup 注入 API、EventSource+fetch+
-Bearer+after/seq、快捷键、snake_case wire 字段、资产为纯模块字符串、无构建步骤。
-
-`tests/web/test_launch.py`：共享启动器（`serve()`/`launch()`）的启动、banner、Ctrl-C 返回 130
-与关闭路径。
+- `test_server.py`：stdlib 宿主绑定/鉴权/SSE/队列/插件缝/真实 kernel boot。
+- `test_ui_auth.py`：token→cookie 303、API 401/403、Host/Origin/Sec-Fetch-Site、WS 1008。
+- `test_ui_shell.py`：五路由、稳定 ID、资产、无数据 bootstrap、CSP/安全头。
+- `test_ui_commands.py`：new/resume/sessions/rename/archive/permission/status/plan/goal/plugins/
+  settings/clear 与诚实拒绝。
+- `test_ui_settings.py`：ConfigEditor 原子写/.bak/注释保留/字段校验/provider 探活/插件 CAS。
+- `test_approvals.py`：broker pending/decide/timeout/cancel/session 过滤。
+- `test_timeline.py`：missing tool result 保持 pending、真实 result 合并、错误合并。
+- `test_launch.py`：launcher banner/Ctrl-C 130/关闭。
+- `test_frontend.py`：无内联脚本、无 CDN、转义、SSE/fetch、snake_case、无构建。
 
 验证命令：
 
     .venv\Scripts\python.exe -m pytest tests/web -q
     .venv\Scripts\python.exe -m ruff check src/deeppyro/web tests/web
     .venv\Scripts\python.exe -m ruff format --check src/deeppyro/web tests/web
-
-（若并行开发期间全仓 `ruff`/typecheck 有其它 agent 的既知新增项，只要求
-`src/deeppyro/web/` 与 `tests/web/` 干净。）

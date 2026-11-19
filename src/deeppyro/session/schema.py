@@ -1216,15 +1216,32 @@ def _lock_path_for(path: Path) -> Path:
 
 
 def _acquire_lock(lock_path: Path, session_id: str) -> None:
-    try:
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        pid = _lock_pid(lock_path)
-        raise SessionLockedError(f"session {session_id!r} is locked by pid {pid}") from None
-    try:
-        os.write(descriptor, f"{os.getpid()} {now_ms()}".encode("ascii"))
-    finally:
-        os.close(descriptor)
+    for attempt in (0, 1):
+        try:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pid = _lock_pid(lock_path)
+            if _lock_owner_alive(pid):
+                raise SessionLockedError(f"session {session_id!r} is locked by pid {pid}") from None
+            # The owner died without releasing the sidecar (crash, kill, or a
+            # closed terminal). Reclaim it once, then let the normal exclusive
+            # create arbitrate with any other process racing for the same lock.
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise SessionLockedError(
+                    f"session {session_id!r} is locked by pid {pid} and the stale lock could not be removed: {exc}"
+                ) from None
+            if attempt == 0:
+                continue
+            raise SessionLockedError(f"session {session_id!r} is locked by pid {pid}") from None
+        try:
+            os.write(descriptor, f"{os.getpid()} {now_ms()}".encode("ascii"))
+        finally:
+            os.close(descriptor)
+        return
 
 
 def _lock_pid(lock_path: Path) -> str:
@@ -1232,6 +1249,47 @@ def _lock_pid(lock_path: Path) -> str:
         return lock_path.read_text(encoding="ascii").split(" ", 1)[0]
     except (OSError, UnicodeDecodeError):
         return "unknown"
+
+
+def _lock_owner_alive(pid_text: str) -> bool:
+    """Whether the pid recorded in a lock sidecar is still running."""
+    try:
+        pid = int(pid_text)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        return _windows_pid_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _windows_pid_alive(pid: int) -> bool:
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]
+    kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong(0)
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _release_lock(lock_path: Path) -> None:

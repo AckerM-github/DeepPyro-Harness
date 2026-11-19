@@ -22,11 +22,13 @@
 | 入口 | 用途 | 启动方式 |
 | --- | --- | --- |
 | **TUI** | 日常交互、会话管理、team/subagent、goal、hooks、PTC | `dpyro`（默认终端） |
-| **Web UI** | 浏览器外壳；只监听 `127.0.0.1`，单页无构建 | TUI 启动页按 **F1**，或 `python -m deeppyro.web` |
+| **Web UI** | 浏览器外壳；只监听 `127.0.0.1`，四栏会话/命令/设置/审批 | TUI 启动页按 **F1**，或 `python -m deeppyro.web` |
 | **headless** | 脚本/CI；人类摘要或 NDJSON | `dpyro --headless "..."` |
 
 启动页：**F1 = Web，F2 / Enter = 终端**。Web 进程由宿主显式启动，不监听时只是一个惰性插件；
-页面只负责发命令、订阅 SSE、回放 transcript，所有会话状态都在 append-only 日志里。
+页面只负责发命令、订阅 SSE、回放 native facts，所有会话状态都在 append-only 日志里。
+P1 Web UI 提供真实会话、流式聊天、工具/审批卡、命令面板和全量设置页；FastAPI + uvicorn
+承载 Python 宿主，前端是同源 HTML/CSS/JS，无构建步骤。
 
 ```powershell
 uv sync
@@ -35,7 +37,7 @@ uv run dpyro --headless "总结这个仓库的目录结构"
 uv run python -m deeppyro.web --port 0 --cwd .
 ```
 
-Web 默认绑定随机回环端口并打印带一次性 bearer token 的 URL；`--host` 只接受 `127.0.0.1`/`localhost`，没有 TLS、没有远程绑定选项。详见 [Web UI 指南](docs/guides/web-ui.md)。
+Web 默认绑定随机回环端口并打印带一次性 bearer token 的 URL；首次页面把 token 换成 HttpOnly cookie。`--host` 只接受 `127.0.0.1`/`localhost`，没有 TLS、没有远程绑定选项。详见 [Web UI 指南](docs/guides/web-ui.md)。
 
 ## native session 与 trace
 
@@ -212,8 +214,9 @@ class GreetPlugin(Plugin):
 - **配置严格 snake_case**：`load_config` 对 camelCase 键与 schema 表内未知键直接抛 `ConfigError`；
   CLI 首次启动会把 0.2.x 旧配置原地升级并写 `.bak` 备份（见 `docs/guides/config-migration.md`）。
   顶层插件 section 与文档化的 adapter 选项是仅有的开放边界。
-- **Web UI 是本地单用户外壳**：只绑定回环、明文 HTTP、无 TLS、单 attached session、无审批 UI；
-  SSE journal 在进程内，重启后靠 transcript 回放。
+- **Web UI 是本地单用户外壳**：只绑定回环、明文 HTTP、无 TLS、单 attached session；
+  SSE journal 在进程内，重启后靠 timeline 回放。审批只覆盖宿主发起的工具调用，
+  无多会话并行/附件上传/compaction UI。
 - **观测默认本地**：usage/trace 只写本机，不含正文；OTLP 导出默认关闭。
 - **memory 仍是 SQLite FTS5**：有 `memory_search`/`memory_add`，无 embedding/向量检索。
 - **Windows 沙箱**：`enforcement=partial`（受限 token/ACL），不是完整 OS 级隔离。

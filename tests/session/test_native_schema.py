@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -302,6 +303,23 @@ def test_second_writer_is_rejected(tmp_path: Path) -> None:
         pytest.raises(SessionLockedError, match="locked by pid"),
     ):
         NativeSession.open(path)
+
+
+def test_stale_lock_from_a_dead_process_is_reclaimed(tmp_path: Path) -> None:
+    session_id = new_session_id()
+    path = tmp_path / f"{session_id}.jsonl"
+    with NativeSession.create(path, cwd=tmp_path):
+        pass
+    lock = path.with_name(path.name + ".lock")
+    lock.write_text("999999999 0", encoding="ascii")
+    session = NativeSession.open(path)
+    try:
+        assert session.header.id == session_id
+        assert lock.exists()
+        assert lock.read_text(encoding="ascii").split(" ", 1)[0] == str(os.getpid())
+    finally:
+        session.close()
+    assert not lock.exists()
 
 
 def test_append_validation_does_not_write_partial_line(tmp_path: Path) -> None:

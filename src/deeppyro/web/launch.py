@@ -27,6 +27,7 @@ async def serve(
     port: int = 0,
     host: str = LOCALHOST,
     banner: TextIO | None = None,
+    ui: bool = True,
 ) -> None:
     """Start a loopback host, print its URL and serve until it stops."""
     web = await WebHost.start(
@@ -37,6 +38,7 @@ async def serve(
         model=model,
         host=host,
         version=__version__,
+        ui=ui,
     )
     web.print_banner(banner)
     try:
@@ -54,6 +56,7 @@ def launch(
     port: int = 0,
     host: str = LOCALHOST,
     banner: TextIO | None = None,
+    ui: bool = True,
 ) -> int:
     """Blocking entry point: 0 on a clean stop, 130 on Ctrl-C."""
     try:
@@ -66,6 +69,7 @@ def launch(
                 port=port,
                 host=host,
                 banner=banner,
+                ui=ui,
             )
         )
     except KeyboardInterrupt:
