@@ -147,12 +147,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         if result == "web":
             from deeppyro.web.launch import launch
 
-            return launch(
-                cwd=args.cwd,
-                session_id=args.resume,
-                provider=args.provider,
-                model=args.model,
-            )
+            try:
+                return launch(
+                    cwd=args.cwd,
+                    session_id=args.resume,
+                    provider=args.provider,
+                    model=args.model,
+                    open_browser=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - report instead of a bare traceback
+                print(
+                    f"error: failed to start the web UI: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
         return 0
 
     if args.resume:

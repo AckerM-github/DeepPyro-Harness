@@ -123,8 +123,13 @@ class DeepPyroApp(PanelLayer):
                     resume=self._resume,
                 )
         except Exception as exc:  # noqa: BLE001 - a broken boot must stay visible
-            self.conversation.add_error(f"failed to start: {type(exc).__name__}: {exc}")
-            self._dismiss_splash()
+            message = f"failed to start: {type(exc).__name__}: {exc}"
+            self.conversation.add_error(message)
+            splash = self._splash_screen()
+            if splash is not None:
+                # Keep the entry points alive: the web host boots its own kernel
+                # and may still work when the terminal runtime cannot start.
+                splash.set_notice(message)
             self.refresh_status()
             return
         self._register_tui_commands()

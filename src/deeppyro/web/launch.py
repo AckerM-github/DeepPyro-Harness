@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import webbrowser
 from pathlib import Path
 from typing import TextIO
 
@@ -28,6 +29,7 @@ async def serve(
     host: str = LOCALHOST,
     banner: TextIO | None = None,
     ui: bool = True,
+    open_browser: bool = False,
 ) -> None:
     """Start a loopback host, print its URL and serve until it stops."""
     web = await WebHost.start(
@@ -41,6 +43,8 @@ async def serve(
         ui=ui,
     )
     web.print_banner(banner)
+    if open_browser:
+        _open_browser(web.url)
     try:
         await web.serve_forever()
     finally:
@@ -57,6 +61,7 @@ def launch(
     host: str = LOCALHOST,
     banner: TextIO | None = None,
     ui: bool = True,
+    open_browser: bool = False,
 ) -> int:
     """Blocking entry point: 0 on a clean stop, 130 on Ctrl-C."""
     try:
@@ -70,12 +75,25 @@ def launch(
                 host=host,
                 banner=banner,
                 ui=ui,
+                open_browser=open_browser,
             )
         )
     except KeyboardInterrupt:
         print("", file=sys.stderr if banner is None else banner)
         return 130
     return 0
+
+
+def _open_browser(url: str) -> None:
+    """Best-effort: open the tokenized loopback URL in the default browser."""
+    if not url:
+        return
+    try:
+        opened = webbrowser.open(url, new=2)
+    except Exception:  # noqa: BLE001 - a missing browser must not stop the server
+        opened = False
+    if not opened:
+        print(f"note: open this URL in a browser: {url}", file=sys.stderr)
 
 
 __all__ = ["launch", "serve"]

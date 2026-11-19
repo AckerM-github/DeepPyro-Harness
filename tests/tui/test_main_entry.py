@@ -59,6 +59,7 @@ def test_splash_f1_launches_the_loopback_web_host(
         "session_id": None,
         "provider": "deepseek",
         "model": "m1",
+        "open_browser": True,
     }
 
 

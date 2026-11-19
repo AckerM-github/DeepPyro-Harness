@@ -13,6 +13,8 @@ from deeppyro.web.host import WebHost
 
 
 class FakeHost:
+    url = "http://127.0.0.1:1234/?token=x"
+
     def __init__(self) -> None:
         self.stopped = False
         self.banner = ""
@@ -57,6 +59,19 @@ def test_launch_returns_zero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     monkeypatch.setattr(WebHost, "start", classmethod(fake_start))
     assert launch_module.launch(cwd=tmp_path, banner=io.StringIO()) == 0
     assert fake.stopped is True
+
+
+def test_launch_can_open_the_browser(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeHost()
+    opened: list[str] = []
+
+    async def fake_start(cls: type[WebHost], **kwargs: Any) -> FakeHost:
+        return fake
+
+    monkeypatch.setattr(WebHost, "start", classmethod(fake_start))
+    monkeypatch.setattr(launch_module.webbrowser, "open", lambda url, new=0: opened.append(url) or True)
+    assert launch_module.launch(cwd=tmp_path, banner=io.StringIO(), open_browser=True) == 0
+    assert opened == [FakeHost.url]
 
 
 def test_launch_translates_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:

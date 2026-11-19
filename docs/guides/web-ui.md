@@ -12,8 +12,11 @@
 两种进入方式，启动的都是同一个 loopback Web 宿主：
 
 1. **TUI splash**：运行 `dpyro`，提示 `F1 web · F2 terminal`；按 **F1** 后本进程
-   直接转为 Web 宿主，打印带 token 的 URL。**F2 / Enter** 进入终端 TUI。
+   直接转为 Web 宿主，打印带 token 的 URL 并尝试用默认浏览器打开（浏览器不可用时
+   只打印 URL，不影响宿主运行）。**F2 / Enter** 进入终端 TUI。
    `dpyro --resume <id>` 配合 F1 时会把该 native 会话挂到 Web 宿主。
+   TUI 运行时装配失败时 splash 不会关闭：错误行会显示在入口提示上方，仍可按 F1
+   直接启动独立的 Web 宿主。
 2. **直接 CLI**：
 
        .venv\Scripts\python.exe -m deeppyro.web --port 0 --cwd .

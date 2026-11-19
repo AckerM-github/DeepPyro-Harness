@@ -103,6 +103,24 @@ async def test_set_runtime_fills_the_boot_line() -> None:
         assert "D:/code/deeppyro" in text
 
 
+async def test_notice_keeps_the_entry_points_visible_after_a_boot_failure() -> None:
+    app = SplashHost(version="0.1.0", cwd="D:/work")
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.1)
+        screen = app.screen
+        assert isinstance(screen, SplashScreen)
+        screen.set_notice("failed to start: LockedError: session is busy")
+        await pilot.pause(0.1)
+
+        text = screen.visible_text()
+        assert "failed to start: LockedError" in text
+        assert "F1 web" in text
+
+        await pilot.press("f1")
+        await pilot.pause(0.2)
+        assert app.result == "web"
+
+
 async def test_splash_stays_open_until_an_entry_point_is_chosen() -> None:
     app = SplashHost(version="0.1.0", cwd="D:/work")
     async with app.run_test(size=(100, 32)) as pilot:

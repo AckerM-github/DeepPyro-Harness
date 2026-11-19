@@ -546,6 +546,23 @@ async def test_splash_screen_waits_for_the_terminal_entry_point() -> None:
         assert app._prompt.has_focus
 
 
+async def test_boot_failure_keeps_the_splash_and_f1_available() -> None:
+    from deeppyro.tui.screens.splash import SplashScreen
+
+    async def failing_runtime(app: Any) -> Any:
+        raise RuntimeError("provider exploded")
+
+    app = DeepPyroApp(runtime_factory=failing_runtime, splash=True)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.2)
+        assert isinstance(app.screen, SplashScreen)
+        assert "failed to start: RuntimeError: provider exploded" in app.screen.full_text()
+
+        await pilot.press("f1")
+        await pilot.pause(0.2)
+    assert app.return_value == "web"
+
+
 async def _submit(app: Any, pilot: Any, text: str) -> None:
     prompt = app.query_one(PromptArea)
     prompt.text = text

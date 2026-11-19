@@ -74,6 +74,7 @@ class SplashScreen(ModalScreen[str | None]):
         self._cwd = cwd
         self._provider = provider
         self._model = model
+        self._notice = ""
         self._compact = False
         self._body: Static | None = None
         self._lines: list[Text] = []
@@ -111,6 +112,15 @@ class SplashScreen(ModalScreen[str | None]):
             self._cwd = str(cwd)
         self._lines = self._build_lines()
         self._visible = max(0, min(self._visible, len(self._lines)))
+        self._refresh()
+
+    def set_notice(self, notice: str) -> None:
+        """Show a failed runtime boot without hiding the entry points."""
+        self._notice = compact_text(notice, max_lines=1, max_chars=74) or notice
+        self._lines = self._build_lines()
+        # A boot failure must be readable immediately, not after the wordmark
+        # reveal animation; the entry points stay on the same screen.
+        self._visible = len(self._lines)
         self._refresh()
 
     def visible_text(self) -> str:
@@ -173,6 +183,9 @@ class SplashScreen(ModalScreen[str | None]):
         rows.append(Text(runtime_line, style="dim"))
         if cwd_line:
             rows.append(Text(cwd_line, style="dim"))
+        if self._notice:
+            rows.append(Text(""))
+            rows.append(Text(self._notice, style="bold #f7768e"))
         rows.append(Text(""))
         rows.append(Text(_HINT, style="italic #e0af68"))
         rows.append(Text(_HELP, style="dim"))

@@ -86,11 +86,16 @@ inputTokens（经 `TraceExportSink` 的 tap）。没有 trace sink 时显示不�
 - 字标逐行揭示，`REVEAL_INTERVAL = 0.04`；小窗口用紧凑字标（`FULL_MIN_WIDTH = 72`、
   `FULL_MIN_HEIGHT = 24`）；
 - `action_start_web` 以结果 `"web"` 关闭 splash；`tui/main.py` 随后把进程交给
-  `deeppyro.web.launch.launch`（CLI 的 `python -m deeppyro.web` 与其共享 `serve()`）。
+  `deeppyro.web.launch.launch(open_browser=True)`（CLI 的 `python -m deeppyro.web` 与其
+  共享 `serve()`）；无法拉起浏览器时只打印 URL。
+- TUI 运行时装配异常时 splash 保持打开，`set_notice()` 在入口提示上方显示
+  `failed to start: ...`；F1 仍可启动独立的 Web 宿主，避免终端 runtime 的失败连带
+  封死 Web 入口。
 
 Web 宿主是**宿主外壳**（`WebHostPlugin`，provide=`web`），不是第二个 agent；它由 launcher/宿主
 直接构造，**不是** core bundle 的插件行。Web 运行时当前拒绝团队预设（返回 409），团队只在
-TUI/headless 中可用；Web 也没有审批 UI——需要审批的工具一律拒绝。
+TUI/headless 中可用；审批请求通过 `/api/ui/approvals` 与 SSE approval 事件完成（见
+[web.md](web.md)）。
 
 ## 6. 键盘与斜杠命令
 
