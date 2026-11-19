@@ -1,8 +1,9 @@
-"""The four-column NiceGUI shell.
+"""The three-column NiceGUI shell.
 
-The shell is the only place that knows the whole page: the rail, the session
-sidebar, the stage (chat or settings) and the inspector. Pages compose it; the
-chat and settings modules never reach across into another region.
+The shell is the only place that knows the whole page: the session sidebar, the
+stage (chat or settings) and the inspector. The brand sits at the top-left of
+the sidebar; a compact top bar replaces it on narrow screens. Pages compose the
+shell; the chat and settings modules never reach across into another region.
 """
 
 from __future__ import annotations
@@ -58,7 +59,7 @@ class ShellView:
         self._root = parent
         with parent:
             with ui.element("div").classes("dp-app"):
-                self._render_rail()
+                self._render_mobile_bar()
                 self._render_sidebar()
                 stage = ui.element("div").classes("dp-stage")
                 active = self._session_id or self._bridge.active_session_id
@@ -75,29 +76,28 @@ class ShellView:
             await self._palette.open()
         ui.timer(1.6, self._refresh_inspector)
 
-    # -- rail --------------------------------------------------------------
+    # -- brand -------------------------------------------------------------
 
-    def _render_rail(self) -> None:
-        with ui.element("aside").classes("dp-rail"):
-            with ui.element("a").classes("dp-brand-mark").on("click", lambda: self._navigate("/")):
-                ui.image("/brand/cyborg-mark.svg").classes("dp-brand-image")
-            ui.element("div").classes("dp-rail-sep")
-            self._rail_button("sessions", "Sessions", lambda: self._navigate("/"))
-            self._rail_button("commands", "Commands", self._open_command_palette)
-            self._rail_button("plugins", "Plugins", lambda: self._navigate("/settings/plugins"))
-            ui.element("div").classes("dp-rail-spacer")
-            self._rail_button("add", "New session", self._open_new_session)
-            ui.element("div").classes("dp-rail-sep")
-            self._rail_button("settings", "Settings", lambda: self._navigate("/settings"))
-            theme.avatar("Lin", colour="#6d5bd0", size=34).classes("dp-rail-avatar")
+    def _brand_logo(self) -> None:
+        with ui.element("a").classes("dp-logo").on("click", lambda: self._navigate("/")):
+            ui.image("/brand/cyborg-mark.svg").classes("dp-logo-image")
 
-    def _rail_button(self, icon_name: str, label: str, handler: Callable[[], Any]) -> None:
+    def _render_mobile_bar(self) -> None:
+        """Keep the brand and the primary actions reachable when the sidebar folds."""
+        with ui.element("header").classes("dp-mobile-bar"):
+            self._brand_logo()
+            ui.label("DeepPyro").classes("dp-mobile-title")
+            ui.element("div").classes("dp-mobile-spacer")
+            self._mobile_button("add", "New session", self._open_new_session)
+            self._mobile_button("commands", "Commands", self._open_command_palette)
+            self._mobile_button("settings", "Settings", lambda: self._navigate("/settings"))
+
+    def _mobile_button(self, icon_name: str, label: str, handler: Callable[[], Any]) -> None:
         button = (
             ui.button(icon=theme.ICONS.get(icon_name, icon_name), on_click=handler)
             .props("flat round dense")
-            .classes("dp-rail-button")
+            .classes("dp-mobile-btn")
         )
-        button.tooltip(label)
         button.props(f'aria-label="{label}"')
 
     # -- sidebar -----------------------------------------------------------
@@ -106,9 +106,11 @@ class ShellView:
         defaults = self._bootstrap.get("defaults") or {}
         with ui.element("aside").classes("dp-sidebar"):
             with ui.element("div").classes("dp-sidebar-head"):
-                with ui.element("div").classes("dp-brand"):
-                    ui.label("DeepPyro").classes("dp-brand-name")
-                    ui.label(str(defaults.get("cwd") or "local runtime")).classes("dp-brand-sub")
+                with ui.element("div").classes("dp-sidebar-lockup"):
+                    self._brand_logo()
+                    with ui.element("div").classes("dp-brand"):
+                        ui.label("DeepPyro").classes("dp-brand-name")
+                        ui.label(str(defaults.get("cwd") or "local runtime")).classes("dp-brand-sub")
                 ui.button(icon="more_horiz").props("flat round dense").classes("dp-icon-btn")
 
             self._search_input = (

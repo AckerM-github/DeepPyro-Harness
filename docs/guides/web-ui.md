@@ -36,15 +36,17 @@
 
 ## 2. 界面
 
-四栏结构（Discord 密度的原创布局，由 NiceGUI 元素树渲染）：
+三栏结构（Discord 密度的原创布局，由 NiceGUI 元素树渲染）：
 
-- **Rail（最左）**：原创半面罩机器标、工作区头像、新建会话（弹窗选择目录）、设置/帮助/用户入口。
-- **Sidebar**：搜索、Sessions / Commands / Plugins 导航、native 会话列表（标题、turn 数、
-  preset、相对时间、active 白点）、归档区。
+- **Sidebar（最左）**：顶部品牌区（原创半面罩机器标 + DeepPyro + 工作目录）、搜索、
+  Sessions / Commands / Plugins 导航、native 会话列表（标题、turn 数、preset、相对时间、
+  active 白点）、归档区、底部用户栏（头像与 Settings 入口）。
 - **Stage（主区）**：当前会话标题、preset/model/cwd、运行条、消息流（用户/助手/推理/
   markdown/代码块）、工具卡（PENDING/DONE/ERROR + 参数 + 结果）、审批卡、composer。
 - **Inspector（右侧）**：session id、model/provider、preset、turns、权限/审批策略、cwd、
   context 进度、usage（input/output/cached）、runtime 计数、快捷键。
+
+窄屏（≤900px）时侧栏与 inspector 折叠，顶部 52px 顶栏保留品牌、New session、Commands 与 Settings。
 
 加载态、空态、错误态都来自真实 API；没有 mock 数据。断线时连接点变为 offline，重连后按
 `lastEventSeq` / timeline 的 `journal_seq` 续订，不重复渲染历史。
@@ -68,7 +70,7 @@ Commands（25 个 core command）、Sessions（搜索/跳转）、Settings（分
 
 每个 native 会话在**创建时**把 cwd 写进会话 header，运行中不改写。要换目录：
 
-1. 点 rail 的 **+**、侧栏 Sessions 的 **+**，或按 `Ctrl/Cmd+N` 打开 **New session** 弹窗；
+1. 点侧栏 SESSIONS 的 **+**、窄屏顶栏的 **+**，或按 `Ctrl/Cmd+N` 打开 **New session** 弹窗；
    输入绝对路径，或从 **Recent workspaces** 选一个最近目录，然后 **Start session**。
    留空则使用宿主启动时的 `--cwd`（默认当前目录）。
 2. 或在 composer 输入 `/cwd D:\work\project`：等价地新建并切换到该目录的会话。

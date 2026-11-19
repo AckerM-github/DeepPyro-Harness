@@ -51,7 +51,7 @@ core bundle **不包含** web 插件行：`WebHostPlugin` 由 launcher/集成方
             NativeSessionControl / fold (facts for settings/commands/inspector)
 
     NiceGUI page (Python element tree -> Quasar/Vue in the browser)
-      pages.py  -> layout.py (rail/sidebar/stage/inspector)
+      pages.py  -> layout.py (sidebar/stage/inspector + narrow top bar)
                 -> chat.py | settings_view.py | palette.py
       --fetch()-->      /api/ui/...          (sessions, timeline, commands, settings)
       --EventSource-->  /api/ui/sessions/{id}/events   (live turn + approvals)
@@ -60,7 +60,7 @@ core bundle **不包含** web 插件行：`WebHostPlugin` 由 launcher/集成方
 ### 2.1 从 P1 静态 shell 切到 NiceGUI
 
 P1 曾用 FastAPI + 服务端 HTML + 手写 vanilla JS 实现四栏外壳；0.3 的 Web UI 按
-产品决定**全量切到 NiceGUI 4**：页面、四栏布局、消息流、工具/审批卡、命令面板、
+产品决定**全量切到 NiceGUI 4**：页面、三栏布局、消息流、工具/审批卡、命令面板、
 设置表单都是 Python 元素树，浏览器侧由 NiceGUI 自带的 Quasar/Vue 渲染，不再维护
 手写 `app.js`/`app.css`。FastAPI 仍是 ASGI 宿主，`/api/ui/*` 与 SSE 契约不变；
 NiceGUI 只负责页面与交互，不持有会话状态。视觉由 `theme.py` + 三份
@@ -93,15 +93,15 @@ NiceGUI 只负责页面与交互，不持有会话状态。视觉由 `theme.py` 
 | `ui/server.py` | FastAPI app、NiceGUI `run_with`、安全/鉴权中间件、5 个页面路由、`/brand` 静态资产、`UiServer` 生命周期 |
 | `ui/pages.py` | NiceGUI 页面注册：`/`、`/c/{id}`、`/palette`、`/settings`、`/settings/{section}` |
 | `ui/bridge.py` | `WebUiBridge`：页面到 `WebSessionHost` 的 typed 边界（bootstrap/sessions/timeline/send/approvals/settings/commands） |
-| `ui/layout.py` | 四栏外壳：rail、会话侧栏、`ChatView` 舞台、inspector、New session 弹窗 |
+| `ui/layout.py` | 三栏外壳：会话侧栏（顶部品牌区）、`ChatView` 舞台、inspector、窄屏顶栏、New session 弹窗 |
 | `ui/chat.py` | 消息流、SSE/轮询、工具卡、审批卡、composer、slash 命令 |
 | `ui/settings_view.py` | 全屏设置：provider/agent/permissions/commands/plugins/sessions/web/about |
 | `ui/palette.py` | 命令面板：命令/会话/设置搜索、键盘导航、执行与导航 |
 | `ui/theme.py` | `/brand` 样式表、Material 图标、头像/徽标/时间/主按钮样式 |
-| `ui/assets/style.css` | 设计 token、reset、四栏、rail/sidebar/inspector |
+| `ui/assets/style.css` | 设计 token、reset、三栏、sidebar/stage/inspector、窄屏顶栏 |
 | `ui/assets/chat.css` | 消息、工具卡、审批卡、composer |
 | `ui/assets/settings.css` | 设置页与命令面板 |
-| `ui/assets/cyborg-mark.svg` | 原创半面罩机器标（rail/avatar/favicon） |
+| `ui/assets/cyborg-mark.svg` | 原创半面罩机器标（品牌 logo/头像/favicon） |
 | `__main__.py` / `version.py` | CLI 入口、独立版本常量 |
 
 ## 4. HTTP 路由（Routes）
@@ -209,7 +209,7 @@ missing-result 错误。
   `status=error` 与原因；`exit` 提示关闭标签页。绝不假装成功。
 - `archive` 当前会话时会新建一个 native 会话并在 `data.session_id` 返回新 id，前端据此跳转。
 
-**新建会话目录**：rail `+`、侧栏 `+`、`Ctrl/Cmd+N` 打开 `#new-session-overlay` 弹窗；路径留空
+**新建会话目录**：侧栏 SESSIONS 的 `+`、窄屏顶栏的 `+`、`Ctrl/Cmd+N` 打开 **New session** 弹窗；路径留空
 提交 `{}`，否则提交 `{"cwd": path}` 到 `POST /api/ui/sessions`。弹窗从现有会话去重出
 Recent workspaces，服务端 `resolve_workspace` 的校验错误在弹窗内显示；成功后刷新侧栏并跳到
 `/c/<new-id>`。每个会话的 cwd 在创建时写入 header，运行中不修改。

@@ -10,7 +10,7 @@ runtime, JSON API and native session model do not change; the old `shell.py`,
 The P1 shell is excellent at density but every new control costs hand-written
 DOM, state and CSS. NiceGUI gives the project Python-native pages, Quasar form
 controls, dialogs, drawers, tabs, keyboard handling and a WebSocket transport.
-The look remains ours: a small stylesheet defines the four-column shell, the
+The look remains ours: a small stylesheet defines the three-column shell, the
 Discord-inspired dark scale and the compact message/tool/approval treatments.
 
 NiceGUI is mounted into the existing FastAPI application rather than starting a
@@ -37,13 +37,13 @@ tests that need a second server must use a fresh process or a single fixture.
 | --- | --- | --- |
 | `web/ui/bridge.py` | integration | The only API pages may call. Wraps session/timeline/send/approval/commands/settings. |
 | `web/ui/theme.py` | integration | Icon names, initials avatars, relative time, shared helpers. |
-| `web/ui/layout.py` | integration | Four-column shell, rail, session sidebar, inspector, new-session dialog. |
+| `web/ui/layout.py` | integration | Three-column shell, session sidebar with brand, chat stage, inspector, narrow top bar, new-session dialog. |
 | `web/ui/chat.py` | chat | Stage header, timeline, streaming draft, tool cards, approval cards, composer. |
 | `web/ui/settings_view.py` | settings | Full-screen settings surface for provider/agent/permissions/commands/plugins/sessions/web/about. |
 | `web/ui/palette.py` | settings | Command palette dialog, filters and navigation. |
 | `web/ui/pages.py` | integration | `ui.page` registrations and composition. |
 | `web/ui/server.py` | integration | Mount NiceGUI, static assets, lifespan, remove the old HTML shell. |
-| `assets/style.css` | integration | Tokens, reset, four-column shell, rail/sidebar/inspector. |
+| `assets/style.css` | integration | Tokens, reset, three-column shell, sidebar/stage/inspector, narrow top bar. |
 | `assets/chat.css` | chat | Chat stage, messages, tool cards, approvals, composer. |
 | `assets/settings.css` | settings | Settings modal/page, forms, palette. |
 
@@ -112,8 +112,9 @@ and `data`. A command that creates or switches a session puts the id in
 
 CSS class names shared across modules:
 
-- Shell: `.dp-app`, `.dp-rail`, `.dp-sidebar`, `.dp-stage`, `.dp-inspector`,
-  `.dp-brand`, `.dp-nav`, `.dp-session-list`.
+- Shell: `.dp-app`, `.dp-sidebar`, `.dp-sidebar-lockup`, `.dp-logo`, `.dp-brand`,
+  `.dp-nav`, `.dp-session-list`, `.dp-stage`, `.dp-inspector`, `.dp-mobile-bar`,
+  `.dp-mobile-btn`.
 - Chat: `.dp-chat`, `.dp-stage-head`, `.dp-messages`, `.dp-message`,
   `.dp-message-body`, `.dp-tool`, `.dp-approval`, `.dp-composer`.
 - Settings: `.dp-settings`, `.dp-settings-nav`, `.dp-settings-body`,

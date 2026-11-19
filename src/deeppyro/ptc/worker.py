@@ -26,9 +26,10 @@ import asyncio
 import contextlib
 import json
 import math
+import os
 import sys
 import threading
-from typing import Any
+from typing import Any, NoReturn
 
 PROTOCOL_VERSION = 1
 MAX_LOG_BYTES_PER_STREAM = 1024 * 1024
@@ -335,6 +336,35 @@ async def _main(protocol: _Protocol, program: str, binding_names: list[str]) -> 
         protocol.send({"kind": "done", "value": normalized, "encodedBytes": len(encoded.encode("utf-8"))})
 
 
+def _system_exit_status(exc: SystemExit) -> int:
+    """Mirror the interpreter's SystemExit status without its shutdown path."""
+    code = exc.code
+    if code is None:
+        return 0
+    if isinstance(code, int):
+        return int(code)
+    with contextlib.suppress(Exception):
+        print(code, file=sys.stderr)
+    return 1
+
+
+def _exit_immediately(code: int) -> NoReturn:
+    """End the worker without CPython teardown.
+
+    The protocol reader is a daemon thread blocked in sys.stdin.buffer.readline.
+    On Windows, letting CPython 3.13 shut down while that thread is still blocked
+    intermittently crashes in python313.dll after a program calls sys.exit.
+    The worker owns no resources that need interpreter finalisation, so flush the
+    protocol streams and leave through the OS instead.
+    """
+    for stream in (sys.__stdout__, sys.__stderr__):
+        if stream is None:
+            continue
+        with contextlib.suppress(Exception):
+            stream.flush()
+    os._exit(int(code))
+
+
 def main() -> int:
     try:
         first = sys.stdin.buffer.readline()
@@ -363,6 +393,8 @@ def main() -> int:
         asyncio.run(_main(protocol, program, bindings))
     except KeyboardInterrupt:
         return 130
+    except SystemExit as exc:
+        _exit_immediately(_system_exit_status(exc))
     return 0
 
 

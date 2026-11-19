@@ -22,7 +22,7 @@
 | 入口 | 用途 | 启动方式 |
 | --- | --- | --- |
 | **TUI** | 日常交互、会话管理、team/subagent、goal、hooks、PTC | `dpyro`（默认终端） |
-| **Web UI** | NiceGUI 浏览器外壳；只监听 `127.0.0.1`，四栏会话/命令/设置/审批 | TUI 启动页按 **F1**，或 `python -m deeppyro.web` |
+| **Web UI** | NiceGUI 浏览器外壳；只监听 `127.0.0.1`，三栏会话/聊天/检查器 + 全屏命令与设置 | TUI 启动页按 **F1**，或 `python -m deeppyro.web` |
 | **headless** | 脚本/CI；人类摘要或 NDJSON | `dpyro --headless "..."` |
 
 启动页：**F1 = Web，F2 / Enter = 终端**。Web 进程由宿主显式启动，不监听时只是一个惰性插件；
