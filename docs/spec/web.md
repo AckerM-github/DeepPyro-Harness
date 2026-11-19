@@ -179,6 +179,15 @@ SSE 数据帧 = `id: <seq>` + `data: <json>`。浏览器重连时 EventSource �
 turn 完成顺序与 TUI 一致：`final` -> `usage` -> `status done`；`finish_reason=length`
 在 done 后再补一条 error；中断产生 partial final + status interrupted，不产生 error。
 
+### 5.1 WebSocket 心跳与重连窗口
+
+NiceGUI 的 Socket.IO 心跳由 `reconnect_timeout` 推导：ping interval = 80%、
+ping timeout = 40%。默认 3 秒意味着 4 秒一次 ping、只等 2 秒 pong；首屏渲染或
+繁忙页面偶尔错过一个 pong 就会触发重连，短暂显示 “Connection lost.”。
+`src/deeppyro/web/ui/server.py` 把 `reconnect_timeout` 设为
+`RECONNECT_TIMEOUT_SECONDS = 15.0`（ping 12 秒 / timeout 6 秒），给本地首屏和
+工具审批留出停顿余量；真正的宿主退出仍会立即显示 offline，不会等满 15 秒。
+
 ## 6. 工具审批（Approvals）
 
 `WebSessionHost` 在 attach 时把 `PermissionGate` 的 ask 回调接到 `ApprovalBroker`。
@@ -312,7 +321,7 @@ usage/tokens/context 来自 native host 的 taps；审批是显式事实与显�
 
 ## 12. 测试（Tests）
 
-`tests/web/` 182 passed（本机 loopback，无外部网络）：
+`tests/web/` 183 passed（本机 loopback，无外部网络）：
 
 - `test_server.py`：stdlib 宿主绑定/鉴权/SSE/队列/插件缝/真实 kernel boot。
 - `test_ui_auth.py`：token→cookie 303、API 401/403、Host/Origin/Sec-Fetch-Site、WS 1008、CSP 头。
@@ -325,6 +334,7 @@ usage/tokens/context 来自 native host 的 taps；审批是显式事实与显�
 - `test_ui_settings.py`：ConfigEditor 原子写/.bak/注释保留/字段校验/provider 探活/插件 CAS。
 - `test_approvals.py`：broker pending/decide/timeout/cancel/session 过滤。
 - `test_timeline.py`：missing tool result 保持 pending、真实 result 合并、错误合并。
+- `test_ui_server.py`：NiceGUI mount 的 heartbeat/reconnect_timeout 接线。
 - `test_launch.py`：launcher banner/Ctrl-C 130/关闭/open_browser。
 
 验证命令：

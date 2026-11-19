@@ -39,6 +39,13 @@ ASSET_DIR = Path(__file__).with_name("assets")
 _FAVICON_FALLBACK = "\u25c8"
 
 
+#: Socket.IO heartbeat window. NiceGUI derives ping interval/timeout from this
+#: value (80%/40%); the 3s default means a 4s ping with a 2s reply window, which
+#: a busy first paint can miss. Fifteen seconds keeps a transient stall from
+#: surfacing as "Connection lost" while still expiring a dead tab promptly.
+RECONNECT_TIMEOUT_SECONDS = 15.0
+
+
 def _favicon() -> str:
     """Return the brand SVG as text for NiceGUI's favicon route."""
     try:
@@ -133,6 +140,7 @@ def create_app(
         title="DeepPyro",
         favicon=_favicon(),
         dark=True,
+        reconnect_timeout=RECONNECT_TIMEOUT_SECONDS,
         storage_secret=context.token,
         show_welcome_message=False,
         mount_path="/",

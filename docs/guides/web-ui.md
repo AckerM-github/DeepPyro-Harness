@@ -144,6 +144,7 @@ Stop 按钮向宿主发 `POST /interrupt`，由 `NativeAgentHost.interrupt()` �
 | 审批卡一直 PENDING | 点 Allow once / Deny；或等 300 秒超时 |
 | 设置保存后当前会话没变 | 运行中的 KernelConfig 不热重载；开新会话或重启宿主 |
 | 新建会话的目录不是想要的 | cwd 在会话创建时固定；用 New session 弹窗或 `/cwd <path>` 新建，旧会话保留 |
+| 短暂显示 “Connection lost.” | 宿主 Socket.IO 心跳窗口为 15 秒（ping 12s / timeout 6s）；首屏卡顿不应再触发。若持续出现，确认宿主进程还在、端口未变 |
 | 断线后自动重连 | 正常：EventSource 带 `Last-Event-ID` 或 `after=`，从 seq 续传 |
 
 ## 9. 验证
