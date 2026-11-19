@@ -1,9 +1,8 @@
-"""ASGI server for the P1 single-page web UI.
+"""ASGI server for the NiceGUI web UI.
 
-The server owns exactly three things: a loopback socket, the cookie/token
-middleware, and the static shell. Agent state stays behind WebSessionHost; the
-JSON routes in api.py are pure projections. Nothing here imports the TUI or any
-removed compatibility layer.
+The server owns the loopback socket, the cookie/token middleware, the JSON API
+and the NiceGUI mount. Agent state stays behind WebSessionHost; the JSON routes
+in api.py are pure projections and remain available for scripts and tests.
 
 The public surface (`address`, `port`, `url`, `closing`, `start`,
 `serve_forever`, `close`) deliberately matches the original stdlib WebServer
@@ -22,25 +21,30 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from nicegui import ui
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from deeppyro.web.security import LOCALHOST, SECURITY_HEADERS, validate_bind_host
 from deeppyro.web.ui.api import UiContext, build_router
 from deeppyro.web.ui.auth import UI_CSP, LoopbackAuthMiddleware
-from deeppyro.web.ui.shell import build_shell
+from deeppyro.web.ui.bridge import WebUiBridge
+from deeppyro.web.ui.pages import register_pages
 from deeppyro.web.wire import HttpError
 
 #: Where the browser assets live next to this module.
 ASSET_DIR = Path(__file__).with_name("assets")
+#: Fallback when the brand SVG cannot be read; NiceGUI accepts one character.
+_FAVICON_FALLBACK = "\u25c8"
 
-#: Asset name -> (filename, media type).
-ASSETS: dict[str, tuple[str, str]] = {
-    "app.css": ("app.css", "text/css; charset=utf-8"),
-    "app.js": ("app.js", "text/javascript; charset=utf-8"),
-    "cyborg-mark.svg": ("cyborg-mark.svg", "image/svg+xml"),
-    "InterVariable.woff2": ("InterVariable.woff2", "font/woff2"),
-}
+
+def _favicon() -> str:
+    """Return the brand SVG as text for NiceGUI's favicon route."""
+    try:
+        return (ASSET_DIR / "cyborg-mark.svg").read_text(encoding="utf-8")
+    except OSError:
+        return _FAVICON_FALLBACK
 
 
 @dataclass
@@ -98,7 +102,7 @@ def create_app(
     port: _PortRef,
     bind_host: str = LOCALHOST,
 ) -> FastAPI:
-    """Compose the shell, the assets and the JSON API into one ASGI app."""
+    """Compose NiceGUI, the assets and the JSON API into one ASGI app."""
     app = FastAPI(
         title="DeepPyro",
         docs_url=None,
@@ -107,6 +111,7 @@ def create_app(
         default_response_class=JSONResponse,
     )
     app.include_router(build_router(service_provider=service_provider, context=context))
+    app.mount("/brand", StaticFiles(directory=ASSET_DIR), name="brand")
 
     @app.exception_handler(HttpError)
     async def http_error_handler(request: Request, exc: HttpError) -> JSONResponse:
@@ -121,50 +126,17 @@ def create_app(
             headers={"cache-control": "no-store"},
         )
 
-    def shell(path: str, *, section: str | None = None, session_id: str | None = None) -> str:
-        return build_shell(
-            path=path,
-            section=section,
-            session_id=session_id,
-            version=context.version,
-        )
-
-    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-    async def index() -> HTMLResponse:
-        return HTMLResponse(shell("/"))
-
-    @app.get("/c/{session_id}", response_class=HTMLResponse, include_in_schema=False)
-    async def session_page(session_id: str) -> HTMLResponse:
-        return HTMLResponse(shell(f"/c/{session_id}", session_id=session_id))
-
-    @app.get("/palette", response_class=HTMLResponse, include_in_schema=False)
-    async def palette_page() -> HTMLResponse:
-        return HTMLResponse(shell("/palette"))
-
-    @app.get("/settings", response_class=HTMLResponse, include_in_schema=False)
-    async def settings_page() -> HTMLResponse:
-        return HTMLResponse(shell("/settings"))
-
-    @app.get("/settings/{section}", response_class=HTMLResponse, include_in_schema=False)
-    async def settings_section_page(section: str) -> HTMLResponse:
-        return HTMLResponse(shell(f"/settings/{section}", section=section))
-
-    @app.get("/ui/{asset}", include_in_schema=False)
-    async def asset(asset: str) -> Response:
-        entry = ASSETS.get(asset)
-        if entry is None:
-            return JSONResponse(
-                {"error": {"code": "not_found", "message": "no such asset"}},
-                status_code=404,
-                headers={"cache-control": "no-store"},
-            )
-        filename, media_type = entry
-        body = (ASSET_DIR / filename).read_bytes()
-        return Response(
-            content=body,
-            media_type=media_type,
-            headers={"cache-control": "public, max-age=3600"},
-        )
+    bridge = WebUiBridge(service_provider(), context)
+    register_pages(bridge)
+    ui.run_with(
+        app,
+        title="DeepPyro",
+        favicon=_favicon(),
+        dark=True,
+        storage_secret=context.token,
+        show_welcome_message=False,
+        mount_path="/",
+    )
 
     # Middleware order: security outermost, auth inside it, so redirects and
     # rejections carry the same hardening headers as normal pages.
@@ -179,7 +151,7 @@ def create_app(
 
 
 class UiServer:
-    """A loopback uvicorn server bound to the P1 ASGI app."""
+    """A loopback uvicorn server bound to the NiceGUI ASGI app."""
 
     def __init__(
         self,
@@ -248,7 +220,7 @@ class UiServer:
                 self._app,
                 log_level="warning",
                 access_log=False,
-                lifespan="off",
+                lifespan="on",
                 timeout_keep_alive=int(self._idle_timeout),
             )
             server = uvicorn.Server(config)
@@ -312,7 +284,6 @@ class UiServer:
 
 
 __all__ = [
-    "ASSETS",
     "ASSET_DIR",
     "SecurityHeadersMiddleware",
     "UiServer",

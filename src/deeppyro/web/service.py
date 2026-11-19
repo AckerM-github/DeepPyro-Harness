@@ -41,6 +41,7 @@ from deeppyro.builtin.schedule import SchedulePlugin
 from deeppyro.builtin.sessions import SessionsPlugin
 from deeppyro.builtin.settings import SettingsPlugin
 from deeppyro.builtin.tools import ToolsPlugin
+from deeppyro.builtin.usage import UsageService
 from deeppyro.config import Config, ProviderConfig
 from deeppyro.core.errors import ConfigError
 from deeppyro.core.messages import (
@@ -161,6 +162,7 @@ class HostServices:
     permission_presets: PermissionPresetsService
     working_directory: WorkingDirectoryService | None
     tool_services: Mapping[str, object]
+    usage: UsageService | None = None
 
 
 def resolve_host_services(app: Any) -> HostServices:
@@ -197,6 +199,7 @@ def _build_host_services(
         permission_presets=require(PermissionPresetsService),
         working_directory=get(WorkingDirectoryService),
         tool_services=tool_services,
+        usage=get(UsageService),
     )
 
 
@@ -679,6 +682,25 @@ class WebSessionHost:
             "busy": bool(binding.host.busy) if active and binding is not None else False,
         }
 
+    def _ledger_usage(self, session_id: str) -> tuple[dict[str, int], int]:
+        """Usage totals and last request size from the local accounting ledger."""
+        service = self._services.usage
+        if service is None:
+            return {"input": 0, "output": 0, "cached": 0}, 0
+        totals = service.by_session().get(session_id)
+        if totals is None:
+            return {"input": 0, "output": 0, "cached": 0}, 0
+        context_tokens = 0
+        for record in reversed(service.records()):
+            if record.session_id == session_id:
+                context_tokens = record.input_tokens
+                break
+        return {
+            "input": totals.input_tokens,
+            "output": totals.output_tokens,
+            "cached": totals.cached_tokens,
+        }, context_tokens
+
     async def timeline(self, session_id: str) -> dict[str, Any]:
         """The browser transcript: messages, joined tool results and live status.
 
@@ -695,6 +717,8 @@ class WebSessionHost:
             state = view.fold().state
             usage = binding.host.usage()
             context_tokens = binding.host.context_tokens()
+            if not any(int(usage.get(key, 0)) for key in ("input", "output", "cached")):
+                usage, context_tokens = self._ledger_usage(session_id)
             busy = bool(binding.host.busy)
             pending = len(binding.pending)
             provider = state.model.provider if state.model is not None else binding.provider
@@ -709,8 +733,7 @@ class WebSessionHost:
             view = fold(log.header, log.events)
             messages = list(view.messages)
             state = view.state
-            usage = {"input": 0, "output": 0, "cached": 0}
-            context_tokens = 0
+            usage, context_tokens = self._ledger_usage(session_id)
             busy = False
             pending = 0
             provider = state.model.provider if state.model is not None else None

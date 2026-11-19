@@ -1,6 +1,6 @@
 # web: the loopback web host for the native runtime
 
-> **状态**：现行（0.3.0 · P1） · **层级**：Web 宿主规格 · **最后核对**：2026-11-19
+> **状态**：现行（0.3.0 · NiceGUI） · **层级**：Web 宿主规格 · **最后核对**：2026-11-19
 > 实现：`src/deeppyro/web/`；使用指南：[guides/web-ui.md](../guides/web-ui.md)。
 > 关联契约：[native/schema.md](../native/schema.md)（schema 1 会话）、[loop.md](loop.md)（AgentLoop）、
 > [sandbox.md](sandbox.md)、[plugin-platform.md](plugin-platform.md)、[tui.md](tui.md)（splash F1 入口）。
@@ -13,7 +13,7 @@ Web UI 是 native agent runtime 的**宿主/外壳（host and shell）**，不�
 §active binding§、一个有界发送队列、一个内存事件 journal 和一个审批 broker。进程重启后，
 浏览器凭 session id 重新回放，不依赖隐藏对话状态。
 
-0.3.0 的 P1 范围：真实 native 运行时的单会话 Web 宿主、Discord 密度的原创前端、SSE、
+0.3.0 的 Web 范围：真实 native 运行时的单会话 Web 宿主、Discord 密度的原创前端、SSE、
 工具调用卡、**工具审批 UI**、命令面板与 slash 命令、全量设置页、插件设置表单、CLI、
 TUI splash F1 接线、测试与本文档。**不包含**：多会话并行、远程访问/TLS、团队模式 UI、
 附件上传、compaction UI、退出命令（关闭浏览器标签即可）。
@@ -36,11 +36,11 @@ core bundle **不包含** web 插件行：`WebHostPlugin` 由 launcher/集成方
       |     start() -> WebHost.start(...)   stop() -> WebHost.stop()
       |
       +-- WebHost                                      src/deeppyro/web/host.py
-      |     WebSessionHost (runtime)  +  UiServer (P1) | WebServer (legacy stdlib)
+      |     WebSessionHost (runtime)  +  UiServer | WebServer (legacy stdlib)
       |
-      +-- UiServer (FastAPI + uvicorn)                 src/deeppyro/web/ui/server.py
+      +-- UiServer (FastAPI + uvicorn + NiceGUI)       src/deeppyro/web/ui/server.py
       |     127.0.0.1 only, loopback auth middleware, security headers,
-      |     server-rendered shell, /ui assets, /api/ui JSON + SSE
+      |     JSON API + SSE, five NiceGUI page routes, /brand static assets
       |
       +-- WebSessionHost (WebService)                  src/deeppyro/web/service.py
             SessionsPlugin.native_*        (facts: create/open/list/read/fold)
@@ -50,18 +50,21 @@ core bundle **不包含** web 插件行：`WebHostPlugin` 由 launcher/集成方
             WebAgentHooks -> EventJournal -> SSE
             NativeSessionControl / fold (facts for settings/commands/inspector)
 
-    browser (server-rendered shell + vanilla JS)
+    NiceGUI page (Python element tree -> Quasar/Vue in the browser)
+      pages.py  -> layout.py (rail/sidebar/stage/inspector)
+                -> chat.py | settings_view.py | palette.py
       --fetch()-->      /api/ui/...          (sessions, timeline, commands, settings)
       --EventSource-->  /api/ui/sessions/{id}/events   (live turn + approvals)
-      --timeline-->     /api/ui/sessions/{id}/timeline (facts replay)
+      --websocket-->    /_nicegui/ws         (element updates, dialogs, timers)
 
-### 2.1 为什么是 FastAPI 而不是 NiceGUI 组件树
+### 2.1 从 P1 静态 shell 切到 NiceGUI
 
-P0 样机验证了 NiceGUI 能承载 Discord 风格的三栏布局；但 P1 需要**精确控制**
-四栏密度、消息分组、工具卡、审批卡、命令面板与设置表单，而 NiceGUI 的组件树
-会不断与自有 CSS/JS 争夺 DOM。最终采用 **FastAPI + 服务端渲染 shell + 同源
-vanilla JS**：Python 侧保留完整宿主/路由/校验/设置能力，视觉层完全可控。
-这是对 P0 选型的修正，不是隐藏的第二套运行时；NiceGUI 依赖已移除。
+P1 曾用 FastAPI + 服务端 HTML + 手写 vanilla JS 实现四栏外壳；0.3 的 Web UI 按
+产品决定**全量切到 NiceGUI 4**：页面、四栏布局、消息流、工具/审批卡、命令面板、
+设置表单都是 Python 元素树，浏览器侧由 NiceGUI 自带的 Quasar/Vue 渲染，不再维护
+手写 `app.js`/`app.css`。FastAPI 仍是 ASGI 宿主，`/api/ui/*` 与 SSE 契约不变；
+NiceGUI 只负责页面与交互，不持有会话状态。视觉由 `theme.py` + 三份
+`/brand/*.css` 控制，Discord 密度的排版仍是自有设计，不复用第三方组件库。
 
 一次 turn 的路径与 TUI 相同：`POST /messages` -> 有界队列 -> `NativeAgentHost.send()`
 -> AgentLoop 发出 `AgentHooks` 事件 -> `WebAgentHooks` 转 typed wire event -> journal -> SSE。
@@ -87,10 +90,17 @@ vanilla JS**：Python 侧保留完整宿主/路由/校验/设置能力，视觉�
 | `ui/api.py` | `/api/ui/*` JSON 路由、命令分发、设置读写、审批决策、SSE |
 | `ui/commands.py` | 25 个 slash 命令的 Web 执行器（真实动作或诚实拒绝） |
 | `ui/settings.py` | `ConfigEditor`（文本级编辑 + 校验 + 原子写 + .bak）、`settings_payload`、provider 探活 |
-| `ui/server.py` | FastAPI app、安全/鉴权中间件、5 个页面路由、资产、`UiServer` 生命周期 |
-| `ui/shell.py` | 服务端渲染的 SPA 外壳（四栏骨架、稳定 ID、按需 New session 弹窗、无数据 bootstrap） |
-| `ui/assets/app.css` | Discord 密度视觉（深色层级、四栏、消息/工具/审批/设置/响应式） |
-| `ui/assets/app.js` | 无框架前端：bootstrap、timeline、SSE、命令、设置、审批、toast |
+| `ui/server.py` | FastAPI app、NiceGUI `run_with`、安全/鉴权中间件、5 个页面路由、`/brand` 静态资产、`UiServer` 生命周期 |
+| `ui/pages.py` | NiceGUI 页面注册：`/`、`/c/{id}`、`/palette`、`/settings`、`/settings/{section}` |
+| `ui/bridge.py` | `WebUiBridge`：页面到 `WebSessionHost` 的 typed 边界（bootstrap/sessions/timeline/send/approvals/settings/commands） |
+| `ui/layout.py` | 四栏外壳：rail、会话侧栏、`ChatView` 舞台、inspector、New session 弹窗 |
+| `ui/chat.py` | 消息流、SSE/轮询、工具卡、审批卡、composer、slash 命令 |
+| `ui/settings_view.py` | 全屏设置：provider/agent/permissions/commands/plugins/sessions/web/about |
+| `ui/palette.py` | 命令面板：命令/会话/设置搜索、键盘导航、执行与导航 |
+| `ui/theme.py` | `/brand` 样式表、Material 图标、头像/徽标/时间/主按钮样式 |
+| `ui/assets/style.css` | 设计 token、reset、四栏、rail/sidebar/inspector |
+| `ui/assets/chat.css` | 消息、工具卡、审批卡、composer |
+| `ui/assets/settings.css` | 设置页与命令面板 |
 | `ui/assets/cyborg-mark.svg` | 原创半面罩机器标（rail/avatar/favicon） |
 | `__main__.py` / `version.py` | CLI 入口、独立版本常量 |
 
@@ -100,18 +110,19 @@ vanilla JS**：Python 侧保留完整宿主/路由/校验/设置能力，视觉�
 校验后 303 到去掉 token 的 URL，并设置 `dpyro_web`（HttpOnly、SameSite=Strict、Path=/）。
 后续请求用 cookie；测试/CLI 可用 `Authorization: Bearer <token>`。API 不重定向，直接 401/403 JSON。
 
-页面（同一 SPA，JS 读 `location.pathname`）：
+页面（五个 NiceGUI 路由，共用 `ShellView`；`/palette` 与 `/settings` 是路由，不是弹层）：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/` | 首页（当前或新会话） |
+| GET | `/` | 首页（当前或新建会话） |
 | GET | `/c/{session_id}` | 指定会话 |
 | GET | `/palette` | 命令面板打开态 |
 | GET | `/settings` | 全屏设置 |
 | GET | `/settings/{section}` | 指定设置分区 |
-| GET | `/ui/{asset}` | app.css/app.js/cyborg-mark.svg/InterVariable.woff2 |
+| GET | `/brand/{asset}` | style.css/chat.css/settings.css/cyborg-mark.svg/InterVariable.woff2 |
+| GET/WS | `/_nicegui/*` | NiceGUI 自有静态资源、WebSocket、favicon |
 
-P1 API：
+Web API：
 
 | 方法 | 路径 | 请求体 | 响应 |
 | --- | --- | --- | --- |
@@ -137,7 +148,7 @@ P1 API：
 | PUT | `/api/ui/plugins/{id}/settings` | `{values,expected_revision?}` | 写回 + live/restart 字段 |
 
 旧 `/api/*` 家族（`/api/health`、`/api/sessions...`、旧 SSE）保留给 stdlib 宿主与兼容客户端；
-P1 前端只使用 `/api/ui/*`。错误统一 `{"error":{"code","message"}}`：
+NiceGUI 前端只使用 `/api/ui/*`。错误统一 `{"error":{"code","message"}}`：
 400 参数、401 token、403 Host/Origin、404 路由/会话/审批、405 方法、409 会话锁/设置版本冲突、
 413 body 超过 1 MiB、429 队列满、500 内部、503 服务缺失/关闭中。
 
@@ -266,7 +277,7 @@ TUI splash：**F1** 让 `DeepPyroApp.run()` 返回 `"web"`，`tui/main.py` 调
     # config = { autostart = false, port = 0 }
 
 挂载后插件惰性（`setup()` 绝不监听）；`plugin.start(port=0, cwd=...)` 显式启动，
-`plugin.stop()`/unmount 关闭。`WebHost.start(ui=True)` 使用 P1 UiServer；
+`plugin.stop()`/unmount 关闭。`WebHost.start(ui=True)` 使用 UiServer（FastAPI + NiceGUI）；
 `ui=False` 保留 stdlib WebServer（旧 API/测试）。
 
 ## 10. 三条原则映射（Three principles）
@@ -292,26 +303,29 @@ usage/tokens/context 来自 native host 的 taps；审批是显式事实与显�
 - 发送队列/审批/journal 都在内存，进程退出即丢失；历史只在 native log。
 - 无 TLS、仅本机单用户；token 首次进入 URL/历史，随后换成 HttpOnly cookie。
 - 团队模式（team preset）在 Web 运行时仍被拒绝（409），团队只在 TUI/headless 可用。
-- 未挂接会话的历史 usage/context 显示为 0（native facts 无按会话 token 账本）。
+- 未挂接会话的 usage 从本地 usage ledger（`~/.dpro/usage/usage.jsonl`）回填；context 取该会话最后一次请求的 input_tokens，不是 runtime 实时值。
+- NiceGUI 需要放宽 CSP 的 `unsafe-inline`/`unsafe-eval`（Vue runtime compiler）；脚本仍只允许同源，页面不加载 CDN。
 - 无附件上传、无 compaction UI、无多会话并行、无移动端专门布局。
 - 无退出命令；关闭标签页/Ctrl-C 结束宿主。
-- `ui=False` 的 stdlib 宿主仍存在，但无 P1 的壳/命令/设置/审批；生产 launcher 默认 `ui=True`。
+- `ui=False` 的 stdlib 宿主仍存在，但无 NiceGUI 壳/命令/设置/审批；生产 launcher 默认 `ui=True`。
 - 浏览器需支持 ES2020 + EventSource + fetch（现代 Chromium/Firefox/Safari）。
 
 ## 12. 测试（Tests）
 
-`tests/web/` 131 passed（本机 loopback，无外部网络）：
+`tests/web/` 182 passed（本机 loopback，无外部网络）：
 
 - `test_server.py`：stdlib 宿主绑定/鉴权/SSE/队列/插件缝/真实 kernel boot。
-- `test_ui_auth.py`：token→cookie 303、API 401/403、Host/Origin/Sec-Fetch-Site、WS 1008。
-- `test_ui_shell.py`：五路由、稳定 ID、资产、无数据 bootstrap、CSP/安全头。
+- `test_ui_auth.py`：token→cookie 303、API 401/403、Host/Origin/Sec-Fetch-Site、WS 1008、CSP 头。
+- `test_ui_bridge.py`：页面桥接的 bootstrap 投影、timeline journal_seq、typed 错误、命令/审批/设置转发。
+- `test_ui_chat.py`：ChatView 渲染与 SSE/轮询、草稿、工具/审批卡、只读/中断、slash 命令。
+- `test_ui_settings_view.py`：设置 schema、provider 表单、保存/测试反馈、插件 field。
+- `test_ui_palette.py`：命令/会话/设置分组、过滤、键盘选择、执行结果路由。
 - `test_ui_commands.py`：new/resume/sessions/rename/archive/permission/status/plan/goal/plugins/
   settings/clear、cwd 无参只读/带路径新建/无效目录报错与诚实拒绝。
 - `test_ui_settings.py`：ConfigEditor 原子写/.bak/注释保留/字段校验/provider 探活/插件 CAS。
 - `test_approvals.py`：broker pending/decide/timeout/cancel/session 过滤。
 - `test_timeline.py`：missing tool result 保持 pending、真实 result 合并、错误合并。
-- `test_launch.py`：launcher banner/Ctrl-C 130/关闭。
-- `test_frontend.py`：无内联脚本、无 CDN、转义、SSE/fetch、snake_case、无构建。
+- `test_launch.py`：launcher banner/Ctrl-C 130/关闭/open_browser。
 
 验证命令：
 

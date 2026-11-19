@@ -15,6 +15,7 @@ dependencies = [
   "pillow>=11",
   "fastapi>=0.165.0",
   "uvicorn>=0.54.0",
+  "nicegui>=4.0,<5",
 ]
 
 [dependency-groups]

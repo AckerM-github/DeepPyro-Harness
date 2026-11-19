@@ -36,12 +36,16 @@ COOKIE_NAME = "dpyro_web"
 #: The token query parameter accepted on the first page request.
 TOKEN_QUERY = "token"
 
-#: Content-Security-Policy for the server-rendered shell. Every script and
-#: style is a same-origin asset, so no inline grant is needed.
+#: Content-Security-Policy for the NiceGUI shell. NiceGUI bootstraps with
+#: small inline style/script blocks, evaluates Vue templates at runtime, and
+#: opens a same-origin WebSocket, so those grants are explicit. Everything else
+#: still has to be same-origin; there is no CDN.
 UI_CSP = (
-    "default-src 'none'; script-src 'self'; style-src 'self'; "
-    "connect-src 'self'; img-src 'self' data:; font-src 'self'; "
-    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    "default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+    "style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; "
+    "img-src 'self' data: blob:; font-src 'self' data:; "
+    "worker-src 'self' blob:; base-uri 'none'; form-action 'self'; "
+    "frame-ancestors 'none'"
 )
 
 #: Dotted cookie attributes safe to emit for a loopback-only host.
@@ -85,14 +89,10 @@ class LoopbackAuthMiddleware:
             return
         path = str(scope.get("path", "/") or "/")
         query = scope.get("query_string", b"")
-        is_api = path.startswith("/api/")
-        if header_ok and not cookie_ok and not is_api:
-            # A CLI client that follows the token URL gets the same upgrade
-            # as a browser: set the cookie, then continue to the clean path.
-            await self._redirect(scope, receive, send, path=path, query=query, port=port)
-            return
         if not cookie_ok and _is_page(path):
-            # First browser hit: valid query token without the cookie yet.
+            # First browser hit: a valid query token (or a CLI bearer) without
+            # the cookie yet. APIs and assets are served directly so a HEAD or
+            # an asset preload never turns into a redirect loop.
             await self._redirect(scope, receive, send, path=path, query=query, port=port)
             return
         await self._app(scope, receive, send)
@@ -197,6 +197,10 @@ def _presented_token(headers: Mapping[str, str], query: bytes) -> str | None:
 
 def _is_page(path: str) -> bool:
     if path.startswith("/api/"):
+        return False
+    if path.startswith("/brand/") or path.startswith("/_nicegui/"):
+        return False
+    if path == "/favicon.ico":
         return False
     return not path.startswith("/ui/")
 

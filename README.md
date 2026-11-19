@@ -22,13 +22,14 @@
 | 入口 | 用途 | 启动方式 |
 | --- | --- | --- |
 | **TUI** | 日常交互、会话管理、team/subagent、goal、hooks、PTC | `dpyro`（默认终端） |
-| **Web UI** | 浏览器外壳；只监听 `127.0.0.1`，四栏会话/命令/设置/审批 | TUI 启动页按 **F1**，或 `python -m deeppyro.web` |
+| **Web UI** | NiceGUI 浏览器外壳；只监听 `127.0.0.1`，四栏会话/命令/设置/审批 | TUI 启动页按 **F1**，或 `python -m deeppyro.web` |
 | **headless** | 脚本/CI；人类摘要或 NDJSON | `dpyro --headless "..."` |
 
 启动页：**F1 = Web，F2 / Enter = 终端**。Web 进程由宿主显式启动，不监听时只是一个惰性插件；
 页面只负责发命令、订阅 SSE、回放 native facts，所有会话状态都在 append-only 日志里。
-P1 Web UI 提供真实会话、流式聊天、工具/审批卡、命令面板和全量设置页；FastAPI + uvicorn
-承载 Python 宿主，前端是同源 HTML/CSS/JS，无构建步骤。
+NiceGUI Web UI 提供真实会话、流式聊天、工具/审批卡、命令面板和全量设置页；FastAPI +
+uvicorn 承载 Python 宿主，页面是 Python 元素树，浏览器侧由 NiceGUI 自带的 Quasar/Vue 渲染，
+无前端构建步骤。
 
 ```powershell
 uv sync

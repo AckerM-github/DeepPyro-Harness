@@ -625,6 +625,7 @@ class ConfigEditor:
                     "name": name,
                     "api": provider.api,
                     "base_url": provider.base_url,
+                    "api_key_env": provider.api_key_env,
                     "api_key_set": bool(provider.resolve_api_key()),
                     "models": [
                         {

@@ -132,6 +132,7 @@ class WebHostPlugin(Service):
                 host=settings.host,
                 token=self._token,
                 registry=self._registry,
+                ui=True,
             )
             self._host = host
             logger.info("web host listening at %s", host.url)

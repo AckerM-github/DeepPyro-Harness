@@ -1,7 +1,9 @@
-"""Local web surface for DeepPyro (P1 single-page shell).
+"""NiceGUI surface for the loopback web host.
 
-The shell package is UI-only: it owns static markup and browser assets and never
-opens sockets or reads agent state. Host integration lives in the web server.
+The package is presentation-only: pages call WebUiBridge, and the bridge narrows
+the native WebSessionHost to dictionaries. No module here opens a socket, boots a
+kernel, or reads a session log directly. The ASGI composition lives in
+deeppyro.web.ui.server.
 """
 
 from __future__ import annotations

@@ -116,7 +116,7 @@ def test_snapshot_never_exposes_api_keys(tmp_path):
 
     assert SECRET not in json.dumps(snapshot)
     deepseek = next(item for item in snapshot["providers"] if item["name"] == "deepseek")
-    assert set(deepseek) == {"name", "api", "base_url", "api_key_set", "models"}
+    assert set(deepseek) == {"name", "api", "base_url", "api_key_env", "api_key_set", "models"}
     assert deepseek["api_key_set"] is True
     assert deepseek["models"][0]["id"] == "deepseek-chat"
     assert set(deepseek["models"][0]) == {"id", "name", "context_window"}

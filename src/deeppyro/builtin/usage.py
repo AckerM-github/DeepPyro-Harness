@@ -235,7 +235,8 @@ class UsageService(Service):
 
     # -- wiring --------------------------------------------------------
     def setup(self) -> None:
-        """Subscribe the v4 record reporter when a hook service is available."""
+        """Seed totals from the ledger and subscribe the record reporters."""
+        self.replay()
         hooks = self.ctx.get(HookService)
         if hooks is None:
             return

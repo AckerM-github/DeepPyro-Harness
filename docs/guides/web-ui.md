@@ -1,12 +1,12 @@
 # Web UI 使用指南（本地回环宿主）
 
-> **状态**：现行（0.3.0 · P1） · **层级**：操作指南 · **最后核对**：2026-11-19
+> **状态**：现行（0.3.0 · NiceGUI） · **层级**：操作指南 · **最后核对**：2026-11-19
 > 规格：[spec/web.md](../spec/web.md)。本指南覆盖启动（含 TUI splash F1）、界面、命令与设置、
 > 审批、打包与排错。
 
 ## 1. 启动
 
-前提：Python 环境已安装（仓库自带 `.venv`）。P1 Web 宿主依赖 FastAPI + uvicorn，
+前提：Python 环境已安装（仓库自带 `.venv`）。Web 宿主依赖 FastAPI + uvicorn + NiceGUI 4，
 由 `uv sync` 安装。
 
 两种进入方式，启动的都是同一个 loopback Web 宿主：
@@ -36,7 +36,7 @@
 
 ## 2. 界面
 
-四栏结构（Discord 密度的原创布局）：
+四栏结构（Discord 密度的原创布局，由 NiceGUI 元素树渲染）：
 
 - **Rail（最左）**：原创半面罩机器标、工作区头像、新建会话（弹窗选择目录）、设置/帮助/用户入口。
 - **Sidebar**：搜索、Sessions / Commands / Plugins 导航、native 会话列表（标题、turn 数、
@@ -79,7 +79,7 @@ Commands（25 个 core command）、Sessions（搜索/跳转）、Settings（分
 
 ## 4. 设置
 
-设置是全屏弹层（侧栏 Settings 或 `Ctrl/Cmd+,`），分区：
+设置是全屏路由 `/settings`（侧栏 Settings 或 `Ctrl/Cmd+,`），分区：
 
 - **Provider & models**：provider/model 选择、Base URL、API key（只写不读，显示 `api_key_set`）、
   温度、max tokens、连接测试；保存后校验并原子写 `~/.dpro/config.toml`，生成编号 `.bak`。
@@ -119,10 +119,11 @@ Stop 按钮向宿主发 `POST /interrupt`，由 `NativeAgentHost.interrupt()` �
 
 ## 7. 打包说明
 
-- 服务器是 FastAPI + uvicorn，只绑回环；前端是 `web/ui/shell.py` 生成的 HTML +
-  `web/ui/assets/` 下的 CSS/JS/SVG/字体，无构建步骤、无 CDN。
-- PyInstaller 等单文件打包需收集 `src/deeppyro/web/ui/assets/`（`app.css`、`app.js`、
-  `cyborg-mark.svg`、`InterVariable.woff2`）。FastAPI/uvicorn 是普通 Python 依赖。
+- 服务器是 FastAPI + uvicorn + NiceGUI 4，只绑回环；页面是 Python 元素树，浏览器侧由
+  NiceGUI 自带的 Quasar/Vue 渲染，无前端构建步骤、无 CDN。
+- PyInstaller 等单文件打包需收集 `src/deeppyro/web/ui/assets/`（`style.css`、`chat.css`、
+  `settings.css`、`cyborg-mark.svg`、`InterVariable.woff2`），并让 NiceGUI 的静态资源随包分发。
+  FastAPI/uvicorn/NiceGUI 都是普通 Python 依赖。
 - 打包后行为不变：启动打印随机 token 的 loopback URL；token 每进程不同，重启后旧 URL 失效。
 - 只绑回环且不提供 TLS，请勿把端口转发到局域网/公网。
 

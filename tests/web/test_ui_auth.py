@@ -149,6 +149,43 @@ async def test_api_accepts_a_query_token_for_cli_clients() -> None:
 
 
 @pytest.mark.asyncio
+async def test_websocket_with_the_cookie_is_accepted() -> None:
+    sent, downstream = await _exchange(
+        _scope("/_nicegui/ws", cookie=f"{COOKIE_NAME}={TOKEN}", kind="websocket")
+    )
+    assert sent[0]["type"] == "websocket.accept"
+    assert len(downstream.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_websocket_without_a_token_is_closed() -> None:
+    sent, downstream = await _exchange(_scope("/_nicegui/ws", kind="websocket"))
+    assert sent[0] == {"type": "websocket.close", "code": 1008}
+    assert not downstream.calls
+
+
+@pytest.mark.asyncio
+async def test_cross_site_websocket_is_closed() -> None:
+    sent, downstream = await _exchange(
+        _scope(
+            "/_nicegui/ws",
+            cookie=f"{COOKIE_NAME}={TOKEN}",
+            origin="http://evil.example",
+            kind="websocket",
+        )
+    )
+    assert sent[0] == {"type": "websocket.close", "code": 1008}
+    assert not downstream.calls
+
+
+@pytest.mark.asyncio
+async def test_brand_asset_with_a_bearer_is_served_without_a_redirect() -> None:
+    sent, downstream = await _exchange(_scope("/brand/style.css", authorization=f"Bearer {TOKEN}"))
+    assert _status(sent) == 200
+    assert downstream.calls[0]["path"] == "/brand/style.css"
+
+
+@pytest.mark.asyncio
 async def test_cross_site_origin_is_forbidden_even_with_a_valid_cookie() -> None:
     sent, downstream = await _exchange(
         _scope(
