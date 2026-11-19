@@ -1,6 +1,9 @@
 # web: the loopback web host for the native runtime
 
-> **状态**：现行（0.3.0 · NiceGUI） · **层级**：Web 宿主规格 · **最后核对**：2026-11-19
+> **状态**：迁移中（0.3.0 · React SPA） · **层级**：Web 宿主规格 · **最后核对**：2026-11-20
+>
+> 2026-11-20 起浏览器层已切换为 React/TS SPA，NiceGUI 已移除。本文的路由/组件段落仍保留旧 NiceGUI 描述，
+> 待按 `docs/design/web-ui-followups.md` 重写；JSON API、鉴权与宿主生命周期仍然有效。
 > 实现：`src/deeppyro/web/`；使用指南：[guides/web-ui.md](../guides/web-ui.md)。
 > 关联契约：[native/schema.md](../native/schema.md)（schema 1 会话）、[loop.md](loop.md)（AgentLoop）、
 > [sandbox.md](sandbox.md)、[plugin-platform.md](plugin-platform.md)、[tui.md](tui.md)（splash F1 入口）。

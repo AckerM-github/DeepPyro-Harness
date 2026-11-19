@@ -150,16 +150,14 @@ async def test_api_accepts_a_query_token_for_cli_clients() -> None:
 
 @pytest.mark.asyncio
 async def test_websocket_with_the_cookie_is_accepted() -> None:
-    sent, downstream = await _exchange(
-        _scope("/_nicegui/ws", cookie=f"{COOKIE_NAME}={TOKEN}", kind="websocket")
-    )
+    sent, downstream = await _exchange(_scope("/ws", cookie=f"{COOKIE_NAME}={TOKEN}", kind="websocket"))
     assert sent[0]["type"] == "websocket.accept"
     assert len(downstream.calls) == 1
 
 
 @pytest.mark.asyncio
 async def test_websocket_without_a_token_is_closed() -> None:
-    sent, downstream = await _exchange(_scope("/_nicegui/ws", kind="websocket"))
+    sent, downstream = await _exchange(_scope("/ws", kind="websocket"))
     assert sent[0] == {"type": "websocket.close", "code": 1008}
     assert not downstream.calls
 
@@ -168,7 +166,7 @@ async def test_websocket_without_a_token_is_closed() -> None:
 async def test_cross_site_websocket_is_closed() -> None:
     sent, downstream = await _exchange(
         _scope(
-            "/_nicegui/ws",
+            "/ws",
             cookie=f"{COOKIE_NAME}={TOKEN}",
             origin="http://evil.example",
             kind="websocket",

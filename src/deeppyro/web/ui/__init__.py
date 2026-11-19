@@ -1,7 +1,7 @@
-"""NiceGUI surface for the loopback web host.
+"""Loopback web surface for the native agent runtime.
 
-The package is presentation-only: pages call WebUiBridge, and the bridge narrows
-the native WebSessionHost to dictionaries. No module here opens a socket, boots a
+The JSON API in api.py is a thin projection over WebSessionHost; the browser is a
+prebuilt React SPA served from static/. No module here opens a socket, boots a
 kernel, or reads a session log directly. The ASGI composition lives in
 deeppyro.web.ui.server.
 """

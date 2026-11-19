@@ -36,12 +36,12 @@ COOKIE_NAME = "dpyro_web"
 #: The token query parameter accepted on the first page request.
 TOKEN_QUERY = "token"
 
-#: Content-Security-Policy for the NiceGUI shell. NiceGUI bootstraps with
-#: small inline style/script blocks, evaluates Vue templates at runtime, and
-#: opens a same-origin WebSocket, so those grants are explicit. Everything else
-#: still has to be same-origin; there is no CDN.
+#: Content-Security-Policy for the React/Vite SPA. The Vite build ships
+#: external scripts and styles, sets inline style attributes, streams SSE from
+#: the same origin and may use workers for the bundled editors, so those grants
+#: are explicit. There is no eval and no CDN: everything else is same-origin.
 UI_CSP = (
-    "default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+    "default-src 'none'; script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; "
     "img-src 'self' data: blob:; font-src 'self' data:; "
     "worker-src 'self' blob:; base-uri 'none'; form-action 'self'; "
@@ -195,14 +195,23 @@ def _presented_token(headers: Mapping[str, str], query: bytes) -> str | None:
     return None
 
 
+#: Exact paths that are served directly, never as an HTML page.
+_NON_PAGE_PATHS = frozenset({"/api", "/assets", "/brand", "/favicon.ico"})
+#: Prefixes that are served directly; a token must never trigger a redirect.
+_NON_PAGE_PREFIXES = ("/api/", "/assets/", "/brand/")
+
+
 def _is_page(path: str) -> bool:
-    if path.startswith("/api/"):
+    """Whether a token-bearing request is an HTML navigation worth a redirect.
+
+    The JSON API and the static bundles (the hashed SPA build, the brand assets
+    and the favicon) are served directly so a HEAD or an asset preload never
+    turns into a redirect loop. `/ui/` is the legacy page prefix and, like
+    every other non-API path, falls through to the SPA shell.
+    """
+    if path in _NON_PAGE_PATHS:
         return False
-    if path.startswith("/brand/") or path.startswith("/_nicegui/"):
-        return False
-    if path == "/favicon.ico":
-        return False
-    return not path.startswith("/ui/")
+    return not path.startswith(_NON_PAGE_PREFIXES)
 
 
 def build_cookie(token: str) -> str:

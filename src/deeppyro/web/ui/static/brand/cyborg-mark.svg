@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="title desc">
+  <title id="title">DeepPyro half-mask machine mark</title>
+  <desc id="desc">An original asymmetric half-face mask mounted on a dark machine head, with one cyan sensor eye.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#242833"/>
+      <stop offset="0.55" stop-color="#161920"/>
+      <stop offset="1" stop-color="#0d0f13"/>
+    </linearGradient>
+    <linearGradient id="plate" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#f6f8fc"/>
+      <stop offset="0.42" stop-color="#cdd5e2"/>
+      <stop offset="0.78" stop-color="#98a4b6"/>
+      <stop offset="1" stop-color="#6d788b"/>
+    </linearGradient>
+    <linearGradient id="machine" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#394354"/>
+      <stop offset="0.55" stop-color="#222833"/>
+      <stop offset="1" stop-color="#12151b"/>
+    </linearGradient>
+    <linearGradient id="eye" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#b9f4ff"/>
+      <stop offset="0.5" stop-color="#62e6ff"/>
+      <stop offset="1" stop-color="#2d9bff"/>
+    </linearGradient>
+    <filter id="glow" x="-80%" y="-160%" width="260%" height="420%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <clipPath id="tile">
+      <rect x="24" y="24" width="464" height="464" rx="108"/>
+    </clipPath>
+  </defs>
+
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#bg)"/>
+  <rect x="24.5" y="24.5" width="463" height="463" rx="107.5" fill="none" stroke="#3a414f" stroke-width="1.5"/>
+
+  <g clip-path="url(#tile)">
+    <path d="M44 132h48M44 384h48M420 132h48M420 384h48" stroke="#485365" stroke-width="2" opacity="0.45"/>
+    <path d="M70 96v28M70 392v24M442 96v40M442 376v40" stroke="#485365" stroke-width="2" opacity="0.35"/>
+  </g>
+
+  <!-- exposed machine head -->
+  <path d="M256 76 L368 112 L412 210 L396 334 L326 416 L256 440 L186 416 L116 334 L100 210 L144 112 Z"
+        fill="url(#machine)" stroke="#4b5769" stroke-width="5" stroke-linejoin="round"/>
+
+  <!-- internal circuitry and core on the exposed side -->
+  <g fill="none" stroke="#59677d" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.9">
+    <path d="M302 132v48l-26 26v48"/>
+    <path d="M370 186v52l22 22v58"/>
+    <path d="M302 380v-40l24-24"/>
+    <path d="M362 354h30"/>
+  </g>
+  <circle cx="340" cy="286" r="46" fill="#101318" stroke="#59677d" stroke-width="6"/>
+  <circle cx="340" cy="286" r="29" fill="none" stroke="#334052" stroke-width="6"/>
+  <circle cx="340" cy="286" r="9" fill="#63e6ff" filter="url(#glow)"/>
+
+  <!-- asymmetric mask plate, separated by a jagged seam -->
+  <path d="M256 76
+           L144 112
+           L100 210
+           L116 334
+           L186 416
+           L256 440
+           L246 394
+           L272 354
+           L238 314
+           L266 274
+           L232 234
+           L258 194
+           L236 154 Z"
+        fill="url(#plate)" stroke="#eef3fb" stroke-width="4" stroke-linejoin="round"/>
+
+  <!-- panel lines and battle damage -->
+  <g fill="none" stroke="#5f6b7d" stroke-width="3" stroke-linecap="round" opacity="0.75">
+    <path d="M130 168 L246 148"/>
+    <path d="M132 270 L214 254"/>
+    <path d="M188 238 L202 276 L184 302 L198 338"/>
+    <path d="M142 364 L186 354"/>
+  </g>
+
+  <!-- eye socket and sensor slit -->
+  <path d="M148 204 L240 186 L231 228 L160 242 Z" fill="#10141a" stroke="#6d7a8f" stroke-width="3" stroke-linejoin="round"/>
+  <g filter="url(#glow)">
+    <path d="M164 212 L228 199 L221 219 L172 230 Z" fill="url(#eye)"/>
+  </g>
+  <path d="M177 210 L218 202" stroke="#e9fdff" stroke-width="2" opacity="0.9"/>
+
+  <!-- jaw vents -->
+  <g stroke="#29303c" stroke-width="10" stroke-linecap="round">
+    <path d="M150 328 L204 316"/>
+    <path d="M160 352 L214 338"/>
+    <path d="M172 376 L222 362"/>
+  </g>
+
+  <!-- temple module and bolts -->
+  <path d="M100 210 L128 220 L124 254 L96 242 Z" fill="#394456" stroke="#68768c" stroke-width="3"/>
+  <circle cx="116" cy="232" r="5" fill="#63e6ff"/>
+  <g fill="#64718a" stroke="#eef3fb" stroke-width="2">
+    <circle cx="142" cy="192" r="5"/>
+    <circle cx="128" cy="300" r="4.5"/>
+    <circle cx="210" cy="396" r="4.5"/>
+  </g>
+
+  <!-- exposed-side vents -->
+  <g stroke="#0f1217" stroke-width="9" stroke-linecap="round" opacity="0.9">
+    <path d="M310 356 L360 344"/>
+    <path d="M314 376 L364 364"/>
+    <path d="M320 396 L366 384"/>
+  </g>
+
+  <!-- subtle cyan seam light -->
+  <path d="M246 394 L272 354 L238 314 L266 274 L232 234 L258 194 L236 154" fill="none" stroke="#63e6ff" stroke-width="2" opacity="0.55"/>
+  <path d="M256 76 L236 154" fill="none" stroke="#eef3fb" stroke-width="4" stroke-linecap="round"/>
+</svg>

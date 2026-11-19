@@ -1,12 +1,16 @@
-"""ASGI server for the NiceGUI web UI.
+"""ASGI server for the static React/Vite web UI.
 
-The server owns the loopback socket, the cookie/token middleware, the JSON API
-and the NiceGUI mount. Agent state stays behind WebSessionHost; the JSON routes
-in api.py are pure projections and remain available for scripts and tests.
+The server owns the loopback socket, the cookie/token middleware and the JSON
+API. The browser surface is a prebuilt single-page app: `static/index.html` is
+the shell, `static/assets` carries the hashed Vite bundle and `assets` keeps
+the shared brand files. Every non-API path falls back to the shell so browser
+routing works, while `/api/*` stays a pure JSON surface.
 
-The public surface (`address`, `port`, `url`, `closing`, `start`,
-`serve_forever`, `close`) deliberately matches the original stdlib WebServer
-so WebHost can choose either server without changing its lifecycle.
+Agent state stays behind WebSessionHost; the JSON routes in api.py are pure
+projections and remain available for scripts and tests. The public surface
+(`address`, `port`, `url`, `closing`, `start`, `serve_forever`,
+`close`) deliberately matches the original stdlib WebServer so WebHost can
+choose either server without changing its lifecycle.
 """
 
 from __future__ import annotations
@@ -21,37 +25,21 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
-from nicegui import ui
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from deeppyro.web.security import LOCALHOST, SECURITY_HEADERS, validate_bind_host
 from deeppyro.web.ui.api import UiContext, build_router
 from deeppyro.web.ui.auth import UI_CSP, LoopbackAuthMiddleware
-from deeppyro.web.ui.bridge import WebUiBridge
-from deeppyro.web.ui.pages import register_pages
 from deeppyro.web.wire import HttpError
 
-#: Where the browser assets live next to this module.
+#: Where the shared brand assets live next to this module (/brand).
 ASSET_DIR = Path(__file__).with_name("assets")
-#: Fallback when the brand SVG cannot be read; NiceGUI accepts one character.
-_FAVICON_FALLBACK = "\u25c8"
-
-
-#: Socket.IO heartbeat window. NiceGUI derives ping interval/timeout from this
-#: value (80%/40%); the 3s default means a 4s ping with a 2s reply window, which
-#: a busy first paint can miss. Fifteen seconds keeps a transient stall from
-#: surfacing as "Connection lost" while still expiring a dead tab promptly.
-RECONNECT_TIMEOUT_SECONDS = 15.0
-
-
-def _favicon() -> str:
-    """Return the brand SVG as text for NiceGUI's favicon route."""
-    try:
-        return (ASSET_DIR / "cyborg-mark.svg").read_text(encoding="utf-8")
-    except OSError:
-        return _FAVICON_FALLBACK
+#: Where the Vite build (index.html plus assets/) is written next to this module.
+STATIC_DIR = Path(__file__).with_name("static")
+#: Body of the 503 returned while the SPA bundle has not been built.
+MISSING_BUILD_MESSAGE = "Web UI is not built. Run pnpm build in web/."
 
 
 @dataclass
@@ -102,6 +90,19 @@ def _http_error(exc: HttpError) -> JSONResponse:
     return JSONResponse(payload, status_code=exc.status, headers=headers)
 
 
+def _index_response() -> FileResponse | PlainTextResponse:
+    """Return the SPA shell, or a 503 while the Vite build is missing."""
+    index = STATIC_DIR / "index.html"
+    if not index.is_file():
+        return PlainTextResponse(MISSING_BUILD_MESSAGE, status_code=503)
+    return FileResponse(index)
+
+
+def _is_api_path(full_path: str) -> bool:
+    """Whether a catch-all path belongs to the JSON API."""
+    return full_path == "api" or full_path.startswith("api/")
+
+
 def create_app(
     *,
     service_provider: Callable[[], Any],
@@ -109,7 +110,7 @@ def create_app(
     port: _PortRef,
     bind_host: str = LOCALHOST,
 ) -> FastAPI:
-    """Compose NiceGUI, the assets and the JSON API into one ASGI app."""
+    """Compose the SPA shell, the shared assets and the JSON API into one ASGI app."""
     app = FastAPI(
         title="DeepPyro",
         docs_url=None,
@@ -119,6 +120,9 @@ def create_app(
     )
     app.include_router(build_router(service_provider=service_provider, context=context))
     app.mount("/brand", StaticFiles(directory=ASSET_DIR), name="brand")
+    assets_dir = STATIC_DIR / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
     @app.exception_handler(HttpError)
     async def http_error_handler(request: Request, exc: HttpError) -> JSONResponse:
@@ -133,18 +137,17 @@ def create_app(
             headers={"cache-control": "no-store"},
         )
 
-    bridge = WebUiBridge(service_provider(), context)
-    register_pages(bridge)
-    ui.run_with(
-        app,
-        title="DeepPyro",
-        favicon=_favicon(),
-        dark=True,
-        reconnect_timeout=RECONNECT_TIMEOUT_SECONDS,
-        storage_secret=context.token,
-        show_welcome_message=False,
-        mount_path="/",
-    )
+    @app.get("/", include_in_schema=False)
+    async def index() -> Response:
+        return _index_response()
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str) -> Response:
+        if _is_api_path(full_path):
+            # The JSON API is the only surface exempt from the SPA fallback;
+            # an unknown API path must stay a JSON 404, never an HTML shell.
+            raise StarletteHTTPException(status_code=404)
+        return _index_response()
 
     # Middleware order: security outermost, auth inside it, so redirects and
     # rejections carry the same hardening headers as normal pages.
@@ -159,7 +162,7 @@ def create_app(
 
 
 class UiServer:
-    """A loopback uvicorn server bound to the NiceGUI ASGI app."""
+    """A loopback uvicorn server bound to the SPA ASGI app."""
 
     def __init__(
         self,
@@ -293,6 +296,7 @@ class UiServer:
 
 __all__ = [
     "ASSET_DIR",
+    "STATIC_DIR",
     "SecurityHeadersMiddleware",
     "UiServer",
     "create_app",

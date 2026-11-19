@@ -1,5 +1,8 @@
 # NiceGUI Web UI (0.3 line, post-tag)
 
+> **已废弃（2026-11-20）**：本文件描述旧的 NiceGUI 实现，现已被 React/TS SPA 取代。
+> 当前实现与未完成事项见 `docs/design/web-ui-followups.md`。
+
 Status: implemented (0.3 line, post-tag). This document is the contract for
 the production switch away from the P1 hand-written single-page shell. The host
 runtime, JSON API and native session model do not change; the old `shell.py`,
