@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from deeppyro.core.errors import ConfigError
 from deeppyro.web.ui.commands import (
     STATUS_ERROR,
     STATUS_OK,
@@ -64,6 +65,8 @@ class FakeService:
         ]
     )
     calls: list[tuple[Any, ...]] = field(default_factory=list)
+    created: list[dict[str, Any]] = field(default_factory=list)
+    create_error: Exception | None = None
     services: Any = field(
         default_factory=lambda: SimpleNamespace(
             config=FakeConfig(),
@@ -79,8 +82,16 @@ class FakeService:
         return {"sessions": rows, "active_session_id": self.active_session_id}
 
     async def create_session(self, request: Any) -> dict[str, Any]:
+        if self.create_error is not None:
+            raise self.create_error
         self.calls.append(("create", request.title or ""))
-        return {"session_id": "session-new", "title": request.title or "", "resumed": False}
+        self.created.append({"cwd": request.cwd or "", "title": request.title or ""})
+        return {
+            "session_id": "session-new",
+            "title": request.title or "",
+            "resumed": False,
+            "cwd": request.cwd or "D:/work",
+        }
 
     async def resume_session(self, session_id: str) -> dict[str, Any]:
         self.calls.append(("resume", session_id))
@@ -159,6 +170,34 @@ async def test_new_starts_a_session_and_returns_its_id() -> None:
     assert result.status == STATUS_OK
     assert result.data["session_id"] == "session-new"
     assert service.calls == [("create", "a title")]
+
+
+@pytest.mark.asyncio
+async def test_cwd_without_arguments_reports_the_current_workspace() -> None:
+    service = FakeService()
+    result = await execute(service, context(), "cwd")
+    assert result.status == STATUS_OK
+    assert result.data["cwd"] == "D:/work"
+    assert service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_cwd_with_a_path_starts_a_session_there() -> None:
+    service = FakeService()
+    result = await execute(service, context(), "cwd", ["D:/projects/other"])
+    assert result.status == STATUS_OK
+    assert result.data["session_id"] == "session-new"
+    assert result.data["cwd"] == "D:/projects/other"
+    assert "previous session is still in the sidebar" in result.message
+    assert service.created[-1] == {"cwd": "D:/projects/other", "title": ""}
+
+
+@pytest.mark.asyncio
+async def test_cwd_reports_a_missing_directory_as_an_error() -> None:
+    service = FakeService(create_error=ConfigError("workspace directory does not exist: D:/nope"))
+    result = await execute(service, context(), "cwd", ["D:/nope"])
+    assert result.status == STATUS_ERROR
+    assert "workspace directory does not exist" in result.message
 
 
 @pytest.mark.asyncio

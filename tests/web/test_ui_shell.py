@@ -57,6 +57,10 @@ REQUIRED_IDS = (
     "session-list",
     "palette-overlay",
     "palette-search",
+    "new-session-overlay",
+    "new-session-cwd",
+    "new-session-form",
+    "new-session-error",
     "palette-results",
     "settings-overlay",
     "settings-nav-list",
@@ -199,6 +203,17 @@ def test_shell_has_the_four_regions_and_stable_control_ids() -> None:
     assert html.count('class="app') == 1
 
 
+def test_new_session_dialog_asks_for_a_workspace() -> None:
+    html = build_shell()
+
+    assert 'id="new-session-cwd"' in html
+    assert 'placeholder="D:/path/to/project"' in html
+    assert "Recent workspaces" in html
+    assert "The current session stays in the sidebar" in html
+    assert INLINE_SCRIPT.search(html) is None
+    assert INLINE_HANDLER.search(html) is None
+
+
 def test_every_route_renders_the_same_spa_frame() -> None:
     documents = (
         build_shell(path="/"),
@@ -331,6 +346,9 @@ def test_app_js_renders_live_bootstrap_sources() -> None:
     for state_name in ("state.sessions", "state.commands", "state.plugins", "state.providers"):
         assert state_name in APP_JS, f"app.js keeps no live {state_name}"
     assert "state.bootstrapped" in APP_JS
+    assert "function openNewSession" in APP_JS
+    assert "new-session-cwd" in APP_JS
+    assert "state.defaultCwd" in APP_JS
 
 
 def test_app_js_renders_with_text_nodes_only() -> None:
@@ -395,6 +413,8 @@ def test_app_css_is_packaged_and_hosts_the_spa() -> None:
         assert rule in APP_CSS, f"app.css missing host rule {rule}"
     assert '#dpyro-app[data-view="palette"] #palette-overlay' in APP_CSS
     assert '#dpyro-app[data-view="settings"] #settings-overlay' in APP_CSS
+    assert ".overlay-root.is-open" in APP_CSS
+    assert ".new-session-modal" in APP_CSS
     assert (
         re.search(r"grid-template-columns:\s*72px\s+266px\s+minmax\(0,\s*1fr\)\s+306px", APP_CSS) is not None
     )

@@ -45,6 +45,7 @@ ICONS: dict[str, str] = {
     "stop": '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>',
     "arrow-up": '<path d="M12 19V5M5 12l7-7 7 7"/>',
     "x": '<path d="M18 6 6 18M6 6l12 12"/>',
+    "folder": '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
 }
 
 RAIL_HTML = """
@@ -197,6 +198,35 @@ PALETTE_HTML = """
     <h2 class="sr-only" id="palette-title">Command palette</h2>
     <div class="palette-body" id="palette-results"><div class="state-block compact"><span class="spinner"></span><div><b>Loading palette</b><p>Reading commands from the local API.</p></div></div></div>
     <div class="palette-foot"><span><b>↑↓</b> navigate</span><span><b>↵</b> select</span><span><b>esc</b> close</span><span class="palette-brand">DEEPPYRO / LOCAL</span></div>
+  </div>
+</div>
+"""
+
+NEW_SESSION_HTML = """
+<div class="overlay-root" id="new-session-overlay" role="dialog" aria-modal="true" aria-labelledby="new-session-title">
+  <div class="new-session-modal">
+    <header class="new-session-head">
+      <div><h2 id="new-session-title">New session</h2><p>Each session keeps the working directory it starts in. The current session stays in the sidebar.</p></div>
+      <button class="icon-btn top-icon" type="button" id="new-session-close" aria-label="Close new session dialog">{x_icon}</button>
+    </header>
+    <form id="new-session-form">
+      <div class="new-session-body">
+        <label class="field" for="new-session-cwd">
+          <span class="field-label">Working directory <span class="field-hint">absolute path</span></span>
+          <span class="input-shell">{folder_icon}<input id="new-session-cwd" type="text" autocomplete="off" spellcheck="false" placeholder="D:/path/to/project"></span>
+          <span class="field-note" id="new-session-default">Leave empty to use the host default workspace.</span>
+        </label>
+        <div class="recent-block">
+          <div class="field-label">Recent workspaces</div>
+          <div class="recent-paths" id="new-session-recent"><span class="field-note">No recent workspaces yet.</span></div>
+        </div>
+        <p class="new-session-error" id="new-session-error" role="alert" hidden></p>
+      </div>
+      <footer class="new-session-foot">
+        <button class="ghost-btn" type="button" id="new-session-cancel">Cancel</button>
+        <button class="primary-btn" type="submit" id="new-session-submit">Start session</button>
+      </footer>
+    </form>
   </div>
 </div>
 """
@@ -391,6 +421,13 @@ def _palette_overlay() -> str:
     return PALETTE_HTML
 
 
+def _new_session_overlay() -> str:
+    return NEW_SESSION_HTML.format(
+        x_icon=icon("x", 16),
+        folder_icon=icon("folder", 14),
+    )
+
+
 def _settings_overlay() -> str:
     return SETTINGS_HTML.format(
         logo_small=brand(27),
@@ -419,6 +456,7 @@ def _shell_markup(state: ShellState) -> str:
         f"{_rail()}{_sidebar()}{_stage()}{_inspector()}"
         "</div>"
         f"{_palette_overlay()}"
+        f"{_new_session_overlay()}"
         f"{_settings_overlay()}"
         '<div class="toast-root" id="toast-root" role="status" aria-live="polite"></div>'
         '<noscript><div class="noscript">DeepPyro needs JavaScript and the local API. '

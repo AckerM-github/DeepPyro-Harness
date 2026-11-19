@@ -254,7 +254,10 @@ def build_router(
     @router.post("/api/ui/sessions")
     async def create_session(request: Request) -> JSONResponse:
         payload = CreateSessionRequest.from_payload(await _body(request))
-        result = await _service(service_provider).create_session(payload)
+        try:
+            result = await _service(service_provider).create_session(payload)
+        except (ValueError, ConfigError) as exc:
+            raise _config_error(exc) from exc
         return json_body(result, status=201)
 
     @router.post("/api/ui/sessions/{session_id}/resume")
@@ -474,7 +477,10 @@ def build_router(
     @router.post("/api/sessions")
     async def legacy_create(request: Request) -> JSONResponse:
         payload = CreateSessionRequest.from_payload(await _body(request))
-        result = await _service(service_provider).create_session(payload)
+        try:
+            result = await _service(service_provider).create_session(payload)
+        except (ValueError, ConfigError) as exc:
+            raise _config_error(exc) from exc
         return json_body(result, status=201)
 
     @router.get("/api/sessions/{session_id}")
@@ -556,6 +562,7 @@ def _defaults(service: Any) -> dict[str, Any]:
         "temperature": agent.temperature,
         "max_tokens": agent.max_tokens,
         "max_steps": agent.max_steps,
+        "cwd": str(getattr(service, "default_cwd", "") or ""),
     }
 
 

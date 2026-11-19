@@ -493,6 +493,11 @@ class WebSessionHost:
         return self._version
 
     @property
+    def default_cwd(self) -> str:
+        """The workspace a new session inherits when the request names none."""
+        return str(self._default_cwd)
+
+    @property
     def approvals(self) -> ApprovalBroker:
         """The loopback approval broker the sandbox gate asks."""
         return self._approvals

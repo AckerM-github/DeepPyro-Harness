@@ -364,7 +364,24 @@ textarea.composer-field::placeholder { color: #687589; }
 /* ---------------- overlay / palette ---------------- */
 .overlay-root { position: fixed; inset: 0; z-index: 100; display: none; place-items: center; background: rgba(4,6,9,.62); backdrop-filter: blur(5px); }
 #dpyro-app[data-view="palette"] #palette-overlay,
-#dpyro-app[data-view="settings"] #settings-overlay { display: grid; }
+#dpyro-app[data-view="settings"] #settings-overlay,
+.overlay-root.is-open { display: grid; }
+.new-session-modal { width: min(520px, calc(100vw - 32px)); overflow: hidden; border: 1px solid #2b3340; border-radius: 12px; background: #15191f; box-shadow: 0 30px 100px rgba(0,0,0,.68), 0 0 0 1px rgba(255,255,255,.025) inset; }
+.new-session-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 19px 20px 8px; }
+.new-session-head h2 { margin: 0; color: #f1f6fd; font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
+.new-session-head p { margin: 6px 0 0; color: #7f8da1; font-size: 10.5px; line-height: 1.55; }
+.new-session-body { display: grid; gap: 16px; padding: 10px 20px 4px; }
+.new-session-body .field-label { margin-bottom: 6px; }
+.new-session-body .input-shell { height: 37px; }
+.new-session-body .input-shell input { font-size: 11px; }
+.recent-block { min-width: 0; }
+.recent-paths { display: flex; flex-wrap: wrap; gap: 6px; min-height: 24px; }
+.recent-path { max-width: 100%; height: 25px; padding: 0 8px; overflow: hidden; border: 1px solid #29313e; border-radius: 4px; background: #0e1117; color: #92a2b7; font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.recent-path:hover { border-color: #3a4658; color: #d9e5f3; background: #1a2029; }
+.new-session-error { margin: 0; padding: 9px 10px; border: 1px solid rgba(247,118,142,.28); border-radius: 5px; background: rgba(247,118,142,.07); color: #f4a2b2; font-size: 10px; line-height: 1.5; }
+.new-session-error[hidden] { display: none; }
+.new-session-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 16px 20px 18px; }
+.new-session-foot .primary-btn { min-width: 108px; }
 .palette { width: min(640px, calc(100vw - 40px)); border: 1px solid #2b3340; border-radius: 12px; overflow: hidden; background: #15181f; box-shadow: 0 30px 100px rgba(0,0,0,.68), 0 0 0 1px rgba(255,255,255,.025) inset; transform: translateY(-6vh); }
 .palette-search { display: flex; align-items: center; gap: 9px; padding: 13px 14px; border-bottom: 1px solid #272e3a; background: #1a1e26; }
 .slash-badge { width: 24px; height: 24px; flex: 0 0 24px; border-radius: 6px; display: grid; place-items: center; background: #242d3b; color: var(--accent); font: 600 13px var(--mono); }

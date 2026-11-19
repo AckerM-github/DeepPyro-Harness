@@ -88,7 +88,7 @@ vanilla JS**：Python 侧保留完整宿主/路由/校验/设置能力，视觉�
 | `ui/commands.py` | 25 个 slash 命令的 Web 执行器（真实动作或诚实拒绝） |
 | `ui/settings.py` | `ConfigEditor`（文本级编辑 + 校验 + 原子写 + .bak）、`settings_payload`、provider 探活 |
 | `ui/server.py` | FastAPI app、安全/鉴权中间件、5 个页面路由、资产、`UiServer` 生命周期 |
-| `ui/shell.py` | 服务端渲染的 SPA 外壳（四栏骨架、稳定 ID、无数据 bootstrap） |
+| `ui/shell.py` | 服务端渲染的 SPA 外壳（四栏骨架、稳定 ID、按需 New session 弹窗、无数据 bootstrap） |
 | `ui/assets/app.css` | Discord 密度视觉（深色层级、四栏、消息/工具/审批/设置/响应式） |
 | `ui/assets/app.js` | 无框架前端：bootstrap、timeline、SSE、命令、设置、审批、toast |
 | `ui/assets/cyborg-mark.svg` | 原创半面罩机器标（rail/avatar/favicon） |
@@ -115,7 +115,7 @@ P1 API：
 
 | 方法 | 路径 | 请求体 | 响应 |
 | --- | --- | --- | --- |
-| GET | `/api/ui/bootstrap` | - | version/health/sessions/active_session_id/commands/presets/permissions/plugins/providers/defaults |
+| GET | `/api/ui/bootstrap` | - | version/health/sessions/active_session_id/commands/presets/permissions/plugins/providers/defaults（含 `defaults.cwd`） |
 | GET | `/api/ui/sessions` | - | `{sessions,active_session_id}`；active 行 `read_only=false`、`busy` |
 | GET | `/api/ui/sessions/{id}/timeline` | - | 对话时间线 + `journal_seq`（SSE 游标） |
 | POST | `/api/ui/sessions` | `{cwd?,preset?,provider?,model?,title?}` | 201 绑定快照 |
@@ -190,11 +190,18 @@ missing-result 错误。
 
 - 真实执行：`new`、`resume`、`sessions`、`rename`、`archive`、`unarchive`、`permission`、
   `status`、`plan`、`goal`、`cwd`、`plugins`、`help`、`clear`。
+- `cwd` 无参只读当前会话目录；带路径时调用 `create_session(CreateSessionRequest(cwd=path))`，
+  新建并切换到该目录的 native 会话，旧会话保留在侧栏；结果 `data.session_id` 驱动前端跳转。
 - 导航：`settings`、`panel`（跳设置分区）。
 - 只读：`provider`/`model`/`preset` 无参时显示当前值；带参跳设置并明确说明只影响新会话。
 - 诚实拒绝：`compact`、`jobs`、`team`、`thinking`、`hooks` 尚未接 Web 宿主时返回
   `status=error` 与原因；`exit` 提示关闭标签页。绝不假装成功。
 - `archive` 当前会话时会新建一个 native 会话并在 `data.session_id` 返回新 id，前端据此跳转。
+
+**新建会话目录**：rail `+`、侧栏 `+`、`Ctrl/Cmd+N` 打开 `#new-session-overlay` 弹窗；路径留空
+提交 `{}`，否则提交 `{"cwd": path}` 到 `POST /api/ui/sessions`。弹窗从现有会话去重出
+Recent workspaces，服务端 `resolve_workspace` 的校验错误在弹窗内显示；成功后刷新侧栏并跳到
+`/c/<new-id>`。每个会话的 cwd 在创建时写入 header，运行中不修改。
 
 **设置**：`ConfigEditor` 对 `~/.dpro/config.toml` 做**文本级**编辑（保留注释/顺序/未知插件表），
 每次写前用 `Config.model_validate` 全量校验，`NamedTemporaryFile` + fsync + `os.replace`
@@ -293,13 +300,13 @@ usage/tokens/context 来自 native host 的 taps；审批是显式事实与显�
 
 ## 12. 测试（Tests）
 
-`tests/web/` 126 passed（本机 loopback，无外部网络）：
+`tests/web/` 131 passed（本机 loopback，无外部网络）：
 
 - `test_server.py`：stdlib 宿主绑定/鉴权/SSE/队列/插件缝/真实 kernel boot。
 - `test_ui_auth.py`：token→cookie 303、API 401/403、Host/Origin/Sec-Fetch-Site、WS 1008。
 - `test_ui_shell.py`：五路由、稳定 ID、资产、无数据 bootstrap、CSP/安全头。
 - `test_ui_commands.py`：new/resume/sessions/rename/archive/permission/status/plan/goal/plugins/
-  settings/clear 与诚实拒绝。
+  settings/clear、cwd 无参只读/带路径新建/无效目录报错与诚实拒绝。
 - `test_ui_settings.py`：ConfigEditor 原子写/.bak/注释保留/字段校验/provider 探活/插件 CAS。
 - `test_approvals.py`：broker pending/decide/timeout/cancel/session 过滤。
 - `test_timeline.py`：missing tool result 保持 pending、真实 result 合并、错误合并。

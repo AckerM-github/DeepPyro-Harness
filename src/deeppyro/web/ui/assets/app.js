@@ -106,7 +106,9 @@ Structure:
     about: {},
     home: '',
     cwd: '',
+    defaultCwd: '',
     counts: null,
+    newSession: {open: false},
     session: {
       id: '',
       title: '',
@@ -633,6 +635,7 @@ Structure:
       state.activeSessionId = record.session_id;
     }
     state.cwd = textOf(data.cwd, record ? record.cwd : '');
+    state.defaultCwd = textOf(data.defaults && data.defaults.cwd, state.cwd);
   }
 
   function commandCount() {
@@ -837,6 +840,7 @@ Structure:
   }
 
   function applyRoute() {
+    if (state.newSession.open) closeNewSession();
     var route = readRoute();
     if (route.view === 'palette') {
       openPalette();
@@ -861,6 +865,7 @@ Structure:
   function closeOverlays() {
     state.palette.open = false;
     state.settings.open = false;
+    closeNewSession();
     applyView('chat');
   }
 
@@ -1075,20 +1080,104 @@ Structure:
   }
 
   function createSession() {
-    return apiPost(api.sessions(), {}).then(function (payload) {
+    openNewSession();
+  }
+
+  function openNewSession() {
+    var overlay = byId('new-session-overlay');
+    if (!overlay) return;
+    state.newSession.open = true;
+    overlay.classList.add('is-open');
+    showNewSessionError('');
+    renderRecentWorkspaces();
+    var input = byId('new-session-cwd');
+    if (input) input.value = state.defaultCwd || state.cwd || '';
+    var note = byId('new-session-default');
+    if (note) {
+      note.textContent = state.defaultCwd
+        ? 'Default workspace: ' + state.defaultCwd + '. Leave empty to use it.'
+        : 'Leave empty to use the host default workspace.';
+    }
+    window.setTimeout(function () {
+      if (input) { input.focus(); input.select(); }
+    }, 0);
+  }
+
+  function closeNewSession() {
+    var overlay = byId('new-session-overlay');
+    if (!overlay) return;
+    state.newSession.open = false;
+    overlay.classList.remove('is-open');
+  }
+
+  function showNewSessionError(message) {
+    var node = byId('new-session-error');
+    if (!node) return;
+    if (message) {
+      node.textContent = message;
+      node.hidden = false;
+    } else {
+      node.textContent = '';
+      node.hidden = true;
+    }
+  }
+
+  function renderRecentWorkspaces() {
+    var host = byId('new-session-recent');
+    if (!host) return;
+    clear(host);
+    var seen = {};
+    var paths = [];
+    state.sessions.forEach(function (item) {
+      var path = textOf(item.cwd);
+      if (path && !seen[path]) {
+        seen[path] = true;
+        paths.push(path);
+      }
+    });
+    if (!paths.length) {
+      var empty = make('span', 'field-note');
+      empty.textContent = 'No recent workspaces yet.';
+      host.appendChild(empty);
+      return;
+    }
+    paths.slice(0, 6).forEach(function (path) {
+      var button = make('button', 'recent-path');
+      button.type = 'button';
+      button.textContent = path;
+      button.title = path;
+      button.addEventListener('click', function () {
+        var input = byId('new-session-cwd');
+        if (input) { input.value = path; input.focus(); }
+      });
+      host.appendChild(button);
+    });
+  }
+
+  function submitNewSession(event) {
+    if (event) event.preventDefault();
+    var input = byId('new-session-cwd');
+    var submit = byId('new-session-submit');
+    var cwd = input ? input.value.trim() : '';
+    showNewSessionError('');
+    if (submit) submit.disabled = true;
+    var body = cwd ? {cwd: cwd} : {};
+    var finish = function () {
+      if (submit) submit.disabled = false;
+    };
+    return apiPost(api.sessions(), body).then(function (payload) {
       var data = payload || {};
       var created = textOf(data.session_id, textOf(data.id, textOf(data.session && data.session.session_id)));
+      if (!created) throw new Error('The server did not return a session id.');
+      closeNewSession();
       return refreshSessions().then(function () {
-        if (created) {
-          state.activeSessionId = created;
-          navigate('/c/' + encode(created));
-        } else {
-          toast('warn', 'The server did not return a session id. Reload the page to refresh the list.');
-        }
+        state.activeSessionId = created;
+        navigate('/c/' + encode(created));
+        toast('success', 'Session started in ' + (textOf(data.cwd) || cwd || 'the host workspace') + '.');
       });
     }).catch(function (error) {
-      toast('error', 'Could not create a session: ' + errorText(error));
-    });
+      showNewSessionError(errorText(error));
+    }).then(finish, finish);
   }
 
   function refreshActiveTimeline() {
@@ -1890,6 +1979,7 @@ Structure:
       }
       if (message) toast('success', message);
       if (data.data && textOf(data.data.session_id)) {
+        refreshSessions();
         navigate('/c/' + encode(textOf(data.data.session_id)));
       }
     }).catch(function (error) {
@@ -2980,8 +3070,12 @@ Structure:
   // ------------------------------------------------------------------
 
   function bindStaticEvents() {
-    bindClick('rail-new-session', createSession);
-    bindClick('new-session', createSession);
+    bindClick('rail-new-session', openNewSession);
+    bindClick('new-session', openNewSession);
+    bindClick('new-session-close', closeNewSession);
+    bindClick('new-session-cancel', closeNewSession);
+    var newSessionForm = byId('new-session-form');
+    if (newSessionForm) newSessionForm.addEventListener('submit', submitNewSession);
     bindClick('session-list-refresh', function () {
       refreshSessions().then(function () { toast('success', 'Session list refreshed.'); });
     });
@@ -3056,10 +3150,14 @@ Structure:
     }
     if (meta && (event.key === 'n' || event.key === 'N')) {
       event.preventDefault();
-      createSession();
+      openNewSession();
       return;
     }
     if (event.key === 'Escape') {
+      if (state.newSession.open) {
+        closeNewSession();
+        return;
+      }
       if (state.palette.open) {
         closePalette();
         return;
@@ -3077,6 +3175,11 @@ Structure:
   function onDocumentClick(event) {
     var target = event.target;
     if (!target) return;
+    var overlay = byId('new-session-overlay');
+    if (overlay && state.newSession.open && target === overlay) {
+      closeNewSession();
+      return;
+    }
     var anchor = target.closest ? target.closest('a') : null;
     if (anchor) {
       var href = anchor.getAttribute('href') || '';

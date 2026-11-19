@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from deeppyro.builtin.commands_builtin import core_command_specs
+from deeppyro.core.errors import ConfigError
 from deeppyro.web.service import WebSessionHost
 from deeppyro.web.wire import CreateSessionRequest, HttpError
 
@@ -82,7 +83,7 @@ async def execute(
         return await _dispatch(service, context, command, values, target)
     except HttpError as exc:
         return _error(exc.message)
-    except ValueError as exc:
+    except (ValueError, ConfigError) as exc:
         return _error(str(exc))
 
 
@@ -135,7 +136,7 @@ async def _dispatch(
     if command == "goal":
         return await _goal(service, target)
     if command == "cwd":
-        return await _cwd(service, target)
+        return await _cwd(service, target, args)
     if command == "plugins":
         return _plugins(context)
     if command == "settings":
@@ -305,11 +306,29 @@ async def _goal(service: WebSessionHost, target: str | None) -> CommandResult:
     return _ok("\n".join(lines), goal=goal)
 
 
-async def _cwd(service: WebSessionHost, target: str | None) -> CommandResult:
+async def _cwd(service: WebSessionHost, target: str | None, args: list[str]) -> CommandResult:
+    if args:
+        requested = " ".join(args).strip()
+        if not requested:
+            return _error("usage: /cwd <absolute-path>")
+        created = await service.create_session(
+            CreateSessionRequest(cwd=requested, preset="", provider="", model="", title="")
+        )
+        workspace = created.get("cwd") or requested
+        return _ok(
+            f"Opened a new session in {workspace}. The previous session is still in the sidebar.",
+            session_id=created["session_id"],
+            session=created,
+            cwd=workspace,
+        )
     if not target:
         return _error("no session is open")
     status = await service.status(target)
-    return _ok(f"Working directory: {status.get('cwd')}", cwd=status.get("cwd"))
+    return _ok(
+        f"Working directory: {status.get('cwd')}. "
+        "Use /cwd <absolute-path> or the + button to start a session elsewhere.",
+        cwd=status.get("cwd"),
+    )
 
 
 def _plugins(context: Any) -> CommandResult:

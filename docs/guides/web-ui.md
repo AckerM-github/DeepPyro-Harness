@@ -38,7 +38,7 @@
 
 四栏结构（Discord 密度的原创布局）：
 
-- **Rail（最左）**：原创半面罩机器标、工作区头像、新建会话、设置/帮助/用户入口。
+- **Rail（最左）**：原创半面罩机器标、工作区头像、新建会话（弹窗选择目录）、设置/帮助/用户入口。
 - **Sidebar**：搜索、Sessions / Commands / Plugins 导航、native 会话列表（标题、turn 数、
   preset、相对时间、active 白点）、归档区。
 - **Stage（主区）**：当前会话标题、preset/model/cwd、运行条、消息流（用户/助手/推理/
@@ -63,6 +63,19 @@ Commands（25 个 core command）、Sessions（搜索/跳转）、Settings（分
   不假装成功。团队模式请用 TUI/headless。
 
 在 composer 输入以 `/` 开头的文本会走命令，不会发给模型。
+
+### 工作目录（cwd）
+
+每个 native 会话在**创建时**把 cwd 写进会话 header，运行中不改写。要换目录：
+
+1. 点 rail 的 **+**、侧栏 Sessions 的 **+**，或按 `Ctrl/Cmd+N` 打开 **New session** 弹窗；
+   输入绝对路径，或从 **Recent workspaces** 选一个最近目录，然后 **Start session**。
+   留空则使用宿主启动时的 `--cwd`（默认当前目录）。
+2. 或在 composer 输入 `/cwd D:\work\project`：等价地新建并切换到该目录的会话。
+3. `/cwd` 不带参数只显示当前会话的目录，不会改变它。
+
+旧会话不会被删除或改写，仍留在侧栏；新会话继承当前 provider/model/preset 与权限策略。
+目录不存在或不是目录时弹窗/命令会显示服务端校验错误。
 
 ## 4. 设置
 
@@ -95,10 +108,10 @@ Commands（25 个 core command）、Sessions（搜索/跳转）、Settings（分
 | --- | --- |
 | `Ctrl/Cmd+K` 或 `?` | 命令面板 |
 | `Ctrl/Cmd+,` | 设置 |
-| `Ctrl/Cmd+N` | 新建会话 |
+| `Ctrl/Cmd+N` | 新建会话（选择工作目录） |
 | `Enter` | 发送 |
 | `Shift+Enter` | 换行 |
-| `Esc` | 关闭面板/设置 |
+| `Esc` | 关闭面板/设置/新建会话弹窗 |
 | `Ctrl-C`（终端） | 停止宿主进程 |
 
 Stop 按钮向宿主发 `POST /interrupt`，由 `NativeAgentHost.interrupt()` 取消当前 turn；
@@ -127,6 +140,7 @@ Stop 按钮向宿主发 `POST /interrupt`，由 `NativeAgentHost.interrupt()` �
 | 503 the web session host is not running | 宿主正在关闭/未启动；重启 `python -m deeppyro.web` |
 | 审批卡一直 PENDING | 点 Allow once / Deny；或等 300 秒超时 |
 | 设置保存后当前会话没变 | 运行中的 KernelConfig 不热重载；开新会话或重启宿主 |
+| 新建会话的目录不是想要的 | cwd 在会话创建时固定；用 New session 弹窗或 `/cwd <path>` 新建，旧会话保留 |
 | 断线后自动重连 | 正常：EventSource 带 `Last-Event-ID` 或 `after=`，从 seq 续传 |
 
 ## 9. 验证
