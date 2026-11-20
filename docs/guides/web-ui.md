@@ -155,6 +155,7 @@ Stop 按钮向宿主发 `POST /interrupt`，由 `NativeAgentHost.interrupt()` �
 | 503 the web session host is not running | 宿主正在关闭/未启动；重启 `python -m deeppyro.web` |
 | 审批卡一直 PENDING | 点 Allow once / Deny；或等 300 秒超时 |
 | 设置保存后当前会话没变 | agent/provider/permission 从下一 turn 生效，streaming 时等当前 turn 结束（响应 `live.deferred=true`）；web port 等配置仍需重启宿主 |
+| 新建会话在 `sessions/` 里找不到文件 | 未发首条消息的会话是 deferred draft，只存在内存；发送后才写 `<id>.jsonl`，未使用就切换/归档会直接丢弃 |
 | 新建会话的目录不是想要的 | cwd 在会话创建时固定；用 New session 弹窗或 `/cwd <path>` 新建，旧会话保留 |
 | 状态点显示 reconnecting / offline | SPA 的 EventSource 断开后按 800ms 起指数退避（上限 10s）自动重连；`offline` 表示浏览器报告离线。持续无法恢复时确认宿主进程还在、端口未变 |
 | 断线后自动重连 | 正常：客户端用 `?after=<lastEventSeq>` 从 seq 续传，不重复渲染历史 |

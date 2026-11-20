@@ -272,6 +272,11 @@ EventSource 不能设置自定义头，所以首连 token 可用 `?token=` 查�
   成功后刷新列表并导航 `/c/<id>`。cwd 在会话创建时固定。弹窗的 preset `<option value>` 使用
   `Preset.id`（`standard`/`ptc`/...），显示文本才用 `Preset.name`；提交 `preset` 字段必须是 id。
   Stage 顶部 cwd chip 打开同一个弹窗（workspaceMode 文案），提交后 navigate 到新会话。
+- 新建会话是 **deferred native session**：header、system prompt、model/preset 选择和标题先只存在内存，不创建
+  `sessions/<id>.jsonl` 或锁文件；首条 `user.message` 或 `turn.started` 才把 header + 缓冲事件原子写入
+  （temp file + fsync + `os.replace`）。未对话就切换/关闭的 draft 直接丢弃，不落盘、不进入历史列表；只有
+  active draft 会以 0 turns 出现在 `/api/ui/sessions` 与 timeline（来自内存投影）。归档未对话 draft 等同丢弃，
+  返回 `data.discarded=true` 并启动替代会话。
 - 会话行操作：每行 `⋯` 菜单调用 `/archive` / `/unarchive` + session id；active 会话归档后跟随
   返回的 `data.session_id` 导航。`Show archived` 切 `include_archived`，`Load more` 用
   `offset=已加载数量`；窄屏/触屏 `⋯` 常显。

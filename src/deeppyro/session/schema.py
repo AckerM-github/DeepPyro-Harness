@@ -404,6 +404,11 @@ class NativeCodec:
         return SessionLog(path=target, header=header, events=tuple(events))
 
 
+#: Events that make a deferred session real. Everything before the first user
+#: message (prompt, selection, permission, title) stays in memory.
+_MATERIALIZE_ON = frozenset({"user.message", "turn.started"})
+
+
 class NativeSession:
     """A one-writer append-only schema 1 session file."""
 
@@ -420,6 +425,7 @@ class NativeSession:
         self._events = list(events)
         self._lock_path = lock_path
         self._handle = handle
+        self._materialized = handle is not None
         self._closed = False
         self._tracker = _OrderTracker()
         for event in self._events:
@@ -443,6 +449,11 @@ class NativeSession:
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def persisted(self) -> bool:
+        """Whether the log file exists; a deferred session is still in memory."""
+        return self._materialized
+
     @classmethod
     def create(
         cls,
@@ -455,9 +466,9 @@ class NativeSession:
         origin: str = "user",
         delegation_depth: int = 0,
         created_at: int | None = None,
+        deferred: bool = False,
     ) -> NativeSession:
         target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             raise FileExistsError(target)
         header = SessionHeader(
@@ -471,6 +482,13 @@ class NativeSession:
         )
         _validate_header(header, expected_id=target.stem)
         lock_path = _lock_path_for(target)
+        if deferred:
+            # The web host creates a session before the first message. Keeping
+            # the header and the initial selection/prompt events in memory
+            # means an abandoned draft leaves no file and no ~28 KB prompt on
+            # disk; the first user/turn event materializes the log.
+            return cls(target, header, [], lock_path, None)
+        target.parent.mkdir(parents=True, exist_ok=True)
         _acquire_lock(lock_path, header.id)
         temp = target.parent / f".{target.name}.tmp"
         try:
@@ -540,6 +558,23 @@ class NativeSession:
         line = (NativeCodec.encode_event(event) + "\n").encode("utf-8")
         if len(line) > MAX_LINE_BYTES:
             raise LineTooLargeError(f"session line {seq + 1} is larger than {MAX_LINE_BYTES} bytes")
+        if not self._materialized:
+            if event_type in _MATERIALIZE_ON:
+                self._materialize(extra=event)
+            self._events.append(event)
+            self._tracker = trial
+            self._last_seq = seq
+            self._last_ts = stamp
+            return event
+        self._write_line(line)
+        self._events.append(event)
+        self._tracker = trial
+        self._last_seq = seq
+        self._last_ts = stamp
+        return event
+
+    def _write_line(self, line: bytes) -> None:
+        """Append one encoded line with rollback on failure."""
         offset = self._handle.tell()
         try:
             self._handle.write(line)
@@ -550,19 +585,44 @@ class NativeSession:
                 self._handle.truncate(offset)
                 self._handle.seek(offset)
             raise
-        self._events.append(event)
-        self._tracker = trial
-        self._last_seq = seq
-        self._last_ts = stamp
-        return event
+
+    def _materialize(self, *, extra: Event) -> None:
+        """Create the deferred log, flushing the header and buffered events.
+
+        Called only once, when the first user/turn event arrives. Nothing is
+        mutated on failure, so the caller can retry the same append.
+        """
+        target = self.path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            raise FileExistsError(target)
+        _acquire_lock(self._lock_path, self.header.id)
+        temp = target.parent / f".{target.name}.tmp"
+        try:
+            with temp.open("wb") as stream:
+                stream.write((NativeCodec.encode_header(self.header) + "\n").encode("utf-8"))
+                for buffered in (*self._events, extra):
+                    stream.write((NativeCodec.encode_event(buffered) + "\n").encode("utf-8"))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp, target)
+            _fsync_directory(target.parent)
+            self._handle = target.open("ab")
+            self._materialized = True
+        except BaseException:
+            with contextlib.suppress(OSError):
+                temp.unlink()
+            _release_lock(self._lock_path)
+            raise
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        with contextlib.suppress(OSError):
-            self._handle.close()
-        _release_lock(self._lock_path)
+        if self._materialized:
+            with contextlib.suppress(OSError):
+                self._handle.close()
+            _release_lock(self._lock_path)
 
     def __enter__(self) -> NativeSession:
         return self

@@ -49,6 +49,7 @@ from deeppyro.web.plugin import WebHostConfig, WebHostPlugin
 from deeppyro.web.security import LOCALHOST, SECURITY_HEADERS, validate_bind_host
 from deeppyro.web.server import WebServer
 from deeppyro.web.surface import Route, RouteRegistry, default_surfaces
+from deeppyro.web.ui.commands import execute as execute_command
 from deeppyro.web.wire import (
     MAX_BODY_BYTES,
     CreateSessionRequest,
@@ -994,6 +995,14 @@ async def test_native_resume_and_inactive_status(kernel_app: Any, web_env: Simpl
     try:
         async with await _client(host) as client:
             first_id = host.active_session_id or ""
+            # A session is deferred until its first turn; converse once so the
+            # resume half of this test has a real log to attach.
+            await host.service.send_message(first_id, SendMessageRequest(text="hello"))
+            for _ in range(200):
+                transcript = await host.service.transcript(first_id)
+                if any("native answer" in entry["text"] for entry in transcript["entries"]):
+                    break
+                await asyncio.sleep(0.01)
             second = await client.post("/api/sessions", params={"token": host.token}, json={})
             second_id = second.json()["session_id"]
             assert second_id != first_id
@@ -1014,6 +1023,76 @@ async def test_native_resume_and_inactive_status(kernel_app: Any, web_env: Simpl
             assert resumed.json()["resumed"] is True
             missing = await client.get("/api/sessions/session-does-not-exist", params={"token": host.token})
             assert missing.status_code == 404
+    finally:
+        await host.stop()
+
+
+async def test_new_session_is_deferred_until_the_first_turn(
+    kernel_app: Any, web_env: SimpleNamespace
+) -> None:
+    """An unused session must not write a log, prompt or sidebar row."""
+    host = await WebHost.start(kernel_app=kernel_app, port=0, cwd=str(web_env.workspace))
+    try:
+        service = host.service
+        first_id = service.active_session_id or ""
+        binding = service._binding
+        assert binding is not None
+        first_path = binding.handle.native_session.path
+        assert not binding.handle.native_session.persisted
+        assert not first_path.exists()
+
+        listed = await service.list_sessions()
+        assert first_id in [row["session_id"] for row in listed["sessions"]]
+
+        second = await service.create_session(CreateSessionRequest())
+        second_id = second["session_id"]
+        second_path = service._binding.handle.native_session.path  # type: ignore[union-attr]
+        assert not second_path.exists()
+        listed = await service.list_sessions()
+        ids = [row["session_id"] for row in listed["sessions"]]
+        assert second_id in ids
+        assert first_id not in ids
+        assert not first_path.exists()
+
+        await service.send_message(second_id, SendMessageRequest(text="hello"))
+        for _ in range(200):
+            if second_path.exists() and not service._binding.host.busy:  # type: ignore[union-attr]
+                break
+            await asyncio.sleep(0.01)
+        assert second_path.exists()
+        assert service._binding is not None
+        assert service._binding.handle.native_session.persisted
+        assert not service._binding.host.busy
+        # Drop the active binding: the catalogue cache must already be invalid
+        # so the materialized session is listed immediately, not after the TTL.
+        await service._detach()
+        listed = await service.list_sessions()
+        assert second_id in [row["session_id"] for row in listed["sessions"]]
+    finally:
+        await host.stop()
+
+
+async def test_archiving_an_unused_draft_discards_it(kernel_app: Any, web_env: SimpleNamespace) -> None:
+    """Archive on a draft must detach it, not fail on the missing log."""
+    host = await WebHost.start(kernel_app=kernel_app, port=0, cwd=str(web_env.workspace))
+    try:
+        first_id = host.service.active_session_id or ""
+        binding = host.service._binding
+        assert binding is not None
+        path = binding.handle.native_session.path
+        payload = await execute_command(host.service, None, "/archive", [first_id], first_id)
+        assert payload.status == "ok"
+        data = payload.data
+        replacement = data["session_id"]
+        assert replacement != first_id
+        assert data["archived"] is True
+        assert data["discarded"] is True
+        assert host.active_session_id == replacement
+        assert not path.exists()
+        listed = await host.service.list_sessions()
+        ids = [row["session_id"] for row in listed["sessions"]]
+        assert first_id not in ids
+        assert replacement in ids
     finally:
         await host.stop()
 

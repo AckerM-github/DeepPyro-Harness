@@ -385,9 +385,9 @@ def _delta_events(
                 arguments = raw_arguments
         if not state.started and (state.name or arguments):
             state.started = True
-            yield ToolCallStart(call_id=state.call_id, name=state.name)
+            yield ToolCallStart(call_id=state.call_id, name=state.name, index=index)
         if arguments:
-            yield ToolCallArgsDelta(call_id=state.call_id, delta=arguments)
+            yield ToolCallArgsDelta(call_id=state.call_id, delta=arguments, index=index)
 
 
 def _map_finish(reason: str) -> StopReason:

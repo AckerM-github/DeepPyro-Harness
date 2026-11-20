@@ -51,6 +51,7 @@ class _CallBuilder:
     call_id: str
     name: str = ""
     fragments: list[str] = field(default_factory=list)
+    provider_id: str = ""
 
 
 async def complete_model_call(
@@ -86,7 +87,15 @@ async def complete_model_call(
         if provider_call_id:
             builder = by_provider_id.get(provider_call_id)
         if builder is None:
-            builder = builders.get(index)
+            candidate = builders.get(index)
+            # A provider id that is already known only ever resolves through
+            # by_provider_id. Falling back to the index would merge a second
+            # parallel call into the first when a transport forgets to send
+            # the index; only an unclaimed index may be adopted.
+            if candidate is not None and not (
+                provider_call_id and candidate.provider_id and candidate.provider_id != provider_call_id
+            ):
+                builder = candidate
         if builder is None:
             builder = _CallBuilder(call_id=new_call_id(), name=name or "")
             builders[index] = builder
@@ -94,6 +103,7 @@ async def complete_model_call(
         if name and not builder.name:
             builder.name = name
         if provider_call_id:
+            builder.provider_id = provider_call_id
             by_provider_id[provider_call_id] = builder
         return builder
 

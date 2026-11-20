@@ -241,11 +241,13 @@ async def _archive(
 
 async def _archive_session(service: WebSessionHost, target_id: str) -> CommandResult:
     was_active = target_id == service.active_session_id
+    draft = was_active and service.session_is_draft(target_id)
     replacement: dict[str, Any] | None = None
-    if was_active:
+    if was_active and not draft:
         # Start the replacement before archiving: if creating it fails, the old
         # session stays attached and unarchived instead of stranding the host
-        # with no active session and an archived transcript.
+        # with no active session and an archived transcript. A draft has no
+        # transcript to strand, so it is discarded first (see below).
         replacement = await service.create_session(CreateSessionRequest())
     try:
         result = await service.archive_session(target_id, archived=True)
@@ -264,11 +266,15 @@ async def _archive_session(service: WebSessionHost, target_id: str) -> CommandRe
                 "archived": False,
             },
         )
+    if draft:
+        replacement = await service.create_session(CreateSessionRequest())
     data: dict[str, Any] = {
         "archived_session_id": target_id,
         "archived": bool(result.get("archived")),
         "detached": bool(result.get("detached")) or was_active,
     }
+    if result.get("discarded"):
+        data["discarded"] = True
     if replacement is not None:
         data["session_id"] = replacement["session_id"]
         data["session"] = replacement

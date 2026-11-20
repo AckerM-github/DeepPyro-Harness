@@ -41,14 +41,24 @@ class SessionsPlugin(Service):
         self._list_lock = threading.Lock()
         self._list_cache: dict[bool, tuple[float, list[NativeSessionInfo]]] = {}
 
-    def native_create(self, spec: NewSession) -> NativeSession:
+    def native_create(self, spec: NewSession, *, deferred: bool = False) -> NativeSession:
         """Create one schema 1 session and return it open (caller closes it).
 
+        deferred=True keeps the log in memory until the first user/turn event.
         Raises FileExistsError when the target session id already exists.
         """
-        session = self.native.create(spec)
+        session = self.native.create(spec, deferred=deferred)
         self._invalidate_list_cache()
         return session
+
+    def invalidate_list_cache(self) -> None:
+        """Drop the short-lived catalogue cache after an out-of-band write.
+
+        A deferred draft materializes its log during the first turn, outside
+        native_create/native_archive, so the cached list would otherwise miss
+        the just-written session until the TTL expires.
+        """
+        self._invalidate_list_cache()
 
     def native_open(self, session_id: str) -> NativeSession:
         """Open an existing session for writing; the caller owns the lock.

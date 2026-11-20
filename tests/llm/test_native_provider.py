@@ -311,6 +311,8 @@ async def test_multiple_parallel_tool_calls_are_keyed_by_index() -> None:
 
     starts = {event.call_id: event.name for event in events if isinstance(event, ToolCallStart)}
     assert starts == {"call_a": "read", "call_b": "write"}
+    assert [event.index for event in events if isinstance(event, ToolCallStart)] == [0, 1]
+    assert [event.index for event in events if isinstance(event, ToolCallArgsDelta)] == [0, 1, 0, 1]
     arguments: dict[str, str] = {}
     for event in events:
         if isinstance(event, ToolCallArgsDelta):

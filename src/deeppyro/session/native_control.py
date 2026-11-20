@@ -96,9 +96,11 @@ class NativeSessionControl:
 
     # -------------------------------------------------------------- lifecycle
 
-    def create(self, spec: NewSession) -> NativeSession:
-        """Create one session log and return it open and locked (caller closes).
+    def create(self, spec: NewSession, *, deferred: bool = False) -> NativeSession:
+        """Create one session and return it open (caller closes).
 
+        With deferred=True the file and lock are only created by the first
+        user/turn event, so an abandoned draft leaves nothing on disk.
         Raises FileExistsError when the target id already exists.
         """
         session_id = spec.session_id or new_session_id()
@@ -112,6 +114,7 @@ class NativeSessionControl:
             origin=spec.origin,
             delegation_depth=spec.delegation_depth,
             created_at=spec.created_at,
+            deferred=deferred,
         )
 
     def open(self, session_id: str) -> NativeSession:

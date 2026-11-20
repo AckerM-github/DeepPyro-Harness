@@ -283,6 +283,39 @@ def test_writer_round_trip_and_compact_bytes(tmp_path: Path) -> None:
     assert not path.with_name(path.name + ".lock").exists()
 
 
+def test_deferred_writer_keeps_an_abandoned_draft_off_disk(tmp_path: Path) -> None:
+    session_id = new_session_id()
+    path = tmp_path / f"{session_id}.jsonl"
+    with NativeSession.create(path, cwd=tmp_path, deferred=True) as session:
+        session.append(EventKind.SESSION_TITLE, {"title": "draft", "source": "user"})
+        assert not session.persisted
+        assert not path.exists()
+        assert not path.with_name(path.name + ".lock").exists()
+    assert not path.exists()
+
+
+def test_deferred_writer_materializes_on_the_first_user_message(tmp_path: Path) -> None:
+    session_id = new_session_id()
+    path = tmp_path / f"{session_id}.jsonl"
+    user = Message(MSG_USER, "user", (TextPart("hi"),), 1, UserSource()).to_dict()
+    with NativeSession.create(path, cwd=tmp_path, deferred=True) as session:
+        session.append(EventKind.SESSION_TITLE, {"title": "draft", "source": "user"})
+        session.append(EventKind.TURN_STARTED, run_id=RUN_ID, turn_id=TURN_ID, trace_id=TRACE_ID)
+        session.append(
+            EventKind.USER_MESSAGE,
+            {"message": user},
+            run_id=RUN_ID,
+            turn_id=TURN_ID,
+            trace_id=TRACE_ID,
+        )
+        assert session.persisted
+        assert path.exists()
+    log = NativeCodec.read(path)
+    assert log.header.id == session_id
+    assert [event.type for event in log.events] == ["session.title", "turn.started", "user.message"]
+    assert [event.seq for event in log.events] == [1, 2, 3]
+
+
 def test_writer_allocates_monotonic_timestamps(tmp_path: Path) -> None:
     session_id = new_session_id()
     path = tmp_path / f"{session_id}.jsonl"

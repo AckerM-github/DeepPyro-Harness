@@ -167,6 +167,22 @@ async def test_parallel_tool_calls_are_tracked_by_index() -> None:
     assert len({call.call_id for call in response.tool_calls}) == 2
 
 
+async def test_distinct_provider_ids_never_merge_at_the_same_index() -> None:
+    # A transport that forgets to send index=1 must not fold the second call
+    # into the first; each distinct provider id owns its arguments.
+    response, _ = await _call(
+        ToolCallStart(call_id="p1", name="todo_write", index=0),
+        ToolCallArgsDelta(call_id="p1", delta='{"todos": []}', index=0),
+        ToolCallStart(call_id="p2", name="web_search", index=0),
+        ToolCallArgsDelta(call_id="p2", delta='{"queries": []}', index=0),
+        Finish(stop_reason=StopReason.TOOL_CALLS),
+    )
+    assert [(call.name, call.arguments) for call in response.tool_calls] == [
+        ("todo_write", '{"todos": []}'),
+        ("web_search", '{"queries": []}'),
+    ]
+
+
 async def test_provider_call_id_resolves_across_indexes() -> None:
     response, _ = await _call(
         ToolCallStart(call_id="p1", name="read", index=0),

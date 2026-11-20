@@ -88,6 +88,7 @@ class FakeService:
     created: list[dict[str, Any]] = field(default_factory=list)
     create_error: Exception | None = None
     archive_error: Exception | None = None
+    draft_ids: set[str] = field(default_factory=set)
     services: Any = field(
         default_factory=lambda: SimpleNamespace(
             config=FakeConfig(),
@@ -150,6 +151,9 @@ class FakeService:
     async def rename_session(self, session_id: str, title: str) -> dict[str, Any]:
         self.calls.append(("rename", session_id, title))
         return {"session_id": session_id, "title": title, "active": True}
+
+    def session_is_draft(self, session_id: str) -> bool:
+        return session_id in self.draft_ids
 
     async def archive_session(self, session_id: str, *, archived: bool = True) -> dict[str, Any]:
         self.calls.append(("archive", session_id, archived))
@@ -283,6 +287,19 @@ async def test_archive_of_the_active_session_opens_a_new_one() -> None:
     # not strand the host with an archived session and nothing attached.
     kinds = [call[0] for call in service.calls]
     assert kinds.index("create") < kinds.index("archive")
+
+
+@pytest.mark.asyncio
+async def test_archive_of_an_active_draft_discards_before_the_replacement() -> None:
+    service = FakeService(draft_ids={"session-1"})
+    result = await execute(service, context(), "archive")
+    assert result.status == STATUS_OK
+    assert result.data["session_id"] == "session-new"
+    assert result.data["archived_session_id"] == "session-1"
+    # A draft has no transcript to strand, so it is dropped before creating the
+    # replacement (the opposite order from a persisted active session).
+    kinds = [call[0] for call in service.calls]
+    assert kinds.index("archive") < kinds.index("create")
 
 
 @pytest.mark.asyncio

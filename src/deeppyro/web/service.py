@@ -499,6 +499,15 @@ class WebSessionHost:
         binding = self._binding
         return None if binding is None else binding.session_id
 
+    def session_is_draft(self, session_id: str) -> bool:
+        """True when the attached session has not written a log yet."""
+        binding = self._binding
+        return (
+            binding is not None
+            and binding.session_id == session_id
+            and not binding.handle.native_session.persisted
+        )
+
     @property
     def services(self) -> HostServices:
         """The resolved plugin services; read-only for API projections."""
@@ -657,6 +666,12 @@ class WebSessionHost:
             limit=None,
             offset=0,
         )
+        binding = self._binding
+        if binding is not None and all(info.id != binding.session_id for info in infos):
+            # A deferred draft has no file yet; a just-materialized one can be
+            # missing from the 2 s list cache. The attached session is always
+            # newest-or-known, so merging it here keeps the sidebar complete.
+            infos = [self._draft_info(binding), *infos]
         needle = (query or "").strip().casefold()
         if needle:
             infos = [
@@ -716,7 +731,8 @@ class WebSessionHost:
         await self._detach()
         try:
             native = self._services.sessions.native_create(
-                NewSession(cwd=workspace, preset=spec.id, origin="user")
+                NewSession(cwd=workspace, preset=spec.id, origin="user"),
+                deferred=True,
             )
         except (OSError, ValueError, NativeQueryError) as exc:
             raise Conflict(f"could not create a session: {exc}") from exc
@@ -790,14 +806,34 @@ class WebSessionHost:
     async def transcript(self, session_id: str) -> dict[str, Any]:
         """Replay a transcript from the native session facts."""
         info = self._look(session_id)
-        try:
-            transcript = self._services.sessions.native_transcript(session_id)
-        except NativeQueryError as exc:
-            raise self._native_error(exc) from exc
-        except OSError as exc:
-            raise Conflict(f"could not read the session transcript: {exc}") from exc
         binding = self._binding
         active = binding is not None and binding.session_id == session_id
+        try:
+            transcript = self._services.sessions.native_transcript(session_id)
+        except (NativeQueryError, FileNotFoundError) as exc:
+            if not active or binding is None or binding.handle.native_session.persisted:
+                raise self._native_error(exc) from exc
+            # A deferred draft has no log to replay yet; its in-memory fold is
+            # the same facts the first append will persist.
+            return {
+                "session_id": session_id,
+                "title": info.title,
+                "readable": True,
+                "issues": [],
+                "entries": [
+                    {
+                        "role": message.role,
+                        "text": message.text(),
+                        "is_error": False,
+                        "tool_names": [],
+                    }
+                    for message in binding.view.derive_messages()
+                ],
+                "active": True,
+                "busy": bool(binding.host.busy),
+            }
+        except OSError as exc:
+            raise Conflict(f"could not read the session transcript: {exc}") from exc
         entries = [
             {
                 "role": entry.role,
@@ -926,6 +962,16 @@ class WebSessionHost:
             return {"session_id": session_id, "archived": info.archived, "detached": False}
         binding = self._binding
         detached = binding is not None and binding.session_id == session_id
+        if archived and detached and not binding.handle.native_session.persisted:
+            # An unused draft has nothing to archive: detaching drops it, which
+            # is exactly the requested outcome and must not fail on a missing log.
+            await self._detach()
+            return {
+                "session_id": session_id,
+                "archived": True,
+                "detached": True,
+                "discarded": True,
+            }
         if detached:
             await self._detach()
         try:
@@ -1088,9 +1134,35 @@ class WebSessionHost:
         try:
             return self._services.sessions.native_look(session_id)
         except NativeQueryError as exc:
+            binding = self._binding
+            if binding is not None and binding.session_id == session_id:
+                # A fresh web session is deferred: it has no file until the
+                # first user message, so its row comes from the live handle.
+                return self._draft_info(binding)
             raise self._native_error(exc) from exc
         except OSError as exc:
             raise Conflict(f"could not read session {session_id}: {exc}") from exc
+
+    @staticmethod
+    def _draft_info(binding: SessionBinding) -> NativeSessionInfo:
+        """Build the native row for an attached, not-yet-persisted draft."""
+        session = binding.handle.native_session
+        state = binding.view.fold().state
+        turns = sum(1 for event in session.events if event.type == "turn.started")
+        return NativeSessionInfo(
+            id=session.header.id,
+            path=session.path,
+            cwd=session.header.cwd,
+            created_at=session.header.created_at,
+            updated_at=session.last_ts,
+            title=state.title or "",
+            turns=turns,
+            event_count=len(session.events),
+            preset=session.header.preset,
+            parent_id=session.header.parent_id,
+            origin=session.header.origin,
+            preview=None,
+        )
 
     @staticmethod
     def _native_error(exc: NativeQueryError) -> HttpError:
@@ -1272,6 +1344,11 @@ class WebSessionHost:
                 self._journal.publish(ErrorEvent(session_id=session_id, message="finish_reason: length"))
         finally:
             self._approvals.cancel_session(session_id)
+            # The first turn materializes a deferred draft outside the
+            # create/archive paths, so the catalogue cache must be dropped or
+            # the just-written session would vanish from the sidebar on TTL.
+            with contextlib.suppress(Exception):
+                self._services.sessions.invalidate_list_cache()
 
     async def _ask_approval(self, request: Any) -> bool:
         binding = self._binding
@@ -1328,6 +1405,9 @@ class WebSessionHost:
         try:
             return self._services.sessions.native_look(session_id)
         except (NativeQueryError, OSError) as exc:
+            binding = self._binding
+            if binding is not None and binding.session_id == session_id:
+                return self._draft_info(binding)
             raise NotFound(f"unknown session: {session_id}") from exc
 
     def _folded_state(self, session_id: str) -> SessionState | None:
