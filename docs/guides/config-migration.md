@@ -56,14 +56,16 @@ ConfigError: invalid configuration: configuration key 'agent.maxTokens' is not s
 
 ### adapter 选项（provider/catalog 读取的 model_extra）
 
-`[providers.X]` 允许 `max_tokens`、`reasoning_effort`；`[providers.X.models[*]]` 额外允许
-`input_modalities`。camelCase 拼写不再被接受：
+`[providers.X]` 允许 `max_tokens`、`reasoning_effort`、`requires_reasoning_content`；
+`[providers.X.models[*]]` 额外允许 `input_modalities`（`requires_reasoning_content` 在模型级也可用，
+模型级优先）。camelCase 拼写不再被接受：
 
 | 0.1 camelCase | 0.2.0+ snake_case |
 | --- | --- |
 | `maxTokens` / `maxOutputTokens` / `maxCompletionTokens` | `max_tokens` |
 | `reasoningEffort` | `reasoning_effort` |
 | `inputModalities` | `input_modalities` |
+| `requiresReasoningContent` | `requires_reasoning_content` |
 
 ### 已删除的开关
 

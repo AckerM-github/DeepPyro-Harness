@@ -13,7 +13,10 @@ arguments are JSON strings.  OpenAI-compatible servers expect:
 * assistant content is a string (or null when only tool calls follow) and tool calls
   live in tool_calls[].function.arguments as a JSON *string*;
 * tool results are role=tool messages keyed by tool_call_id;
-* reasoning is replayed through the DeepSeek reasoning_content field (docs/spec/llm.md).
+* reasoning is replayed through the DeepSeek reasoning_content field (docs/spec/llm.md);
+* a provider whose thinking mode rejects replayed assistant turns without that field
+  (`requires_reasoning_content`) gets the key even when no reasoning was captured, as an
+  empty string; DeepSeek accepts that and requires it on every replayed tool-call turn.
 
 Conversion is deliberately tolerant for everything except tool-call arguments: unknown
 content parts are skipped, empty messages are dropped, and developer instructions become
@@ -106,8 +109,19 @@ def tool_to_json(tool: ToolSpec) -> dict[str, Any]:
     }
 
 
-def message_to_chat(message: Message, *, attachments: Any = None) -> dict[str, Any] | None:
-    """Convert one Message; returns None when the message would be empty on the wire."""
+def message_to_chat(
+    message: Message,
+    *,
+    attachments: Any = None,
+    requires_reasoning_content: bool = False,
+) -> dict[str, Any] | None:
+    """Convert one Message; returns None when the message would be empty on the wire.
+
+    When `requires_reasoning_content` is set (a thinking-mode provider such as
+    DeepSeek with tools in play), every assistant message carrying tool calls gets a
+    `reasoning_content` key, empty when no reasoning was captured.  Strict servers
+    reject such a turn with HTTP 400 otherwise; an empty string is accepted.
+    """
     role = message.role
     if role in ("system", "developer"):
         text = message_text(message)
@@ -140,8 +154,10 @@ def message_to_chat(message: Message, *, attachments: Any = None) -> dict[str, A
             return None
         payload: dict[str, Any] = {"role": "assistant", "content": text or None}
         reasoning = message_reasoning(message)
-        if reasoning:
+        if reasoning or (requires_reasoning_content and calls):
             # DeepSeek replays thinking through reasoning_content; see docs/spec/llm.md.
+            # Thinking-mode servers also require the key on a replayed tool-call turn
+            # that captured no reasoning, so send an empty string rather than omitting it.
             payload["reasoning_content"] = reasoning
         if calls:
             payload["tool_calls"] = [
@@ -167,6 +183,7 @@ def convert_messages(
     system: Message | None = None,
     *,
     attachments: Any = None,
+    requires_reasoning_content: bool = False,
 ) -> list[dict[str, Any]]:
     """Build the messages array; the system instruction goes first and is not duplicated."""
     converted: list[dict[str, Any]] = []
@@ -176,7 +193,11 @@ def convert_messages(
         if text.strip():
             converted.append({"role": "system", "content": text})
     for message in messages:
-        payload = message_to_chat(message, attachments=attachments)
+        payload = message_to_chat(
+            message,
+            attachments=attachments,
+            requires_reasoning_content=requires_reasoning_content,
+        )
         if payload is not None:
             converted.append(payload)
     return converted
@@ -187,11 +208,18 @@ def build_chat_payload(
     *,
     model_ctx: int | None = None,
     attachments: Any = None,
+    requires_reasoning_content: bool = False,
 ) -> dict[str, Any]:
     """Build the JSON body for POST {baseURL}/chat/completions."""
+    replay_reasoning = requires_reasoning_content and bool(request.tools)
     payload: dict[str, Any] = {
         "model": request.model,
-        "messages": convert_messages(request.messages, request.system, attachments=attachments),
+        "messages": convert_messages(
+            request.messages,
+            request.system,
+            attachments=attachments,
+            requires_reasoning_content=replay_reasoning,
+        ),
         "stream": True,
         "stream_options": {"include_usage": True},
     }

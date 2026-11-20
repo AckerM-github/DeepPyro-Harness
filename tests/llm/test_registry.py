@@ -73,6 +73,53 @@ def test_create_native_provider_without_models_has_no_context_window() -> None:
     assert provider.model_ctx is None
 
 
+def test_create_native_provider_enables_reasoning_replay_for_deepseek() -> None:
+    config = ProviderConfig.model_validate(
+        {
+            "api": "openai-completions",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "secret",
+            "models": [{"id": "deepseek-flash", "context_window": 65536}],
+        }
+    )
+    provider = create_native_provider("deepseek", config)
+    assert isinstance(provider, NativeOpenAICompatProvider)
+    assert provider.requires_reasoning_content is True
+
+
+def test_create_native_provider_disables_reasoning_replay_for_local_endpoints() -> None:
+    provider = create_native_provider("local", provider_config(api_key="secret"))
+    assert isinstance(provider, NativeOpenAICompatProvider)
+    assert provider.requires_reasoning_content is False
+
+
+def test_reasoning_replay_can_be_forced_by_an_adapter_option() -> None:
+    config = ProviderConfig.model_validate(
+        {
+            "api": "openai-completions",
+            "base_url": "https://example.test/v1",
+            "models": [{"id": "some-thinking-model", "requires_reasoning_content": True}],
+        }
+    )
+    provider = create_native_provider("custom", config)
+    assert isinstance(provider, NativeOpenAICompatProvider)
+    assert provider.requires_reasoning_content is True
+
+
+def test_reasoning_replay_can_be_disabled_for_deepseek() -> None:
+    config = ProviderConfig.model_validate(
+        {
+            "api": "openai-completions",
+            "base_url": "https://api.deepseek.com/v1",
+            "requires_reasoning_content": False,
+            "models": [{"id": "deepseek-chat"}],
+        }
+    )
+    provider = create_native_provider("deepseek", config)
+    assert isinstance(provider, NativeOpenAICompatProvider)
+    assert provider.requires_reasoning_content is False
+
+
 def test_create_native_provider_model_ctx_uses_largest_window() -> None:
     config = provider_config(
         models=[

@@ -372,3 +372,63 @@ def test_message_tool_calls_helper_returns_native_parts() -> None:
     )
     calls = message_tool_calls(assistant)
     assert [call.name for call in calls] == ["read"]
+
+
+def test_tool_call_without_reasoning_gets_an_empty_reasoning_content_when_required() -> None:
+    assistant = _assistant(ToolCallPart(id="call_0123456789abcdef", name="read", arguments="{}"))
+    assert message_to_chat(assistant, requires_reasoning_content=True) == {
+        "role": "assistant",
+        "content": None,
+        "reasoning_content": "",
+        "tool_calls": [
+            {
+                "id": "call_0123456789abcdef",
+                "type": "function",
+                "function": {"name": "read", "arguments": "{}"},
+            }
+        ],
+    }
+
+
+def test_tool_call_without_reasoning_omits_the_field_by_default() -> None:
+    assistant = _assistant(ToolCallPart(id="call_0123456789abcdef", name="read", arguments="{}"))
+    payload = message_to_chat(assistant)
+    assert payload is not None
+    assert "reasoning_content" not in payload
+
+
+def test_captured_reasoning_wins_when_replay_is_required() -> None:
+    assistant = _assistant(
+        ReasoningPart(text="think"),
+        ToolCallPart(id="call_0123456789abcdef", name="read", arguments="{}"),
+    )
+    payload = message_to_chat(assistant, requires_reasoning_content=True)
+    assert payload is not None
+    assert payload["reasoning_content"] == "think"
+
+
+def test_plain_assistant_message_does_not_gain_empty_reasoning_content() -> None:
+    assistant = _assistant(TextPart(text="answer"))
+    assert message_to_chat(assistant, requires_reasoning_content=True) == {
+        "role": "assistant",
+        "content": "answer",
+    }
+
+
+def test_reasoning_replay_only_applies_when_tools_are_offered() -> None:
+    tool = ToolSpec(name="read", parameters={"type": "object", "properties": {}})
+    messages = (
+        _user("hi"),
+        _assistant(ToolCallPart(id="call_0123456789abcdef", name="read", arguments="{}")),
+    )
+    without_tools = build_chat_payload(
+        ModelRequest(provider="deepseek", model="deepseek-flash", messages=messages),
+        requires_reasoning_content=True,
+    )
+    assert "reasoning_content" not in without_tools["messages"][1]
+
+    with_tools = build_chat_payload(
+        ModelRequest(provider="deepseek", model="deepseek-flash", messages=messages, tools=(tool,)),
+        requires_reasoning_content=True,
+    )
+    assert with_tools["messages"][1]["reasoning_content"] == ""

@@ -107,6 +107,7 @@ class NativeOpenAICompatProvider:
         timeout_s: float = 600.0,
         retry_policy: RetryPolicy | None = None,
         attachments: Any = None,
+        requires_reasoning_content: bool = False,
     ) -> None:
         self.name = name
         self.base_url = base_url.rstrip("/")
@@ -118,6 +119,11 @@ class NativeOpenAICompatProvider:
         # does not inject one yet, so bare attachment ids are dropped when no resolver is
         # supplied.
         self.attachments = attachments
+        #: Thinking-mode servers (DeepSeek, see docs/spec/llm.md) reject replayed
+        #: tool-call turns that omit reasoning_content, so the field is written even
+        #: when no reasoning was captured.  Off by default: other OpenAI-compatible
+        #: endpoints may not know the field.
+        self.requires_reasoning_content = bool(requires_reasoning_content)
         self._client: httpx.AsyncClient | None = None
         self._closed = False
 
@@ -170,7 +176,12 @@ class NativeOpenAICompatProvider:
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         """Stream one completion as native core.llm.StreamEvent values."""
-        payload = build_chat_payload(request, model_ctx=self.model_ctx, attachments=self.attachments)
+        payload = build_chat_payload(
+            request,
+            model_ctx=self.model_ctx,
+            attachments=self.attachments,
+            requires_reasoning_content=self.requires_reasoning_content,
+        )
         state: dict[str, AsyncIterator[StreamEvent] | None] = {"gen": None}
         pending: list[RetryScheduled] = []
 

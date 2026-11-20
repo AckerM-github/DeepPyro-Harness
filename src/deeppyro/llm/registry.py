@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from urllib.parse import urlsplit
 
 from deeppyro.config import Config, ProviderConfig
 from deeppyro.core.errors import ConfigError, LlmError
@@ -73,6 +74,7 @@ def create_native_provider(name: str, pc: ProviderConfig, *, timeout_s: float = 
             pc.resolve_api_key(),
             model_ctx=_context_window(pc),
             timeout_s=timeout_s,
+            requires_reasoning_content=_requires_reasoning_content(name, pc),
         )
     if api in _ANTHROPIC_APIS:
         if "base_url" not in pc.model_fields_set or not pc.base_url.strip():
@@ -129,6 +131,31 @@ def _reasoning_effort(pc: ProviderConfig) -> str:
     if isinstance(value, str) and value:
         return value.lower()
     return "off"
+
+
+def _requires_reasoning_content(name: str, pc: ProviderConfig) -> bool:
+    """Whether replayed assistant tool calls must carry reasoning_content (DeepSeek).
+
+    DeepSeek thinking mode rejects a tool loop whose replayed assistant message has no
+    reasoning_content (HTTP 400, docs/spec/llm.md); an empty string is accepted, so the
+    converter can fill the field in.  Enabled only when the provider is recognisably
+    DeepSeek (a provider named "deepseek" or a DeepSeek host), because other
+    OpenAI-compatible servers may not know the field; any other endpoint can opt in with
+    the `requires_reasoning_content` adapter option.
+    """
+    for model in pc.models:
+        value = _extra(model, "requiresReasoningContent", "requires_reasoning_content")
+        if isinstance(value, bool):
+            return value
+    value = _extra(pc, "requiresReasoningContent", "requires_reasoning_content")
+    if isinstance(value, bool):
+        return value
+    return "deepseek" in name.lower() or _deepseek_host(pc)
+
+
+def _deepseek_host(pc: ProviderConfig) -> bool:
+    host = (urlsplit(pc.base_url).hostname or "").lower()
+    return "deepseek" in host
 
 
 def _extra(obj: Any, *keys: str) -> Any:

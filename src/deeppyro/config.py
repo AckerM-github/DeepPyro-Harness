@@ -167,7 +167,7 @@ class ModelConfig(_SchemaModel):
     model_config = ConfigDict(extra="allow")
 
     _allowed_extra_keys: ClassVar[frozenset[str]] = frozenset(
-        {"max_tokens", "reasoning_effort", "input_modalities"}
+        {"max_tokens", "reasoning_effort", "input_modalities", "requires_reasoning_content"}
     )
 
     id: str
@@ -181,13 +181,16 @@ class ProviderConfig(_SchemaModel):
     """One OpenAI-compatible (or Anthropic) provider endpoint.
 
     Keys are snake_case only; baseURL/apiKeyEnv/apiKey are rejected as of 0.2.0.
-    The documented adapter options max_tokens and reasoning_effort are accepted
-    as model_extra so a provider can set defaults for all of its models.
+    The documented adapter options max_tokens, reasoning_effort and
+    requires_reasoning_content are accepted as model_extra so a provider can set
+    defaults for all of its models.
     """
 
     model_config = ConfigDict(extra="allow")
 
-    _allowed_extra_keys: ClassVar[frozenset[str]] = frozenset({"max_tokens", "reasoning_effort"})
+    _allowed_extra_keys: ClassVar[frozenset[str]] = frozenset(
+        {"max_tokens", "reasoning_effort", "requires_reasoning_content"}
+    )
 
     api: str = "openai-completions"
     base_url: str = "https://api.deepseek.com/v1"

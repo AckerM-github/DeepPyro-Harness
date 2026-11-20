@@ -32,6 +32,7 @@ provider = NativeOpenAICompatProvider(   # wire-free mirror used by the native l
     name, base_url, api_key, *, model_ctx: int | None = None,
     timeout_s: float = 600.0, retry_policy: RetryPolicy | None = None,
     attachments: object | None = None,   # optional image-attachment resolver
+    requires_reasoning_content: bool = False,  # DeepSeek thinking replay (§11)
 )
 provider = AnthropicProvider(            # when pc.api is "anthropic-messages"/"anthropic"
     name, base_url, api_key, *, model_ctx: int | None = None,
@@ -97,6 +98,13 @@ body: {
   `max_completion_tokens`) is what DeepSeek and llama-server accept.
 * `model_ctx` comes from the native provider: the largest `contextWindow` among the
   provider's configured models (None when no model declares one).
+* `requires_reasoning_content` is a provider-level adapter option (model-level first, then
+  provider-level) that makes the converter write `reasoning_content` even when a replayed
+  assistant turn captured no reasoning; the value is an empty string, which DeepSeek
+  accepts (omitting the key is an HTTP 400 in thinking mode, §11). `create_native_provider`
+  enables it automatically for a provider named `deepseek` or hosted on a DeepSeek domain
+  and leaves every other OpenAI-compatible endpoint alone; another endpoint can opt in
+  (and DeepSeek can opt out) with the `requires_reasoning_content` key.
 * Timeout: `httpx.Timeout(timeout_s, connect=min(30, timeout_s))`; the client is created
   lazily on the first request and closed by `aclose()` (idempotent; a closed provider
   raises on further streams instead of silently opening a new socket).
@@ -121,7 +129,7 @@ fixture shapes it mirrored are history.
 | `role="system"` / `role="developer"` | `{"role":"system","content":text}` (empty -> dropped) |
 | `role="user"`, text only | `{"role":"user","content":text}` |
 | `role="user"` with `ImagePart` | content array `[{"type":"text"},{"type":"image_url","image_url":{"url":...}}]` |
-| `role="assistant"` | `{"role":"assistant","content":text_or_null,"reasoning_content":reasoning?,"tool_calls":[...]}` |
+| `role="assistant"` | `{"role":"assistant","content":text_or_null,"reasoning_content":reasoning_or_required_empty?,"tool_calls":[...]}` |
 | `role="tool"` | `{"role":"tool","tool_call_id":toolCallId or source.callId,"content":text}` |
 
 * `LlmRequest.system` is prepended as a system message unless the history already
@@ -136,7 +144,11 @@ fixture shapes it mirrored are history.
   JSON cannot be sent to the API at all, so `normalize_arguments` raises
   `LlmRequestError(code="BAD_REQUEST", retryable=False)` before any request is made.
 * DeepSeek reasoning is replayed through `reasoning_content`; this is the same field the
-  provider streams, so history round-trips.
+  provider streams, so history round-trips. A thinking-mode server also requires the key
+  on a replayed assistant turn that has tool calls but captured no reasoning, so
+  `requires_reasoning_content` providers get `"reasoning_content": ""` there instead of
+  omitting the key (an empty string is accepted; omission is HTTP 400). The key is only
+  forced when the request carries tools.
 * `ImagePart.attachment` accepted forms: a ready `data:`/`http(s)://` URL, or a dict with
   `url`, or a dict with `data`/`base64` plus `mimeType`/`mediaType`. A bare attachment id is
   dereferenced only when the converter receives an attachment resolver
@@ -331,11 +343,13 @@ client-side bug and fail fast with `LlmRequestError(code="BAD_REQUEST")`. Observ
   algorithm are unchanged, but the hash **values change once**; traces recorded before and
   after the port cannot be joined by prompt hash. No fixture pins the value.
 
-* `reasoning_content` is only added when non-empty. DSH's adapter auto-enables
-  `requiresReasoningContentOnAssistantMessages` for DeepSeek and then sends the field
-  (possibly empty) on *every* replayed assistant message. Sending it only when present is
-  accepted by DeepSeek today; if a strict server rejects replayed history, add an empty
-  `reasoning_content` for DeepSeek models.
+* `reasoning_content` replay used to be added only when non-empty, which made a DeepSeek
+  thinking-mode tool loop fail with HTTP 400 ("The `reasoning_content` in the thinking mode
+  must be passed back to the API") whenever one tool-call turn captured no reasoning (the
+  second sequential tool call in a turn commonly has none). The replay now follows DSH's
+  `requiresReasoningContentOnAssistantMessages` behaviour: `requires_reasoning_content`
+  providers write the key on every replayed tool-call assistant message, empty when no
+  reasoning was captured; see §2/§3 and `tests/llm/test_native_messages.py`.
 * No session-affinity/prompt-cache headers (§2) — cache hit-rate difference only.
 * Anthropic-compatible endpoints are supported by `AnthropicProvider` (section 14); the
   `web_deepseek_search_llm_request` fixture uses an Anthropic-shaped *web search tool*
