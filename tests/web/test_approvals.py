@@ -356,3 +356,129 @@ async def test_cancel_session_wins_once_over_a_due_timeout() -> None:
     assert (await task) is False
     assert broker.pending() == []
     assert decided == [ApprovalDecision.CANCEL]
+
+
+# -- session-scoped grants -------------------------------------------------
+
+
+async def test_session_scope_allow_answers_later_asks_without_a_prompt() -> None:
+    notified: list[ApprovalPrompt] = []
+    decided: list[ApprovalDecision] = []
+    broker = ApprovalBroker(
+        notify=notified.append,
+        on_decided=lambda prompt, decision: decided.append(decision),
+    )
+    task = await _start_ask(broker, "session-a", tool="shell")
+    prompt = broker.pending()[0]
+
+    assert broker.decide(prompt.approval_id, ApprovalDecision.ALLOW, scope="session") is True
+    assert (await task) is True
+    assert broker.pending() == []
+    assert len(notified) == 1 and len(decided) == 1
+
+    # The grant answers the same tool in the same session with no prompt.
+    assert await broker.ask("session-a", _request(tool="shell")) is True
+    assert broker.pending() == []
+    assert len(notified) == 1
+    assert len(decided) == 1
+
+
+async def test_session_scope_is_limited_to_one_session_and_tool() -> None:
+    broker = ApprovalBroker()
+
+    granted = await _start_ask(broker, "session-a", tool="shell")
+    assert broker.decide(broker.pending()[0].approval_id, "allow", scope="session") is True
+    assert (await granted) is True
+
+    other_tool = await _start_ask(broker, "session-a", tool="write")
+    assert broker.pending()[-1].tool == "write"
+    assert broker.decide(broker.pending()[-1].approval_id, "deny") is True
+    assert (await other_tool) is False
+
+    other_session = await _start_ask(broker, "session-b", tool="shell")
+    assert broker.decide(broker.pending()[-1].approval_id, "deny") is True
+    assert (await other_session) is False
+    assert broker.pending() == []
+
+
+async def test_session_scope_deny_grants_nothing() -> None:
+    broker = ApprovalBroker()
+    task = await _start_ask(broker)
+    prompt = broker.pending()[0]
+
+    assert broker.decide(prompt.approval_id, ApprovalDecision.DENY, scope="session") is True
+    assert (await task) is False
+
+    second = await _start_ask(broker)
+    assert len(broker.pending()) == 1
+    assert broker.decide(broker.pending()[0].approval_id, "deny") is True
+    assert (await second) is False
+    assert broker.pending() == []
+
+
+async def test_default_scope_allows_only_the_one_prompt() -> None:
+    broker = ApprovalBroker()
+    task = await _start_ask(broker)
+    approval_id = broker.pending()[0].approval_id
+
+    assert broker.decide(approval_id, ApprovalDecision.ALLOW) is True
+    assert (await task) is True
+
+    second = await _start_ask(broker)
+    assert len(broker.pending()) == 1
+    assert broker.decide(broker.pending()[0].approval_id, "deny") is True
+    assert (await second) is False
+
+
+async def test_unknown_scope_raises_and_leaves_the_prompt_pending() -> None:
+    broker = ApprovalBroker()
+    task = await _start_ask(broker)
+    approval_id = broker.pending()[0].approval_id
+
+    with pytest.raises(ValueError, match="unknown approval scope"):
+        broker.decide(approval_id, ApprovalDecision.ALLOW, scope="forever")
+    assert [prompt.approval_id for prompt in broker.pending()] == [approval_id]
+
+    assert broker.decide(approval_id, ApprovalDecision.ALLOW) is True
+    assert (await task) is True
+    assert broker.pending() == []
+
+
+def test_session_scope_on_an_unknown_id_is_a_noop() -> None:
+    broker = ApprovalBroker()
+    assert broker.decide("missing", ApprovalDecision.ALLOW, scope="session") is False
+    assert broker.pending() == []
+    with pytest.raises(ValueError):
+        broker.decide("missing", "maybe")
+
+
+async def test_cancel_session_keeps_the_session_scope_grant() -> None:
+    broker = ApprovalBroker()
+    task = await _start_ask(broker)
+    assert broker.decide(broker.pending()[0].approval_id, "allow", scope="session") is True
+    assert (await task) is True
+
+    # Every turn ends by cancelling that session's prompts; that must not
+    # revoke a grant the user asked to keep for the session.
+    assert broker.cancel_session("session-a") == 0
+    assert await broker.ask("session-a", _request(tool="shell")) is True
+    assert broker.pending() == []
+
+
+async def test_forget_session_drops_only_that_sessions_grants() -> None:
+    broker = ApprovalBroker()
+    for session_id in ("session-a", "session-b"):
+        task = await _start_ask(broker, session_id, tool="shell")
+        assert broker.decide(broker.pending()[0].approval_id, "allow", scope="session") is True
+        assert (await task) is True
+
+    broker.forget_session("session-a")
+    broker.forget_session("session-missing")
+
+    revoked = await _start_ask(broker, "session-a", tool="shell")
+    assert len(broker.pending()) == 1
+    assert broker.decide(broker.pending()[0].approval_id, "deny") is True
+    assert (await revoked) is False
+
+    assert await broker.ask("session-b", _request(tool="shell")) is True
+    assert broker.pending() == []

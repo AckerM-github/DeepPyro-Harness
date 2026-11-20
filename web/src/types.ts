@@ -131,6 +131,13 @@ export interface MessageSource {
   [key: string]: unknown;
 }
 
+/** Browser-side lifecycle of one user turn, used to group streaming steps. */
+export interface TurnMeta {
+  started_at: number;
+  ended_at?: number;
+  status: 'running' | 'settled' | 'failed' | 'stopped';
+}
+
 export interface ChatMessage {
   id: string | number;
   role: string;
@@ -145,6 +152,12 @@ export interface ChatMessage {
   has_text: boolean;
   /** Browser-only flag: deltas are still arriving for this message. */
   streaming?: boolean;
+  /** Browser-only turn grouping metadata. */
+  turn_meta?: TurnMeta;
+  /** Browser-only: backend turn number of a live assistant step. */
+  turn?: number;
+  /** Browser-only: live step created without a local user anchor. */
+  detached?: boolean;
 }
 
 export interface Usage {
@@ -171,6 +184,8 @@ export interface Timeline {
   usage: Usage;
   messages: ChatMessage[];
   journal_seq?: number;
+  /** Structured plan/goal/todo state when the backend exposes it. */
+  state?: TimelineState | null;
 }
 
 export interface Approval {
@@ -180,6 +195,88 @@ export interface Approval {
   summary: string;
   detail: string;
   created_at: number;
+  status?: string;
+}
+
+/** Goal state projected by the runtime for the plan bar. */
+export interface GoalState {
+  id?: string;
+  revision?: number;
+  objective: string;
+  phase?: string;
+  max_goal_rounds?: number;
+  blocked_reason?: unknown;
+}
+
+export interface TodoItem {
+  content: string;
+  status: string;
+}
+
+export interface DeliverableState {
+  path: string;
+  description?: string;
+}
+
+export interface TaskState {
+  task_id: string;
+  objective: string;
+  status: string;
+  owner?: string;
+  created_at?: number;
+}
+
+/** Structured session state exposed by the timeline (P1 backend). */
+export interface TimelineState {
+  title?: string;
+  cwd?: string;
+  model?: string | null;
+  preset?: string;
+  permission_policy?: string;
+  sandbox_mode?: string;
+  plan_mode?: boolean;
+  rounds_started?: number;
+  goal?: GoalState | null;
+  todos?: TodoItem[];
+  deliverables?: DeliverableState[];
+  tasks?: TaskState[];
+  handoffs?: unknown[];
+}
+
+/** One message waiting behind the running turn. */
+export interface QueuedMessage {
+  queue_id: string;
+  text: string;
+  created_at?: number;
+}
+
+/** Directory browser payload for the new-session folder picker. */
+export interface FsDirEntry {
+  name: string;
+  path: string;
+}
+
+export interface FsDirsPayload {
+  path: string;
+  parent: string | null;
+  entries: FsDirEntry[];
+}
+
+export interface FsRoot {
+  label: string;
+  path: string;
+}
+
+export interface FsRootsPayload {
+  roots: FsRoot[];
+}
+
+export interface ModelChangeResult {
+  ok: boolean;
+  session_id: string;
+  provider: string;
+  model: string;
+  applied: 'next_turn' | 'deferred';
 }
 
 export interface CommandResult {

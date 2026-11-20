@@ -37,26 +37,33 @@
 
 ## 2. 界面
 
-三栏结构（Discord 密度的原创布局，由 React 组件渲染已构建的 SPA）：
+conversation-first 工作台（左栏会话、中栏对话、右侧详情默认收起）：
 
-- **Sidebar（最左）**：顶部品牌区（原创半面罩机器标 + DeepPyro + 工作目录）、搜索、
-  Sessions / Commands / Plugins 导航、native 会话列表（标题、turn 数、preset、相对时间、
-  active 白点，行尾 `⋯` 菜单提供 Archive / Unarchive / Copy session ID）、底部的
-  **Show archived** 与 **Load more**、用户栏（头像与 Settings 入口）。会话列表分页加载，
-  归档会话默认隐藏，勾选后以 `Archived · N turns` 显示。
-- **Stage（主区）**：当前会话标题、preset/model/cwd、运行条、消息流（用户/助手/推理/
-  markdown/代码块）、工具卡（PENDING/DONE/ERROR + 参数 + 结果）、审批卡、composer。
-- **Inspector（右侧）**：session id、model/provider、preset、turns、权限/审批策略、cwd、
-  context 进度、usage（input/output/cached）、runtime 计数、快捷键。
+- **Sidebar（最左）**：品牌区（原创半面罩机器标 + DeepPyro）、**New session** 按钮、
+  会话搜索框、会话列表（标题、turn 数、preset、相对时间、active 白点，行尾 `⋯` 菜单提供
+  **Rename / Archive**；双击标题也可改名）、底部的 **Show archived** 与 **Load more**、
+  用户栏与 Settings 入口。会话列表分页加载，归档会话默认隐藏，勾选后以
+  `Archived · N turns` 显示。
+- **Stage（主区）**：顶栏只有会话标题、非 live 时的连接状态、运行中的 `Working…`，
+  以及 Reload / Session details 两个图标；中间是消息流（用户消息右侧气泡；助手消息无头像、
+  无时间戳；推理与工具调用收进 `Used N tools` / `Working…` 折叠过程层，展开后是按工具
+  语义化的卡片：命令用终端卡、改文件显示 Before/After、搜索按文件分组、读文件带行号）；
+  底部是 composer 栈：审批条（`Permission needed`）、排队条（`Queued · N`）、计划进度条、
+  composer 卡片（模型菜单、权限 preset、上下文用量、发送/Stop 按钮）。空会话显示
+  `What should we build?` 与工作区建议。
+- **Session details（右侧，默认关闭）**：点顶栏 info 图标打开覆盖式抽屉，显示模型/Provider/
+  preset/工作区、上下文用量进度、本会话 token 用量、权限 preset 与 Manage permissions 入口；
+  点 scrim、关闭按钮或 `Esc` 收起。
 
-窄屏（<768px）时侧栏收进抽屉，Inspector 在 <1280px 时收起；顶部窄栏保留品牌、New session、
-Commands 与 Settings。
+窄屏（<768px）时侧栏收进抽屉（顶栏菜单按钮打开），Session details 变成全屏抽屉；
+composer 仍保留模型与权限菜单。
 
-加载态、空态、错误态都来自真实 API；没有 mock 数据。断线时连接点变为 offline，重连后按
-`lastEventSeq` / timeline 的 `journal_seq` 续订，不重复渲染历史。
+加载态、空态、错误态都来自真实 API；没有 mock 数据。断线时顶栏出现 reconnecting/offline，
+重连后按 `lastEventSeq` / timeline 的 `journal_seq` 续订，不重复渲染历史。
 
-按 `Ctrl/Cmd+K` 打开命令面板，或在 composer 输入 `/help`。面板分三组：
-Commands（25 个 core command）、Sessions（搜索/跳转）、Settings（分区）。
+`Ctrl/Cmd+K` 打开**快速切换器**：默认列出会话与 Actions（New session / Settings）；输入以
+`/` 开头才显示命令列表，命令直接执行，不再有参数步骤。composer 左侧的命令图标打开同一个
+切换器。
 
 - **真实执行**：`/new`、`/resume`、`/sessions`、`/rename`、`/archive`、`/unarchive`、
   `/permission`、`/status`、`/plan`、`/goal`、`/cwd`、`/plugins`、`/help`。
@@ -70,18 +77,18 @@ Commands（25 个 core command）、Sessions（搜索/跳转）、Settings（分
 
 每个 native 会话在**创建时**把 cwd 写进会话 header，运行中不改写。要换目录：
 
-1. 点侧栏 SESSIONS 的 **+**、窄屏顶栏的 **+**，或按 `Ctrl/Cmd+N` 打开 **New session** 弹窗；
-   输入绝对路径，或从 **Recent workspaces** 选一个最近目录，然后 **Start session**。
-   留空则使用宿主启动时的 `--cwd`（默认当前目录）。
+1. 点侧栏 **New session**、或按 `Ctrl/Cmd+N` 打开 **New session** 弹窗：**Folder** 行
+   显示当前工作区，点 **Choose…** 打开目录选择器（只列目录，可上溯、可切 Home/Workspace 根）；
+   也可以直接从 **Recent folders** 选最近用过的目录。填可选 **Title**、选 **Preset** 后点
+   **Start session**；留空目录则使用宿主启动时的 `--cwd`（默认当前目录）。
 2. 或在 composer 输入 `/cwd D:\work\project`：等价地新建并切换到该目录的会话。
 3. `/cwd` 不带参数只显示当前会话的目录，不会改变它。
 
 旧会话不会被删除或改写，仍留在侧栏；新会话继承当前 provider/model/preset 与权限策略。
-目录不存在或不是目录时弹窗/命令会显示服务端校验错误。
+目录不存在或不可读时，选择器与弹窗内显示服务端校验错误，不会静默失败。
 
-Stage 顶部路径 chip 也可点击：它打开同一个 **Change working directory** 弹窗，并明确提示
-“会话绑定启动目录，当前会话留在侧栏”。这是唯一改变工作目录的 UI 入口；不会原地改写
-正在运行的会话。
+会话行菜单的 **Rename**（或双击标题）可直接改标题，等价于 `/rename`，只改会话 header，
+不重写历史。
 
 归档/取消归档都从会话行尾的 `⋯` 菜单触发。归档 active 会话时后端先创建替代会话再归档，
 UI 自动跳到替代会话；取消归档后可在 **Show archived** 结果里看到它恢复，刷新页面状态保持。
@@ -94,8 +101,8 @@ UI 自动跳到替代会话；取消归档后可在 **Show archived** 结果里�
 
 - **Provider & models**：provider/model 选择、Base URL、API key（只写不读，显示 `api_key_set`）、
   温度、max tokens、连接测试；保存后校验并原子写 `~/.dpro/config.toml`，生成编号 `.bak`。
-- **Agent behavior / Permissions**：默认 preset、权限模式、审批策略；运行中会话也可通过
-  `/permission` 调整。
+- **Agent behavior / Permissions**：默认 preset、权限模式、审批策略；运行中会话直接在
+  composer 的权限菜单（或 Session details 抽屉）调整，下一 turn 生效。
 - **Commands**：25 个 core command 的真实注册表视图。
 - **Plugins**：运行时插件行、状态、插件设置 schema 表单（live 字段热应用，restart 字段标记重启）。
 - **Sessions / Web host / About**：会话计数、回环地址、版本与 Python/平台信息。
@@ -106,9 +113,11 @@ UI 自动跳到替代会话；取消归档后可在 **Show archived** 结果里�
 
 需要更高权限的工具（例如写 workspace 之外的路径）会让 turn 挂起：
 
-1. 页面出现审批卡：工具名、摘要、目标路径/原因、**Allow once** / **Deny**。
-2. 工具卡保持 **PENDING**，不会误显示 missing-result 错误。
-3. 点 Allow 后工具继续执行；Deny 后工具得到拒绝并收尾。
+1. composer 上方出现审批条 `Permission needed · <动作>`：摘要、目标路径/原因，以及
+   **Allow once** / **Allow for this session** / **Deny** 三个按钮。
+2. 等待中的工具卡保持 **Running**，不会误显示 missing-result 错误。
+3. **Allow once** 只放行这一次；**Allow for this session** 对同一会话的同一工具自动放行，
+   直到会话 detach 或宿主重启（放行集合只在内存里）；**Deny** 让工具得到拒绝并收尾。
 4. 超时（默认 300 秒）或 turn 结束会清理 pending，不会永久卡住。
 
 审批决策只通过本机 API 发送，不经过模型。
@@ -117,16 +126,17 @@ UI 自动跳到替代会话；取消归档后可在 **Show archived** 结果里�
 
 | 键 | 作用 |
 | --- | --- |
-| `Ctrl/Cmd+K` 或 `?` | 命令面板 |
+| `Ctrl/Cmd+K` | 快速切换器（会话/Actions；输入 `/` 时列命令） |
 | `Ctrl/Cmd+,` | 设置 |
-| `Ctrl/Cmd+N` | 新建会话（选择工作目录） |
-| `Enter` | 发送 |
+| `Ctrl/Cmd+N` | 新建会话 |
+| `Enter` | 发送（turn 未结束时进入队列） |
 | `Shift+Enter` | 换行 |
-| `Esc` | 关闭面板/设置/新建会话弹窗 |
+| `Esc` | 关闭抽屉/切换器/设置/新建会话弹窗 |
 | `Ctrl-C`（终端） | 停止宿主进程 |
 
 Stop 按钮向宿主发 `POST /interrupt`，由 `NativeAgentHost.interrupt()` 取消当前 turn；
-不会杀 socket。队列里排队的消息会一起丢弃（响应里的 `dropped`）。
+不会杀 socket。队列里排队的消息会一起丢弃（响应里的 `dropped`）。turn 未结束时 `Enter`
+发送的消息进入队列（`Queued · N` 条），可逐条删除；上限 8 条，满后返回 429。
 
 ## 7. 打包说明
 
@@ -151,9 +161,12 @@ Stop 按钮向宿主发 `POST /interrupt`，由 `NativeAgentHost.interrupt()` �
 | 409 team mode is not available | web 运行时拒绝 team 预设；团队请用 TUI/headless |
 | 409 stale settings revision | 设置被另一个窗口改过；点 Reload 后重试 |
 | 413 payload too large | 消息超过 100000 字符或 body 超过 1 MiB |
-| 429 turn queue is full | 当前 turn 未结束且已排 8 条；等完成或 Stop |
+| 429 turn queue is full | 当前 turn 未结束且已排 8 条；等完成或 Stop；队列条里也可逐条删除 |
 | 503 the web session host is not running | 宿主正在关闭/未启动；重启 `python -m deeppyro.web` |
-| 审批卡一直 PENDING | 点 Allow once / Deny；或等 300 秒超时 |
+| 审批条不消失 | 点 Allow once / Allow for this session / Deny；或等 300 秒超时 |
+| 模型菜单切换后当前 turn 没变 | 会话级模型切换从下一 turn 生效；当前 turn 流式中会提示 deferred |
+| 发送后消息没有立刻出现 | turn 未结束时消息进入队列，composer 上方出现 `Queued · N`；可删除或等当前 turn 结束 |
+| 找不到 Commands / Plugins 导航 | 已从侧栏移除：命令走 `Ctrl/Cmd+K`（输入 `/`）或 composer 内直接输入；Plugins 在 Settings 分区 |
 | 设置保存后当前会话没变 | agent/provider/permission 从下一 turn 生效，streaming 时等当前 turn 结束（响应 `live.deferred=true`）；web port 等配置仍需重启宿主 |
 | 新建会话在 `sessions/` 里找不到文件 | 未发首条消息的会话是 deferred draft，只存在内存；发送后才写 `<id>.jsonl`，未使用就切换/归档会直接丢弃 |
 | 新建会话的目录不是想要的 | cwd 在会话创建时固定；用 New session 弹窗或 `/cwd <path>` 新建，旧会话保留 |

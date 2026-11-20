@@ -3745,3 +3745,744 @@ label.settings-row:hover {
     animation: none !important;
   }
 }
+
+/* -------------------------------------------------------------------------
+   22. Conversation-first refresh (P0/P1)
+   The rules above describe the earlier inspector-heavy shell. This block
+   re-scopes the shell around the conversation: one quiet header, a docked
+   composer with inline status, and details as an on-demand drawer.
+   ------------------------------------------------------------------------- */
+
+/* Header: one row, no configuration chips. */
+.chat-header {
+  min-height: 56px;
+  padding: 10px 24px;
+}
+
+.chat-title-row {
+  max-width: calc(var(--content-max) + 32px);
+}
+
+.chat-title {
+  max-width: min(52ch, 70%);
+}
+
+.header-actions .icon-button.active {
+  background: var(--hover);
+  color: var(--text-primary);
+}
+
+/* Composer area: approvals, queue, plan and input share one dock. */
+.composer-area {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 4px 24px 18px;
+  background: var(--bg-base);
+}
+
+.composer-area > * {
+  width: 100%;
+  max-width: calc(var(--content-max) + 32px);
+  margin-right: auto;
+  margin-left: auto;
+}
+
+.composer-area > .composer-wrap {
+  padding: 0;
+  background: transparent;
+}
+
+.composer-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--text-caption);
+  transition: color var(--fast) var(--ease), background-color var(--fast) var(--ease);
+}
+
+.composer-icon:hover {
+  background: var(--hover);
+  color: var(--text-secondary);
+}
+
+.composer-context {
+  overflow: hidden;
+  color: var(--text-caption);
+  font-size: 11.5px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.composer-send.queue {
+  background: var(--bg-layer-3);
+  color: var(--accent);
+}
+
+.composer-send.queue:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+/* Inline popovers anchored to composer chips. */
+.composer-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.composer-menu .composer-chip {
+  color: var(--text-tertiary);
+  transition: color var(--fast) var(--ease), background-color var(--fast) var(--ease);
+}
+
+.composer-menu .composer-chip:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text-secondary);
+}
+
+.composer-menu .composer-chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.composer-chip .rotated {
+  transform: rotate(180deg);
+}
+
+.composer-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 60;
+  min-width: 220px;
+  max-width: min(300px, calc(100vw - 32px));
+  padding: 5px;
+  border-radius: 12px;
+  background: var(--bg-layer-2);
+  box-shadow: 0 0 0 0.5px var(--border-l2), var(--shadow-lg);
+  animation: fade-in var(--fast) var(--ease);
+}
+
+.composer-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.composer-menu-item:hover,
+.composer-menu-item:focus-visible {
+  background: var(--hover);
+  color: var(--text-primary);
+}
+
+.composer-menu-item.active {
+  color: var(--text-primary);
+}
+
+.composer-menu-item svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.composer-menu-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.composer-menu-title {
+  overflow: hidden;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-menu-desc {
+  overflow: hidden;
+  color: var(--text-caption);
+  font-size: 11.5px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Messages: no avatar gutter; actions reveal on hover. */
+.assistant-message {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0 20px;
+}
+
+.assistant-message.error .assistant-text {
+  color: var(--danger-text);
+}
+
+.message-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 5px;
+  opacity: 0;
+  transition: opacity var(--fast) var(--ease);
+}
+
+.user-message .message-actions {
+  justify-content: flex-end;
+}
+
+.message:hover .message-actions,
+.message:focus-within .message-actions {
+  opacity: 1;
+}
+
+.message-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--text-caption);
+  transition: color var(--fast) var(--ease), background-color var(--fast) var(--ease);
+}
+
+.message-action:hover {
+  background: var(--hover);
+  color: var(--text-primary);
+}
+
+@media (hover: none) {
+  .message-actions {
+    opacity: 1;
+  }
+}
+
+/* Process: reasoning and tool work fold into one quiet line. */
+.process {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.process-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  max-width: 100%;
+  min-height: 26px;
+  padding: 0 7px 0 4px;
+  margin-left: -4px;
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  font-size: 12.5px;
+  line-height: 18px;
+  text-align: left;
+  transition: color var(--fast) var(--ease), background-color var(--fast) var(--ease);
+}
+
+.process-head:hover {
+  background: var(--hover);
+  color: var(--text-secondary);
+}
+
+.process.open .process-head {
+  color: var(--text-secondary);
+}
+
+.process-chevron {
+  flex: 0 0 auto;
+  color: var(--text-caption);
+}
+
+.process-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 0 2px 13px;
+  margin-left: 4px;
+  border-left: 1px solid var(--border-l1);
+}
+
+.process-body .reasoning-head {
+  height: 24px;
+  font-size: 12.5px;
+}
+
+/* Empty conversation hero. */
+.empty-workspace {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 0.5px var(--border-l1);
+  color: var(--text-caption);
+  font-size: 11.5px;
+  line-height: 1;
+}
+
+/* Session list section header. */
+.session-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  padding: 12px 8px 5px;
+  color: var(--text-caption);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+.session-section-count {
+  color: var(--text-caption);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.72;
+}
+
+/* Session details drawer. */
+.inspector-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 71;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: rgba(8, 8, 9, 0.42);
+  animation: fade-in var(--fast) var(--ease);
+}
+
+.inspector {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 72;
+  flex: none;
+  width: min(380px, calc(100vw - 48px));
+  height: 100dvh;
+  border-left: 0.5px solid var(--border-l2);
+  background: var(--bg-sidebar);
+  box-shadow: -28px 0 72px -36px rgba(0, 0, 0, 0.85);
+  animation: drawer-in var(--base-dur) var(--ease);
+}
+
+.inspector-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspector-section-title {
+  margin-bottom: 6px;
+  color: var(--text-caption);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.inspector-body {
+  gap: 18px;
+  padding: 16px 18px 28px;
+}
+
+@keyframes drawer-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Small confirmation dialog. */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(8, 8, 9, 0.52);
+  animation: fade-in var(--fast) var(--ease);
+}
+
+.dialog {
+  width: min(420px, calc(100vw - 32px));
+  padding: 14px 16px 14px;
+  border-radius: 16px;
+  background: var(--bg-layer-1);
+  box-shadow: 0 0 0 0.5px var(--border-l2), var(--shadow-lg);
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.dialog-title {
+  flex: 1 1 auto;
+  color: var(--text-primary);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.dialog-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--bg-layer-2);
+  box-shadow: inset 0 0 0 0.5px var(--border-l2);
+  color: var(--text-primary);
+  font-size: 13.5px;
+  line-height: 20px;
+  outline: none;
+  transition: box-shadow var(--fast) var(--ease);
+}
+
+.dialog-input:focus {
+  box-shadow: inset 0 0 0 0.5px var(--border-l3), 0 0 0 3px rgba(122, 170, 255, 0.1);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+/* Narrow screens: the dock loses its outer padding. */
+@media (max-width: 767px) {
+  .chat-header {
+    min-height: 54px;
+    padding: 8px 14px;
+  }
+
+  .chat-title {
+    max-width: 62%;
+  }
+
+  .composer-area {
+    padding: 4px 12px 12px;
+  }
+
+  .composer-context {
+    display: none;
+  }
+
+  .inspector {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .process-body {
+    padding-left: 10px;
+  }
+}
+
+/* Composer control alignment: the model trigger matches the permission chip. */
+.composer .mm-trigger,
+.composer-menu .mm-trigger {
+  height: 26px;
+  padding: 0 6px 0 8px;
+  border-radius: 7px;
+}
+
+/* Keep permission switching reachable on narrow screens. */
+@media (max-width: 767px) {
+  .composer-menu .composer-chip {
+    display: inline-flex;
+    max-width: 118px;
+  }
+
+  .composer-left {
+    gap: 2px;
+  }
+}
+
+/* Sentence case for group and stat labels (no terminal-style all caps). */
+.section-label,
+.palette-group-label,
+.usage-grid .inspector-label,
+.inspector-section > .inspector-label {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.section-label {
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.palette-group-label {
+  font-size: 11px;
+}
+
+.usage-grid .inspector-label {
+  font-size: 11px;
+}
+
+
+
+
+/* -------------------------------------------------------------------------
+   23. Turn grouping and live streaming
+   ------------------------------------------------------------------------- */
+
+.transcript-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.jump-latest {
+  position: absolute;
+  right: 20px;
+  bottom: 14px;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-layer-2);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 0 0 0.5px var(--border-l2), var(--shadow-md);
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+
+.jump-latest:hover {
+  background: var(--bg-layer-3);
+  color: var(--text-primary);
+}
+
+.jump-latest-icon {
+  transform: rotate(90deg);
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0 16px;
+}
+
+.turn + .turn {
+  padding-top: 10px;
+}
+
+.turn .user-message {
+  margin: 4px 0 2px;
+}
+
+/* Folded per-turn process: reasoning, intermediate steps and tool calls. */
+.turn-process {
+  display: flex;
+  flex-direction: column;
+}
+
+.turn-process-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 28px;
+  padding: 0 2px;
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 18px;
+  text-align: left;
+  transition: color var(--fast) var(--ease);
+}
+
+.turn-process-head:hover {
+  color: var(--text-secondary);
+}
+
+.turn-process-head .mini-spinner {
+  width: 12px;
+  height: 12px;
+}
+
+.turn-process.running .turn-process-label {
+  color: var(--text-secondary);
+}
+
+.turn-process-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turn-process-chevron {
+  margin-left: auto;
+  color: var(--text-caption);
+}
+
+.turn-process-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 160ms var(--ease);
+}
+
+.turn-process.open .turn-process-body {
+  grid-template-rows: 1fr;
+}
+
+.turn-process-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow: hidden;
+  margin: 2px 0 2px 8px;
+  padding: 2px 0 2px 12px;
+  border-left: 1px solid var(--border-l1);
+}
+
+.turn-step {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.turn-step-text {
+  color: var(--text-secondary);
+  font-size: 13.5px;
+  line-height: 23px;
+  overflow-wrap: anywhere;
+}
+
+.turn-step-text .markdown p:last-child {
+  margin-bottom: 0;
+}
+
+/* Reasoning while it is still arriving: one quiet preview line block. */
+.reasoning.streaming .reasoning-head span {
+  color: var(--text-secondary);
+}
+
+.reasoning-preview {
+  display: -webkit-box;
+  margin: 0 0 4px 7px;
+  padding: 1px 0 1px 13px;
+  border-left: 1px solid var(--border-l1);
+  color: var(--text-caption);
+  font-size: 12.5px;
+  line-height: 19px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+.reasoning.streaming .reasoning-preview {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.05) 50%,
+    transparent 100%
+  );
+  background-repeat: no-repeat;
+  background-size: 200% 100%;
+  animation: reasoning-sweep 2.2s var(--ease) infinite;
+}
+
+@keyframes reasoning-sweep {
+  from {
+    background-position: 180% 0;
+  }
+
+  to {
+    background-position: -80% 0;
+  }
+}
+
+/* Running process header: live elapsed time, so the folded row stays informative. */
+.turn-process.running .turn-process-label {
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-process.running .turn-process-head .mini-spinner {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+/* Answer body: message actions are revealed on hover of the answer itself. */
+.turn .assistant-text .message-actions {
+  margin-top: 4px;
+}
+
+.turn .assistant-text:hover .message-actions,
+.turn .assistant-text:focus-within .message-actions {
+  opacity: 1;
+}
+
+.turn .assistant-error {
+  color: var(--danger-text);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+@media (max-width: 767px) {
+  .jump-latest {
+    right: 14px;
+    bottom: 10px;
+  }
+
+  .turn {
+    padding-bottom: 12px;
+  }
+
+  .turn-process-inner {
+    margin-left: 4px;
+    padding-left: 10px;
+  }
+}
+

@@ -3,7 +3,11 @@ import type {
   Bootstrap,
   CommandResult,
   ConnectionState,
+  FsDirsPayload,
+  FsRootsPayload,
+  ModelChangeResult,
   ProviderProbe,
+  QueuedMessage,
   SessionPage,
   SettingsMutation,
   SettingsPayload,
@@ -130,10 +134,13 @@ export const api = {
       { method: 'POST', body: {} },
     ),
   sendMessage: (sessionId: string, text: string) =>
-    request<{ session_id: string }>(`/api/ui/sessions/${encodeURIComponent(sessionId)}/messages`, {
-      method: 'POST',
-      body: { text },
-    }),
+    request<{ session_id: string; accepted?: boolean; queued?: boolean }>(
+      `/api/ui/sessions/${encodeURIComponent(sessionId)}/messages`,
+      {
+        method: 'POST',
+        body: { text },
+      },
+    ),
   interrupt: (sessionId: string) =>
     request<Record<string, unknown>>(`/api/ui/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
       method: 'POST',
@@ -158,11 +165,30 @@ export const api = {
     request<{ approvals: Approval[] }>(
       `/api/ui/approvals${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`,
     ),
-  decideApproval: (approvalId: string, decision: 'allow' | 'deny') =>
-    request<{ approval_id: string; settled: boolean }>(
+  decideApproval: (approvalId: string, decision: 'allow' | 'deny', scope?: 'once' | 'session') =>
+    request<{ approval_id: string; settled: boolean; scope?: string }>(
       `/api/ui/approvals/${encodeURIComponent(approvalId)}`,
-      { method: 'POST', body: { decision } },
+      { method: 'POST', body: scope ? { decision, scope } : { decision } },
     ),
+  setSessionModel: (sessionId: string, provider: string, model: string) =>
+    request<ModelChangeResult>(`/api/ui/sessions/${encodeURIComponent(sessionId)}/model`, {
+      method: 'POST',
+      body: { provider, model },
+    }),
+  queue: (sessionId: string) =>
+    request<{ session_id: string; items: QueuedMessage[] }>(
+      `/api/ui/sessions/${encodeURIComponent(sessionId)}/queue`,
+    ),
+  cancelQueued: (sessionId: string, queueId: string) =>
+    request<{ ok: boolean; removed?: boolean }>(
+      `/api/ui/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(queueId)}`,
+      { method: 'DELETE' },
+    ),
+  fsDirs: (path?: string) => {
+    const suffix = path ? `?path=${encodeURIComponent(path)}` : '';
+    return request<FsDirsPayload>(`/api/ui/fs/dirs${suffix}`);
+  },
+  fsRoots: () => request<FsRootsPayload>('/api/ui/fs/roots'),
   runCommand: (name: string, args: string[], sessionId: string | null) =>
     request<CommandResult>('/api/ui/commands', {
       method: 'POST',

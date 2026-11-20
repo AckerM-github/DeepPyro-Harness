@@ -49,6 +49,9 @@ MAX_BODY_BYTES = 1024 * 1024
 #: Decisions the approval prompt accepts from the browser.
 ALLOWED_DECISIONS = frozenset({"allow", "deny", "expire", "cancel"})
 
+#: Approval scopes the browser may ask for when allowing.
+ALLOWED_SCOPES = frozenset({"once", "session"})
+
 #: Commands grouped for the palette and the settings surface.
 COMMAND_GROUPS: dict[str, str] = {
     "new": "session",
@@ -318,6 +321,23 @@ def build_router(
             payload["journal_seq"] = journal.last_seq
         return json_body(payload)
 
+    @router.post("/api/ui/sessions/{session_id}/model")
+    async def set_session_model(request: Request) -> JSONResponse:
+        payload = await _body(request)
+        provider = payload.get("provider")
+        if not isinstance(provider, str) or not provider.strip():
+            raise BadRequest('"provider" must be a non-empty string')
+        model = payload.get("model")
+        if not isinstance(model, str) or not model.strip():
+            raise BadRequest('"model" must be a non-empty string')
+        return json_body(
+            await _service(service_provider).set_session_model(
+                _sid(request),
+                provider.strip(),
+                model.strip(),
+            )
+        )
+
     @router.post("/api/ui/sessions")
     async def create_session(request: Request) -> JSONResponse:
         payload = CreateSessionRequest.from_payload(await _body(request))
@@ -340,6 +360,15 @@ def build_router(
     @router.post("/api/ui/sessions/{session_id}/interrupt")
     async def interrupt(request: Request) -> JSONResponse:
         return json_body(await _service(service_provider).interrupt(_sid(request)))
+
+    @router.get("/api/ui/sessions/{session_id}/queue")
+    async def queue(request: Request) -> JSONResponse:
+        return json_body(await _service(service_provider).queue(_sid(request)))
+
+    @router.delete("/api/ui/sessions/{session_id}/queue/{queue_id}")
+    async def drop_queued(request: Request) -> JSONResponse:
+        queue_id = request.path_params["queue_id"]
+        return json_body(await _service(service_provider).drop_queued(_sid(request), queue_id))
 
     @router.post("/api/ui/sessions/{session_id}/rename")
     async def rename(request: Request) -> JSONResponse:
@@ -378,10 +407,20 @@ def build_router(
         decision = payload.get("decision")
         if not isinstance(decision, str) or decision not in ALLOWED_DECISIONS:
             raise BadRequest('"decision" must be one of allow, deny, expire, cancel')
-        settled = _service(service_provider).decide_approval(approval_id, decision)
+        scope = payload.get("scope", "once")
+        if not isinstance(scope, str) or scope not in ALLOWED_SCOPES:
+            raise BadRequest('"scope" must be one of once, session')
+        settled = _service(service_provider).decide_approval(approval_id, decision, scope=scope)
         if not settled:
             raise NotFound(f"approval {approval_id} is not pending")
-        return json_body({"approval_id": approval_id, "decision": decision, "settled": True})
+        return json_body(
+            {
+                "approval_id": approval_id,
+                "decision": decision,
+                "settled": True,
+                "scope": scope,
+            }
+        )
 
     # -- commands ----------------------------------------------------------
 
@@ -568,6 +607,18 @@ def build_router(
         )
         return json_body({"ok": True, "config": config, "live": live})
 
+    # -- filesystem picker -------------------------------------------------
+
+    @router.get("/api/ui/fs/dirs")
+    async def fs_dirs(request: Request) -> JSONResponse:
+        raw = request.query_params.get("path")
+        path = raw if raw is not None and raw.strip() else None
+        return json_body(await _service(service_provider).fs_dirs(path))
+
+    @router.get("/api/ui/fs/roots")
+    async def fs_roots() -> JSONResponse:
+        return json_body(await _service(service_provider).fs_roots())
+
     # -- legacy API family -------------------------------------------------
 
     @router.get("/api/health")
@@ -672,6 +723,7 @@ def _defaults(service: Any) -> dict[str, Any]:
 
 __all__ = [
     "ALLOWED_DECISIONS",
+    "ALLOWED_SCOPES",
     "COMMAND_GROUPS",
     "MAX_BODY_BYTES",
     "UiContext",

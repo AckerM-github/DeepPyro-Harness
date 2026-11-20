@@ -21,30 +21,87 @@ interface SidebarProps {
   onCloseMobile: () => void;
   onSelect: (sessionId: string) => void;
   onArchiveSession: (session: SessionSummary, archived: boolean) => void;
+  onRenameSession: (session: SessionSummary, title: string) => void;
   onNew: () => void;
-  onOpenPalette: () => void;
   onOpenSettings: () => void;
-  onOpenPlugins: () => void;
   onOpenInspector: () => void;
-  commandCount: number;
-  pluginCount: number;
 }
 
 const GROUPS = ['Today', 'Yesterday', 'Previous 7 days', 'Older'] as const;
+
+function RenameDialog({
+  session,
+  onCancel,
+  onSubmit,
+}: {
+  session: SessionSummary;
+  onCancel: () => void;
+  onSubmit: (title: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [value, setValue] = useState(sessionTitle(session.title));
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, []);
+  const submit = () => {
+    const title = value.trim();
+    if (!title) return;
+    onSubmit(title);
+  };
+  return (
+    <div className="dialog-backdrop" onClick={(event) => event.target === event.currentTarget && onCancel()}>
+      <div className="dialog" role="dialog" aria-modal="true" aria-label="Rename session">
+        <div className="dialog-head">
+          <span className="dialog-title">Rename session</span>
+          <button className="icon-button tiny" type="button" onClick={onCancel} aria-label="Close">
+            <Icon name="x" size={14} />
+          </button>
+        </div>
+        <input
+          ref={inputRef}
+          className="dialog-input"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              submit();
+            } else if (event.key === 'Escape') {
+              event.preventDefault();
+              onCancel();
+            }
+          }}
+          aria-label="Session title"
+          spellCheck={false}
+        />
+        <div className="dialog-actions">
+          <button className="button ghost small" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="button primary small" type="button" disabled={!value.trim()} onClick={submit}>
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 interface SessionRowProps {
   session: SessionSummary;
   active: boolean;
   onSelect: () => void;
   onArchiveSession: (session: SessionSummary, archived: boolean) => void;
+  onRename: (session: SessionSummary) => void;
 }
 
-function SessionRow({ session, active, onSelect, onArchiveSession }: SessionRowProps) {
+function SessionRow({ session, active, onSelect, onArchiveSession, onRename }: SessionRowProps) {
   const moreRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<{ top: number; left: number } | null>(null);
-  const [copied, setCopied] = useState(false);
-  const copyTimer = useRef<number | null>(null);
   const close = useCallback(() => setMenu(null), []);
 
   useEffect(() => {
@@ -70,13 +127,6 @@ function SessionRow({ session, active, onSelect, onArchiveSession }: SessionRowP
     };
   }, [menu, close]);
 
-  useEffect(
-    () => () => {
-      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
-    },
-    [],
-  );
-
   const toggleMenu = () => {
     if (menu) {
       close();
@@ -84,29 +134,11 @@ function SessionRow({ session, active, onSelect, onArchiveSession }: SessionRowP
     }
     const rect = moreRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const width = 192;
+    const width = 196;
     setMenu({
       top: Math.min(rect.bottom + 4, window.innerHeight - 96),
       left: Math.max(8, Math.min(rect.right - width - 4, window.innerWidth - width - 8)),
     });
-  };
-
-  const archive = () => {
-    close();
-    onArchiveSession(session, !session.archived);
-  };
-
-  const copyId = async () => {
-    try {
-      await navigator.clipboard.writeText(session.session_id);
-      setCopied(true);
-      copyTimer.current = window.setTimeout(() => {
-        setCopied(false);
-        close();
-      }, 700);
-    } catch {
-      close();
-    }
   };
 
   return (
@@ -116,6 +148,7 @@ function SessionRow({ session, active, onSelect, onArchiveSession }: SessionRowP
         type="button"
         aria-current={active ? 'page' : undefined}
         onClick={onSelect}
+        onDoubleClick={() => onRename(session)}
         title={session.cwd}
       >
         <span className={`session-dot ${session.busy ? 'busy' : ''} ${session.archived ? 'archived' : ''}`} />
@@ -149,13 +182,29 @@ function SessionRow({ session, active, onSelect, onArchiveSession }: SessionRowP
               aria-label={`Actions for ${sessionTitle(session.title)}`}
               style={{ top: menu.top, left: menu.left }}
             >
-              <button className="session-menu-item" type="button" role="menuitem" onClick={archive}>
-                <Icon name={session.archived ? 'refresh' : 'archive'} size={15} />
-                <span>{session.archived ? 'Unarchive session' : 'Archive session'}</span>
+              <button
+                className="session-menu-item"
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  close();
+                  onRename(session);
+                }}
+              >
+                <Icon name="pencil" size={15} />
+                <span>Rename</span>
               </button>
-              <button className="session-menu-item" type="button" role="menuitem" onClick={() => void copyId()}>
-                <Icon name={copied ? 'check' : 'copy'} size={15} />
-                <span>{copied ? 'Session ID copied' : 'Copy session ID'}</span>
+              <button
+                className="session-menu-item"
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  close();
+                  onArchiveSession(session, !session.archived);
+                }}
+              >
+                <Icon name={session.archived ? 'refresh' : 'archive'} size={15} />
+                <span>{session.archived ? 'Unarchive' : 'Archive'}</span>
               </button>
             </div>,
             document.body,
@@ -182,16 +231,14 @@ export function Sidebar({
   onCloseMobile,
   onSelect,
   onArchiveSession,
+  onRenameSession,
   onNew,
-  onOpenPalette,
   onOpenSettings,
-  onOpenPlugins,
   onOpenInspector,
-  commandCount,
-  pluginCount,
 }: SidebarProps) {
   const rootRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const [renaming, setRenaming] = useState<SessionSummary | null>(null);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -253,6 +300,17 @@ export function Sidebar({
     );
   }, [filtered]);
 
+  const renameDialog = renaming ? (
+    <RenameDialog
+      session={renaming}
+      onCancel={() => setRenaming(null)}
+      onSubmit={(title) => {
+        onRenameSession(renaming, title);
+        setRenaming(null);
+      }}
+    />
+  ) : null;
+
   if (collapsed) {
     return (
       <aside className="sidebar rail" aria-label="Sidebar" ref={rootRef}>
@@ -260,21 +318,13 @@ export function Sidebar({
           <BrandMark size={28} />
         </button>
         <div className="rail-stack">
-          <button className="rail-button" type="button" onClick={onNew} title="New session (Ctrl+N)">
+          <button className="rail-button" type="button" onClick={onNew} title="New session">
             <Icon name="plus" size={19} />
           </button>
-          <button
-            className={`rail-button ${mobileOpen ? 'active' : ''}`}
-            type="button"
-            onClick={onOpenPalette}
-            title="Commands (Ctrl+K)"
-          >
-            <Icon name="terminal" size={18} />
-          </button>
           <button className="rail-button" type="button" onClick={onOpenInspector} title="Session details">
-            <Icon name="message" size={18} />
+            <Icon name="info" size={18} />
           </button>
-          <button className="rail-button" type="button" onClick={onOpenSettings} title="Settings (Ctrl+,)">
+          <button className="rail-button" type="button" onClick={onOpenSettings} title="Settings">
             <Icon name="settings" size={18} />
           </button>
         </div>
@@ -288,11 +338,7 @@ export function Sidebar({
   }
 
   return (
-    <aside
-      className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`}
-      aria-label="Sidebar"
-      ref={rootRef}
-    >
+    <aside className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`} aria-label="Sidebar" ref={rootRef}>
       <div className="sidebar-top">
         <button className="brand" type="button" onClick={onToggleCollapse} title="Collapse sidebar">
           <BrandMark size={26} className="brand-mark" />
@@ -307,7 +353,6 @@ export function Sidebar({
         <button className="new-session" type="button" onClick={onNew}>
           <Icon name="plus" size={17} />
           <span>New session</span>
-          <kbd>Ctrl N</kbd>
         </button>
         <label className="session-search">
           <Icon name="search" size={15} />
@@ -315,36 +360,17 @@ export function Sidebar({
             ref={searchRef}
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
-            placeholder="Find a session"
-            aria-label="Find a session"
+            placeholder="Search sessions"
+            aria-label="Search sessions"
             spellCheck={false}
           />
-          <kbd>/</kbd>
         </label>
       </div>
 
-      <nav className="primary-nav" aria-label="Primary">
-        <button
-          className="nav-item active"
-          type="button"
-          onClick={() => searchRef.current?.focus()}
-          aria-current="page"
-        >
-          <Icon name="message" size={16} />
-          <span>Sessions</span>
-          <span className="nav-count">{total}</span>
-        </button>
-        <button className="nav-item" type="button" onClick={onOpenPalette}>
-          <Icon name="terminal" size={16} />
-          <span>Commands</span>
-          <span className="nav-count">{commandCount}</span>
-        </button>
-        <button className="nav-item" type="button" onClick={onOpenPlugins}>
-          <Icon name="plug" size={16} />
-          <span>Plugins</span>
-          <span className="nav-count">{pluginCount}</span>
-        </button>
-      </nav>
+      <div className="session-section-head">
+        <span>Sessions</span>
+        <span className="session-section-count">{total}</span>
+      </div>
 
       <div className="session-scroll">
         {groups.length === 0 ? (
@@ -368,6 +394,7 @@ export function Sidebar({
                     onCloseMobile();
                   }}
                   onArchiveSession={onArchiveSession}
+                  onRename={setRenaming}
                 />
               ))}
             </section>
@@ -403,6 +430,7 @@ export function Sidebar({
           <Icon name="settings" size={17} />
         </button>
       </div>
+      {renameDialog}
     </aside>
   );
 }

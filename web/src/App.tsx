@@ -9,10 +9,10 @@ import type {
   ConnectionState,
   LiveApply,
   ProviderProbe,
+  QueuedMessage,
   SessionSummary,
   SettingsPayload,
   Timeline,
-  WebEvent,
 } from './types';
 import { Sidebar } from './components/Sidebar';
 import { Transcript } from './components/Chat';
@@ -22,6 +22,21 @@ import { Settings, type SectionId } from './components/Settings';
 import { Palette } from './components/Palette';
 import { NewSession } from './components/NewSession';
 import { Icon } from './components/Icon';
+import { ApprovalBar } from './components/ApprovalBar';
+import { QueueDock } from './components/QueueDock';
+import { PlanBar } from './components/PlanBar';
+import { ModelMenu } from './components/ModelMenu';
+import { PermissionMenu } from './components/PermissionMenu';
+import { formatTokens, humanError } from './lib/format';
+import {
+  applyLiveEvent,
+  beginUserTurn,
+  createLiveContext,
+  dropUserTurn,
+  newNotice,
+  reconcileTimeline,
+  resetLiveContext,
+} from './lib/liveTurn';
 
 const SETTINGS_SECTIONS: Record<string, SectionId> = {
   provider: 'provider',
@@ -55,146 +70,6 @@ function sessionIdFromPath(): string | null {
   }
 }
 
-function messageId(): string {
-  return `stream-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function newAssistantMessage(): ChatMessage {
-  return {
-    id: messageId(),
-    role: 'assistant',
-    created_at: Date.now(),
-    text: '',
-    reasoning: '',
-    source: { kind: 'runtime' },
-    tool_call_id: null,
-    is_error: false,
-    tool_calls: [],
-    images: [],
-    has_text: false,
-    streaming: true,
-  };
-}
-
-function lastAssistantIndex(messages: ChatMessage[]): number {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === 'assistant') return index;
-  }
-  return -1;
-}
-
-function appendText(messages: ChatMessage[], text: string): ChatMessage[] {
-  const index = lastAssistantIndex(messages);
-  if (index < 0) {
-    const created = { ...newAssistantMessage(), text, has_text: true };
-    return [...messages, created];
-  }
-  const current = messages[index];
-  if (current.role === 'assistant' && (current.streaming || current.text === '')) {
-    const next = [...messages];
-    next[index] = { ...current, text: current.text + text, has_text: true, streaming: true };
-    return next;
-  }
-  return [...messages, { ...newAssistantMessage(), text, has_text: true }];
-}
-
-function appendThinking(messages: ChatMessage[], text: string): ChatMessage[] {
-  const index = lastAssistantIndex(messages);
-  if (index < 0) {
-    return [...messages, { ...newAssistantMessage(), reasoning: text, streaming: true }];
-  }
-  const next = [...messages];
-  next[index] = { ...messages[index], reasoning: messages[index].reasoning + text, streaming: true };
-  return next;
-}
-
-function applyEvent(timeline: Timeline, event: WebEvent): Timeline {
-  if (event.session_id !== timeline.session_id) return timeline;
-  switch (event.type) {
-    case 'status':
-      return {
-        ...timeline,
-        busy: event.phase === 'thinking',
-        messages:
-          event.phase === 'thinking'
-            ? timeline.messages
-            : timeline.messages.map((message) => ({ ...message, streaming: false })),
-      };
-    case 'text':
-      return { ...timeline, busy: true, messages: appendText(timeline.messages, event.text) };
-    case 'thinking':
-      return { ...timeline, busy: true, messages: appendThinking(timeline.messages, event.text) };
-    case 'tool_call': {
-      const index = lastAssistantIndex(timeline.messages);
-      if (index < 0) {
-        const message = newAssistantMessage();
-        message.tool_calls = [
-          { id: event.call_id, name: event.name, arguments: event.arguments, result: null, is_error: false, pending: true },
-        ];
-        return { ...timeline, busy: true, messages: [...timeline.messages, message] };
-      }
-      const next = [...timeline.messages];
-      const current = next[index];
-      next[index] = {
-        ...current,
-        streaming: true,
-        tool_calls: [
-          ...current.tool_calls,
-          { id: event.call_id, name: event.name, arguments: event.arguments, result: null, is_error: false, pending: true },
-        ],
-      };
-      return { ...timeline, busy: true, messages: next };
-    }
-    case 'tool_result':
-      return {
-        ...timeline,
-        busy: true,
-        messages: timeline.messages.map((message) => ({
-          ...message,
-          tool_calls: message.tool_calls.map((call) =>
-            call.id === event.call_id
-              ? { ...call, result: event.text, is_error: event.is_error, pending: false }
-              : call,
-          ),
-        })),
-      };
-    case 'final': {
-      const index = lastAssistantIndex(timeline.messages);
-      if (index < 0) {
-        const message = { ...newAssistantMessage(), text: event.text, has_text: Boolean(event.text), streaming: false };
-        return { ...timeline, busy: false, messages: [...timeline.messages, message] };
-      }
-      const next = [...timeline.messages];
-      next[index] = { ...next[index], text: event.text, has_text: Boolean(event.text), streaming: false };
-      return { ...timeline, busy: false, messages: next };
-    }
-    case 'error':
-      // A failed turn is terminal even if the transport never delivered the
-      // matching status event. Clear busy/streaming so the composer unlocks.
-      return {
-        ...timeline,
-        busy: false,
-        messages: timeline.messages.map((message) => ({ ...message, streaming: false })),
-      };
-    case 'usage':
-      return {
-        ...timeline,
-        usage: {
-          input_tokens: event.input_tokens,
-          output_tokens: event.output_tokens,
-          cached_input_tokens: event.cached_input_tokens,
-        },
-      };
-    default:
-      return timeline;
-  }
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return 'Something went wrong.';
-}
-
 function settingsSavedMessage(live: LiveApply | undefined, fallback: string): [string, 'ok' | 'error'] {
   if (live?.detail?.startsWith('live apply failed')) return [live.detail, 'error'];
   if (live?.deferred) return [fallback + ' Applies after the current turn.', 'ok'];
@@ -217,6 +92,8 @@ export function App() {
   const [timelineError, setTimelineError] = useState<string | null>(null);
   const [turnError, setTurnError] = useState<string | null>(null);
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [queue, setQueue] = useState<QueuedMessage[]>([]);
+  const [notices, setNotices] = useState<ChatMessage[]>([]);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [composer, setComposer] = useState('');
   const [bootError, setBootError] = useState<string | null>(null);
@@ -228,7 +105,8 @@ export function App() {
   );
   const [mobileOpen, setMobileOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [inspectorOpen, setInspectorOpen] = useState(() => window.innerWidth >= 1280);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [atBottom, setAtBottom] = useState(true);
 
   const [newOpen, setNewOpen] = useState(false);
   const [newCwd, setNewCwd] = useState<string | null>(null);
@@ -256,7 +134,17 @@ export function App() {
   const refreshTimer = useRef<number | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true);
+  const liveRef = useRef(createLiveContext());
+  const queueRef = useRef<QueuedMessage[]>([]);
+  // Only subscribe once the first timeline of this session is loaded, so the
+  // event cursor starts at the stored journal sequence instead of replaying the
+  // whole journal into an empty transcript.
+  const [readySessionId, setReadySessionId] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
 
   const notify = useCallback((text: string, kind: 'ok' | 'error' = 'ok') => {
     setToast({ kind, text });
@@ -266,7 +154,16 @@ export function App() {
 
   const commitTimeline = useCallback((next: Timeline) => {
     journalRef.current = next.journal_seq ?? journalRef.current;
-    setTimeline(next);
+    // Merge instead of replacing so an in-flight step keeps its message
+    // identity (and turn metadata) across background refreshes.
+    setTimeline((current) =>
+      current && current.session_id === next.session_id ? reconcileTimeline(current, next) : next,
+    );
+  }, []);
+
+  const addNotice = useCallback((text: string, kind: 'ok' | 'error' = 'ok') => {
+    if (!text.trim()) return;
+    setNotices((current) => [...current, newNotice(text, kind)]);
   }, []);
 
   const refreshSessions = useCallback(async () => {
@@ -326,6 +223,15 @@ export function App() {
     }
   }, []);
 
+  const loadQueue = useCallback(async (sessionId: string) => {
+    try {
+      const result = await api.queue(sessionId);
+      if (activeRef.current === sessionId) setQueue(result.items);
+    } catch {
+      // Queue visibility is optional until the runtime exposes it.
+    }
+  }, []);
+
   const loadTimeline = useCallback(
     async (sessionId: string, quiet = false) => {
       const ticket = ++requestRef.current;
@@ -337,13 +243,14 @@ export function App() {
         commitTimeline(next);
         setTimelineLoading(false);
         void loadApprovals(sessionId);
+        void loadQueue(sessionId);
       } catch (error) {
         if (ticket !== requestRef.current) return;
-        setTimelineError(errorMessage(error));
+        setTimelineError(humanError(error));
         setTimelineLoading(false);
       }
     },
-    [commitTimeline, loadApprovals],
+    [commitTimeline, loadApprovals, loadQueue],
   );
 
   const scheduleRefresh = useCallback(
@@ -362,9 +269,16 @@ export function App() {
     async (sessionId: string) => {
       activeRef.current = sessionId;
       journalRef.current = 0;
+      setReadySessionId(null);
       setActiveId(sessionId);
       setTimeline(null);
       setApprovals([]);
+      setQueue([]);
+      queueRef.current = [];
+      resetLiveContext(liveRef.current);
+      stickRef.current = true;
+      setAtBottom(true);
+      setNotices([]);
       setTimelineError(null);
       setTurnError(null);
       setTimelineLoading(true);
@@ -383,15 +297,17 @@ export function App() {
         if (activeRef.current !== sessionId) return;
         setTimelineError(null);
         commitTimeline(next);
+        setReadySessionId(sessionId);
         setTimelineLoading(false);
         void loadApprovals(sessionId);
+        void loadQueue(sessionId);
       } catch (error) {
         if (activeRef.current !== sessionId) return;
-        setTimelineError(errorMessage(error));
+        setTimelineError(humanError(error));
         setTimelineLoading(false);
       }
     },
-    [commitTimeline, loadApprovals],
+    [commitTimeline, loadApprovals, loadQueue],
   );
 
   useEffect(() => {
@@ -411,40 +327,57 @@ export function App() {
           setTimelineLoading(false);
         }
       } catch (error) {
-        setBootError(errorMessage(error));
+        setBootError(humanError(error));
         setTimelineLoading(false);
       }
     })();
   }, [openSession]);
 
   useEffect(() => {
-    if (!activeId) return;
+    if (!activeId || readySessionId !== activeId) return;
     setConnection('connecting');
     const handle = subscribeEvents(
       activeId,
       journalRef.current,
       (event) => {
         if (event.session_id !== activeId) return;
-        setTimeline((current) => (current ? applyEvent(current, event) : current));
+        const thinking = event.type === 'status' && event.phase === 'thinking';
+        setTimeline((current) => {
+          if (!current) return current;
+          let next = current;
+          if ((thinking || event.type === 'step') && liveRef.current.userMessageId === null) {
+            // A queued turn just started: echo its text as the optimistic user
+            // message instead of waiting for the next canonical refresh.
+            const promoted = queueRef.current[0];
+            if (promoted) {
+              next = beginUserTurn(next, promoted.text, liveRef.current);
+              stickRef.current = true;
+            }
+          }
+          return applyLiveEvent(next, event, liveRef.current);
+        });
         if (event.type === 'approval') void loadApprovals(activeId);
         if (event.type === 'error') {
-          setTurnError(event.message);
-          notify(event.message, 'error');
+          setTurnError(humanError(event.message));
           scheduleRefresh(activeId);
         }
-        if (event.type === 'final' || (event.type === 'status' && event.phase !== 'thinking')) {
+        if (thinking || event.type === 'final' || (event.type === 'status' && event.phase !== 'thinking') || event.type === 'approval') {
+          void loadQueue(activeId);
           scheduleRefresh(activeId);
         }
       },
       setConnection,
     );
     return () => handle.close();
-  }, [activeId, loadApprovals, notify, scheduleRefresh]);
+  }, [activeId, readySessionId, loadApprovals, loadQueue, scheduleRefresh]);
 
   useEffect(() => {
     const element = scrollerRef.current;
-    if (element && stickRef.current) element.scrollTop = element.scrollHeight;
-  }, [timeline]);
+    if (element && stickRef.current) {
+      element.scrollTop = element.scrollHeight;
+      setAtBottom(true);
+    }
+  }, [timeline, notices, approvals, queue]);
 
   useEffect(() => {
     return () => {
@@ -462,7 +395,7 @@ export function App() {
       const payload = await api.settings();
       setSettings(payload);
     } catch (error) {
-      setSettingsError(errorMessage(error));
+      setSettingsError(humanError(error));
     } finally {
       setSettingsLoading(false);
     }
@@ -475,7 +408,7 @@ export function App() {
       const payload = await api.settings();
       setSettings(payload);
     } catch (error) {
-      setSettingsError(errorMessage(error));
+      setSettingsError(humanError(error));
     } finally {
       setSettingsLoading(false);
     }
@@ -523,6 +456,7 @@ export function App() {
         setNewOpen(false);
         setSettingsOpen(false);
         setMobileOpen(false);
+        setInspectorOpen(false);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -531,43 +465,114 @@ export function App() {
 
   const handleSend = useCallback(async () => {
     const text = composer.trim();
-    if (!text || !timeline || !timeline.active || timeline.busy) return;
+    if (!text || !timeline || !timeline.active) return;
+    const queued = Boolean(timeline.busy);
     setComposer('');
     setTurnError(null);
-    setTimeline((current) => (current ? { ...current, busy: true } : current));
+    stickRef.current = true;
+    setAtBottom(true);
+    // Show the question immediately; the canonical timeline replaces it later.
+    if (!queued) setTimeline((current) => (current ? beginUserTurn(current, text, liveRef.current) : current));
     try {
-      await api.sendMessage(timeline.session_id, text);
+      const result = await api.sendMessage(timeline.session_id, text);
+      if (result.queued) void loadQueue(timeline.session_id);
       scheduleRefresh(timeline.session_id);
       void refreshSessions();
     } catch (error) {
-      setComposer(text);
-      setTimeline((current) => (current ? { ...current, busy: false } : current));
-      notify(errorMessage(error), 'error');
+      if (!queued) {
+        setTimeline((current) => (current ? dropUserTurn(current, liveRef.current) : current));
+        setComposer(text);
+      }
+      notify(humanError(error), 'error');
     }
-  }, [composer, notify, refreshSessions, scheduleRefresh, timeline]);
+  }, [composer, loadQueue, notify, refreshSessions, scheduleRefresh, timeline]);
+
+  const handleRetry = useCallback(
+    async (text: string) => {
+      if (!timeline || !timeline.active || !text.trim()) return;
+      setTurnError(null);
+      stickRef.current = true;
+      setAtBottom(true);
+      setTimeline((current) => (current ? beginUserTurn(current, text, liveRef.current) : current));
+      try {
+        await api.sendMessage(timeline.session_id, text);
+        scheduleRefresh(timeline.session_id);
+      } catch (error) {
+        setTimeline((current) => (current ? dropUserTurn(current, liveRef.current) : current));
+        notify(humanError(error), 'error');
+      }
+    },
+    [notify, scheduleRefresh, timeline],
+  );
 
   const handleStop = useCallback(async () => {
     if (!timeline) return;
     try {
       await api.interrupt(timeline.session_id);
-      notify('Interrupt requested.');
       scheduleRefresh(timeline.session_id);
     } catch (error) {
-      notify(errorMessage(error), 'error');
+      notify(humanError(error), 'error');
     }
   }, [notify, scheduleRefresh, timeline]);
 
   const handleDecide = useCallback(
-    async (approvalId: string, decision: 'allow' | 'deny') => {
+    async (approvalId: string, decision: 'allow' | 'deny', scope: 'once' | 'session') => {
       try {
-        await api.decideApproval(approvalId, decision);
+        await api.decideApproval(approvalId, decision, scope);
         setApprovals((current) => current.filter((approval) => approval.approval_id !== approvalId));
+        if (scope === 'session' && decision === 'allow') addNotice('Allowed this tool for the rest of the session.');
         if (activeRef.current) scheduleRefresh(activeRef.current);
       } catch (error) {
-        notify(errorMessage(error), 'error');
+        notify(humanError(error), 'error');
       }
     },
-    [notify, scheduleRefresh],
+    [addNotice, notify, scheduleRefresh],
+  );
+
+  const handleCancelQueued = useCallback(
+    async (queueId: string) => {
+      if (!timeline) return;
+      try {
+        await api.cancelQueued(timeline.session_id, queueId);
+        await loadQueue(timeline.session_id);
+      } catch (error) {
+        notify(humanError(error), 'error');
+      }
+    },
+    [loadQueue, notify, timeline],
+  );
+
+  const handleRenameSession = useCallback(
+    async (session: SessionSummary, title: string) => {
+      try {
+        await api.rename(session.session_id, title);
+        await refreshSessions();
+        if (activeRef.current === session.session_id) await loadTimeline(session.session_id, true);
+      } catch (error) {
+        notify(humanError(error), 'error');
+      }
+    },
+    [loadTimeline, notify, refreshSessions],
+  );
+
+  const handleModelSelect = useCallback(
+    async (nextProvider: string, nextModel: string) => {
+      if (!timeline) return;
+      try {
+        const result = await api.setSessionModel(timeline.session_id, nextProvider, nextModel);
+        setTimeline((current) =>
+          current ? { ...current, provider: result.provider, model: result.model } : current,
+        );
+        notify(
+          result.applied === 'deferred'
+            ? 'Model will switch after the current turn.'
+            : 'Model switched for the next message.',
+        );
+      } catch (error) {
+        notify(humanError(error), 'error');
+      }
+    },
+    [notify, timeline],
   );
 
   const handleResume = useCallback(async () => {
@@ -576,10 +581,9 @@ export function App() {
     try {
       await api.resumeSession(timeline.session_id);
       await loadTimeline(timeline.session_id, true);
-      notify('Session resumed.');
       void refreshSessions();
     } catch (error) {
-      notify(errorMessage(error), 'error');
+      notify(humanError(error), 'error');
     } finally {
       setResumeBusy(false);
     }
@@ -591,16 +595,16 @@ export function App() {
         // The command layer keeps the UI reachable when the active session is
         // archived: it opens a replacement and returns its id for navigation.
         const result = await api.runCommand(archived ? '/archive' : '/unarchive', [session.session_id], activeId);
-        if (result.message) notify(result.message, result.status === 'error' ? 'error' : 'ok');
+        if (result.message) addNotice(result.message, result.status === 'error' ? 'error' : 'ok');
         if (result.data?.session_id) {
           await openSession(result.data.session_id);
         }
         await refreshSessions();
       } catch (error) {
-        notify(errorMessage(error), 'error');
+        notify(humanError(error), 'error');
       }
     },
-    [activeId, notify, openSession, refreshSessions],
+    [activeId, addNotice, notify, openSession, refreshSessions],
   );
 
   const handleCreate = useCallback(
@@ -617,14 +621,13 @@ export function App() {
         setNewCwd(null);
         await refreshSessions();
         await openSession(created.session_id);
-        notify('Session created.');
       } catch (error) {
-        setNewError(errorMessage(error));
+        setNewError(humanError(error));
       } finally {
         setNewBusy(false);
       }
     },
-    [notify, openSession, refreshSessions],
+    [openSession, refreshSessions],
   );
 
   const handleCommand = useCallback(
@@ -642,17 +645,17 @@ export function App() {
       }
       try {
         const result: CommandResult = await api.runCommand(command.name, args, activeId);
-        if (result.message) notify(result.message, result.status === 'error' ? 'error' : 'ok');
+        if (result.message) addNotice(result.message, result.status === 'error' ? 'error' : 'ok');
         if (result.data?.session_id) {
           await openSession(result.data.session_id);
         } else if (name === 'sessions' || name === 'resume' || name === 'archive' || name === 'unarchive') {
           await refreshSessions();
         }
       } catch (error) {
-        notify(errorMessage(error), 'error');
+        addNotice(humanError(error), 'error');
       }
     },
-    [activeId, notify, openSession, openSettings, refreshSessions],
+    [activeId, addNotice, openSession, openSettings, refreshSessions],
   );
 
   const handlePermission = useCallback(
@@ -661,9 +664,8 @@ export function App() {
       try {
         await api.permission(timeline.session_id, preset);
         setTimeline((current) => (current ? { ...current, permission_preset: preset } : current));
-        notify(`Permission preset: ${preset}`);
       } catch (error) {
-        notify(errorMessage(error), 'error');
+        notify(humanError(error), 'error');
       }
     },
     [notify, timeline],
@@ -678,7 +680,7 @@ export function App() {
         const [text, kind] = settingsSavedMessage(result.live, 'Agent settings saved.');
         notify(text, kind);
       } catch (error) {
-        notify(errorMessage(error), 'error');
+        notify(humanError(error), 'error');
       } finally {
         setSettingsBusy(false);
       }
@@ -695,7 +697,7 @@ export function App() {
         const [text, kind] = settingsSavedMessage(result.live, `Provider "${name}" saved.`);
         notify(text, kind);
       } catch (error) {
-        notify(errorMessage(error), 'error');
+        notify(humanError(error), 'error');
       } finally {
         setSettingsBusy(false);
       }
@@ -712,7 +714,7 @@ export function App() {
         setProbe(result);
         notify(result.ok === false ? `Test failed: ${result.message ?? result.detail ?? 'unknown error'}` : 'Connection OK.', result.ok === false ? 'error' : 'ok');
       } catch (error) {
-        notify(errorMessage(error), 'error');
+        notify(humanError(error), 'error');
       } finally {
         setSettingsBusy(false);
       }
@@ -729,7 +731,7 @@ export function App() {
         const [text, kind] = settingsSavedMessage(result.live, `Default permission: ${preset}`);
         notify(text, kind);
       } catch (error) {
-        notify(errorMessage(error), 'error');
+        notify(humanError(error), 'error');
       } finally {
         setSettingsBusy(false);
       }
@@ -761,16 +763,23 @@ export function App() {
   }
 
   const title = timeline?.title?.trim() || 'New session';
-  const preset = timeline?.preset || 'standard';
-  const provider = timeline?.provider ?? bootstrap?.defaults.provider ?? 'provider';
-  const model = timeline?.model ?? bootstrap?.defaults.model ?? 'model';
-  const commandCount = bootstrap?.commands.length ?? 0;
-  const pluginCount = bootstrap?.plugins.length ?? 0;
+  const provider = timeline?.provider ?? bootstrap?.defaults.provider ?? null;
+  const model = timeline?.model ?? bootstrap?.defaults.model ?? null;
   const recentCwds = Array.from(new Set(sessions.map((session) => session.cwd).filter(Boolean))).slice(0, 5);
   const defaultCwd = bootstrap?.defaults.cwd ?? sessions[0]?.cwd ?? '';
+  const modelProviders = (bootstrap?.providers ?? []).map((item) => ({
+    name: item.id,
+    models: item.models.map((entry) => entry.id),
+  }));
+  if (modelProviders.length === 0 && provider) {
+    modelProviders.push({ name: provider, models: model ? [model] : [] });
+  }
+  const contextLabel = timeline
+    ? `${formatTokens(timeline.context_tokens)} / ${formatTokens(timeline.context_window)} context`
+    : undefined;
 
   return (
-    <div className={`app-shell ${inspectorOpen ? 'with-inspector' : ''}`}>
+    <div className="app-shell">
       <Sidebar
         sessions={sessions}
         total={sessionTotal}
@@ -799,12 +808,9 @@ export function App() {
           setNewOpen(true);
         }}
         onArchiveSession={(session, archived) => void handleSessionArchive(session, archived)}
-        onOpenPalette={() => setPaletteOpen(true)}
+        onRenameSession={(session, nextTitle) => void handleRenameSession(session, nextTitle)}
         onOpenSettings={() => void openSettings()}
-        onOpenPlugins={() => void openSettings('plugins')}
-        onOpenInspector={() => setInspectorOpen((value) => !value)}
-        commandCount={commandCount}
-        pluginCount={pluginCount}
+        onOpenInspector={() => setInspectorOpen(true)}
       />
 
       {mobileOpen ? (
@@ -824,105 +830,137 @@ export function App() {
               <Icon name="menu" size={19} />
             </button>
             <h1 className="chat-title">{title}</h1>
-            <span className={`status-pill ${connection}`}>
-              <span className={`status-dot ${connection}`} />
-              {CONNECTION_LABEL[connection]}
-            </span>
+            {connection !== 'live' ? (
+              <span className={`status-pill ${connection}`}>
+                <span className={`status-dot ${connection}`} />
+                {CONNECTION_LABEL[connection]}
+              </span>
+            ) : null}
             <div className="header-actions">
               <button
                 className="icon-button subtle"
                 type="button"
-                title="Reload transcript"
+                title="Reload conversation"
+                aria-label="Reload conversation"
                 onClick={() => {
                   if (activeId) void loadTimeline(activeId);
                 }}
               >
                 <Icon name="refresh" size={17} />
               </button>
-              <button className="icon-button subtle" type="button" title="Settings (Ctrl+,)" onClick={() => void openSettings()}>
-                <Icon name="settings" size={18} />
-              </button>
               <button
                 className={`icon-button subtle ${inspectorOpen ? 'active' : ''}`}
                 type="button"
                 title="Session details"
+                aria-label="Session details"
                 onClick={() => setInspectorOpen((value) => !value)}
               >
-                <Icon name="more" size={19} />
+                <Icon name="info" size={18} />
               </button>
             </div>
           </div>
-          <div className="header-meta">
-            <span className="header-chip">
-              <Icon name="sparkles" size={13} />
-              {preset}
-            </span>
-            <span className="header-chip">
-              <Icon name="plug" size={13} />
-              {provider} · {model}
-            </span>
-            <button
-              className="header-chip path-chip path-button"
-              type="button"
-              title={timeline?.cwd ? `Change working directory (${timeline.cwd})` : 'Choose a working directory'}
-              aria-label="Change working directory"
-              onClick={() => {
-                setNewCwd(timeline?.cwd || defaultCwd);
-                setNewError(null);
-                setNewOpen(true);
-              }}
-            >
-              <Icon name="folder" size={13} />
-              {timeline?.cwd || 'no workspace'}
-            </button>
-            {timeline?.busy ? <span className="header-chip busy-chip">working</span> : null}
-          </div>
         </header>
 
-        <div
-          className="transcript-scroll"
-          ref={scrollerRef}
-          onScroll={(event) => {
-            const element = event.currentTarget;
-            stickRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 96;
-          }}
-        >
-          <Transcript
-            timeline={timeline}
-            approvals={approvals}
-            loading={timelineLoading}
-            error={timelineError}
-            turnError={turnError}
-            onDismissTurnError={() => setTurnError(null)}
-            onDecide={(approvalId, decision) => void handleDecide(approvalId, decision)}
-            onResume={() => void handleResume()}
-            onPick={setComposer}
-            resumeBusy={resumeBusy}
-          />
+        <div className="transcript-shell">
+          <div
+            className="transcript-scroll"
+            ref={scrollerRef}
+            onScroll={(event) => {
+              const element = event.currentTarget;
+              const next = element.scrollHeight - element.scrollTop - element.clientHeight < 96;
+              stickRef.current = next;
+              setAtBottom((current) => (current === next ? current : next));
+            }}
+          >
+            <Transcript
+              timeline={timeline}
+              loading={timelineLoading}
+              error={timelineError}
+              turnError={turnError}
+              onDismissTurnError={() => setTurnError(null)}
+              onResume={() => void handleResume()}
+              onPick={setComposer}
+              onRetry={(text) => void handleRetry(text)}
+              notices={notices}
+              resumeBusy={resumeBusy}
+            />
+          </div>
+          {!atBottom && timeline && timeline.messages.length > 0 ? (
+            <button
+              className="jump-latest"
+              type="button"
+              onClick={() => {
+                const element = scrollerRef.current;
+                if (!element) return;
+                stickRef.current = true;
+                setAtBottom(true);
+                element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+              }}
+            >
+              <Icon name="arrow-right" size={13} className="jump-latest-icon" />
+              Jump to latest
+            </button>
+          ) : null}
         </div>
 
-        <Composer
-          value={composer}
-          onChange={setComposer}
-          onSend={() => void handleSend()}
-          onStop={() => void handleStop()}
-          busy={Boolean(timeline?.busy)}
-          disabled={!timeline || !timeline.active}
-          placeholder={timeline?.active ? 'Message DeepPyro — / for commands' : 'Read-only session — resume to send'}
-          hint={timeline?.active ? 'Enter sends · Shift+Enter adds a line · / for commands' : 'Read-only session'}
-          modelLabel={`${provider} · ${model}`}
-          onOpenPalette={() => setPaletteOpen(true)}
-        />
+        <div className="composer-area">
+          {approvals.map((approval) => (
+            <ApprovalBar
+              key={approval.approval_id}
+              approval={approval}
+              onDecide={(approvalId, decision, scope) => void handleDecide(approvalId, decision, scope)}
+            />
+          ))}
+          <QueueDock items={queue} onCancel={(queueId) => void handleCancelQueued(queueId)} />
+          <PlanBar state={timeline?.state ?? null} onOpenDetails={() => setInspectorOpen(true)} />
+          <Composer
+            value={composer}
+            onChange={setComposer}
+            onSend={() => void handleSend()}
+            onStop={() => void handleStop()}
+            busy={Boolean(timeline?.busy)}
+            disabled={!timeline || !timeline.active}
+            placeholder={timeline?.active ? 'Message DeepPyro…' : 'This session is read-only'}
+            modelSlot={
+              <ModelMenu
+                provider={provider}
+                model={model}
+                providers={modelProviders}
+                disabled={!timeline || !timeline.active}
+                onSelect={(nextProvider, nextModel) => void handleModelSelect(nextProvider, nextModel)}
+              />
+            }
+            permissionSlot={
+              <PermissionMenu
+                current={timeline?.permission_preset ?? 'ask'}
+                presets={bootstrap?.permissions ?? []}
+                disabled={!timeline || !timeline.active}
+                onSelect={(preset) => void handlePermission(preset)}
+              />
+            }
+            contextLabel={contextLabel}
+            onOpenPalette={() => setPaletteOpen(true)}
+          />
+        </div>
       </main>
 
       {inspectorOpen ? (
-        <Inspector
-          timeline={timeline}
-          permissionPresets={bootstrap?.permissions ?? []}
-          onClose={() => setInspectorOpen(false)}
-          onOpenSettings={() => void openSettings('permissions')}
-          onPermission={(permission) => void handlePermission(permission)}
-        />
+        <>
+          <button
+            className="inspector-scrim"
+            type="button"
+            aria-label="Close session details"
+            tabIndex={-1}
+            onClick={() => setInspectorOpen(false)}
+          />
+          <Inspector
+            timeline={timeline}
+            permissionPresets={bootstrap?.permissions ?? []}
+            onClose={() => setInspectorOpen(false)}
+            onOpenSettings={() => void openSettings('permissions')}
+            onPermission={(permission) => void handlePermission(permission)}
+          />
+        </>
       ) : null}
 
       <NewSession

@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef } from 'react';
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
 import { Icon } from './Icon';
 
 const MAX_INPUT_HEIGHT = 220;
@@ -13,8 +13,9 @@ export interface ComposerProps {
   busy: boolean;
   disabled: boolean;
   placeholder?: string;
-  hint?: string;
-  modelLabel?: string;
+  modelSlot?: ReactNode;
+  permissionSlot?: ReactNode;
+  contextLabel?: string;
   onOpenPalette: () => void;
 }
 
@@ -26,19 +27,15 @@ export function Composer({
   busy,
   disabled,
   placeholder,
-  hint,
-  modelLabel,
+  modelSlot,
+  permissionSlot,
+  contextLabel,
   onOpenPalette,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const placeholderText = placeholder ?? DEFAULT_PLACEHOLDER;
-  const canSend = !busy && !disabled && value.trim().length > 0;
-  const hintText = disabled
-    ? 'This session is read-only.'
-    : busy
-      ? 'Working — stop to interrupt.'
-      : (hint ?? 'Enter to send · Shift+Enter for a new line');
+  const canSend = !disabled && value.trim().length > 0;
 
   // Auto-grow the textarea from one line up to the fixed maximum height.
   useLayoutEffect(() => {
@@ -83,54 +80,40 @@ export function Composer({
         <div className="composer-toolbar">
           <div className="composer-left">
             <button
-              className="icon-button subtle"
-              type="button"
-              disabled
-              title="Attachments coming soon"
-              aria-label="Attachments coming soon"
-            >
-              <Icon name="plus" size={16} />
-            </button>
-            <button
-              className="icon-button subtle"
+              className="composer-icon"
               type="button"
               onClick={onOpenPalette}
-              title="Commands (/)"
-              aria-label="Open command palette"
+              title="Commands"
+              aria-label="Open commands"
             >
               <Icon name="command" size={15} />
             </button>
-            {modelLabel ? (
-              <span className="composer-chip" title={`Model: ${modelLabel}`}>
-                <Icon name="plug" size={12} />
-                {modelLabel}
-              </span>
-            ) : null}
+            {modelSlot}
+            {permissionSlot}
           </div>
           <div className="composer-right">
-            <span className="composer-hint">{hintText}</span>
+            {contextLabel ? <span className="composer-context">{contextLabel}</span> : null}
             {busy ? (
               <button
                 className="composer-stop"
                 type="button"
                 onClick={onStop}
-                title="Stop"
+                title="Stop generating"
                 aria-label="Stop generating"
               >
                 <Icon name="stop" size={16} />
               </button>
-            ) : (
-              <button
-                className="composer-send"
-                type="button"
-                onClick={onSend}
-                disabled={!canSend}
-                title="Send (Enter)"
-                aria-label="Send message"
-              >
-                <Icon name="send" size={16} />
-              </button>
-            )}
+            ) : null}
+            <button
+              className={`composer-send ${busy && canSend ? 'queue' : ''}`}
+              type="button"
+              onClick={onSend}
+              disabled={!canSend}
+              title={busy ? 'Add to queue — it runs after the current turn' : 'Send'}
+              aria-label={busy ? 'Add message to queue' : 'Send message'}
+            >
+              <Icon name="send" size={16} />
+            </button>
           </div>
         </div>
       </div>

@@ -4,7 +4,9 @@ The native sandbox gate answers one-shot approvals through an async answerer.
 Because the web UI has no terminal modal, this broker sits between the two: it
 turns one ApprovalRequest into an ApprovalPrompt the browser can answer, waits
 for that decision on the running event loop, then reports it back to the gate.
-Only allow-once exists; deny, expiry, cancellation and shutdown all fail closed.
+An allow is one-shot by default; a session-scoped allow grants that one tool for
+the rest of the attached session, while deny, expiry, cancellation and shutdown
+always fail closed.
 
 The broker is in-memory and loop-local: it opens no socket (the HTTP server is
 loopback-only and lives elsewhere), spawns no threads and takes no locks. A
@@ -30,6 +32,11 @@ logger = logging.getLogger(__name__)
 
 #: How long the browser has to answer one approval prompt.
 DEFAULT_TIMEOUT_SECONDS = 300.0
+
+#: Scopes a browser decision may carry. "once" settles the prompt only;
+#: "session" also remembers the (session, tool) pair and auto-allows later
+#: requests for the same tool in the same attached session.
+APPROVAL_SCOPES = frozenset({"once", "session"})
 
 
 class ApprovalDecision(StrEnum):
@@ -90,6 +97,9 @@ class ApprovalBroker:
         self._notify = notify
         self._on_decided = on_decided
         self._pending: dict[str, _Pending] = {}
+        # (session_id, tool) pairs a "session" scoped allow already granted.
+        # In-memory by design: the grant dies with the attached session.
+        self._allowed: set[tuple[str, str]] = set()
         self._closed = False
 
     @property
@@ -114,10 +124,16 @@ class ApprovalBroker:
         """
         if self._closed:
             return False
+        tool = request.tool or request.kind
+        if (session_id, tool) in self._allowed:
+            # A previous "allow for this session" decision already covers
+            # this tool: answer immediately, without publishing another prompt.
+            logger.debug("approval auto-allowed for %s tool %s", session_id, tool)
+            return True
         prompt = ApprovalPrompt(
             approval_id=uuid.uuid4().hex,
             session_id=session_id,
-            tool=request.tool or request.kind,
+            tool=tool,
             summary=request.summary,
             detail=request.detail,
             created_at=time.time(),
@@ -145,7 +161,13 @@ class ApprovalBroker:
             self._pending.pop(prompt.approval_id, None)
         return decision is ApprovalDecision.ALLOW
 
-    def decide(self, approval_id: str, decision: ApprovalDecision | str) -> bool:
+    def decide(
+        self,
+        approval_id: str,
+        decision: ApprovalDecision | str,
+        *,
+        scope: str = "once",
+    ) -> bool:
         """Resolve one waiting prompt; True when this call settled it.
 
         Repeated calls, unknown ids and prompts already settled by timeout,
@@ -153,8 +175,24 @@ class ApprovalBroker:
         further on_decided callback. A string decision is normalised through
         ApprovalDecision, so an invalid value raises ValueError before any
         state changes.
+
+        scope defaults to "once". scope="session" with an allow also records
+        the prompt's (session_id, tool) pair, so ask() answers every later
+        request for that tool in that session without a prompt. Unknown
+        scopes raise ValueError before any state changes.
         """
-        return self._settle(approval_id, ApprovalDecision(decision))
+        normalized = ApprovalDecision(decision)
+        if scope not in APPROVAL_SCOPES:
+            raise ValueError(f"unknown approval scope: {scope}")
+        pending = self._pending.get(approval_id)
+        if (
+            pending is not None
+            and scope == "session"
+            and normalized is ApprovalDecision.ALLOW
+            and not pending.future.done()
+        ):
+            self._allowed.add((pending.prompt.session_id, pending.prompt.tool))
+        return self._settle(approval_id, normalized)
 
     def pending(self, session_id: str | None = None) -> list[ApprovalPrompt]:
         """Snapshot the prompts still waiting, oldest first.
@@ -178,6 +216,14 @@ class ApprovalBroker:
         for approval_id in approval_ids:
             self._settle(approval_id, ApprovalDecision.CANCEL)
         return len(approval_ids)
+
+    def forget_session(self, session_id: str) -> None:
+        """Drop every session-scoped allow granted to one session.
+
+        Called when the host detaches the session: grants must not outlive the
+        attachment, and a later resume starts from the plain prompt flow again.
+        """
+        self._allowed = {(sid, tool) for sid, tool in self._allowed if sid != session_id}
 
     def close(self) -> None:
         """Deny every waiting prompt and refuse new ones (host shutdown).
@@ -206,6 +252,7 @@ class ApprovalBroker:
 
 
 __all__ = [
+    "APPROVAL_SCOPES",
     "DEFAULT_TIMEOUT_SECONDS",
     "ApprovalBroker",
     "ApprovalDecision",

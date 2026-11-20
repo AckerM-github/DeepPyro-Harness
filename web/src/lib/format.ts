@@ -1,3 +1,30 @@
+/** Turn transport/API failures into one sentence a person can act on. */
+export function humanError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const lower = raw.toLowerCase();
+  if (
+    lower.includes('failed to fetch') ||
+    lower.includes('networkerror') ||
+    lower.includes('unreachable') ||
+    lower.includes('did not answer')
+  ) {
+    return 'Can’t reach the local runtime. Check that DeepPyro is still running.';
+  }
+  if (/\b(401|403)\b/.test(raw) || lower.includes('unauthorized') || lower.includes('forbidden')) {
+    return 'Your session expired. Reload the page to sign in again.';
+  }
+  if (/\b404\b/.test(raw) || lower.includes('not found')) {
+    return 'That session is no longer available.';
+  }
+  if (/\b409\b/.test(raw) || lower.includes('attached')) {
+    return 'Another tab is attached to this session. Close the other tab and try again.';
+  }
+  if (/\b429\b/.test(raw) || lower.includes('too many')) {
+    return 'There are already too many queued messages. Wait for the current turn to finish.';
+  }
+  return raw || 'Something went wrong. Please try again.';
+}
+
 export function shortAgo(epochMs: number): string {
   if (!epochMs) return '';
   const delta = Math.max(0, Math.floor((Date.now() - epochMs) / 1000));
@@ -34,6 +61,18 @@ export function formatTokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
   if (value >= 1000) return `${(value / 1000).toFixed(value >= 100_000 ? 0 : 1)}k`;
   return String(Math.round(value));
+}
+
+/** Compact elapsed time for a running turn: 12s, 1m 04s, 2h 10m. */
+export function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes < 60) return rest ? `${minutes}m ${String(rest).padStart(2, '0')}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
 }
 
 export function basename(path: string): string {

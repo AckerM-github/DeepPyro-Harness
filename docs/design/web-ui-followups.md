@@ -4,6 +4,85 @@
 Python 仍负责 host/auth/API/SSE。下列 P0/P1/P2 为迁移评审时的清单，已完成项保留证据，
 未完成项不再阻塞提交。评审原始证据在 `D:/dshworkspace/webui-review/`。
 
+## 2026-11-20 第二轮：conversation-first 优化（已完成）
+
+迁移评审后收到「Web UI 用起来像 TUI」的反馈，于是又做了一轮 P0/P1 改造，只动 `web/`
+与 `src/deeppyro/web/`（TUI 未改）。核心变化：
+
+- **转录区语义化**：新增 `web/src/components/ToolCard.tsx` 与 `web/src/lib/toolMeta.ts`，
+  按工具名渲染 read/shell/write/edit/grep/glob/web/todo/present/goal/team/ask 等卡片；
+  raw tool call id、整段参数 JSON、结果原文默认都不出现；推理与工具调用合并为折叠过程层。
+  时间线的 `role="tool"` 消息不再当正文渲染（结果已 join 到 `tool_calls`）。
+- **右栏默认关闭**：`Inspector` 改为覆盖式抽屉（模型/上下文/usage/权限），顶栏 info 按钮打开；
+  context 用量改为 composer 下方常驻一行。
+- **composer 成为控制台**：`ModelMenu`（会话级 `POST /sessions/{id}/model`）、
+  `PermissionMenu`、上下文用量、Stop/发送；busy 时发送进入队列（`QueueDock`，后端原已支持
+  202/queued）；审批在 composer 上方以 `ApprovalBar` 出现，新增 Allow for this session
+  （`scope=session`）。附件死按钮与键盘 hint 已删除。
+- **计划可见**：timeline 新增顶层 `state`（goal/todos/deliverables/tasks/handoffs），
+  `PlanBar` 在 goal 进行中或还有未完成 todo 时显示，全部完成后不再常驻。
+- **侧栏与入口**：删除 Commands/Plugins 一级导航与全部 kbd 提示；会话行菜单改为
+  Rename/Archive（双击标题也可改名）；命令面板降级为 `Ctrl/Cmd+K` 快速切换器，命令只在
+  输入以 `/` 开头时出现，且不再有参数步；命令结果作为 transcript notice 展示，不再只弹 toast；
+  错误文案统一走 `humanError()`（网络/401/404/409/429 的人话映射）。
+- **新建会话**：`NewSession` 重写为「目录选择器 + 最近目录 + 标题 + preset」，不再要求手打
+  绝对路径；目录选择器用 `GET /api/ui/fs/roots|dirs`（只列目录、跳过隐藏项）。
+- **新增后端端点**：timeline `state`、`POST /sessions/{id}/model`、`GET/DELETE
+  /sessions/{id}/queue`、approval `scope=once|session`、`GET /api/ui/fs/{roots,dirs}`。
+  这些是纯 Web 层扩展，不改 native/TUI 行为；`tests/web` 207 passed。
+- **仍未做（P2）**：设置覆盖层还是旧视觉（8 分区信息架构未动）；附件上传、消息分叉/编辑、
+  会话内搜索、虚拟列表、主题/字号设置、自动化浏览器测试入库。
+
+注意：下面 P1 清单里的「命令面板参数（combobox/arg mode/inline 参数）」已被这一轮**取代**——
+palette 不再承担带参命令输入，参数改由 GUI 对象（模型菜单、权限菜单、目录选择器）承担，
+旧 arg mode 实现已删除；Sidebar 的 Commands/Plugins 一级导航也已移除，Plugins 分区仍可从
+Settings 进入。以下内容保留为迁移轮的历史记录。
+
+## 2026-11-20 第三轮：turn 分组与流式状态机（已完成）
+
+第二轮之后实测多轮流式还有三个问题：上一轮回答会随着新一轮的增量被改写；流式期间用户
+消息要等 canonical 刷新才出现；每个 delta 都触发布局/滚动跳动。根因是前端把 SSE 增量写进
+同一条「当前 assistant 消息」，晚到的 `final` 会落到错误的消息上；后台刷新又整表替换
+timeline，丢掉本地节点与滚动位置。
+
+这一轮只动前端（`web/`；TUI 与 Python host/API/SSE 契约未改），把转录区改成 turn 分组 +
+浏览器侧流式状态机：
+
+- **新增 `web/src/lib/liveTurn.ts`（371 行）**：乐观用户回显（`beginUserTurn()`/
+  `dropUserTurn()`）；每个 backend `step` 新开一条 assistant 消息，`text`/`thinking`/
+  `tool_call` 只写当前 step；`final` 只结算当前 step（不回写历史消息）；
+  `status(done|interrupted)` 结算整轮（settled/stopped），`error` 结算为 failed；
+  `step(turn,1)` 先结算上一轮再开新消息，晚到的 `final` 无法改写旧消息。后台刷新用
+  `reconcileTimeline()` 合并 canonical timeline，保留本地 id、`turn_meta` 与流式消息。
+- **新增 `web/src/lib/liveTurn.test.ts`（15 条用例）**：锁定多 turn 不互相覆盖、tool step
+  聚合为一条消息、同 step 重放忽略、失败/中断解锁 composer、composer 之外发起的 turn
+  不重开已结算轮、发送失败撤回乐观消息，以及 reconciliation 的保 id、结算 running、
+  追加缺失消息、排序、跨 session 忽略，和 notice 的错误样式。
+- **App 接线**（`web/src/App.tsx`）：SSE 回调在 `applyLiveEvent()` 之前先做队列提升（排队
+  turn 开始时立即回显队列首条）；后台刷新 180ms 去抖后经 `commitTimeline()` 合并；贴底
+  跟随，距底超过 96px 时改为悬浮的 **Jump to latest**；发送失败撤回乐观消息并恢复
+  composer。
+- **Chat 渲染**（`web/src/components/Chat.tsx`）：`groupTurns()` 以用户消息分组、按 step 的
+  `turn` 归属；过程层 `TurnProcess` 运行中与结束后都默认折叠，header 每秒计时
+  `Working… 12s · 1 tool`，settle 后变为 `Worked for 12s · 1 tool`（失败/中断为
+  `Failed after …`/`Stopped after …`），点击 header 可随时展开（运行中也可查看已发生的
+  step/tool）；答案正文不折叠。推理流式时预览最后一行并扫光；答案提供 Copy / Try again。
+- **类型与样式**：`web/src/types.ts` 增加浏览器专有字段 `streaming`、`turn_meta`
+  （`TurnMeta` 的 started_at/ended_at/status）、`turn`，服务端 wire 不含它们；
+  `web/src/styles.css` 新增第 23 节 turn grouping/live streaming（过程层 0fr↔1fr 折叠、
+  running header 计时、jump-latest、reasoning sweep、移动端适配）。
+- **文档**：`docs/design/react-web-ui.md` 新增「会话渲染与流式状态机」一节并更新文件图；
+  `docs/spec/web.md` §5 补客户端流式语义（wire 契约不变、timeline 仍权威）。
+
+验证：`pnpm typecheck` 干净；Vitest **29 passed**（`liveTurn` 15 + `commandArgs` 10 +
+`api.sse` 4；第二轮时是 14）；`pnpm build` 成功并更新 `src/deeppyro/web/ui/static/`；
+两次 CDP 驱动真实浏览器的端到端捕获验证本轮场景，控制台无 error。
+
+已知边界：**composer 之外发起的 turn**（其它入口写入的用户消息，或排队 turn 早于
+canonical 用户消息到达）在 timeline 刷新前会先显示成匿名 assistant 组，刷新后归位；
+消息编辑/分叉、会话内搜索、虚拟列表仍是 P2；上一轮 P2 的其它遗留（设置覆盖层视觉、
+附件上传、主题/字号、自动化浏览器测试入库、动态 import 与单包体积）本轮未动。
+
 ## P0 — 已完成
 
 1. **文档改为 React SPA**
@@ -64,7 +143,7 @@ Python 仍负责 host/auth/API/SSE。下列 P0/P1/P2 为迁移评审时的清单
 - **可访问性**：drawer focus trap、Escape、aria-current、tool/reasoning `aria-expanded`、
   chat `role=log` + `aria-live` 状态、approval group label；尚无完整 axe/键盘审计。
 - **性能**：Inspector 用 `sameInspector` memo，流式时忽略 messages 变化；聊天消息与工具卡 memo。
-  transcript 仍是 React 受控重绘，未做虚拟列表；“仅贴底时自动滚动”尚未单独实现。
+  transcript 仍是 React 受控重绘，未做虚拟列表；贴底自动跟随与 Jump to latest 已在第三轮实现。
 - **缓存**：`/assets/*` immutable 1 年，shell 与 `/brand` no-store。
 - **安全**：CSP `script-src/style-src 'self'` 无 unsafe-inline/eval；Markdown 禁用 form/button/style/
   iframe 等并可跳过 raw HTML；cookie 按端口命名、303 去 token；mutation 同源校验。

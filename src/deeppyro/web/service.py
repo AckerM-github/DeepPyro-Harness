@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
+import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -118,6 +120,9 @@ SESSION_LIST_LIMIT = 50
 
 #: Largest page a client may request from the session catalogue.
 MAX_SESSION_LIST_LIMIT = 200
+
+#: Most directory roots the filesystem picker offers.
+FS_ROOTS_LIMIT = 30
 
 #: Tools receive these services through ToolContext.services. The tuple mirrors
 #: tui/runtime_schedule.py:42-62 (the TUI cannot be imported from web code) plus
@@ -359,6 +364,19 @@ def _record_type(event: Any) -> str:
     return _RECORD_TYPES_BY_KIND.get(kind, str(getattr(kind, "value", kind)))
 
 
+@dataclass(frozen=True, slots=True)
+class PendingTurn:
+    """One user message waiting behind the active turn.
+
+    queue_id is a stable handle the browser uses to drop the turn before it
+    starts; created_at is the wall-clock accept time (epoch seconds).
+    """
+
+    queue_id: str
+    text: str
+    created_at: float
+
+
 @dataclass(slots=True)
 class SessionBinding:
     """One attached native session with its live host and turn queue."""
@@ -374,8 +392,11 @@ class SessionBinding:
     preset_revision: int
     context_window: int
     workspace: Path
-    pending: deque[str] = field(default_factory=deque)
+    pending: deque[PendingTurn] = field(default_factory=deque)
     task: asyncio.Task[None] | None = None
+    #: A model switch accepted while the turn was streaming, applied before
+    #: the next queued turn starts.
+    deferred_selection: Selection | None = None
 
     @property
     def session_id(self) -> str:
@@ -884,8 +905,13 @@ class WebSessionHost:
         active = binding is not None and binding.session_id == session_id
         if active and binding is not None:
             view = binding.view
+            # binding.view is the _NativeView proxy: only explicit methods are
+            # typed, everything else forwards to the native handle. Fold once
+            # here so the serialised facts read tasks/handoffs off the folded
+            # SessionView instead of the handle.
+            facts_view = cast(SessionView, view.fold())
             messages = list(view.derive_messages())
-            state = view.fold().state
+            state = facts_view.state
             usage = binding.host.usage()
             context_tokens = binding.host.context_tokens()
             if not any(int(usage.get(key, 0)) for key in ("input", "output", "cached")):
@@ -902,6 +928,7 @@ class WebSessionHost:
         else:
             log = self._services.sessions.native_read(session_id)
             view = fold(log.header, log.events)
+            facts_view = view
             messages = list(view.messages)
             state = view.state
             usage, context_tokens = self._ledger_usage(session_id)
@@ -918,6 +945,7 @@ class WebSessionHost:
             "session_id": session_id,
             "title": title,
             "cwd": cwd,
+            "state": _state_facts(state, facts_view),
             "active": active,
             "busy": busy,
             "pending": pending,
@@ -936,6 +964,73 @@ class WebSessionHost:
             },
             "messages": _timeline_messages(messages),
         }
+
+    async def set_session_model(
+        self,
+        session_id: str,
+        provider: str,
+        model: str,
+    ) -> dict[str, Any]:
+        """Retarget the attached session to an explicit provider/model.
+
+        Only this session's running host is reconfigured; the global config is
+        never edited. A streaming turn gets the choice deferred and applied
+        before the next queued turn starts.
+        """
+        self._ensure_open()
+        self._look(session_id)
+        selection = resolve_selection(self._services.config, provider, model)
+        binding = self._binding
+        if binding is None or binding.session_id != session_id:
+            raise Conflict(f"session {session_id} is not attached; resume it first")
+        busy = bool(binding.host.busy) or (binding.task is not None and not binding.task.done())
+        applied = "next_turn"
+        if busy:
+            binding.deferred_selection = selection
+            applied = "deferred"
+        else:
+            self._apply_selection(binding, selection)
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "provider": selection.provider,
+            "model": selection.model,
+            "applied": applied,
+        }
+
+    def _apply_selection(self, binding: SessionBinding, selection: Selection) -> None:
+        """Point one live host at a new provider/model and persist the fact."""
+        provider = self._services.llm.native_provider(selection.provider)
+        facts = _prompt_facts(
+            binding.view,
+            binding.gate,
+            selection.model,
+            binding.workspace,
+            self._services.permission_presets,
+        )
+        config = self._services.config
+        # Pass the limits explicitly: NativeAgentHost.reconfigure defaults them to
+        # its own _UNSET sentinel, which the loop compares against a different
+        # sentinel and would then try to store as a real limit. Every web-side
+        # reconfigure therefore carries the current config values, like
+        # _apply_runtime_config_now does.
+        binding.host.reconfigure(
+            provider=provider,
+            model=selection.model,
+            temperature=config.agent.temperature,
+            max_tokens_per_call=config.agent.max_tokens,
+            max_steps=config.agent.max_steps,
+            prompt_facts=facts,
+        )
+        if (selection.provider, selection.model) != (binding.provider, binding.model):
+            binding.view.append(
+                "model/selection",
+                {"provider": selection.provider, "model": selection.model},
+            )
+        binding.provider = selection.provider
+        binding.model = selection.model
+        binding.context_window = selection.context_window
+        binding.deferred_selection = None
 
     async def rename_session(self, session_id: str, title: str, *, source: str = "user") -> dict[str, Any]:
         """Rename one session, writing through the live handle when attached."""
@@ -1071,7 +1166,9 @@ class WebSessionHost:
         if len(binding.pending) >= self._pending_limit:
             raise TooManyRequests("the turn queue is full; wait for the active turn to finish")
         busy = bool(binding.host.busy)
-        binding.pending.append(request.text)
+        binding.pending.append(
+            PendingTurn(queue_id=uuid.uuid4().hex, text=request.text, created_at=time.time())
+        )
         self._start_turn_worker(binding)
         queued = len(binding.pending) if busy else len(binding.pending) - 1
         return {"session_id": session_id, "accepted": True, "queued": max(queued, 0)}
@@ -1106,6 +1203,115 @@ class WebSessionHost:
             ),
             "dropped": dropped,
         }
+
+    async def queue(self, session_id: str) -> dict[str, Any]:
+        """Snapshot the user turns waiting behind the active turn."""
+        binding = self._require_active(session_id)
+        return {
+            "session_id": session_id,
+            "items": [
+                {
+                    "queue_id": turn.queue_id,
+                    "text": turn.text,
+                    "created_at": turn.created_at,
+                }
+                for turn in binding.pending
+            ],
+        }
+
+    async def drop_queued(self, session_id: str, queue_id: str) -> dict[str, Any]:
+        """Remove one queued turn by id; 404 when it is no longer waiting."""
+        binding = self._require_active(session_id)
+        for index, turn in enumerate(binding.pending):
+            if turn.queue_id == queue_id:
+                del binding.pending[index]
+                return {"ok": True, "removed": True}
+        raise NotFound(f"queued turn {queue_id} was not found")
+
+    async def fs_dirs(self, path: str | None = None) -> dict[str, Any]:
+        """List the sub-directories of one directory for the browser picker.
+
+        Never opens files: the payload carries names and absolute paths only.
+        Hidden entries and unreadable children are skipped; a file target is a
+        400 and a missing target a 404.
+        """
+        binding = self._binding
+        if path is None or not str(path).strip():
+            target = self._fs_base(binding)
+        else:
+            raw = str(path).strip()
+            target = Path(raw).expanduser()
+            if not target.is_absolute():
+                raise BadRequest(f"path must be absolute: {raw}")
+        with contextlib.suppress(OSError):
+            target = target.resolve()
+        if not target.exists():
+            raise NotFound(f"directory does not exist: {target}")
+        if not target.is_dir():
+            raise BadRequest(f"not a directory: {target}")
+        try:
+            children = sorted(target.iterdir(), key=lambda item: item.name.casefold())
+        except OSError as exc:
+            raise Conflict(f"could not read directory {target}: {exc}") from exc
+        entries: list[dict[str, str]] = []
+        for child in children:
+            if child.name.startswith("."):
+                continue
+            try:
+                if not child.is_dir():
+                    continue
+            except OSError:
+                continue
+            entries.append({"name": child.name, "path": str(child)})
+        parent = target.parent
+        return {
+            "path": str(target),
+            "parent": None if parent == target else str(parent),
+            "entries": entries,
+        }
+
+    async def fs_roots(self) -> dict[str, Any]:
+        """The directory roots the browser picker starts from."""
+        roots: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        def add(label: str, candidate: str | Path | None) -> None:
+            if candidate is None or len(roots) >= FS_ROOTS_LIMIT:
+                return
+            raw = str(candidate).strip()
+            if not raw:
+                return
+            path = Path(raw).expanduser()
+            with contextlib.suppress(OSError):
+                path = path.resolve()
+            key = str(path).casefold()
+            if key in seen or not path.is_dir():
+                return
+            seen.add(key)
+            roots.append({"label": label, "path": str(path)})
+
+        add("Home", Path.home())
+        add("Workspace", self._default_cwd)
+        try:
+            page = await self.list_sessions(limit=FS_ROOTS_LIMIT)
+        except Exception:
+            logger.debug("web host could not read recent sessions for fs roots", exc_info=True)
+            page = {"sessions": []}
+        for row in page.get("sessions", []):
+            cwd = row.get("cwd")
+            if not isinstance(cwd, str) or not cwd.strip():
+                continue
+            name = Path(cwd).name
+            add(name or cwd, cwd)
+        return {"roots": roots}
+
+    def _fs_base(self, binding: SessionBinding | None) -> Path:
+        """The directory the picker opens when the request names none."""
+        if binding is not None and binding.workspace.is_dir():
+            return binding.workspace
+        if self._default_cwd.is_dir():
+            return self._default_cwd
+        return Path.home()
 
     async def sse(self, session_id: str, *, after: int = 0) -> AsyncIterator[bytes]:
         """Stream journal frames for one session, replaying after a sequence."""
@@ -1251,6 +1457,7 @@ class WebSessionHost:
         if binding is None:
             return
         self._approvals.cancel_session(binding.session_id)
+        self._approvals.forget_session(binding.session_id)
         binding.pending.clear()
         if binding.host.busy:
             with contextlib.suppress(Exception):
@@ -1294,8 +1501,14 @@ class WebSessionHost:
                         await self._apply_runtime_config_now(binding, *pending)
                     except Exception:
                         logger.exception("web host could not apply pending settings")
-                text = binding.pending.popleft()
-                await self._run_turn(binding, text)
+                deferred = binding.deferred_selection
+                if deferred is not None:
+                    try:
+                        self._apply_selection(binding, deferred)
+                    except Exception:
+                        logger.exception("web host could not apply the deferred model selection")
+                turn = binding.pending.popleft()
+                await self._run_turn(binding, turn.text)
         finally:
             if binding.task is asyncio.current_task():
                 binding.task = None
@@ -1394,12 +1607,16 @@ class WebSessionHost:
             for prompt in self._approvals.pending(session_id)
         ]
 
-    def decide_approval(self, approval_id: str, decision: str) -> bool:
+    def decide_approval(self, approval_id: str, decision: str, *, scope: str = "once") -> bool:
         """Settle one pending approval; False when it was already settled."""
         try:
-            return self._approvals.decide(approval_id, ApprovalDecision(decision))
+            normalized = ApprovalDecision(decision)
         except ValueError as exc:
             raise BadRequest(f"unknown approval decision: {decision}") from exc
+        try:
+            return self._approvals.decide(approval_id, normalized, scope=scope)
+        except ValueError as exc:
+            raise BadRequest(f"unknown approval scope: {scope}") from exc
 
     def _native_info(self, session_id: str) -> NativeSessionInfo:
         try:
@@ -1502,7 +1719,7 @@ def _state_facts(state: SessionState | None, view: SessionView | None) -> dict[s
                     "owner": task.owner,
                     "created_at": task.created_at,
                 }
-                for task in view.tasks
+                for task in getattr(view, "tasks", ())
             ]
             if view is not None
             else []
@@ -1521,7 +1738,7 @@ def _state_facts(state: SessionState | None, view: SessionView | None) -> dict[s
                     "error": item.error,
                     "created_at": item.created_at,
                 }
-                for item in view.handoffs
+                for item in getattr(view, "handoffs", ())
             ]
             if view is not None
             else []
@@ -1594,9 +1811,11 @@ def _timeline_messages(messages: list[Any]) -> list[dict[str, Any]]:
 __all__ = [
     "DEFAULT_CONTEXT_WINDOW",
     "DEFAULT_PENDING_TURNS",
+    "FS_ROOTS_LIMIT",
     "MAX_SESSION_LIST_LIMIT",
     "SESSION_LIST_LIMIT",
     "HostServices",
+    "PendingTurn",
     "Selection",
     "SessionBinding",
     "WebSessionHost",
