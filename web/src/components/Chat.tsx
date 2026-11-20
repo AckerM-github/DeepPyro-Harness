@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import type { Approval, ChatMessage, Timeline, ToolCall } from '../types';
 import { clockTime, prettyJson } from '../lib/format';
 import { BrandMark, Icon } from './Icon';
@@ -10,6 +10,7 @@ function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }
     <button
       className="text-button"
       type="button"
+      aria-label={copied ? 'Copied' : label}
       onClick={() => {
         void navigator.clipboard
           ?.writeText(value)
@@ -26,7 +27,7 @@ function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }
   );
 }
 
-function ToolCard({ call }: { call: ToolCall }) {
+const ToolCard = memo(function ToolCard({ call }: { call: ToolCall }) {
   const [open, setOpen] = useState(false);
   const status = call.pending ? 'running' : call.is_error ? 'error' : 'done';
   const label = status === 'running' ? 'Running' : status === 'error' ? 'Error' : 'Done';
@@ -34,7 +35,12 @@ function ToolCard({ call }: { call: ToolCall }) {
   const result = call.result ?? '';
   return (
     <div className={`tool-card ${status}`}>
-      <button className="tool-head" type="button" onClick={() => setOpen((value) => !value)}>
+      <button
+        className="tool-head"
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
         <span className="tool-icon">
           <Icon name="terminal" size={15} />
         </span>
@@ -72,14 +78,19 @@ function ToolCard({ call }: { call: ToolCall }) {
       ) : null}
     </div>
   );
-}
+});
 
 function Reasoning({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   if (!text.trim()) return null;
   return (
     <div className={`reasoning ${open ? 'open' : ''}`}>
-      <button className="reasoning-head" type="button" onClick={() => setOpen((value) => !value)}>
+      <button
+        className="reasoning-head"
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
         <Icon name="sparkles" size={14} />
         <span>Reasoning</span>
         <Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} className="reasoning-chevron" />
@@ -89,7 +100,7 @@ function Reasoning({ text }: { text: string }) {
   );
 }
 
-function UserMessage({ message }: { message: ChatMessage }) {
+const UserMessage = memo(function UserMessage({ message }: { message: ChatMessage }) {
   return (
     <article className="message user-message">
       <div className="user-bubble">
@@ -108,9 +119,9 @@ function UserMessage({ message }: { message: ChatMessage }) {
       <div className="message-time">{clockTime(message.created_at)}</div>
     </article>
   );
-}
+});
 
-function AssistantMessage({ message }: { message: ChatMessage }) {
+const AssistantMessage = memo(function AssistantMessage({ message }: { message: ChatMessage }) {
   const hasBody = Boolean(message.text.trim() || message.reasoning.trim() || message.tool_calls.length);
   return (
     <article className={`message assistant-message ${message.is_error ? 'error' : ''}`}>
@@ -144,16 +155,16 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
       </div>
     </article>
   );
-}
+});
 
-function Notice({ message }: { message: ChatMessage }) {
+const Notice = memo(function Notice({ message }: { message: ChatMessage }) {
   return (
     <div className={`transcript-notice ${message.is_error ? 'error' : ''}`}>
       <Icon name={message.is_error ? 'alert' : 'info'} size={14} />
       <span>{message.text || 'The runtime reported an empty message.'}</span>
     </div>
   );
-}
+});
 
 function ApprovalCard({
   approval,
@@ -164,13 +175,16 @@ function ApprovalCard({
   onDecide: (approvalId: string, decision: 'allow' | 'deny') => void;
   disabled: boolean;
 }) {
+  const titleId = `approval-title-${approval.approval_id}`;
   return (
-    <div className="approval-card">
+    <div className="approval-card" role="group" aria-labelledby={titleId}>
       <div className="approval-head">
         <span className="approval-icon">
           <Icon name="alert" size={15} />
         </span>
-        <span className="approval-title">Approval required · {approval.tool}</span>
+        <span className="approval-title" id={titleId}>
+          Approval required · {approval.tool}
+        </span>
         <span className="approval-badge">WAITING</span>
       </div>
       <div className="approval-summary">{approval.summary || approval.detail || 'A tool needs permission to run.'}</div>
@@ -231,7 +245,7 @@ function EmptyHero({ onPick }: { onPick: (prompt: string) => void }) {
 
 function Skeleton() {
   return (
-    <div className="transcript-skeleton" aria-hidden="true">
+    <div className="transcript-skeleton" role="status" aria-label="Loading transcript">
       {[0, 1, 2].map((index) => (
         <div className="skeleton-row" key={index}>
           <span className="skeleton-avatar" />
@@ -275,9 +289,17 @@ export function Transcript({
   }
 
   const readOnly = !timeline.active;
+  const statusText = timeline.busy
+    ? 'DeepPyro is working.'
+    : readOnly
+      ? 'This session is read-only.'
+      : 'DeepPyro is ready.';
 
   return (
-    <div className="transcript">
+    <div className="transcript" aria-busy={timeline.busy}>
+      <div className="sr-only" role="status" aria-live="polite">
+        {statusText}
+      </div>
       {error ? (
         <div className="inline-error">
           <Icon name="alert" size={15} />
@@ -298,7 +320,7 @@ export function Transcript({
       {timeline.messages.length === 0 && !timeline.busy ? (
         <EmptyHero onPick={onPick} />
       ) : (
-        <div className="message-list">
+        <div className="message-list" role="log" aria-label="Conversation">
           {timeline.messages.map((message) =>
             message.role === 'user' ? (
               <UserMessage key={String(message.id)} message={message} />

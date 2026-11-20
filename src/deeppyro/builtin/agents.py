@@ -21,6 +21,7 @@ from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.builtin.presets import PresetsPlugin
 from deeppyro.builtin.prompt_service import PromptPlugin
 from deeppyro.builtin.tools import ToolsPlugin
+from deeppyro.config import Config
 from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.ptc.runtime import PtcRuntime
 from deeppyro.session.schema import NativeSession
@@ -145,6 +146,10 @@ class AgentsPlugin(Service):
             default_max_steps=self._agent_config.max_steps,
             ptc_mode=self._legacy_ptc_mode,
         )
+
+    def apply_config(self, config: Config) -> None:
+        """Use the reloaded agent defaults for hosts built from now on."""
+        self._agent_config = config.agent
 
     def _legacy_ptc_mode(self) -> bool:
         """Whether the host-wide PTC switch is on (deprecated preset coupling)."""

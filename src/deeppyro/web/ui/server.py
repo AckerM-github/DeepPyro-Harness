@@ -40,6 +40,12 @@ ASSET_DIR = Path(__file__).with_name("assets")
 STATIC_DIR = Path(__file__).with_name("static")
 #: Body of the 503 returned while the SPA bundle has not been built.
 MISSING_BUILD_MESSAGE = "Web UI is not built. Run pnpm build in web/."
+#: Cache policy for Vite's content-hashed bundle under /assets: the filename
+#: changes with the content, so a client may reuse a cached copy indefinitely.
+IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+#: Cache policy for unhashed replies: the SPA shell and the shared brand assets
+#: must be revalidated on every load so a rebuilt bundle is picked up at once.
+NO_STORE_CACHE_CONTROL = "no-store"
 
 
 @dataclass
@@ -47,6 +53,21 @@ class _PortRef:
     """Mutable port the auth middleware reads after the socket is bound."""
 
     value: int = 0
+
+
+class CacheControlledStaticFiles(StaticFiles):
+    """Static files that stamp one explicit Cache-Control policy on every reply."""
+
+    cache_control: str
+
+    def __init__(self, *, directory: Path, cache_control: str) -> None:
+        self.cache_control = cache_control
+        super().__init__(directory=directory)
+
+    async def get_response(self, path: str, scope: Any) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["cache-control"] = self.cache_control
+        return response
 
 
 class SecurityHeadersMiddleware:
@@ -91,11 +112,16 @@ def _http_error(exc: HttpError) -> JSONResponse:
 
 
 def _index_response() -> FileResponse | PlainTextResponse:
-    """Return the SPA shell, or a 503 while the Vite build is missing."""
+    """Return the SPA shell, or a 503 while the Vite build is missing.
+
+    The shell is unhashed, so it must not be cached: a stale shell would keep
+    pointing browsers at an old bundle after every rebuild.
+    """
     index = STATIC_DIR / "index.html"
+    no_store = {"cache-control": NO_STORE_CACHE_CONTROL}
     if not index.is_file():
-        return PlainTextResponse(MISSING_BUILD_MESSAGE, status_code=503)
-    return FileResponse(index)
+        return PlainTextResponse(MISSING_BUILD_MESSAGE, status_code=503, headers=no_store)
+    return FileResponse(index, headers=no_store)
 
 
 def _is_api_path(full_path: str) -> bool:
@@ -119,10 +145,20 @@ def create_app(
         default_response_class=JSONResponse,
     )
     app.include_router(build_router(service_provider=service_provider, context=context))
-    app.mount("/brand", StaticFiles(directory=ASSET_DIR), name="brand")
+    # Brand assets and the SPA shell share human-readable, unhashed filenames:
+    # no-store, while the content-hashed Vite bundle is immutable.
+    app.mount(
+        "/brand",
+        CacheControlledStaticFiles(directory=ASSET_DIR, cache_control=NO_STORE_CACHE_CONTROL),
+        name="brand",
+    )
     assets_dir = STATIC_DIR / "assets"
     if assets_dir.is_dir():
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+        app.mount(
+            "/assets",
+            CacheControlledStaticFiles(directory=assets_dir, cache_control=IMMUTABLE_CACHE_CONTROL),
+            name="assets",
+        )
 
     @app.exception_handler(HttpError)
     async def http_error_handler(request: Request, exc: HttpError) -> JSONResponse:
@@ -296,7 +332,10 @@ class UiServer:
 
 __all__ = [
     "ASSET_DIR",
+    "IMMUTABLE_CACHE_CONTROL",
+    "NO_STORE_CACHE_CONTROL",
     "STATIC_DIR",
+    "CacheControlledStaticFiles",
     "SecurityHeadersMiddleware",
     "UiServer",
     "create_app",

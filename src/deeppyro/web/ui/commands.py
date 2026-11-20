@@ -122,11 +122,7 @@ async def _dispatch(
     if command == "unarchive":
         if not args:
             return _error("usage: /unarchive <session-id-or-title>")
-        resolved = await _resolve_session(service, args[0], target)
-        if resolved is None:
-            return _error(f"no session matches {args[0]!r}")
-        archived = await service.archive_session(resolved, archived=False)
-        return _ok(f"Restored {resolved}.", **archived)
+        return await _archive(service, target, args, archived=False)
     if command == "permission":
         return await _permission(service, target, args)
     if command == "status":
@@ -146,7 +142,15 @@ async def _dispatch(
     if command == "panel":
         return _redirect("/settings/plugins", "Opened plugin settings.")
     if command == "clear":
-        return _ok("Cleared the view.", action="clear")
+        # The browser transcript is projected from the persistent native session
+        # log, so a server-side clear would either lie or destroy history. Refuse
+        # honestly and point at the real alternatives instead of returning a
+        # success the SPA cannot honor.
+        return _error(
+            "/clear is not supported on the web surface: the transcript is the "
+            "persistent session log and is always replayed. Start a new session "
+            "with /new (or pick another session in the sidebar) for a blank view."
+        )
     if command in {"provider", "model", "preset"}:
         return await _selection(service, command, args)
     if command == "compact":
@@ -168,7 +172,7 @@ def _help() -> CommandResult:
 
 
 async def _resume(service: WebSessionHost, args: list[str], target: str | None) -> CommandResult:
-    sessions = (await service.list_sessions(include_archived=True))["sessions"]
+    sessions = (await service.list_sessions(include_archived=True, limit=None))["sessions"]
     if not sessions:
         return _error("no sessions to resume")
     choice: str | None = None
@@ -197,7 +201,7 @@ async def _resume(service: WebSessionHost, args: list[str], target: str | None) 
 
 
 async def _sessions(service: WebSessionHost) -> CommandResult:
-    catalog = await service.list_sessions(include_archived=True)
+    catalog = await service.list_sessions(include_archived=True, limit=None)
     rows = catalog["sessions"]
     lines = []
     for row in rows:
@@ -214,6 +218,14 @@ async def _sessions(service: WebSessionHost) -> CommandResult:
 async def _archive(
     service: WebSessionHost, target: str | None, args: list[str], *, archived: bool
 ) -> CommandResult:
+    """Archive or restore one session without leaving the view orphaned.
+
+    The result keeps "session_id" reserved for navigation ("open this session",
+    the SPA contract): only a freshly created replacement is exposed that way.
+    The affected target travels as "archived_session_id" / "unarchived_session_id"
+    so archiving a background session refreshes the list instead of switching to
+    it.
+    """
     target_id = target
     if args:
         resolved = await _resolve_session(service, args[0], target)
@@ -222,15 +234,79 @@ async def _archive(
         target_id = resolved
     if not target_id:
         return _error("no session is open")
+    if archived:
+        return await _archive_session(service, target_id)
+    return await _unarchive_session(service, target_id)
+
+
+async def _archive_session(service: WebSessionHost, target_id: str) -> CommandResult:
     was_active = target_id == service.active_session_id
-    result = await service.archive_session(target_id, archived=archived)
-    message = f"Archived {target_id}." if archived else f"Restored {target_id}."
-    data: dict[str, Any] = dict(result)
-    if archived and was_active:
-        created = await service.create_session(CreateSessionRequest())
-        message += f" Started {created['session_id']}."
-        data["session_id"] = created["session_id"]
-        data["session"] = created
+    replacement: dict[str, Any] | None = None
+    if was_active:
+        # Start the replacement before archiving: if creating it fails, the old
+        # session stays attached and unarchived instead of stranding the host
+        # with no active session and an archived transcript.
+        replacement = await service.create_session(CreateSessionRequest())
+    try:
+        result = await service.archive_session(target_id, archived=True)
+    except HttpError as exc:
+        if replacement is None:
+            raise
+        # The replacement is already the active session, so the browser must
+        # still follow it even though the archive half failed.
+        return CommandResult(
+            STATUS_ERROR,
+            f"Started session {replacement['session_id']} but could not archive {target_id}: {exc.message}",
+            data={
+                "session_id": replacement["session_id"],
+                "session": replacement,
+                "archived_session_id": target_id,
+                "archived": False,
+            },
+        )
+    data: dict[str, Any] = {
+        "archived_session_id": target_id,
+        "archived": bool(result.get("archived")),
+        "detached": bool(result.get("detached")) or was_active,
+    }
+    if replacement is not None:
+        data["session_id"] = replacement["session_id"]
+        data["session"] = replacement
+        message = f"Archived {target_id}. Started {replacement['session_id']}."
+    else:
+        message = f"Archived {target_id}."
+    return _ok(message, **data)
+
+
+async def _unarchive_session(service: WebSessionHost, target_id: str) -> CommandResult:
+    facts = await service.facts(target_id)
+    info = facts.get("info") or {}
+    if not info.get("archived"):
+        # Restoring a session that is not archived must not detach it: a no-op
+        # that dropped the live binding would orphan the browser's active view.
+        return _ok(
+            f"{target_id} is not archived; nothing to restore.",
+            unarchived_session_id=target_id,
+            archived=False,
+            changed=False,
+        )
+    was_active = target_id == service.active_session_id
+    result = await service.archive_session(target_id, archived=False)
+    data: dict[str, Any] = {
+        "unarchived_session_id": target_id,
+        "archived": bool(result.get("archived")),
+        "detached": bool(result.get("detached")),
+        "changed": True,
+    }
+    message = f"Restored {target_id}."
+    if was_active and result.get("detached"):
+        # Writing the unarchive marker needs the write lock, so the host
+        # detached first; attach it again so no navigation target is lost.
+        resumed = await service.resume_session(target_id)
+        data["session_id"] = resumed["session_id"]
+        data["session"] = resumed
+        data["resumed"] = True
+        message = f"Restored {target_id} and resumed it."
     return _ok(message, **data)
 
 
@@ -260,7 +336,19 @@ async def _status(service: WebSessionHost, target: str | None) -> CommandResult:
     if not target:
         return _error("no session is open")
     status = await service.status(target)
-    facts = (await service.facts(target))["state"]
+    facts = await service.facts(target)
+    state = facts.get("state") or {}
+    info = facts.get("info") or {}
+    # Conversation turns come from the native session index (turn.started
+    # events). Rounds are goal rounds only: state.rounds_started is incremented
+    # by goal start_round and has nothing to do with conversation turns.
+    turns = info.get("turns", status.get("turns", 0))
+    rounds = state.get("rounds_started", 0)
+    goal = state.get("goal")
+    if goal:
+        rounds_line = f"goal rounds: {rounds} / {goal.get('max_goal_rounds', 0)}"
+    else:
+        rounds_line = f"goal rounds: {rounds} (no goal set)"
     lines = [
         f"session: {status['session_id']}",
         f"title: {status.get('title') or '(untitled)'}",
@@ -268,11 +356,12 @@ async def _status(service: WebSessionHost, target: str | None) -> CommandResult:
         f"preset: {status.get('preset')}",
         f"permission: {status.get('permission_preset')}",
         f"cwd: {status.get('cwd')}",
-        f"turns: {facts.get('rounds_started', 0)} rounds",
+        f"turns: {turns}",
+        rounds_line,
         f"context: {status.get('context_tokens', 0)} / {status.get('context_window', 0)} tokens",
         f"busy: {bool(status.get('busy'))}",
     ]
-    return _ok("\n".join(lines), status=status, state=facts)
+    return _ok("\n".join(lines), status=status, state=state, turns=turns, rounds=rounds, goal=goal)
 
 
 async def _plan(service: WebSessionHost, target: str | None) -> CommandResult:
@@ -354,7 +443,7 @@ async def _selection(service: WebSessionHost, command: str, args: list[str]) -> 
             )
         return _redirect(
             "/settings/provider",
-            "provider selection is edited in settings and applies to new sessions",
+            "provider selection is edited in settings and applies to the next turn",
         )
     if command == "model":
         current = config.agent.model
@@ -370,7 +459,7 @@ async def _selection(service: WebSessionHost, command: str, args: list[str]) -> 
             )
         return _redirect(
             "/settings/provider",
-            "model selection is edited in settings and applies to new sessions",
+            "model selection is edited in settings and applies to the next turn",
         )
     ids = service.services.presets.ids()
     current = service.services.presets.default().id
@@ -385,7 +474,7 @@ async def _selection(service: WebSessionHost, command: str, args: list[str]) -> 
 async def _resolve_session(service: WebSessionHost, value: str, active: str | None) -> str | None:
     if active and (value == active or active.startswith(value)):
         return active
-    catalog = (await service.list_sessions(include_archived=True))["sessions"]
+    catalog = (await service.list_sessions(include_archived=True, limit=None))["sessions"]
     for row in catalog:
         if row["session_id"] == value:
             return str(row["session_id"])

@@ -1,44 +1,73 @@
 # Web UI 后续事项（React SPA 迁移后）
 
-状态：迁移代码已落地（NiceGUI 已移除），本轮先提交可运行版本；下列事项按优先级排列。
-记录时间：2026-11-20。相关评审证据在 `D:/dshworkspace/webui-review/`。
+状态：2026-11-20 本轮收口。NiceGUI 已移除，生产 Web UI 是 Vite + React + TypeScript SPA；
+Python 仍负责 host/auth/API/SSE。下列 P0/P1/P2 为迁移评审时的清单，已完成项保留证据，
+未完成项不再阻塞提交。评审原始证据在 `D:/dshworkspace/webui-review/`。
 
-## P0 — 迁移收口前必须处理
+## P0 — 已完成
 
-1. **文档仍描述 NiceGUI**
-   - `docs/spec/web.md`：第 3、41-66、93-98、113-123、151、184、289、316-337 行仍写 NiceGUI 路由、`WebUiBridge`、`/_nicegui/ws`、`reconnect_timeout` 和已删除测试。
-   - `docs/design/nicegui-web-ui.md`：整篇过期，应删除或替换为 SPA 设计文档。
-   - 根 `README.md` 需要补充 `cd web && pnpm install && pnpm build`，以及构建产物提交位置。
-2. **静态产物是否进 wheel 未验证**
-   - `pyproject.toml` 使用 hatchling，`packages = ["src/deeppyro"]`；需构建 wheel 后确认 `deeppyro/web/ui/static/index.html`、`static/assets/*`、`assets/*` 均在包内，否则安装版 Web UI 会 503。
-3. **移动端没有会话抽屉**
-   - 当前 `<=767px` 侧栏收成 56px 图标 rail，会话列表不可达；需要 overlay drawer（backdrop、ESC、focus trap、路由切换自动关闭）。
-   - 相关截图：`D:/dshworkspace/spa-mobile-ts.png`、`spa-mobile-drawer-ts.png`。
+1. **文档改为 React SPA**
+   - `docs/spec/web.md` 重写 routes/static/auth/CSP/cache/SSE/approval/commands/settings/lifecycle。
+   - 新增 `docs/design/react-web-ui.md`；删除 `docs/design/nicegui-web-ui.md`。
+   - 根 `README.md` 增加 `cd web && pnpm install && pnpm build` 与产物位置说明。
+2. **静态产物进 wheel 已验证**
+   - `uv build --wheel` 生成的 0.3.0 wheel 含 361 entries，包含
+     `deeppyro/web/ui/static/index.html`、`static/assets/*.js|*.css`、`assets/cyborg-mark.svg`。
+   - `tests/web/test_frontend.py` 改为 SPA/packaging guard。
+3. **移动端会话抽屉**
+   - `<=767px` 侧栏为 overlay drawer：backdrop、scrim、ESC、focus trap、打开时 focus 搜索框、
+     路由/选择会话自动关闭；`768–1023px` 才是 icon rail。
+   - 390x844 真实浏览器验证：drawer `mobile-open`、scrim、`body.drawer-open`、focus “Find a session”、
+     Escape 关闭；截图 `D:/dshworkspace/e2e-mobile-focus.png`、`e2e-mobile-drawer.png`。
 4. **设置页首屏慢**
-   - 本机 `/api/ui/settings` 实测约 0.9–1.0s，其他 `/api/ui/*` 也常见 0.5–0.9s；设置页 900ms 截图仍是 “Loading settings...”。
-   - 需定位后端同步阻塞/锁竞争，并给前端 skeleton 与超时错误。
-5. **设置保存未做真实 E2E**
-   - 需要验证 provider / agent / permissions 保存后对“下一 turn”立即生效，且配置校验失败有可见错误；此前 NiceGUI 版本存在“写盘成功但不生效”。
-6. **全量 pytest 与提交后的 CI 基线**
-   - 本轮只确认 `tests/web` 114 passed、ruff、`pnpm build`、pyright 41 errors 基线。全量结果需在提交后记录。
+   - `session/native_index.py` 增加 per-file metadata cache（mtime_ns+size）与 path cache；
+     `SessionsPlugin` 增加 2s 全列表 TTL cache，warm list 只 stat，不再 parse 全部 JSONL。
+   - warm `/api/ui/settings` 0.7ms median（max 1.6ms），端点到端点 0.6ms；冷进程首次仍约 0.5s
+     （每进程一次全 fold），已记录为已知边界。
+   - 前端 Settings 首开 skeleton + 8s 超时/Retry。
+5. **设置保存真实 E2E**
+   - agent/provider/permission 的 PATCH/POST 写盘后调用 `apply_settings_live()`，响应带
+     `live:{applied, restart_required, deferred, detail}`；idle 会话立即重定向，下一 turn 生效；
+     streaming 时 deferred。
+   - 隔离 home 验证：`deepseek-flash` → `deepseek-chat`，下一 turn 返回 `LIVE APPLY OK`，随后回滚；
+     `/api/ui/settings/agent` 响应 `applied=[config,llm,agents,session]`。SPA toast 会提示 deferred /
+     restart required / live apply failed。
+6. **全量 pytest 与 CI 基线**
+   - 合并工作树 `pytest -q` exit 0；`pytest tests/web -q` 172 passed；前端 Vitest 14 passed。
+   - 唯一历史 flake：`tests/plugins/test_settings_lock.py::test_concurrent_processes_do_not_lose_updates`
+     在 Windows 多进程临时文件场景偶发，隔离重跑 10 passed。
 
-## P1 — 功能闭环与回归
+## P1 — 已完成或已闭环
 
-- 会话列表后端固定 50 条；真实 `.dpro` 已有数百个 jsonl，需要分页/搜索/归档列表。
-- SSE 断线重连：验证断网 >8s、后台恢复、发送不静默丢失；read-only 会话应显示 Resume 而不是假发送。
-- 命令面板：真实键盘输入过滤、带参数命令（`/model`、`/permission`、`/cwd` 等）、参数缺失提示；不要只执行空 args。
-- 审批：多审批排队、300s 过期、allow/deny 后的状态与历史；interrupt 需保留 partial text，不能丢队列或留 stale final。
-- `/clear` 假成功、`/status` 把 rounds 当 turns 等旧后端问题在 SPA 下复核。
-- 设置面缺少 DSH 的 Commands / Plugins / Sessions / Web / About 完整分区；要么实现，要么在 UI 明确缩小范围。
-- `Manage access`、Sessions 导航、插件卡片等控件需逐个确认不是死控件。
-- 前端测试缺失：目前没有 Vitest/Playwright；至少补 bootstrap、发送、SSE 重连、审批、设置保存、移动端抽屉的浏览器冒烟。
-- 旧资源清理：`src/deeppyro/web/ui/assets/style.css`、`settings.css`、`chat.css` 与 `tests/web/test_frontend.py` 可能已无引用，确认后删除。
+- **会话分页/搜索/归档**：`GET /api/ui/sessions?limit&offset&query&include_archived`，默认 50、
+  上限 200，返回 `total/limit/offset/has_more/query`；Sidebar 支持 Load more、Show archived、
+  Archived 标记。真实浏览器验证 50→100 items、archived 1。
+- **SSE 断线重连**：`subscribeEvents` 自管重连，`after=lastSeq` 续传，800ms 指数退避上限 10s；
+  `offline` 事件立即关闭流并显示 Offline，`online` 立即重连。Vitest 4 条覆盖；真实浏览器
+  offline 9s → Offline，恢复后 1s → Live，并收到恢复后新消息（`e2e-reconnect.png`）。
+- **命令面板参数**：combobox/listbox、键盘 ↑↓/Enter/Esc、带参命令 arg mode、缺参提示、
+  inline `/cmd text`、Windows 引号路径；真实键盘 CDP 63/63，Vitest 10 条。
+- **审批与 interrupt**：后端测试覆盖多审批排队/乱序结算/300s 过期/allow-deny 幂等；
+  interrupt 不再丢已接受队列，中断 await 期间接受的消息会重启 worker。
+- **`/clear` 与 `/status`**：`/clear` 诚实拒绝（transcript 是持久日志，提示 `/new`）；
+  `/status` 分开输出 native turns 与 goal rounds。
+- **设置分区**：Provider/Agent/Permissions/Commands/Plugins/Sessions/Web/About 八个分区；
+  Sidebar 的 Plugins 导航现在直接打开 Plugins 分区。
+- **死控件巡检**：Sessions 导航聚焦搜索、Manage access → Permissions、Plugins → Plugins；
+  保留的快捷入口均有行为。
+- **旧资源清理**：删除 `ui/assets/{style,settings,chat}.css` 与 Inter 字体；`test_frontend.py` 已重写。
+- **前端测试**：Vitest 覆盖 commandArgs 与 SSE 重连（14 tests）；浏览器 E2E 仍以 CDP 脚本手工执行，
+  未把 Playwright 加入依赖。
 
-## P2 — 质量、性能与安全
+## P2 — 已完成 / 部分完成
 
-- 可访问性：focus ring、focus trap、`aria-live` 流式消息、键盘可达的会话/审批操作、prefers-reduced-motion。
-- 性能：inspector 1.6s 全量重建、流式期间整段 transcript clear+rebuild、强制 scroll bottom；改为增量渲染与“仅在底部时自动滚动”。
-- 静态资源缓存：hash 文件应 immutable，`index.html` 保持 no-store；当前 FileResponse 默认策略未区分。
-- 安全复核：cookie 仅按 host 不按端口、token 留在 URL/History、无轮换；模型 markdown 是否可能注入 form/button；CSP 仍允许 `style-src 'unsafe-inline'`。
-- 包体：JS 447KB（gzip 134KB），可按设置/命令面板做动态 import。
-- 发布：版本号仍 0.3.0，迁移完成后决定是否升 0.4.0 并更新 changelog。
+- **可访问性**：drawer focus trap、Escape、aria-current、tool/reasoning `aria-expanded`、
+  chat `role=log` + `aria-live` 状态、approval group label；尚无完整 axe/键盘审计。
+- **性能**：Inspector 用 `sameInspector` memo，流式时忽略 messages 变化；聊天消息与工具卡 memo。
+  transcript 仍是 React 受控重绘，未做虚拟列表；“仅贴底时自动滚动”尚未单独实现。
+- **缓存**：`/assets/*` immutable 1 年，shell 与 `/brand` no-store。
+- **安全**：CSP `script-src/style-src 'self'` 无 unsafe-inline/eval；Markdown 禁用 form/button/style/
+  iframe 等并可跳过 raw HTML；cookie 按端口命名、303 去 token；mutation 同源校验。
+- **仍未做**：JS 单包约 471KB（gzip 140KB），未做 Settings/Palette 动态 import；版本仍 0.3.0；
+  PyInstaller frozen 构建未收集 `web/ui/static`（wheel 已正确，文档已记 caveat）；
+  TUI 未接 live apply；自动化浏览器测试未入库。

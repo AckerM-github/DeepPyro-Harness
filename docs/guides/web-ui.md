@@ -1,13 +1,14 @@
 # Web UI 使用指南（本地回环宿主）
 
-> **状态**：现行（0.3.0 · NiceGUI） · **层级**：操作指南 · **最后核对**：2026-11-19
+> **状态**：现行（0.3.0 · React SPA） · **层级**：操作指南 · **最后核对**：2026-11-20
 > 规格：[spec/web.md](../spec/web.md)。本指南覆盖启动（含 TUI splash F1）、界面、命令与设置、
 > 审批、打包与排错。
 
 ## 1. 启动
 
-前提：Python 环境已安装（仓库自带 `.venv`）。Web 宿主依赖 FastAPI + uvicorn + NiceGUI 4，
-由 `uv sync` 安装。
+前提：Python 环境已安装（仓库自带 `.venv`）。Web 宿主只依赖 FastAPI + uvicorn，由 `uv sync`
+安装；浏览器端是已构建好的 React/Vite SPA（产物已提交在 `src/deeppyro/web/ui/static/`），
+运行不需要 Node.js。只有修改 `web/` 下的前端源码时才需要 Node.js 20.19+ 与 pnpm（见 §7）。
 
 两种进入方式，启动的都是同一个 loopback Web 宿主：
 
@@ -36,7 +37,7 @@
 
 ## 2. 界面
 
-三栏结构（Discord 密度的原创布局，由 NiceGUI 元素树渲染）：
+三栏结构（Discord 密度的原创布局，由 React 组件渲染已构建的 SPA）：
 
 - **Sidebar（最左）**：顶部品牌区（原创半面罩机器标 + DeepPyro + 工作目录）、搜索、
   Sessions / Commands / Plugins 导航、native 会话列表（标题、turn 数、preset、相对时间、
@@ -46,27 +47,24 @@
 - **Inspector（右侧）**：session id、model/provider、preset、turns、权限/审批策略、cwd、
   context 进度、usage（input/output/cached）、runtime 计数、快捷键。
 
-窄屏（≤900px）时侧栏与 inspector 折叠，顶部 52px 顶栏保留品牌、New session、Commands 与 Settings。
+窄屏（<768px）时侧栏收进抽屉，Inspector 在 <1280px 时收起；顶部窄栏保留品牌、New session、
+Commands 与 Settings。
 
 加载态、空态、错误态都来自真实 API；没有 mock 数据。断线时连接点变为 offline，重连后按
 `lastEventSeq` / timeline 的 `journal_seq` 续订，不重复渲染历史。
-
-## 3. 命令（命令面板与 slash）
 
 按 `Ctrl/Cmd+K` 打开命令面板，或在 composer 输入 `/help`。面板分三组：
 Commands（25 个 core command）、Sessions（搜索/跳转）、Settings（分区）。
 
 - **真实执行**：`/new`、`/resume`、`/sessions`、`/rename`、`/archive`、`/unarchive`、
-  `/permission`、`/status`、`/plan`、`/goal`、`/cwd`、`/plugins`、`/help`、`/clear`。
+  `/permission`、`/status`、`/plan`、`/goal`、`/cwd`、`/plugins`、`/help`。
 - **导航**：`/settings`、`/panel`。
+- **明确拒绝**：`/clear` 不执行——transcript 是持久会话日志且总会重放，输入它会提示用
+  `/new` 或侧栏新建会话。
 - **只读/说明**：`/provider`、`/model`、`/preset` 无参显示当前值；带参跳设置并提示
-  “只影响新会话”。
+  “只影响下一 turn”。
 - **未接 Web 宿主**：`/compact`、`/jobs`、`/team`、`/thinking`、`/hooks` 返回明确错误，
   不假装成功。团队模式请用 TUI/headless。
-
-在 composer 输入以 `/` 开头的文本会走命令，不会发给模型。
-
-### 工作目录（cwd）
 
 每个 native 会话在**创建时**把 cwd 写进会话 header，运行中不改写。要换目录：
 
@@ -81,7 +79,8 @@ Commands（25 个 core command）、Sessions（搜索/跳转）、Settings（分
 
 ## 4. 设置
 
-设置是全屏路由 `/settings`（侧栏 Settings 或 `Ctrl/Cmd+,`），分区：
+设置是覆盖层（侧栏 Settings 或 `Ctrl/Cmd+,` 打开，Esc 关闭），不是独立路由；打开时从
+`GET /api/ui/settings` 读取当前配置，分区：
 
 - **Provider & models**：provider/model 选择、Base URL、API key（只写不读，显示 `api_key_set`）、
   温度、max tokens、连接测试；保存后校验并原子写 `~/.dpro/config.toml`，生成编号 `.bak`。
@@ -121,11 +120,14 @@ Stop 按钮向宿主发 `POST /interrupt`，由 `NativeAgentHost.interrupt()` �
 
 ## 7. 打包说明
 
-- 服务器是 FastAPI + uvicorn + NiceGUI 4，只绑回环；页面是 Python 元素树，浏览器侧由
-  NiceGUI 自带的 Quasar/Vue 渲染，无前端构建步骤、无 CDN。
-- PyInstaller 等单文件打包需收集 `src/deeppyro/web/ui/assets/`（`style.css`、`chat.css`、
-  `settings.css`、`cyborg-mark.svg`、`InterVariable.woff2`），并让 NiceGUI 的静态资源随包分发。
-  FastAPI/uvicorn/NiceGUI 都是普通 Python 依赖。
+- 服务器是 FastAPI + uvicorn，只绑回环；浏览器端是 React + TypeScript + Vite 构建的 SPA，
+  产物提交在 `src/deeppyro/web/ui/static/`（`index.html` + 哈希命名的 `assets/`），同源提供、
+  无 CDN、无外部字体。
+- wheel 打包：`[tool.hatch.build.targets.wheel] packages = ["src/deeppyro"]` 自动收录
+  `web/ui/static` 与 `web/ui/assets`；`tests/web/test_frontend.py` 会断言产物存在且 shell 引用可解析。
+- PyInstaller 等冻结打包目前只收集 bundle/certifi/tzdata，**需要额外收集
+  `src/deeppyro/web/ui/static/`**（否则浏览器拿到 503 “Web UI is not built”）；这是已知打包 TODO。
+- 修改前端后必须 `cd web && pnpm install && pnpm build` 并提交产物，否则宿主继续服务旧 bundle。
 - 打包后行为不变：启动打印随机 token 的 loopback URL；token 每进程不同，重启后旧 URL 失效。
 - 只绑回环且不提供 TLS，请勿把端口转发到局域网/公网。
 
@@ -142,10 +144,10 @@ Stop 按钮向宿主发 `POST /interrupt`，由 `NativeAgentHost.interrupt()` �
 | 429 turn queue is full | 当前 turn 未结束且已排 8 条；等完成或 Stop |
 | 503 the web session host is not running | 宿主正在关闭/未启动；重启 `python -m deeppyro.web` |
 | 审批卡一直 PENDING | 点 Allow once / Deny；或等 300 秒超时 |
-| 设置保存后当前会话没变 | 运行中的 KernelConfig 不热重载；开新会话或重启宿主 |
+| 设置保存后当前会话没变 | agent/provider/permission 从下一 turn 生效，streaming 时等当前 turn 结束（响应 `live.deferred=true`）；web port 等配置仍需重启宿主 |
 | 新建会话的目录不是想要的 | cwd 在会话创建时固定；用 New session 弹窗或 `/cwd <path>` 新建，旧会话保留 |
-| 短暂显示 “Connection lost.” | 宿主 Socket.IO 心跳窗口为 15 秒（ping 12s / timeout 6s）；首屏卡顿不应再触发。若持续出现，确认宿主进程还在、端口未变 |
-| 断线后自动重连 | 正常：EventSource 带 `Last-Event-ID` 或 `after=`，从 seq 续传 |
+| 状态点显示 reconnecting / offline | SPA 的 EventSource 断开后按 800ms 起指数退避（上限 10s）自动重连；`offline` 表示浏览器报告离线。持续无法恢复时确认宿主进程还在、端口未变 |
+| 断线后自动重连 | 正常：客户端用 `?after=<lastEventSeq>` 从 seq 续传，不重复渲染历史 |
 
 ## 9. 验证
 

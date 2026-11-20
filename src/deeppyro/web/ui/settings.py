@@ -640,6 +640,15 @@ class ConfigEditor:
             ],
         }
 
+    def load(self) -> Config:
+        """The validated configuration as currently written on disk.
+
+        Read-only twin of :meth:`snapshot` for callers that need the real
+        Config object (live-apply, permission defaults) rather than the
+        redacted JSON view.
+        """
+        return self._load().config
+
     def update_agent(
         self,
         provider: str | None = None,

@@ -56,6 +56,12 @@ class PermissionPresetsService:
     def default(self) -> str:
         return self._default
 
+    def set_default(self, name: str) -> str:
+        """Point the default preset at one known name (sessions are untouched)."""
+        self.get(name)
+        self._default = name
+        return name
+
     def names(self) -> tuple[str, ...]:
         """The switchable preset names, in registration order."""
         return tuple(self._presets)

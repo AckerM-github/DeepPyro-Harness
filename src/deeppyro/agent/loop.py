@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Awaitable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
@@ -104,6 +104,9 @@ from deeppyro.tools.pipeline import ToolCallRequest, ToolOutcome, run_tool_call
 from deeppyro.tools.registry import ToolRegistry
 
 T = TypeVar("T")
+
+#: Sentinel for reconfigure(): "leave this value unchanged" (None clears it).
+_UNSET: Any = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +208,41 @@ class AgentLoop:
         self._last_assistant_text = ""
         self._last_finish_reason: str | None = None
         self._last_checkpoint_path: Path | None = None
+
+    def reconfigure(
+        self,
+        *,
+        provider: NativeLlmProvider | None = None,
+        model: str | None = None,
+        temperature: Any = _UNSET,
+        max_tokens_per_call: Any = _UNSET,
+        max_steps: Any = _UNSET,
+    ) -> bool:
+        """Retarget the loop between runs; returns whether anything changed.
+
+        Every argument defaults to "leave unchanged"; temperature,
+        max_tokens_per_call and max_steps accept None to clear the value. Only
+        the owning host may call this, and never while run() is executing: the
+        loop reads these fields on every model call.
+        """
+        changed = False
+        if provider is not None and provider is not self._provider:
+            self._provider = provider
+            self._provider_name = provider.name
+            changed = True
+        if model is not None and model != self._model:
+            self._model = model
+            changed = True
+        if temperature is not _UNSET and temperature != self._temperature:
+            self._temperature = temperature
+            changed = True
+        if max_tokens_per_call is not _UNSET and max_tokens_per_call != self._max_tokens_per_call:
+            self._max_tokens_per_call = max_tokens_per_call
+            changed = True
+        if max_steps is not _UNSET and max_steps != self._limits.max_steps:
+            self._limits = replace(self._limits, max_steps=max_steps)
+            changed = True
+        return changed
 
     @property
     def session(self) -> NativeSession:

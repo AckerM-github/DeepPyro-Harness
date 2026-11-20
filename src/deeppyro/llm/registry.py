@@ -167,6 +167,34 @@ class LlmRegistry:
         self._providers[provider] = created
         return created
 
+    async def reload_config(self, cfg: Config) -> list[str]:
+        """Point the registry at a newly loaded Config without a restart.
+
+        Cached providers whose ProviderConfig changed, or that were removed from
+        the file, are closed and forgotten so the next native_provider() call
+        rebuilds them from the new config. Unchanged instances stay cached: an
+        agent loop holding one keeps a working transport. The model catalog
+        cache is always cleared because a base_url/key change can change which
+        models are listed. Returns the names that were dropped for rebuilding.
+        """
+        previous = self.config
+        stale = [
+            name
+            for name in self._providers
+            if name not in cfg.providers or previous.providers.get(name) != cfg.providers[name]
+        ]
+        self.config = cfg
+        self._catalog.clear()
+        closures = [self._providers.pop(name) for name in stale]
+        if closures:
+            results: list[Any] = await asyncio.gather(
+                *(provider.aclose() for provider in closures), return_exceptions=True
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+        return stale
+
     @property
     def providers(self) -> dict[str, LlmProvider]:
         """Currently instantiated providers (a copy; used by tests and the CLI)."""

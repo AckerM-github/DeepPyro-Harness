@@ -1,6 +1,6 @@
 # DeepPyro 文档地图（0.3.0）
 
-> **状态**：现行文档入口 · **版本**：0.3.0 native-only · **最后核对**：2026-11-19
+> **状态**：现行文档入口 · **版本**：0.3.0 native-only · **最后核对**：2026-11-20
 >
 > 本文件回答三个问题：先读什么、每类文档的权威性是什么、过时文档去哪里。具体规格状态以
 > [spec/README.md](spec/README.md) 为准；发布范围与遗留项以
@@ -14,7 +14,7 @@
 | 2 | [release/0.3.0.md](release/0.3.0.md) | 破坏性变更、native-only 边界、验收门禁、已知限制 |
 | 3 | [adr/0001-three-track-native-agent.md](adr/0001-three-track-native-agent.md) | 为什么做 native 契约、三条主线与里程碑 |
 | 4 | [native/schema.md](native/schema.md) | native session schema 1 的唯一契约正文 |
-| 5 | [spec/web.md](spec/web.md) | Web 宿主：回环绑定、SSE、transcript 回放与安全模型 |
+| 5 | [spec/web.md](spec/web.md) | Web 宿主：React SPA 静态产物、回环 JSON API/SSE、安全模型与打包 |
 
 插件作者从 [plugins/README.md](plugins/README.md) 开始；从 v2 升级到 API v3 看
 [plugins/migration-v2-v3.md](plugins/migration-v2-v3.md)。0.2 及更早的旧形状只保留在
@@ -44,7 +44,7 @@
 | [plugins/](plugins/) | 插件作者指南与 v2→v3 迁移 | [plugins/README.md](plugins/README.md) |
 | [release/](release/) | 0.3.0 发布说明；0.2.0 历史账本与去品牌审计 | [release/0.3.0.md](release/0.3.0.md) |
 | [ops/](ops/) | 遥测、数据与运维边界 | [ops/telemetry.md](ops/telemetry.md) |
-| [design/](design/) | 0.3 迁移设计：TUI native、provider port、native host、v4 删除清单 | [design/tui-native-runtime.md](design/tui-native-runtime.md) |
+| [design/](design/) | 0.3 迁移设计：TUI native、provider port、native host、v4 删除清单、React SPA 架构 | [design/tui-native-runtime.md](design/tui-native-runtime.md)、[design/react-web-ui.md](design/react-web-ui.md) |
 | [archive/](archive/) | 历史研究/审计 + 归档索引 | [archive/README.md](archive/README.md) |
 
 根目录还有 [README.md](../README.md) 与
@@ -76,7 +76,9 @@
 - 删除 v4 会话/交互/迁移规格与 `dpyro migrate` 指南；旧会话不再可读，会话迁移路径不存在。
   配置仍可从 0.2.x 自动升级，见 [guides/config-migration.md](guides/config-migration.md)。
 - 删除 `--legacy-v4`、`--native-loop`、`DEEPPYRO_NATIVE_LOOP`、`DEEPPYRO_TUI_NATIVE` 的全部现行描述。
-- `spec/web.md` 从“phase 1，不含 F1/F2”更新为已接线的启动页行为。
+- `spec/web.md` 从“phase 1，不含 F1/F2”更新为已接线的启动页行为；2026-11-20 再改写为 React SPA 契约
+  （静态构建产物、SPA 路由、JSON API/SSE、CSP 与 wheel 打包）。`design/nicegui-web-ui.md` 删除，
+  新增 `design/react-web-ui.md` 记录 SPA 架构与取舍。
 - `spec/loop.md`、`spec/events.md`、`spec/hooks.md` 只描述 native loop/typed events/fold。
 - 0.2.0 的已知问题总表保留为历史账本；0.3.0 的边界写入 [release/0.3.0.md](release/0.3.0.md)。
 
@@ -84,6 +86,7 @@
 
 | 日期 | 变更 |
 | --- | --- |
+| 2026-11-20 | Web UI 文档切到 React SPA：重写 `spec/web.md` 与 `guides/web-ui.md`，删除 `design/nicegui-web-ui.md`、新增 `design/react-web-ui.md`；README 补前端构建与静态产物说明。 |
 | 2026-11-19 | 0.3.0 native-only：删除 v4 文档与回退/会话迁移说明；新增 Web UI 规格/指南与旧配置自动升级指南；重写本入口与 release note。 |
 | 2026-11-18 | 新增 [guides/](guides/) 目录；状态标签区分 native 默认与 TUI 仍 v4；目录地图补 guides 行。 |
 | 2026-11-18 | 建立本入口；删除过期计划；归档历史研究；规格全部补齐状态头。 |

@@ -839,6 +839,106 @@ async def test_native_interrupt_and_bounded_queue(kernel_app: Any, web_env: Simp
         await host.stop()
 
 
+async def test_interrupt_right_after_send_does_not_drop_the_message(
+    kernel_app: Any, web_env: SimpleNamespace
+) -> None:
+    """Regression: an accepted message must never be silently discarded.
+
+    Sending and then interrupting in the same loop tick used to clear the queue
+    even though no turn had started: the response admitted interrupted=false
+    while the only accepted message had already been dropped and never ran.
+    """
+    host = await WebHost.start(kernel_app=kernel_app, port=0, cwd=str(web_env.workspace))
+    try:
+        service = host.service
+        session_id = service.active_session_id or ""
+        assert session_id
+        accepted = await service.send_message(session_id, SendMessageRequest(text="survives"))
+        assert accepted["accepted"] is True
+        assert accepted["queued"] == 0
+
+        # Same loop tick: send_message only scheduled the turn worker, so this
+        # interrupt must not report having interrupted a running turn.
+        interrupted = await service.interrupt(session_id)
+        assert interrupted["interrupted"] is False
+        assert interrupted["dropped"] == 0
+
+        text = ""
+        for _ in range(200):
+            transcript = await service.transcript(session_id)
+            text = " ".join(entry["text"] for entry in transcript["entries"])
+            if "survives" in text and "native answer" in text:
+                break
+            await asyncio.sleep(0.01)
+        assert "survives" in text
+        assert "native answer" in text
+    finally:
+        await host.stop()
+
+
+async def test_message_accepted_while_an_interrupt_lands_still_runs(
+    kernel_app: Any, web_env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A message queued inside the interrupt await must not be stranded.
+
+    interrupt() drops the queue and then awaits the native host. A send that
+    lands in that window is acknowledged with queued >= 1, so the cancelled
+    worker must restart or the accepted turn would never run.
+    """
+    from deeppyro.agent.native_host import NativeAgentHost
+
+    web_env.provider.gate = asyncio.Event()
+    gate = web_env.provider.gate
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original_interrupt = NativeAgentHost.interrupt
+
+    async def slow_interrupt(self: NativeAgentHost) -> bool:
+        started.set()
+        await release.wait()
+        return await original_interrupt(self)
+
+    monkeypatch.setattr(NativeAgentHost, "interrupt", slow_interrupt)
+    host = await WebHost.start(kernel_app=kernel_app, port=0, cwd=str(web_env.workspace))
+    try:
+        service = host.service
+        session_id = service.active_session_id or ""
+        assert session_id
+        first = await service.send_message(session_id, SendMessageRequest(text="first"))
+        assert first["accepted"] is True
+        for _ in range(100):
+            if (await service.status(session_id))["busy"]:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("the first turn never became busy")
+
+        interrupt_task = asyncio.create_task(service.interrupt(session_id))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        # interrupt() already dropped the pre-existing queue and is blocked in
+        # the native host; this send is accepted while the interrupt lands.
+        late = await service.send_message(session_id, SendMessageRequest(text="lands mid-interrupt"))
+        assert late["accepted"] is True
+        assert late["queued"] == 1
+        release.set()
+        settled = await asyncio.wait_for(interrupt_task, timeout=5)
+        assert settled["interrupted"] is True
+
+        gate.set()
+        text = ""
+        for _ in range(300):
+            transcript = await service.transcript(session_id)
+            text = " ".join(entry["text"] for entry in transcript["entries"])
+            if "lands mid-interrupt" in text:
+                break
+            await asyncio.sleep(0.01)
+        assert "lands mid-interrupt" in text
+    finally:
+        release.set()
+        gate.set()
+        await host.stop()
+
+
 async def test_native_turn_queue_limit_returns_429(kernel_app: Any, web_env: SimpleNamespace) -> None:
     web_env.provider.gate = asyncio.Event()
     host = await WebHost.start(kernel_app=kernel_app, port=0, cwd=str(web_env.workspace))

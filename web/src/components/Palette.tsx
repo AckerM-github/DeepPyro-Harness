@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { CommandSpec, SessionSummary } from '../types';
-import { sessionTitle, splitArgs } from '../lib/format';
+import { sessionTitle } from '../lib/format';
+import {
+  commandNeedsArgument,
+  inlineCommandArgs,
+  missingArgumentMessage,
+  parseCommandArgs,
+} from '../lib/commandArgs';
 import { Icon } from './Icon';
 import type { IconName } from './Icon';
 
@@ -18,6 +24,12 @@ export interface PaletteProps {
 
 /** Hard cap on rendered rows so the palette stays scannable. */
 const MAX_RESULTS = 12;
+
+/** Id shared by the results listbox and the input that controls it. */
+const RESULTS_ID = 'palette-results';
+
+/** Commands duplicated by a palette action; the action is the canonical entry point. */
+const ACTION_COMMAND_NAMES = ['new', 'settings'];
 
 interface ActionSpec {
   id: 'new' | 'settings';
@@ -85,24 +97,9 @@ function matchesCommand(command: CommandSpec, tokens: string[]): boolean {
   return matchTokens(commandHaystack(command), tokens);
 }
 
-/**
- * Arguments typed after the command name, e.g. "/model gpt-4" -> ["gpt-4"].
- * Commands that take no argument always receive an empty list.
- */
-function commandArgs(command: CommandSpec, query: string): string[] {
-  if (!command.takes_arg) return [];
-  const trimmed = query.trim().replace(/^\/+/, '');
-  if (!trimmed) return [];
-  const lower = trimmed.toLowerCase();
-  const forms = [command.name, ...command.aliases].map((form) => form.toLowerCase());
-  for (const form of forms) {
-    if (!form) continue;
-    if (lower === form) return [];
-    if (lower.startsWith(form) && /^\s/.test(trimmed.charAt(form.length))) {
-      return splitArgs(trimmed.slice(form.length));
-    }
-  }
-  return [];
+/** DOM id for a result row, referenced by aria-activedescendant. */
+function optionId(row: PaletteRow): string {
+  return 'palette-option-' + row.key.replace(/[^a-zA-Z0-9_-]+/g, '-');
 }
 
 export function Palette(props: PaletteProps) {
@@ -119,18 +116,22 @@ export function Palette(props: PaletteProps) {
 
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
+  const [argCommand, setArgCommand] = useState<CommandSpec | null>(null);
+  const [argText, setArgText] = useState('');
+  const [argError, setArgError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
 
   const rows = useMemo<PaletteRow[]>(() => {
     const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const list: PaletteRow[] = [];
 
     for (const action of ACTIONS) {
-      const haystack = `${action.name} ${action.description}`.toLowerCase();
+      const haystack = (action.name + ' ' + action.description).toLowerCase();
       if (!matchTokens(haystack, tokens)) continue;
       list.push({
-        key: `action:${action.id}`,
+        key: 'action:' + action.id,
         group: 'Actions',
         kind: 'action',
         name: action.name,
@@ -141,12 +142,13 @@ export function Palette(props: PaletteProps) {
     }
 
     for (const command of commands) {
-      if (!command.name || !matchesCommand(command, tokens)) continue;
+      if (!command.name || ACTION_COMMAND_NAMES.includes(command.name.toLowerCase())) continue;
+      if (!matchesCommand(command, tokens)) continue;
       list.push({
-        key: `command:${command.name}`,
+        key: 'command:' + command.name,
         group: 'Commands',
         kind: 'command',
-        name: `/${command.name}`,
+        name: '/' + command.name,
         description: command.summary || command.usage,
         icon: 'command',
         command,
@@ -156,10 +158,10 @@ export function Palette(props: PaletteProps) {
     for (const session of sessions) {
       if (session.archived) continue;
       const title = sessionTitle(session.title);
-      const haystack = `${title} ${session.cwd}`.toLowerCase();
+      const haystack = (title + ' ' + session.cwd).toLowerCase();
       if (!matchTokens(haystack, tokens)) continue;
       list.push({
-        key: `session:${session.session_id}`,
+        key: 'session:' + session.session_id,
         group: 'Sessions',
         kind: 'session',
         name: title,
@@ -186,35 +188,128 @@ export function Palette(props: PaletteProps) {
 
   useEffect(() => {
     if (!open) return;
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setQuery('');
     setActive(0);
+    setArgCommand(null);
+    setArgText('');
+    setArgError(null);
     const frame = window.requestAnimationFrame(() => inputRef.current?.focus());
-    return () => window.cancelAnimationFrame(frame);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      const target = returnFocusRef.current;
+      returnFocusRef.current = null;
+      if (target && target.isConnected) target.focus();
+    };
   }, [open]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || argCommand) return;
     const node = listRef.current?.querySelector<HTMLElement>('.palette-item.active');
     node?.scrollIntoView({ block: 'nearest' });
-  }, [activeIndex, open, rows]);
+  }, [activeIndex, argCommand, open, rows]);
+
+  const beginArgumentStep = (command: CommandSpec, initialText: string, initialError: string | null) => {
+    setArgCommand(command);
+    setArgText(initialText);
+    setArgError(initialError);
+    inputRef.current?.focus();
+  };
+
+  const leaveArgumentStep = () => {
+    setArgCommand(null);
+    setArgText('');
+    setArgError(null);
+    inputRef.current?.focus();
+  };
+
+  const runCommand = (command: CommandSpec, args: string[]) => {
+    onRunCommand(command, args);
+    onClose();
+  };
 
   const activate = (row: PaletteRow) => {
     if (row.kind === 'action') {
       if (row.actionId === 'new') onNewSession();
       else onOpenSettings();
-    } else if (row.kind === 'command') {
-      onRunCommand(row.command, commandArgs(row.command, query));
-    } else {
-      onSelectSession(row.sessionId);
+      onClose();
+      return;
     }
-    onClose();
+    if (row.kind === 'session') {
+      onSelectSession(row.sessionId);
+      onClose();
+      return;
+    }
+    const command = row.command;
+    if (!commandNeedsArgument(command)) {
+      runCommand(command, []);
+      return;
+    }
+    const inline = inlineCommandArgs(command, query);
+    if (!inline) {
+      beginArgumentStep(command, '', null);
+      return;
+    }
+    if (inline.parsed.error) {
+      beginArgumentStep(command, inline.raw, inline.parsed.error);
+      return;
+    }
+    if (inline.parsed.args.length === 0) {
+      beginArgumentStep(command, inline.raw, null);
+      return;
+    }
+    runCommand(command, inline.parsed.args);
+  };
+
+  const submitArguments = () => {
+    const command = argCommand;
+    if (!command) return;
+    const parsed = parseCommandArgs(argText);
+    if (parsed.error) {
+      setArgError(parsed.error);
+      return;
+    }
+    if (parsed.args.length === 0) {
+      setArgError(missingArgumentMessage(command));
+      return;
+    }
+    runCommand(command, parsed.args);
+  };
+
+  const handleChange = (value: string) => {
+    if (argCommand) {
+      setArgText(value);
+      if (argError) setArgError(null);
+      return;
+    }
+    setQuery(value);
+    setActive(0);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Tab') {
+      event.preventDefault();
+      inputRef.current?.focus();
+      return;
+    }
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      onClose();
+      if (argCommand) leaveArgumentStep();
+      else onClose();
+      return;
+    }
+    if (argCommand) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        submitArguments();
+        return;
+      }
+      if (event.key === 'Backspace' && argText === '' && !event.nativeEvent.isComposing) {
+        event.preventDefault();
+        leaveArgumentStep();
+        return;
+      }
       return;
     }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -237,6 +332,9 @@ export function Palette(props: PaletteProps) {
 
   if (!open) return null;
 
+  const activeOption = rows[activeIndex];
+  const activeDescendant = !argCommand && activeOption ? optionId(activeOption) : undefined;
+
   return (
     <div
       className="palette-backdrop"
@@ -253,25 +351,67 @@ export function Palette(props: PaletteProps) {
       >
         <div className="palette-search">
           <span className="palette-icon">
-            <Icon name="search" size={16} />
+            <Icon name={argCommand ? 'command' : 'search'} size={16} />
           </span>
           <input
             ref={inputRef}
             className="palette-input"
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
-              setActive(0);
-            }}
-            placeholder="Search actions, commands and sessions"
-            aria-label="Search actions, commands and sessions"
+            value={argCommand ? argText : query}
+            onChange={(event) => handleChange(event.target.value)}
+            placeholder={
+              argCommand
+                ? argCommand.usage || 'Arguments for /' + argCommand.name
+                : 'Search actions, commands and sessions'
+            }
+            aria-label={
+              argCommand ? 'Arguments for /' + argCommand.name : 'Search actions, commands and sessions'
+            }
+            role={argCommand ? undefined : 'combobox'}
+            aria-autocomplete={argCommand ? undefined : 'list'}
+            aria-controls={argCommand ? undefined : RESULTS_ID}
+            aria-expanded={argCommand ? undefined : true}
+            aria-activedescendant={activeDescendant}
             autoComplete="off"
             spellCheck={false}
           />
         </div>
 
-        <div className="palette-results" role="listbox" aria-label="Results" ref={listRef}>
-          {rows.length === 0 ? (
+        <div
+          className="palette-results"
+          role={argCommand ? 'group' : 'listbox'}
+          aria-label={argCommand ? 'Command arguments' : 'Results'}
+          ref={listRef}
+          id={argCommand ? undefined : RESULTS_ID}
+        >
+          {argCommand ? (
+            <>
+              <div className="palette-group">
+                <div className="palette-group-label">Command</div>
+                <div className="palette-item active">
+                  <span className="palette-icon">
+                    <Icon name="command" size={15} />
+                  </span>
+                  <span className="palette-copy">
+                    <span className="palette-name">{'/' + argCommand.name}</span>
+                    <span className="palette-desc">{argCommand.usage || argCommand.summary}</span>
+                  </span>
+                </div>
+              </div>
+              <div className="palette-group">
+                <div className="palette-group-label">Arguments</div>
+                {argError ? (
+                  <div className="inline-error" role="alert">
+                    <Icon name="alert" size={14} />
+                    <span>{argError}</span>
+                  </div>
+                ) : (
+                  <div className="palette-empty">
+                    Type the arguments, then press Enter to run. Esc or Backspace returns to the command list.
+                  </div>
+                )}
+              </div>
+            </>
+          ) : rows.length === 0 ? (
             <div className="palette-empty">No matches</div>
           ) : (
             groups.map((group) => (
@@ -280,10 +420,12 @@ export function Palette(props: PaletteProps) {
                 {group.items.map(({ row, index }) => (
                   <div
                     key={row.key}
-                    className={`palette-item ${index === activeIndex ? 'active' : ''}`}
+                    id={optionId(row)}
+                    className={'palette-item ' + (index === activeIndex ? 'active' : '')}
                     role="option"
                     aria-selected={index === activeIndex}
                     onMouseEnter={() => setActive(index)}
+                    onMouseDown={(event) => event.preventDefault()}
                     onClick={() => activate(row)}
                   >
                     <span className="palette-icon">
@@ -301,15 +443,31 @@ export function Palette(props: PaletteProps) {
         </div>
 
         <footer className="palette-footer">
-          <span>
-            <kbd className="palette-kbd">↑↓</kbd> navigate
-          </span>
-          <span>
-            <kbd className="palette-kbd">↵</kbd> run
-          </span>
-          <span>
-            <kbd className="palette-kbd">esc</kbd> close
-          </span>
+          {argCommand ? (
+            <>
+              <span>
+                <kbd className="palette-kbd">↵</kbd> run
+              </span>
+              <span>
+                <kbd className="palette-kbd">esc</kbd> back
+              </span>
+              <span>
+                <kbd className="palette-kbd">⌫</kbd> back when empty
+              </span>
+            </>
+          ) : (
+            <>
+              <span>
+                <kbd className="palette-kbd">↑↓</kbd> navigate
+              </span>
+              <span>
+                <kbd className="palette-kbd">↵</kbd> run
+              </span>
+              <span>
+                <kbd className="palette-kbd">esc</kbd> close
+              </span>
+            </>
+          )}
         </footer>
       </div>
     </div>

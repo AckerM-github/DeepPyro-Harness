@@ -290,6 +290,10 @@ select:focus-visible {
   display: none;
 }
 
+.sidebar-scrim {
+  display: none;
+}
+
 kbd,
 .kbd {
   display: inline-flex;
@@ -771,6 +775,55 @@ kbd,
   font-size: 12.5px;
   line-height: 20px;
   text-align: center;
+}
+
+.session-dot.archived {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-l3);
+}
+
+.session-list-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px 3px;
+  color: var(--text-caption);
+  font-size: 11.5px;
+  line-height: 16px;
+}
+
+.session-archived-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.session-archived-toggle input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.load-more {
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 11.5px;
+  line-height: 16px;
+}
+
+.load-more:hover {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.load-more:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .sidebar-footer {
@@ -3177,7 +3230,7 @@ label.settings-row:hover {
 /* -------------------------------------------------------------------------
    19. Responsive — tablet rail (768–1023)
    ------------------------------------------------------------------------- */
-@media (max-width: 1023px) {
+@media (min-width: 768px) and (max-width: 1023px) {
   .header-meta .path-chip {
     display: none;
   }
@@ -3273,27 +3326,35 @@ label.settings-row:hover {
     flex-basis: var(--sidebar-w);
     height: 100dvh;
     padding: 8px;
+    visibility: hidden;
     transform: translateX(-100%);
-    transition: transform var(--base-dur) var(--ease), box-shadow var(--base-dur) var(--ease);
+    transition:
+      transform var(--base-dur) var(--ease),
+      box-shadow var(--base-dur) var(--ease),
+      visibility 0s linear var(--base-dur);
     will-change: transform;
   }
 
   .sidebar.mobile-open {
+    visibility: visible;
     transform: translateX(0);
-    box-shadow: 0 0 0 100vmax rgba(8, 8, 9, 0.52);
+    box-shadow: 0 24px 64px -24px rgba(0, 0, 0, 0.72);
+    transition-delay: 0s;
   }
 
-  .sidebar.rail {
-    width: var(--rail-w);
-    flex-basis: var(--rail-w);
+  .sidebar-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 64;
+    display: block;
+    padding: 0;
+    border: 0;
+    background: rgba(8, 8, 9, 0.52);
+    animation: fade-in var(--fast) var(--ease);
   }
 
-  .sidebar.rail.mobile-open {
-    box-shadow: 0 0 0 100vmax rgba(8, 8, 9, 0.52);
-  }
-
-  .sidebar.rail .rail-stack {
-    margin-top: 4px;
+  body.drawer-open {
+    overflow: hidden;
   }
 
   .mobile-only {

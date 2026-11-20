@@ -13,10 +13,11 @@ from typing import Any
 
 import pytest
 
-from deeppyro.web.ui.auth import COOKIE_NAME, LoopbackAuthMiddleware, build_cookie
+from deeppyro.web.ui.auth import LoopbackAuthMiddleware, build_cookie, cookie_name
 
 TOKEN = "test-token-0123456789"
 PORT = 8765
+COOKIE = f"{cookie_name(PORT)}={TOKEN}"
 
 
 class _Downstream:
@@ -101,18 +102,28 @@ async def test_first_page_hit_with_token_sets_cookie_and_redirects_clean() -> No
     sent, downstream = await _exchange(_scope("/c/native", query=f"token={TOKEN}&x=1"))
     assert not downstream.calls
     assert _status(sent) == 303
-    assert _header(sent[0], "location") == "/c/native?x=1"
+    location = _header(sent[0], "location")
+    assert location == "/c/native?x=1"
+    assert TOKEN not in location
     cookie = _header(sent[0], "set-cookie")
-    assert cookie == build_cookie(TOKEN)
+    assert cookie == build_cookie(TOKEN, port=PORT)
+    assert cookie.startswith(f"{cookie_name(PORT)}=")
     assert "httponly" in cookie.lower()
     assert "samesite=strict" in cookie.lower()
     assert TOKEN in cookie
     assert "token=" not in cookie
 
 
+def test_cookie_name_is_scoped_to_the_bound_port() -> None:
+    assert cookie_name(PORT) == f"dpyro_web_{PORT}"
+    assert cookie_name(PORT) != cookie_name(PORT + 1)
+    # The generic name is exactly what another loopback service could read.
+    assert cookie_name(PORT) != "dpyro_web"
+
+
 @pytest.mark.asyncio
 async def test_cookie_reaches_the_page_after_the_first_hop() -> None:
-    sent, downstream = await _exchange(_scope("/settings", cookie=f"{COOKIE_NAME}={TOKEN}"))
+    sent, downstream = await _exchange(_scope("/settings", cookie=COOKIE))
     assert _status(sent) == 200
     assert downstream.calls[0]["path"] == "/settings"
 
@@ -125,13 +136,34 @@ async def test_missing_token_is_a_json_401() -> None:
     assert _header(sent[0], "content-type").startswith("application/json")
     body = json.loads(sent[1]["body"])
     assert body["error"]["code"] == "unauthorized"
+    assert _header(sent[0], "cache-control") == "no-store"
+
+
+@pytest.mark.parametrize("name", ["dpyro_web", cookie_name(PORT + 1)])
+@pytest.mark.asyncio
+async def test_cookie_from_another_port_is_rejected(name: str) -> None:
+    sent, downstream = await _exchange(_scope("/", cookie=f"{name}={TOKEN}"))
+    assert not downstream.calls
+    assert _status(sent) == 401
+    assert TOKEN not in sent[1]["body"].decode()
 
 
 @pytest.mark.asyncio
-async def test_wrong_cookie_is_rejected() -> None:
-    sent, downstream = await _exchange(_scope("/", cookie=f"{COOKIE_NAME}=not-the-token"))
+async def test_wrong_value_for_the_scoped_cookie_is_rejected() -> None:
+    sent, downstream = await _exchange(_scope("/", cookie=f"{cookie_name(PORT)}=not-the-token"))
     assert not downstream.calls
     assert _status(sent) == 401
+
+
+@pytest.mark.asyncio
+async def test_token_in_the_url_is_stripped_even_with_a_valid_cookie() -> None:
+    sent, downstream = await _exchange(_scope("/c/native", query=f"token={TOKEN}&x=1", cookie=COOKIE))
+    assert not downstream.calls
+    assert _status(sent) == 303
+    location = _header(sent[0], "location")
+    assert location == "/c/native?x=1"
+    assert TOKEN not in location
+    assert _header(sent[0], "set-cookie") == build_cookie(TOKEN, port=PORT)
 
 
 @pytest.mark.asyncio
@@ -150,7 +182,7 @@ async def test_api_accepts_a_query_token_for_cli_clients() -> None:
 
 @pytest.mark.asyncio
 async def test_websocket_with_the_cookie_is_accepted() -> None:
-    sent, downstream = await _exchange(_scope("/ws", cookie=f"{COOKIE_NAME}={TOKEN}", kind="websocket"))
+    sent, downstream = await _exchange(_scope("/ws", cookie=COOKIE, kind="websocket"))
     assert sent[0]["type"] == "websocket.accept"
     assert len(downstream.calls) == 1
 
@@ -167,7 +199,7 @@ async def test_cross_site_websocket_is_closed() -> None:
     sent, downstream = await _exchange(
         _scope(
             "/ws",
-            cookie=f"{COOKIE_NAME}={TOKEN}",
+            cookie=COOKIE,
             origin="http://evil.example",
             kind="websocket",
         )
@@ -188,7 +220,7 @@ async def test_cross_site_origin_is_forbidden_even_with_a_valid_cookie() -> None
     sent, downstream = await _exchange(
         _scope(
             "/",
-            cookie=f"{COOKIE_NAME}={TOKEN}",
+            cookie=COOKIE,
             origin="https://evil.example",
             fetch_site="cross-site",
         )
@@ -200,7 +232,7 @@ async def test_cross_site_origin_is_forbidden_even_with_a_valid_cookie() -> None
 
 @pytest.mark.asyncio
 async def test_wrong_host_is_forbidden() -> None:
-    sent, downstream = await _exchange(_scope("/", cookie=f"{COOKIE_NAME}={TOKEN}", host="evil.example"))
+    sent, downstream = await _exchange(_scope("/", cookie=COOKIE, host="evil.example"))
     assert not downstream.calls
     assert _status(sent) == 403
 
@@ -214,8 +246,6 @@ async def test_websocket_without_a_token_closes_1008() -> None:
 
 @pytest.mark.asyncio
 async def test_websocket_with_a_cookie_reaches_the_app() -> None:
-    sent, downstream = await _exchange(
-        _scope("/api/ui/socket", kind="websocket", cookie=f"{COOKIE_NAME}={TOKEN}")
-    )
+    sent, downstream = await _exchange(_scope("/api/ui/socket", kind="websocket", cookie=COOKIE))
     assert sent == [{"type": "websocket.accept"}]
     assert downstream.calls

@@ -4,7 +4,8 @@ import type {
   CommandResult,
   ConnectionState,
   ProviderProbe,
-  SessionSummary,
+  SessionPage,
+  SettingsMutation,
   SettingsPayload,
   Timeline,
   WebEvent,
@@ -102,7 +103,20 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 export const api = {
   bootstrap: () => request<Bootstrap>('/api/ui/bootstrap'),
-  sessions: () => request<{ sessions: SessionSummary[]; active_session_id: string | null }>('/api/ui/sessions'),
+  sessions: ({ limit, offset, include_archived, query }: {
+    limit?: number;
+    offset?: number;
+    include_archived?: boolean;
+    query?: string;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (limit !== undefined) params.set('limit', String(limit));
+    if (offset !== undefined) params.set('offset', String(offset));
+    if (include_archived) params.set('include_archived', 'true');
+    if (query) params.set('query', query);
+    const suffix = params.size > 0 ? `?${params.toString()}` : '';
+    return request<SessionPage>(`/api/ui/sessions${suffix}`);
+  },
   timeline: (sessionId: string) =>
     request<Timeline>(`/api/ui/sessions/${encodeURIComponent(sessionId)}/timeline`),
   createSession: (body: { cwd?: string; title?: string; preset?: string }) =>
@@ -156,9 +170,9 @@ export const api = {
     }),
   settings: () => request<SettingsPayload>('/api/ui/settings'),
   updateAgent: (changes: Record<string, unknown>) =>
-    request<{ ok: boolean }>('/api/ui/settings/agent', { method: 'PATCH', body: changes }),
+    request<SettingsMutation>('/api/ui/settings/agent', { method: 'PATCH', body: changes }),
   updateProvider: (name: string, changes: Record<string, unknown>) =>
-    request<{ ok: boolean }>(`/api/ui/settings/provider/${encodeURIComponent(name)}`, {
+    request<SettingsMutation>(`/api/ui/settings/provider/${encodeURIComponent(name)}`, {
       method: 'PATCH',
       body: changes,
     }),
@@ -169,7 +183,7 @@ export const api = {
       timeoutMs: 90_000,
     }),
   updatePermission: (preset: string) =>
-    request<{ ok: boolean }>('/api/ui/settings/permission', { method: 'POST', body: { preset } }),
+    request<SettingsMutation>('/api/ui/settings/permission', { method: 'POST', body: { preset } }),
 };
 
 export interface EventStreamHandle {
@@ -194,7 +208,7 @@ export function subscribeEvents(
   let timer: number | null = null;
 
   const schedule = () => {
-    if (closed) return;
+    if (closed || !navigator.onLine) return;
     const delay = Math.min(10_000, 800 * 2 ** retry);
     retry += 1;
     timer = window.setTimeout(connect, delay);
@@ -244,13 +258,25 @@ export function subscribeEvents(
     retry = 0;
     connect();
   };
+  const offline = () => {
+    if (closed) return;
+    if (timer !== null) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
+    source?.close();
+    source = null;
+    onState('offline');
+  };
   window.addEventListener('online', online);
+  window.addEventListener('offline', offline);
   connect();
 
   return {
     close: () => {
       closed = true;
       window.removeEventListener('online', online);
+      window.removeEventListener('offline', offline);
       if (timer !== null) window.clearTimeout(timer);
       source?.close();
       source = null;

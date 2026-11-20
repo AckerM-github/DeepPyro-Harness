@@ -2,6 +2,29 @@
 
 export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'offline';
 
+export interface SessionPage {
+  sessions: SessionSummary[];
+  active_session_id: string | null;
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+  query: string | null;
+}
+
+export interface LiveApply {
+  applied: string[];
+  restart_required: string[];
+  deferred: boolean;
+  detail: string | null;
+}
+
+export interface SettingsMutation {
+  ok: boolean;
+  config?: Record<string, unknown>;
+  live?: LiveApply;
+}
+
 export interface SessionSummary {
   session_id: string;
   title: string;

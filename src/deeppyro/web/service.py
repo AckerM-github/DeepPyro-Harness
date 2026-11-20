@@ -15,8 +15,8 @@ import asyncio
 import contextlib
 import logging
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -65,6 +65,7 @@ from deeppyro.sandbox.policy import (
     approval_policy_text,
     sandbox_policy_text,
 )
+from deeppyro.sandbox.types import DEFAULT_PERMISSION_PRESET
 from deeppyro.session.errors import SessionLockedError
 from deeppyro.session.fold import SessionState, SessionView, fold
 from deeppyro.session.native_control import NewSession
@@ -112,8 +113,11 @@ DEFAULT_CONTEXT_WINDOW = 32768
 #: How many user messages may wait behind the active turn.
 DEFAULT_PENDING_TURNS = 8
 
-#: How many recent sessions the sidebar catalogue returns.
+#: Default page size of the paginated session catalogue.
 SESSION_LIST_LIMIT = 50
+
+#: Largest page a client may request from the session catalogue.
+MAX_SESSION_LIST_LIMIT = 200
 
 #: Tools receive these services through ToolContext.services. The tuple mirrors
 #: tui/runtime_schedule.py:42-62 (the TUI cannot be imported from web code) plus
@@ -442,6 +446,15 @@ def _prompt_facts(
     )
 
 
+def _config_permission_default(config: Config) -> str:
+    """The [permission] defaultPreset of a loaded Config, with a safe fallback."""
+    table = getattr(config, "permission", None)
+    value = table.get("defaultPreset") if isinstance(table, Mapping) else None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return DEFAULT_PERMISSION_PRESET
+
+
 class WebSessionHost:
     """The WebService implementation: native sessions behind HTTP and SSE."""
 
@@ -460,6 +473,7 @@ class WebSessionHost:
         self._version = version
         self._pending_limit = max(int(pending_limit), 1)
         self._binding: SessionBinding | None = None
+        self._pending_runtime: tuple[Config, frozenset[str], str | None] | None = None
         self._started = False
         self._closing = False
         self._approvals = ApprovalBroker(
@@ -524,6 +538,83 @@ class WebSessionHost:
         self._approvals.close()
         self._journal.close()
 
+    # -- live config --------------------------------------------------------
+
+    async def apply_runtime_config(
+        self,
+        config: Config,
+        *,
+        changed: Iterable[str],
+        previous_permission_default: str | None = None,
+    ) -> dict[str, Any]:
+        """Adopt a reloaded Config in the running host without restarting.
+
+        Called after ConfigEditor saved config.toml. The new Config replaces the
+        HostServices snapshot immediately, so sessions created later resolve the
+        new provider/model. The attached session is retargeted in place when the
+        host is idle; during a streaming turn the update is deferred and applied
+        before the next turn starts.
+
+        Returns {"applied": [...], "deferred": bool, "detail": str}; callers
+        surface that verbatim instead of claiming success unconditionally.
+        """
+        changes = frozenset(changed)
+        binding = self._binding
+        self._services = replace(self._services, config=config)
+        if binding is None:
+            return {"applied": [], "deferred": False, "detail": "no active session to rebind"}
+        busy = binding.host.busy or (binding.task is not None and not binding.task.done())
+        if busy:
+            self._pending_runtime = (config, changes, previous_permission_default)
+            return {
+                "applied": [],
+                "deferred": True,
+                "detail": "active turn is streaming; applies before the next turn",
+            }
+        return await self._apply_runtime_config_now(binding, config, changes, previous_permission_default)
+
+    async def _apply_runtime_config_now(
+        self,
+        binding: SessionBinding,
+        config: Config,
+        changes: frozenset[str],
+        previous_permission_default: str | None,
+    ) -> dict[str, Any]:
+        """Retarget one idle binding: provider/model, limits and prompt facts."""
+        applied: list[str] = []
+        presets = self._services.permission_presets
+        if "permission.defaultPreset" in changes and previous_permission_default is not None:
+            default = _config_permission_default(config)
+            if default != previous_permission_default:
+                presets.set_default(default)
+                with contextlib.suppress(Exception):
+                    presets.apply(binding.view, default)
+                applied.append("permissionPresets")
+        selection = Selection(binding.provider, binding.model, binding.context_window)
+        if changes & {"agent.provider", "agent.model"}:
+            selection = resolve_selection(config)
+        provider = self._services.llm.native_provider(selection.provider)
+        facts = _prompt_facts(binding.view, binding.gate, selection.model, binding.workspace, presets)
+        changed = binding.host.reconfigure(
+            provider=provider,
+            model=selection.model,
+            temperature=config.agent.temperature,
+            max_tokens_per_call=config.agent.max_tokens,
+            max_steps=config.agent.max_steps,
+            prompt_facts=facts,
+        )
+        if (selection.provider, selection.model) != (binding.provider, binding.model):
+            binding.view.append(
+                "model/selection",
+                {"provider": selection.provider, "model": selection.model},
+            )
+        binding.provider = selection.provider
+        binding.model = selection.model
+        binding.context_window = selection.context_window
+        if changed:
+            applied.append("session")
+        return {"applied": applied, "deferred": False, "detail": ""}
+
     # -- WebService protocol ----------------------------------------------
 
     async def health(self) -> dict[str, Any]:
@@ -534,15 +625,59 @@ class WebSessionHost:
             "active_session_id": self.active_session_id,
         }
 
-    async def list_sessions(self, *, include_archived: bool = False) -> dict[str, Any]:
-        """Session catalogue, newest first, from native facts."""
+    async def list_sessions(
+        self,
+        *,
+        include_archived: bool = False,
+        limit: int | None = SESSION_LIST_LIMIT,
+        offset: int = 0,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        """Paginated session catalogue, newest first, from native facts.
+
+        "limit" defaults to the sidebar page size and is clamped to
+        MAX_SESSION_LIST_LIMIT; None returns the whole catalogue (slash command
+        resolution uses it so a long history stays reachable). "query" is a
+        case-insensitive substring match over title, id, cwd and preset,
+        mirroring the SPA search box. The native list already materializes the
+        full newest-first index, so the host filters and slices that one
+        snapshot: a second native scan only to count rows would double the
+        listing cost for every page request.
+        """
+        if type(limit) is not int and limit is not None:
+            raise ValueError("limit must be an int or None")
+        if type(offset) is not int:
+            raise ValueError("offset must be an int")
+        if offset < 0 or (limit is not None and limit < 0):
+            raise ValueError("offset and limit must be non-negative")
+        if query is not None and not isinstance(query, str):
+            raise ValueError("query must be a string or None")
         infos = self._services.sessions.native_list(
             include_archived=include_archived,
-            limit=SESSION_LIST_LIMIT,
+            limit=None,
+            offset=0,
         )
+        needle = (query or "").strip().casefold()
+        if needle:
+            infos = [
+                info
+                for info in infos
+                if any(
+                    needle in (value or "").casefold()
+                    for value in (info.title, info.id, info.cwd, info.preset)
+                )
+            ]
+        total = len(infos)
+        page_limit = total if limit is None else min(limit, MAX_SESSION_LIST_LIMIT)
+        page = infos[offset : offset + page_limit]
         return {
-            "sessions": [self._info_summary(info) for info in infos],
+            "sessions": [self._info_summary(info) for info in page],
             "active_session_id": self.active_session_id,
+            "total": total,
+            "limit": page_limit,
+            "offset": offset,
+            "has_more": offset + len(page) < total,
+            "query": (query or "").strip() or None,
         }
 
     async def facts(self, session_id: str | None = None) -> dict[str, Any]:
@@ -782,18 +917,33 @@ class WebSessionHost:
         return {"session_id": session_id, "title": info.title, "active": False}
 
     async def archive_session(self, session_id: str, *, archived: bool = True) -> dict[str, Any]:
-        """Archive or restore one session; an attached session is detached first."""
+        """Archive or restore one session; only a real state change detaches it."""
+        info = self._look(session_id)
+        if info.archived == archived:
+            # Already in the requested state: never detach (or append a marker)
+            # just to repeat it, or a no-op restore would strand the host with
+            # no attached session even though nothing changed.
+            return {"session_id": session_id, "archived": info.archived, "detached": False}
         binding = self._binding
-        active = binding is not None and binding.session_id == session_id
-        if active:
+        detached = binding is not None and binding.session_id == session_id
+        if detached:
             await self._detach()
         try:
             state = self._services.sessions.native_archive(session_id, archived=archived)
         except NativeQueryError as exc:
+            await self._restore_after_failed_archive(session_id, detached)
             raise self._native_error(exc) from exc
         except OSError as exc:
+            await self._restore_after_failed_archive(session_id, detached)
             raise Conflict(f"could not update session {session_id}: {exc}") from exc
-        return {"session_id": session_id, "archived": state, "detached": active}
+        return {"session_id": session_id, "archived": state, "detached": detached}
+
+    async def _restore_after_failed_archive(self, session_id: str, detached: bool) -> None:
+        """Best-effort re-attach when an archive write fails after a detach."""
+        if not detached:
+            return
+        with contextlib.suppress(Exception):
+            await self.resume_session(session_id)
 
     async def apply_permission(self, session_id: str, preset: str) -> dict[str, Any]:
         """Switch the permission preset of the attached session without rebuilding it."""
@@ -820,6 +970,7 @@ class WebSessionHost:
                 "session_id": session_id,
                 "active": True,
                 "title": state.title or info.title,
+                "turns": info.turns,
                 "provider": state.model.provider if state.model is not None else binding.provider,
                 "model": state.model.model if state.model is not None else binding.model,
                 "preset": state.preset.preset if state.preset is not None else binding.preset,
@@ -850,6 +1001,7 @@ class WebSessionHost:
             "session_id": session_id,
             "active": False,
             "title": (state.title if state is not None else None) or info.title,
+            "turns": info.turns,
             "provider": selection.provider,
             "model": selection.model,
             "preset": (
@@ -874,27 +1026,31 @@ class WebSessionHost:
             raise TooManyRequests("the turn queue is full; wait for the active turn to finish")
         busy = bool(binding.host.busy)
         binding.pending.append(request.text)
-        if binding.task is None or binding.task.done():
-            binding.task = asyncio.create_task(
-                self._run_turns(binding),
-                name=f"web-turn-{session_id}",
-            )
+        self._start_turn_worker(binding)
         queued = len(binding.pending) if busy else len(binding.pending) - 1
         return {"session_id": session_id, "accepted": True, "queued": max(queued, 0)}
 
     async def interrupt(self, session_id: str) -> dict[str, Any]:
-        """Interrupt the active turn through the native agent host."""
+        """Interrupt the active turn through the native agent host.
+
+        Accepted messages are only dropped when a turn is actually interrupted;
+        when nothing is running the queue is kept (and a worker ensured) so an
+        interrupt that races a fresh send can never silently lose the message.
+        """
+        self._ensure_open()
         binding = self._require_active(session_id)
-        dropped = len(binding.pending)
-        binding.pending.clear()
         task = binding.task
         if not binding.host.busy or task is None or task.done():
+            if binding.pending:
+                self._start_turn_worker(binding)
             return {
                 "session_id": session_id,
                 "interrupted": False,
                 "detail": "nothing to interrupt",
-                "dropped": dropped,
+                "dropped": 0,
             }
+        dropped = len(binding.pending)
+        binding.pending.clear()
         interrupted = await binding.host.interrupt()
         return {
             "session_id": session_id,
@@ -991,6 +1147,9 @@ class WebSessionHost:
             prompt_facts=facts,
             services=self._services.tool_services,
             context_window=selection.context_window,
+            temperature=self._services.config.agent.temperature,
+            max_tokens=self._services.config.agent.max_tokens,
+            max_steps=self._services.config.agent.max_steps,
         )
         try:
             host = self._services.agents.host(handle.native_session, build)
@@ -1016,6 +1175,7 @@ class WebSessionHost:
     async def _detach(self) -> None:
         binding = self._binding
         self._binding = None
+        self._pending_runtime = None
         if binding is None:
             return
         self._approvals.cancel_session(binding.session_id)
@@ -1043,14 +1203,35 @@ class WebSessionHost:
         with contextlib.suppress(Exception):
             binding.handle.aclose()
 
+    def _start_turn_worker(self, binding: SessionBinding) -> None:
+        """Start the per-session turn worker unless one is already running."""
+        if binding.task is not None and not binding.task.done():
+            return
+        binding.task = asyncio.create_task(
+            self._run_turns(binding),
+            name=f"web-turn-{binding.session_id}",
+        )
+
     async def _run_turns(self, binding: SessionBinding) -> None:
         try:
             while binding.pending and not self._closing:
+                pending = self._pending_runtime
+                if pending is not None:
+                    self._pending_runtime = None
+                    try:
+                        await self._apply_runtime_config_now(binding, *pending)
+                    except Exception:
+                        logger.exception("web host could not apply pending settings")
                 text = binding.pending.popleft()
                 await self._run_turn(binding, text)
         finally:
             if binding.task is asyncio.current_task():
                 binding.task = None
+            # A cancelled worker (interrupt) can leave messages that a sender
+            # accepted while the interrupt was landing. Restart so an
+            # acknowledged turn is never stranded in the queue.
+            if binding is self._binding and binding.pending and not self._closing:
+                self._start_turn_worker(binding)
 
     async def _run_turn(self, binding: SessionBinding, text: str) -> None:
         session_id = binding.session_id
@@ -1323,6 +1504,7 @@ def _timeline_messages(messages: list[Any]) -> list[dict[str, Any]]:
 __all__ = [
     "DEFAULT_CONTEXT_WINDOW",
     "DEFAULT_PENDING_TURNS",
+    "MAX_SESSION_LIST_LIMIT",
     "SESSION_LIST_LIMIT",
     "HostServices",
     "Selection",

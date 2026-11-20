@@ -27,7 +27,7 @@ import asyncio
 import contextlib
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
@@ -77,6 +77,9 @@ __all__ = [
 
 DEFAULT_NOTICE_LIMIT = 64
 """How many injected notices may wait for the next run before drops are counted."""
+
+#: Sentinel for reconfigure(): "leave this value unchanged" (None clears it).
+_UNSET: Any = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -548,6 +551,43 @@ class NativeAgentHost:
         self._prompt_source = source
         self._prompt_facts = facts
         return self.refresh_prompt()
+
+    def reconfigure(
+        self,
+        *,
+        provider: LlmProvider | None = None,
+        model: str | None = None,
+        temperature: Any = _UNSET,
+        max_tokens_per_call: Any = _UNSET,
+        max_steps: Any = _UNSET,
+        prompt_facts: PromptFacts | None = None,
+    ) -> bool:
+        """Retarget the next run without rebuilding the host.
+
+        The web settings surface uses this after a config edit: the loop adopts
+        the new provider/model/limits, and a refreshed prompt_facts makes the
+        next send() render the system prompt with the new model/permission
+        values. Must only be called while idle; returns whether anything
+        changed.
+        """
+        self._ensure_ready()
+        if self._task is not None and not self._task.done():
+            raise RuntimeError("cannot reconfigure the agent while a run is streaming")
+        changed = self._loop.reconfigure(
+            provider=provider,
+            model=model,
+            temperature=temperature,
+            max_tokens_per_call=max_tokens_per_call,
+            max_steps=max_steps,
+        )
+        if prompt_facts is not None:
+            self._prompt_facts = prompt_facts
+            source = self._prompt_source
+            if source is not None and hasattr(source, "facts"):
+                # Duck-typed so this module keeps its TYPE_CHECKING-only import of
+                # PresetPromptSource/PromptFacts (avoids an import cycle).
+                self._prompt_source = replace(source, facts=lambda: prompt_facts)
+        return changed
 
     def refresh_prompt(self) -> bool:
         """Render the system prompt and persist it when it changed.

@@ -22,14 +22,14 @@
 | 入口 | 用途 | 启动方式 |
 | --- | --- | --- |
 | **TUI** | 日常交互、会话管理、team/subagent、goal、hooks、PTC | `dpyro`（默认终端） |
-| **Web UI** | NiceGUI 浏览器外壳；只监听 `127.0.0.1`，三栏会话/聊天/检查器 + 全屏命令与设置 | TUI 启动页按 **F1**，或 `python -m deeppyro.web` |
+| **Web UI** | React/Vite 单页应用外壳；只监听 `127.0.0.1`，三栏会话/聊天/检查器 + 命令面板与设置覆盖层 | TUI 启动页按 **F1**，或 `python -m deeppyro.web` |
 | **headless** | 脚本/CI；人类摘要或 NDJSON | `dpyro --headless "..."` |
 
 启动页：**F1 = Web，F2 / Enter = 终端**。Web 进程由宿主显式启动，不监听时只是一个惰性插件；
 页面只负责发命令、订阅 SSE、回放 native facts，所有会话状态都在 append-only 日志里。
-NiceGUI Web UI 提供真实会话、流式聊天、工具/审批卡、命令面板和全量设置页；FastAPI +
-uvicorn 承载 Python 宿主，页面是 Python 元素树，浏览器侧由 NiceGUI 自带的 Quasar/Vue 渲染，
-无前端构建步骤。
+Web UI 是 React + TypeScript + Vite 的单页应用：提供真实会话、流式聊天、工具/审批卡、命令面板和
+全量设置页；FastAPI + uvicorn 只提供回环 JSON API 与 SSE，所有会话状态仍在 native 日志里。
+前端源码在 `web/`，构建产物提交在 `src/deeppyro/web/ui/static/`，随 wheel 一起发布。
 
 ```powershell
 uv sync
@@ -39,6 +39,22 @@ uv run python -m deeppyro.web --port 0 --cwd .
 ```
 
 Web 默认绑定随机回环端口并打印带一次性 bearer token 的 URL；首次页面把 token 换成 HttpOnly cookie。`--host` 只接受 `127.0.0.1`/`localhost`，没有 TLS、没有远程绑定选项。详见 [Web UI 指南](docs/guides/web-ui.md)。
+
+### Web UI 前端构建（仅修改 `web/` 时需要）
+
+运行仓库中已有的 wheel 或直接 `uv run python -m deeppyro.web` 不需要 Node.js；只有修改
+`web/` 下的前端源码后才需要重新构建。要求 Node.js 20.19+ 与 pnpm：
+
+```powershell
+cd web
+pnpm install
+pnpm build        # = tsc --noEmit && vite build，输出到 src/deeppyro/web/ui/static/
+```
+
+产物目录 `src/deeppyro/web/ui/static/`（`index.html` + 哈希命名的 `assets/`）是提交进仓库的
+构建产物，wheel 会原样收录；如果目录缺失，Web 宿主会返回 503 并提示先运行 `pnpm build`。
+前端布局、API/SSE 契约与打包说明见 [docs/spec/web.md](docs/spec/web.md) 与
+[docs/design/react-web-ui.md](docs/design/react-web-ui.md)。
 
 ## native session 与 trace
 

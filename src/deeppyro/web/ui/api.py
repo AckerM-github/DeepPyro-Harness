@@ -15,7 +15,7 @@ Two route families are served from one router:
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,7 +28,9 @@ from deeppyro.core.errors import ConfigError
 from deeppyro.plugins.errors import PluginError, SettingsConflict
 from deeppyro.web.events import HEARTBEAT_FRAME
 from deeppyro.web.security import sse_headers
+from deeppyro.web.service import MAX_SESSION_LIST_LIMIT, SESSION_LIST_LIMIT
 from deeppyro.web.ui.commands import execute as execute_command
+from deeppyro.web.ui.live_apply import apply_settings_live, permission_default
 from deeppyro.web.ui.settings import ConfigEditor, settings_payload, test_provider
 from deeppyro.web.wire import (
     BadRequest,
@@ -120,6 +122,51 @@ def _after(request: Request) -> int:
 
 def _sid(request: Request) -> str:
     return parse_session_id(request.path_params["session_id"])
+
+
+def _query_int(
+    request: Request,
+    name: str,
+    *,
+    default: int,
+    minimum: int = 0,
+    maximum: int | None = None,
+) -> int:
+    """Parse one integer query parameter with explicit bounds."""
+    raw = request.query_params.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise BadRequest(f'"{name}" must be an integer') from exc
+    if value < minimum:
+        raise BadRequest(f'"{name}" must be at least {minimum}')
+    if maximum is not None and value > maximum:
+        raise BadRequest(f'"{name}" must be at most {maximum}')
+    return value
+
+
+def _query_bool(request: Request, name: str, *, default: bool = False) -> bool:
+    """Parse one boolean query parameter ("1/true/yes/on" or "0/false/no/off")."""
+    raw = request.query_params.get(name)
+    if raw is None or not raw.strip():
+        return default
+    lowered = raw.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    raise BadRequest(f'"{name}" must be a boolean')
+
+
+def _query_text(request: Request, name: str) -> str | None:
+    """Parse one optional text query parameter (blank means absent)."""
+    raw = request.query_params.get(name)
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None
 
 
 def json_body(payload: Any, *, status: int = 200) -> JSONResponse:
@@ -239,8 +286,28 @@ def build_router(
         )
 
     @router.get("/api/ui/sessions")
-    async def ui_sessions() -> JSONResponse:
-        return json_body(await _service(service_provider).list_sessions())
+    async def ui_sessions(request: Request) -> JSONResponse:
+        # Paging/searching is opt-in: the response always carries total, limit,
+        # offset and has_more, so a client can page without a second count call.
+        limit = _query_int(
+            request,
+            "limit",
+            default=SESSION_LIST_LIMIT,
+            minimum=0,
+            maximum=MAX_SESSION_LIST_LIMIT,
+        )
+        offset = _query_int(request, "offset", default=0, minimum=0)
+        include_archived = _query_bool(request, "include_archived", default=False)
+        query = _query_text(request, "query")
+        service = _service(service_provider)
+        return json_body(
+            await service.list_sessions(
+                include_archived=include_archived,
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
+        )
 
     @router.get("/api/ui/sessions/{session_id}/timeline")
     async def timeline(request: Request) -> JSONResponse:
@@ -350,6 +417,36 @@ def build_router(
             return BadRequest(str(exc))
         raise exc
 
+    async def _live_apply(
+        changed: Iterable[str],
+        *,
+        providers: Iterable[str] = (),
+        previous_permission_default: str | None = None,
+    ) -> dict[str, Any]:
+        """Apply a just-saved config to the running kernel.
+
+        A live-apply failure is reported in the response (the config file was
+        already written), never swallowed and never turned into a fake success.
+        """
+        service = _service(service_provider)
+        try:
+            config = editor().load()
+            return await apply_settings_live(
+                app=context.kernel_app,
+                service=service,
+                config=config,
+                changed=changed,
+                providers=providers,
+                previous_permission_default=previous_permission_default,
+            )
+        except Exception as exc:  # noqa: BLE001 - report, do not fail the save
+            return {
+                "applied": [],
+                "restart_required": [],
+                "deferred": False,
+                "detail": f"live apply failed: {type(exc).__name__}: {exc}",
+            }
+
     @router.get("/api/ui/settings")
     async def settings() -> JSONResponse:
         service = _service(service_provider)
@@ -375,7 +472,8 @@ def build_router(
             config = editor().update_agent(**changes)
         except (ValueError, ConfigError) as exc:
             raise _config_error(exc) from exc
-        return json_body({"ok": True, "config": config})
+        live = await _live_apply({f"agent.{key}" for key in changes})
+        return json_body({"ok": True, "config": config, "live": live})
 
     @router.patch("/api/ui/settings/provider/{name}")
     async def update_provider(request: Request, name: str) -> JSONResponse:
@@ -388,7 +486,8 @@ def build_router(
             config = editor().update_provider(name, **changes)
         except (ValueError, ConfigError) as exc:
             raise _config_error(exc) from exc
-        return json_body({"ok": True, "config": config})
+        live = await _live_apply({"provider"}, providers=(name,))
+        return json_body({"ok": True, "config": config, "live": live})
 
     @router.post("/api/ui/settings/providers/{name}/test")
     async def probe_provider(name: str) -> JSONResponse:
@@ -459,10 +558,15 @@ def build_router(
         if not isinstance(preset, str) or not preset.strip():
             raise BadRequest('"preset" must be a non-empty string')
         try:
+            previous = permission_default(editor().load())
             config = editor().set_permission_default(preset)
         except (ValueError, ConfigError) as exc:
             raise _config_error(exc) from exc
-        return json_body({"ok": True, "config": config})
+        live = await _live_apply(
+            {"permission.defaultPreset"},
+            previous_permission_default=previous,
+        )
+        return json_body({"ok": True, "config": config, "live": live})
 
     # -- legacy API family -------------------------------------------------
 

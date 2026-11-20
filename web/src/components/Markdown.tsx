@@ -42,6 +42,25 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
+// Model output is untrusted. react-markdown escapes raw HTML by default and
+// skipHtml drops it instead of rendering; the element filter is defense in
+// depth for a future rehype plugin. A reply therefore cannot instantiate a
+// form/button/iframe/style/script or otherwise forge an approval UI.
+const disallowedElements = [
+  'base',
+  'button',
+  'embed',
+  'form',
+  'frame',
+  'frameset',
+  'iframe',
+  'link',
+  'meta',
+  'object',
+  'script',
+  'style',
+];
+
 const components: Components = {
   pre({ children }) {
     return <CodeBlock>{children}</CodeBlock>;
@@ -68,7 +87,12 @@ const components: Components = {
 export function Markdown({ children }: { children: string }) {
   return (
     <div className="markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={components}
+        skipHtml
+        disallowedElements={disallowedElements}
+      >
         {children}
       </ReactMarkdown>
     </div>

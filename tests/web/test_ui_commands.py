@@ -16,6 +16,7 @@ from deeppyro.web.ui.commands import (
     CommandResult,
     execute,
 )
+from deeppyro.web.wire import Conflict
 
 
 @dataclass
@@ -62,11 +63,31 @@ class FakeService:
                 "active": False,
                 "archived": False,
             },
+            {
+                "session_id": "session-3",
+                "title": "archived session",
+                "turns": 4,
+                "active": False,
+                "archived": True,
+            },
         ]
     )
+    rounds_started: int = 3
+    goal: dict[str, Any] | None = field(
+        default_factory=lambda: {
+            "id": "goal-1",
+            "revision": 1,
+            "objective": "Ship P1",
+            "phase": "active",
+            "max_goal_rounds": 10,
+            "blocked_reason": None,
+        }
+    )
+    plan_mode: str = "off"
     calls: list[tuple[Any, ...]] = field(default_factory=list)
     created: list[dict[str, Any]] = field(default_factory=list)
     create_error: Exception | None = None
+    archive_error: Exception | None = None
     services: Any = field(
         default_factory=lambda: SimpleNamespace(
             config=FakeConfig(),
@@ -75,11 +96,39 @@ class FakeService:
         )
     )
 
-    async def list_sessions(self, *, include_archived: bool = False) -> dict[str, Any]:
+    def _row(self, session_id: str) -> dict[str, Any] | None:
+        return next((row for row in self.sessions if row["session_id"] == session_id), None)
+
+    async def list_sessions(
+        self,
+        *,
+        include_archived: bool = False,
+        limit: int | None = 50,
+        offset: int = 0,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(("sessions", include_archived, limit, offset, query))
         rows = list(self.sessions)
         if not include_archived:
             rows = [row for row in rows if not row["archived"]]
-        return {"sessions": rows, "active_session_id": self.active_session_id}
+        if query:
+            needle = query.casefold()
+            rows = [
+                row
+                for row in rows
+                if needle in row["session_id"].casefold() or needle in row["title"].casefold()
+            ]
+        total = len(rows)
+        page = rows if limit is None else rows[offset : offset + limit]
+        return {
+            "sessions": page,
+            "active_session_id": self.active_session_id,
+            "total": total,
+            "limit": total if limit is None else limit,
+            "offset": offset,
+            "has_more": offset + len(page) < total,
+            "query": query,
+        }
 
     async def create_session(self, request: Any) -> dict[str, Any]:
         if self.create_error is not None:
@@ -104,18 +153,26 @@ class FakeService:
 
     async def archive_session(self, session_id: str, *, archived: bool = True) -> dict[str, Any]:
         self.calls.append(("archive", session_id, archived))
-        if session_id == self.active_session_id:
+        if self.archive_error is not None:
+            raise self.archive_error
+        row = self._row(session_id)
+        if row is not None:
+            row["archived"] = archived
+        detached = session_id == self.active_session_id
+        if detached:
             self.active_session_id = None
-        return {"session_id": session_id, "archived": archived, "detached": True}
+        return {"session_id": session_id, "archived": archived, "detached": detached}
 
     async def apply_permission(self, session_id: str, preset: str) -> dict[str, Any]:
         self.calls.append(("permission", session_id, preset))
         return {"session_id": session_id, "permission_preset": preset}
 
     async def status(self, session_id: str) -> dict[str, Any]:
+        row = self._row(session_id) or {"turns": 0}
         return {
             "session_id": session_id,
             "title": "active session",
+            "turns": row["turns"],
             "provider": "deepseek",
             "model": "deepseek-flash",
             "preset": "standard",
@@ -127,20 +184,18 @@ class FakeService:
         }
 
     async def facts(self, session_id: str) -> dict[str, Any]:
+        row = self._row(session_id) or {"turns": 0, "archived": False}
         return {
-            "info": {"session_id": session_id},
+            "info": {
+                "session_id": session_id,
+                "turns": row["turns"],
+                "archived": row.get("archived", False),
+            },
             "state": {
-                "plan_mode": "off",
-                "rounds_started": 3,
+                "plan_mode": self.plan_mode,
+                "rounds_started": self.rounds_started,
                 "todos": [{"content": "ship it", "status": "in_progress"}],
-                "goal": {
-                    "id": "goal-1",
-                    "revision": 1,
-                    "objective": "Ship P1",
-                    "phase": "active",
-                    "max_goal_rounds": 10,
-                    "blocked_reason": None,
-                },
+                "goal": self.goal,
             },
         }
 
@@ -206,6 +261,8 @@ async def test_resume_accepts_an_index() -> None:
     result = await execute(service, context(), "/resume", ["2"])
     assert result.status == STATUS_OK
     assert result.data["session_id"] == "session-2"
+    # Resolution must see the whole catalogue, not just the sidebar page.
+    assert ("sessions", True, None, 0, None) in service.calls
 
 
 @pytest.mark.asyncio
@@ -221,7 +278,105 @@ async def test_archive_of_the_active_session_opens_a_new_one() -> None:
     result = await execute(service, context(), "archive")
     assert result.status == STATUS_OK
     assert result.data["session_id"] == "session-new"
-    assert ("create", "") in service.calls
+    assert result.data["archived_session_id"] == "session-1"
+    # The replacement must exist before the archive write: a failure there must
+    # not strand the host with an archived session and nothing attached.
+    kinds = [call[0] for call in service.calls]
+    assert kinds.index("create") < kinds.index("archive")
+
+
+@pytest.mark.asyncio
+async def test_archive_active_without_a_replacement_leaves_the_session_alone() -> None:
+    service = FakeService(create_error=ConfigError("no providers configured"))
+    result = await execute(service, context(), "archive")
+    assert result.status == STATUS_ERROR
+    assert "no providers configured" in result.message
+    assert not any(call[0] == "archive" for call in service.calls)
+    assert service.active_session_id == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_archive_failure_after_replacement_still_navigates_to_the_new_session() -> None:
+    service = FakeService(archive_error=Conflict("archive write failed"))
+    result = await execute(service, context(), "archive")
+    assert result.status == STATUS_ERROR
+    assert "could not archive session-1" in result.message
+    assert "session-new" in result.message
+    assert result.data["session_id"] == "session-new"
+    assert result.data["archived"] is False
+
+
+@pytest.mark.asyncio
+async def test_archiving_a_background_session_does_not_navigate_to_it() -> None:
+    service = FakeService()
+    result = await execute(service, context(), "archive", ["session-2"])
+    assert result.status == STATUS_OK
+    assert result.data["archived_session_id"] == "session-2"
+    # "session_id" means "open this session" for the SPA; a background archive
+    # must instead refresh the sidebar, so it must not carry that key.
+    assert "session_id" not in result.data
+    assert service.active_session_id == "session-1"
+    assert ("archive", "session-2", True) in service.calls
+
+
+@pytest.mark.asyncio
+async def test_unarchive_restores_a_session_without_switching_to_it() -> None:
+    service = FakeService()
+    result = await execute(service, context(), "unarchive", ["session-3"])
+    assert result.status == STATUS_OK
+    assert result.data["unarchived_session_id"] == "session-3"
+    assert result.data["changed"] is True
+    assert "session_id" not in result.data
+    assert ("archive", "session-3", False) in service.calls
+    assert service.active_session_id == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_unarchive_of_an_unarchived_session_is_a_safe_no_op() -> None:
+    service = FakeService()
+    result = await execute(service, context(), "unarchive", ["session-2"])
+    assert result.status == STATUS_OK
+    assert "not archived" in result.message
+    assert result.data["changed"] is False
+    assert "session_id" not in result.data
+    # A no-op restore must not detach the live binding.
+    assert not any(call[0] == "archive" for call in service.calls)
+    assert service.active_session_id == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_unarchiving_the_open_archived_session_reattaches_it() -> None:
+    service = FakeService(active_session_id="session-3")
+    result = await execute(service, context(), "unarchive", ["session-3"])
+    assert result.status == STATUS_OK
+    assert result.data["session_id"] == "session-3"
+    assert result.data["resumed"] is True
+    assert ("archive", "session-3", False) in service.calls
+    assert ("resume", "session-3") in service.calls
+    assert service.active_session_id == "session-3"
+
+
+@pytest.mark.asyncio
+async def test_unarchive_requires_an_argument() -> None:
+    result = await execute(FakeService(), context(), "unarchive")
+    assert result.status == STATUS_ERROR
+    assert "usage: /unarchive" in result.message
+
+
+@pytest.mark.asyncio
+async def test_archive_without_an_open_session_reports_an_error() -> None:
+    result = await execute(FakeService(active_session_id=None), context(), "archive")
+    assert result.status == STATUS_ERROR
+    assert "no session is open" in result.message
+
+
+@pytest.mark.asyncio
+async def test_clear_is_an_honest_refusal_not_a_false_success() -> None:
+    result = await execute(FakeService(), context(), "clear")
+    assert result.status == STATUS_ERROR
+    assert "not supported" in result.message
+    assert "/new" in result.message
+    assert result.data == {}
 
 
 @pytest.mark.asyncio
@@ -280,8 +435,31 @@ async def test_help_lists_the_core_registry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_status_reports_context_and_rounds() -> None:
+async def test_status_reports_turns_and_goal_rounds_separately() -> None:
     result = await execute(FakeService(), context(), "status")
     assert result.status == STATUS_OK
     assert "10 / 100 tokens" in result.message
-    assert "3 rounds" in result.message
+    # Native conversation turns (2) are not goal rounds (3 of a 10 round cap).
+    assert "turns: 2" in result.message
+    assert "goal rounds: 3 / 10" in result.message
+    assert "3 rounds" not in result.message
+    assert result.data["turns"] == 2
+    assert result.data["rounds"] == 3
+
+
+@pytest.mark.asyncio
+async def test_status_without_a_goal_does_not_invent_rounds() -> None:
+    result = await execute(FakeService(goal=None), context(), "status")
+    assert result.status == STATUS_OK
+    assert "turns: 2" in result.message
+    assert "goal rounds: 3 (no goal set)" in result.message
+    assert result.data["goal"] is None
+
+
+@pytest.mark.asyncio
+async def test_sessions_lists_the_whole_archive() -> None:
+    service = FakeService()
+    result = await execute(service, context(), "sessions")
+    assert result.status == STATUS_OK
+    assert len(result.data["sessions"]) == 3
+    assert "[archived]" in result.message

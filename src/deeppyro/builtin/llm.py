@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any, ClassVar
 
 from deeppyro.api import PluginConfig, PluginContext, PluginDependencyError, Service
+from deeppyro.config import Config
 from deeppyro.kernel.config_service import KernelConfig
 from deeppyro.llm import LlmRegistry, ModelInfo
 
@@ -134,6 +135,15 @@ class LlmPlugin(Service):
         if provider in self._factories:
             return []
         return self._registry.catalog_snapshot(provider)
+
+    async def apply_config(self, config: Config) -> list[str]:
+        """Live-apply a reloaded Config to the provider registry.
+
+        Unchanged providers keep their transport; changed or removed ones are
+        closed and rebuilt lazily from the new config. Returns the rebuilt
+        provider names (an empty list means nothing had to change).
+        """
+        return await self._registry.reload_config(config)
 
     async def stop(self) -> None:
         await self._registry.aclose()

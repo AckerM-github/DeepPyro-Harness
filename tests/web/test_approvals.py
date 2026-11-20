@@ -260,3 +260,99 @@ async def test_on_decided_failure_keeps_the_decision() -> None:
     assert broker.decide(approval_id, ApprovalDecision.ALLOW) is True
     assert (await task) is True
     assert broker.pending() == []
+
+
+async def test_two_pending_approvals_settle_independently_out_of_order() -> None:
+    decided: list[tuple[str, ApprovalDecision]] = []
+    broker = ApprovalBroker(
+        on_decided=lambda prompt, decision: decided.append((prompt.approval_id, decision))
+    )
+    first = await _start_ask(broker, tool="shell")
+    second = await _start_ask(broker, tool="write", expected=2)
+
+    pending = broker.pending()
+    assert [prompt.tool for prompt in pending] == ["shell", "write"]
+
+    assert broker.decide(pending[1].approval_id, ApprovalDecision.ALLOW) is True
+    assert (await second) is True
+    assert broker.pending() == [pending[0]]
+    assert decided == [(pending[1].approval_id, ApprovalDecision.ALLOW)]
+
+    assert broker.decide(pending[0].approval_id, ApprovalDecision.DENY) is True
+    assert (await first) is False
+    assert broker.pending() == []
+    assert decided[-1] == (pending[0].approval_id, ApprovalDecision.DENY)
+
+    # A late duplicate decision on an already settled prompt changes nothing.
+    assert broker.decide(pending[1].approval_id, ApprovalDecision.DENY) is False
+    assert len(decided) == 2
+
+
+async def test_decisions_remove_the_approval_from_pending_immediately() -> None:
+    broker = ApprovalBroker()
+    task = await _start_ask(broker)
+    prompt = broker.pending()[0]
+
+    assert broker.decide(prompt.approval_id, ApprovalDecision.ALLOW) is True
+    # Settled synchronously: the browser's next poll must not see it again.
+    assert broker.pending() == []
+    assert (await task) is True
+
+    denied = await _start_ask(broker)
+    denied_prompt = broker.pending()[0]
+    assert broker.decide(denied_prompt.approval_id, ApprovalDecision.DENY) is True
+    assert broker.pending() == []
+    assert (await denied) is False
+
+
+async def test_expiry_settles_exactly_once_and_late_decisions_are_ignored() -> None:
+    notified: list[ApprovalPrompt] = []
+    decided: list[ApprovalDecision] = []
+    broker = ApprovalBroker(
+        timeout_seconds=0.01,
+        notify=notified.append,
+        on_decided=lambda prompt, decision: decided.append(decision),
+    )
+
+    assert await broker.ask("session-a", _request()) is False
+    assert broker.pending() == []
+    assert decided == [ApprovalDecision.EXPIRE]
+
+    # The browser may try to answer the prompt after it timed out; that must
+    # neither resurrect the prompt nor fire a second settlement.
+    approval_id = notified[0].approval_id
+    assert broker.decide(approval_id, ApprovalDecision.ALLOW) is False
+    assert decided == [ApprovalDecision.EXPIRE]
+
+
+async def test_allowed_prompt_does_not_settle_its_expiring_neighbour() -> None:
+    decided: list[ApprovalDecision] = []
+    broker = ApprovalBroker(
+        timeout_seconds=0.01,
+        on_decided=lambda prompt, decision: decided.append(decision),
+    )
+    first = asyncio.create_task(broker.ask("session-a", _request(tool="shell")))
+    second = asyncio.create_task(broker.ask("session-a", _request(tool="write")))
+    await _wait_for_pending(broker, 2)
+    pending = broker.pending()
+
+    assert broker.decide(pending[0].approval_id, ApprovalDecision.ALLOW) is True
+    assert (await first) is True
+    assert (await second) is False
+    assert decided == [ApprovalDecision.ALLOW, ApprovalDecision.EXPIRE]
+    assert broker.pending() == []
+
+
+async def test_cancel_session_wins_once_over_a_due_timeout() -> None:
+    decided: list[ApprovalDecision] = []
+    broker = ApprovalBroker(
+        timeout_seconds=0.01,
+        on_decided=lambda prompt, decision: decided.append(decision),
+    )
+    task = asyncio.create_task(broker.ask("session-a", _request()))
+    await _wait_for_pending(broker, 1)
+
+    assert broker.cancel_session("session-a") == 1
+    assert (await task) is False
+    assert broker.pending() == []
+    assert decided == [ApprovalDecision.CANCEL]

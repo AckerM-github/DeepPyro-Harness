@@ -7,6 +7,7 @@ import type {
   CommandSpec,
   CommandResult,
   ConnectionState,
+  LiveApply,
   ProviderProbe,
   SessionSummary,
   SettingsPayload,
@@ -17,10 +18,25 @@ import { Sidebar } from './components/Sidebar';
 import { Transcript } from './components/Chat';
 import { Composer } from './components/Composer';
 import { Inspector } from './components/Inspector';
-import { Settings } from './components/Settings';
+import { Settings, type SectionId } from './components/Settings';
 import { Palette } from './components/Palette';
 import { NewSession } from './components/NewSession';
 import { Icon } from './components/Icon';
+
+const SETTINGS_SECTIONS: Record<string, SectionId> = {
+  provider: 'provider',
+  agent: 'agent',
+  permission: 'permissions',
+  permissions: 'permissions',
+  command: 'commands',
+  commands: 'commands',
+  plugin: 'plugins',
+  plugins: 'plugins',
+  session: 'sessions',
+  sessions: 'sessions',
+  web: 'web',
+  about: 'about',
+};
 
 const CONNECTION_LABEL: Record<ConnectionState, string> = {
   connecting: 'Connecting',
@@ -171,9 +187,22 @@ function errorMessage(error: unknown): string {
   return 'Something went wrong.';
 }
 
+function settingsSavedMessage(live: LiveApply | undefined, fallback: string): [string, 'ok' | 'error'] {
+  if (live?.detail?.startsWith('live apply failed')) return [live.detail, 'error'];
+  if (live?.deferred) return [fallback + ' Applies after the current turn.', 'ok'];
+  if (live?.restart_required?.length) {
+    return [fallback + ' Restart required: ' + live.restart_required.join(', ') + '.', 'ok'];
+  }
+  return [fallback, 'ok'];
+}
+
 export function App() {
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [sessionTotal, setSessionTotal] = useState(0);
+  const [sessionHasMore, setSessionHasMore] = useState(false);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [includeArchived, setIncludeArchived] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [timelineLoading, setTimelineLoading] = useState(true);
@@ -182,7 +211,9 @@ export function App() {
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [composer, setComposer] = useState('');
   const [bootError, setBootError] = useState<string | null>(null);
+  const [settingsSection, setSettingsSection] = useState<SectionId>('provider');
 
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => window.innerWidth >= 768 && window.innerWidth < 1024,
   );
@@ -206,6 +237,9 @@ export function App() {
   const [toast, setToast] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
   const activeRef = useRef<string | null>(null);
+  const sessionsRequestRef = useRef(0);
+  const sessionsQueryRef = useRef('');
+  const includeArchivedRef = useRef(false);
   const journalRef = useRef(0);
   const requestRef = useRef(0);
   const initRef = useRef(false);
@@ -226,13 +260,52 @@ export function App() {
   }, []);
 
   const refreshSessions = useCallback(async () => {
+    const ticket = ++sessionsRequestRef.current;
+    const needle = sessionsQueryRef.current.trim();
     try {
-      const result = await api.sessions();
+      const result = await api.sessions({
+        query: needle || undefined,
+        include_archived: includeArchivedRef.current,
+      });
+      if (ticket !== sessionsRequestRef.current) return;
       setSessions(result.sessions);
+      setSessionTotal(result.total);
+      setSessionHasMore(result.has_more);
     } catch {
       // The transcript still works when the list is briefly unavailable.
     }
   }, []);
+
+  const loadMoreSessions = useCallback(async () => {
+    if (sessionsLoading || !sessionHasMore) return;
+    const ticket = sessionsRequestRef.current;
+    const needle = sessionsQueryRef.current.trim();
+    setSessionsLoading(true);
+    try {
+      const result = await api.sessions({
+        offset: sessions.length,
+        query: needle || undefined,
+        include_archived: includeArchivedRef.current,
+      });
+      if (ticket !== sessionsRequestRef.current) return;
+      setSessions((current) => [...current, ...result.sessions]);
+      setSessionTotal(result.total);
+      setSessionHasMore(result.has_more);
+    } catch {
+      // Keep the already loaded page; the next refresh can retry.
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, [sessionHasMore, sessions.length, sessionsLoading]);
+
+  const toggleArchived = useCallback(
+    (value: boolean) => {
+      includeArchivedRef.current = value;
+      setIncludeArchived(value);
+      void refreshSessions();
+    },
+    [refreshSessions],
+  );
 
   const loadApprovals = useCallback(async (sessionId: string) => {
     try {
@@ -319,6 +392,7 @@ export function App() {
         const boot = await api.bootstrap();
         setBootstrap(boot);
         setSessions(boot.sessions);
+        setSessionTotal(boot.sessions.length);
         const candidate = sessionIdFromPath() ?? boot.active_session_id ?? boot.sessions[0]?.session_id ?? null;
         if (candidate) {
           await openSession(candidate);
@@ -364,7 +438,8 @@ export function App() {
     };
   }, []);
 
-  const openSettings = useCallback(async () => {
+  const openSettings = useCallback(async (section: SectionId = 'provider') => {
+    setSettingsSection(section);
     setSettingsOpen(true);
     setSettingsLoading(true);
     setSettingsError(null);
@@ -392,6 +467,29 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    sessionsQueryRef.current = query;
+    const timer = window.setTimeout(() => void refreshSessions(), 220);
+    return () => window.clearTimeout(timer);
+  }, [query, refreshSessions]);
+
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 767px)');
+    const sync = () => {
+      setIsMobile(query.matches);
+      if (query.matches) setSidebarCollapsed(false);
+    };
+    sync();
+    query.addEventListener('change', sync);
+    return () => query.removeEventListener('change', sync);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobile) return;
+    document.body.classList.toggle('drawer-open', mobileOpen);
+    return () => document.body.classList.remove('drawer-open');
+  }, [isMobile, mobileOpen]);
+
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const mod = event.metaKey || event.ctrlKey;
       if (mod && event.key.toLowerCase() === 'k') {
@@ -408,6 +506,7 @@ export function App() {
         setPaletteOpen(false);
         setNewOpen(false);
         setSettingsOpen(false);
+        setMobileOpen(false);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -501,7 +600,7 @@ export function App() {
         return;
       }
       if (name === 'settings') {
-        await openSettings();
+        await openSettings(SETTINGS_SECTIONS[(args[0] ?? '').toLowerCase()] ?? 'provider');
         return;
       }
       try {
@@ -537,9 +636,10 @@ export function App() {
     async (patch: { provider?: string; model?: string; temperature?: number; max_tokens?: number; max_steps?: number }) => {
       setSettingsBusy(true);
       try {
-        await api.updateAgent(patch);
+        const result = await api.updateAgent(patch);
         await reloadSettings();
-        notify('Agent settings saved.');
+        const [text, kind] = settingsSavedMessage(result.live, 'Agent settings saved.');
+        notify(text, kind);
       } catch (error) {
         notify(errorMessage(error), 'error');
       } finally {
@@ -553,9 +653,10 @@ export function App() {
     async (name: string, patch: { base_url?: string; api_key?: string; api_key_env?: string }) => {
       setSettingsBusy(true);
       try {
-        await api.updateProvider(name, patch);
+        const result = await api.updateProvider(name, patch);
         await reloadSettings();
-        notify(`Provider "${name}" saved.`);
+        const [text, kind] = settingsSavedMessage(result.live, `Provider "${name}" saved.`);
+        notify(text, kind);
       } catch (error) {
         notify(errorMessage(error), 'error');
       } finally {
@@ -586,9 +687,10 @@ export function App() {
     async (preset: string) => {
       setSettingsBusy(true);
       try {
-        await api.updatePermission(preset);
+        const result = await api.updatePermission(preset);
         await reloadSettings();
-        notify(`Default permission: ${preset}`);
+        const [text, kind] = settingsSavedMessage(result.live, `Default permission: ${preset}`);
+        notify(text, kind);
       } catch (error) {
         notify(errorMessage(error), 'error');
       } finally {
@@ -599,12 +701,12 @@ export function App() {
   );
 
   const toggleSidebar = useCallback(() => {
-    if (window.innerWidth < 768) {
+    if (isMobile) {
       setMobileOpen((value) => !value);
     } else {
       setSidebarCollapsed((value) => !value);
     }
-  }, []);
+  }, [isMobile]);
 
   if (bootError) {
     return (
@@ -634,12 +736,24 @@ export function App() {
     <div className={`app-shell ${inspectorOpen ? 'with-inspector' : ''}`}>
       <Sidebar
         sessions={sessions}
+        total={sessionTotal}
+        hasMore={sessionHasMore}
+        loadingMore={sessionsLoading}
+        includeArchived={includeArchived}
+        onLoadMore={() => void loadMoreSessions()}
+        onToggleArchived={toggleArchived}
         activeId={activeId}
-        collapsed={sidebarCollapsed}
+        collapsed={!isMobile && sidebarCollapsed}
         mobileOpen={mobileOpen}
         query={query}
         onQueryChange={setQuery}
-        onToggleCollapse={() => setSidebarCollapsed((value) => !value)}
+        onToggleCollapse={() => {
+          if (isMobile) {
+            setMobileOpen(false);
+          } else {
+            setSidebarCollapsed((value) => !value);
+          }
+        }}
         onCloseMobile={() => setMobileOpen(false)}
         onSelect={(sessionId) => void openSession(sessionId)}
         onNew={() => {
@@ -648,10 +762,21 @@ export function App() {
         }}
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenSettings={() => void openSettings()}
+        onOpenPlugins={() => void openSettings('plugins')}
         onOpenInspector={() => setInspectorOpen((value) => !value)}
         commandCount={commandCount}
         pluginCount={pluginCount}
       />
+
+      {mobileOpen ? (
+        <button
+          className="sidebar-scrim"
+          type="button"
+          aria-label="Close sidebar"
+          tabIndex={-1}
+          onClick={() => setMobileOpen(false)}
+        />
+      ) : null}
 
       <main className="main-column">
         <header className="chat-header">
@@ -744,7 +869,7 @@ export function App() {
           timeline={timeline}
           permissionPresets={bootstrap?.permissions ?? []}
           onClose={() => setInspectorOpen(false)}
-          onOpenSettings={() => void openSettings()}
+          onOpenSettings={() => void openSettings('permissions')}
           onPermission={(permission) => void handlePermission(permission)}
         />
       ) : null}
@@ -784,6 +909,7 @@ export function App() {
       />
 
       <Settings
+        initialSection={settingsSection}
         open={settingsOpen}
         payload={settings}
         loading={settingsLoading}

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { memo, type ReactNode } from 'react';
 import type { PermissionPreset, Timeline } from '../types';
 import { formatTokens, sessionTitle } from '../lib/format';
 import { Icon } from './Icon';
@@ -31,7 +31,7 @@ function Row({ label, children, title }: { label: string; children: ReactNode; t
   );
 }
 
-export function Inspector({
+function InspectorBase({
   timeline,
   permissionPresets,
   onClose,
@@ -183,3 +183,27 @@ export function Inspector({
     </aside>
   );
 }
+
+function sameInspector(a: InspectorProps, b: InspectorProps): boolean {
+  if (a.permissionPresets !== b.permissionPresets) return false;
+  const left = a.timeline;
+  const right = b.timeline;
+  if (!left || !right) return left === right;
+  return (
+    left.session_id === right.session_id &&
+    left.title === right.title &&
+    left.active === right.active &&
+    left.provider === right.provider &&
+    left.model === right.model &&
+    left.preset === right.preset &&
+    left.permission_preset === right.permission_preset &&
+    left.cwd === right.cwd &&
+    left.context_tokens === right.context_tokens &&
+    left.context_window === right.context_window &&
+    left.usage.input_tokens === right.usage.input_tokens &&
+    left.usage.output_tokens === right.usage.output_tokens &&
+    left.usage.cached_input_tokens === right.usage.cached_input_tokens
+  );
+}
+
+export const Inspector = memo(InspectorBase, sameInspector);

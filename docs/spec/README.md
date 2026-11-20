@@ -1,6 +1,6 @@
 # 规格文档索引（docs/spec）
 
-> **状态**：现行索引（0.3.0 native-only） · **最后核对**：2026-11-19 · **覆盖**：31 篇规格 + 本索引
+> **状态**：现行索引（0.3.0 native-only） · **最后核对**：2026-11-20 · **覆盖**：31 篇规格 + 本索引
 > 总文档入口见 [docs/README.md](../README.md)；0.3.0 破坏性变更以 [docs/release/0.3.0.md](../release/0.3.0.md) 为准；
 > 历史遗留项以 [docs/release/0.2.0-known-issues.md](../release/0.2.0-known-issues.md) 为准（仅追溯）。
 > 权威契约：native schema 1 + ADR。与 ADR 冲突时以 ADR 为准；与 schema 冲突时以 schema 为准。
@@ -69,13 +69,14 @@ TUI、headless 和回环 Web UI 三个入口共用同一 runtime。v4 会话栈�
 | [tui-contributions.md](tui-contributions.md) | TUI 贡献 | `现行（0.3.0）` | |
 | [tui-input.md](tui-input.md) | TUI 输入 | `现行（0.3.0）` | |
 | [tui-widgets.md](tui-widgets.md) | TUI widgets | `现行（0.3.0）` | |
-| [web.md](web.md) | Web UI 宿主 | `现行（0.3.0）` | 仅回环；TUI splash F1 或 `python -m deeppyro.web` 启动 |
+| [web.md](web.md) | Web UI 宿主 | `现行（0.3.0）` | React SPA 静态产物 + 回环 JSON API/SSE；TUI splash F1 或 `python -m deeppyro.web` 启动 |
 
 ## 4. 历史材料（非契约）
 
 - [docs/archive/](../archive/)：0.1/0.2 时代的研究与已完成计划，只用于追溯；索引见 [archive/README.md](../archive/README.md)。
 - [docs/design/](../design/)：0.3.0 迁移设计草案。其中 TUI native、native host、provider port 等已实现（0.3.0），
-  `v4-deletion-plan.md` 是删除计划的历史记录；这些文档都不是新代码依据。
+  `react-web-ui.md` 记录 Web UI 的 React SPA 架构与取舍，`v4-deletion-plan.md` 是删除计划的历史记录；
+  这些文档都不是新代码依据。
 - 0.2.0 发布说明与 known issues（[docs/release/](../release/)）保留为历史证据，描述已删除机制的内容不再有效。
 
 ## 5. 维护规则
@@ -96,9 +97,9 @@ TUI、headless 和回环 Web UI 三个入口共用同一 runtime。v4 会话栈�
 | `docs/adr/` | 1 | 三线 ADR |
 | `docs/archive/` | 7 | 归档索引 + 1 篇 goal 审计 + 5 篇研究 |
 | `docs/guides/` | 5 | Web UI、配置迁移、bundle digest、bundle 签名、Windows 沙箱边界 |
-| `docs/design/` | 6 | 0.3.0 迁移设计（已实现或历史） |
+| `docs/design/` | 8 | 0.3.0 迁移设计（已实现或历史，含 `react-web-ui.md`） |
 | `docs/plugins/` | 2 | 插件作者指南 + v2→v3 迁移 |
 | `docs/release/` | 4 | 0.3.0、0.2.0（历史）、0.2.0 known issues（历史）、dsh-audit（历史） |
 | `docs/ops/` | 1 | 遥测/数据边界 |
 | `docs/README.md` | 1 | 文档地图 |
-| `docs/` 总计 | 64 | 以上全部 |
+| `docs/` 总计 | 66 | 以上全部 |

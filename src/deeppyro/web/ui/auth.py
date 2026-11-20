@@ -5,7 +5,9 @@ carries the per-process bearer token once in the query string; the ASGI
 middleware validates it, swaps it for a SameSite=Strict HttpOnly cookie, and
 redirects to the clean URL. Every later page, asset, API and WebSocket request
 is authenticated by that cookie (or an Authorization header for tests and CLI
-clients), so the token never sits in the address bar after the first hop.
+clients), so the token never sits in the address bar after the first hop. The
+cookie name is scoped to the bound port because browsers scope cookies by host
+only: a generic name would let any other loopback service read or overwrite it.
 
 This module owns the ASGI boundary only. It does not know about sessions,
 the shell or the kernel; it composes the checks in deeppyro.web.security so
@@ -30,19 +32,25 @@ from deeppyro.web.security import (
 )
 from deeppyro.web.wire import MAX_ERROR_CHARS
 
-#: HttpOnly cookie the browser carries after the first tokenized page request.
-COOKIE_NAME = "dpyro_web"
+#: Prefix of the HttpOnly cookie the browser carries after the first tokenized
+#: page request. The concrete name is scoped to the bound port by cookie_name():
+#: browsers scope cookies by host only, so a generic name would let any other
+#: loopback service (or another DeepPyro instance) read and overwrite it.
+COOKIE_PREFIX = "dpyro_web"
 
 #: The token query parameter accepted on the first page request.
 TOKEN_QUERY = "token"
 
-#: Content-Security-Policy for the React/Vite SPA. The Vite build ships
-#: external scripts and styles, sets inline style attributes, streams SSE from
-#: the same origin and may use workers for the bundled editors, so those grants
-#: are explicit. There is no eval and no CDN: everything else is same-origin.
+#: Content-Security-Policy for the React/Vite SPA. The Vite build ships external
+#: scripts and one external stylesheet, streams SSE from the same origin and may
+#: use workers for the bundled editors, so those grants are explicit. React's
+#: inline style props are applied through the CSSOM, which CSP does not govern,
+#: and the built shell has no inline style elements or style attributes, so
+#: style-src needs no 'unsafe-inline'. There is no eval and no CDN: everything
+#: else is same-origin.
 UI_CSP = (
     "default-src 'none'; script-src 'self'; "
-    "style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; "
+    "style-src 'self'; connect-src 'self' ws: wss:; "
     "img-src 'self' data: blob:; font-src 'self' data:; "
     "worker-src 'self' blob:; base-uri 'none'; form-action 'self'; "
     "frame-ancestors 'none'"
@@ -50,6 +58,16 @@ UI_CSP = (
 
 #: Dotted cookie attributes safe to emit for a loopback-only host.
 _COOKIE_DIRECTIVES = ("path=/", "httponly", "samesite=strict")
+
+
+def cookie_name(port: int) -> str:
+    """Name the session cookie for the one port this server is bound to.
+
+    Cookies are host-scoped, not port-scoped: every service on 127.0.0.1 shares
+    one cookie jar for the host. Suffixing the bound port keeps this session
+    unreadable and unoverwritable from any other localhost port.
+    """
+    return f"{COOKIE_PREFIX}_{int(port)}"
 
 
 class LoopbackAuthMiddleware:
@@ -79,7 +97,7 @@ class LoopbackAuthMiddleware:
             await self._reject(scope, receive, send, 403, "unexpected Host or Origin")
             return
         presented = _presented_token(headers, scope.get("query_string", b""))
-        cookie_ok = token_matches(self._token, _cookie_token(headers))
+        cookie_ok = token_matches(self._token, _cookie_token(headers, cookie_name(port)))
         header_ok = token_matches(self._token, presented)
         if not (cookie_ok or header_ok):
             await self._reject(scope, receive, send, 401, "missing or invalid web token")
@@ -89,10 +107,12 @@ class LoopbackAuthMiddleware:
             return
         path = str(scope.get("path", "/") or "/")
         query = scope.get("query_string", b"")
-        if not cookie_ok and _is_page(path):
-            # First browser hit: a valid query token (or a CLI bearer) without
-            # the cookie yet. APIs and assets are served directly so a HEAD or
-            # an asset preload never turns into a redirect loop.
+        if _is_page(path) and (not cookie_ok or _query_has_token(query)):
+            # First browser hit (a valid query token without the cookie yet), or
+            # a page URL that still carries the token: always redirect to the
+            # clean URL so the token never stays in the address bar or history.
+            # APIs, assets and WebSockets are never redirected, so a HEAD or an
+            # asset preload cannot turn into a redirect loop.
             await self._redirect(scope, receive, send, path=path, query=query, port=port)
             return
         await self._app(scope, receive, send)
@@ -159,7 +179,7 @@ class LoopbackAuthMiddleware:
         location = urlunsplit(("", "", path, urlencode(remaining), ""))
         headers = [
             (b"location", location.encode("latin-1")),
-            (b"set-cookie", build_cookie(self._token).encode("latin-1")),
+            (b"set-cookie", build_cookie(self._token, port=port).encode("latin-1")),
             (b"content-length", b"0"),
             *[(name.encode(), value.encode()) for name, value in SECURITY_HEADERS],
         ]
@@ -172,7 +192,8 @@ def _headers(scope: Mapping[str, Any]) -> dict[str, str]:
     return {name.decode("latin-1").lower(): value.decode("latin-1") for name, value in pairs}
 
 
-def _cookie_token(headers: Mapping[str, str]) -> str | None:
+def _cookie_token(headers: Mapping[str, str], name: str) -> str | None:
+    """Read one named cookie from the Cookie header."""
     raw = headers.get("cookie")
     if not raw:
         return None
@@ -181,7 +202,7 @@ def _cookie_token(headers: Mapping[str, str]) -> str | None:
         jar.load(raw)
     except CookieError:
         return None
-    morsel = jar.get(COOKIE_NAME)
+    morsel = jar.get(name)
     return morsel.value if morsel is not None else None
 
 
@@ -193,6 +214,11 @@ def _presented_token(headers: Mapping[str, str], query: bytes) -> str | None:
         if key == TOKEN_QUERY:
             return value or None
     return None
+
+
+def _query_has_token(query: bytes) -> bool:
+    """Whether the raw query string carries a token key at all, even empty."""
+    return any(key == TOKEN_QUERY for key, _ in parse_qsl(query.decode("latin-1"), keep_blank_values=True))
 
 
 #: Exact paths that are served directly, never as an HTML page.
@@ -214,15 +240,16 @@ def _is_page(path: str) -> bool:
     return not path.startswith(_NON_PAGE_PREFIXES)
 
 
-def build_cookie(token: str) -> str:
-    """Build the Set-Cookie value for one validated token."""
-    return f"{COOKIE_NAME}={token}; " + "; ".join(_COOKIE_DIRECTIVES)
+def build_cookie(token: str, *, port: int) -> str:
+    """Build the Set-Cookie value for one validated token on one bound port."""
+    return f"{cookie_name(port)}={token}; " + "; ".join(_COOKIE_DIRECTIVES)
 
 
 __all__ = [
-    "COOKIE_NAME",
+    "COOKIE_PREFIX",
     "TOKEN_QUERY",
     "UI_CSP",
     "LoopbackAuthMiddleware",
     "build_cookie",
+    "cookie_name",
 ]

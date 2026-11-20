@@ -15,10 +15,11 @@ is true.
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from deeppyro.paths import sessions_dir
 from deeppyro.session.fold import SessionView, fold
@@ -45,6 +46,11 @@ _SESSION_TITLE = EventKind.SESSION_TITLE.value
 #: Archive marker record type. The schema 1 vocabulary has no archive event kind;
 #: the browser writes this plugin-namespace event (valid, unvalidated data).
 ARCHIVE_EVENT = "plugin.session.archived"
+#: Bound on the per-file caches below: a session browser never needs unbounded
+#: memory of every log it has ever parsed or path it has ever resolved.
+_CACHE_LIMIT = 4096
+
+_MISSING: Any = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +112,64 @@ class _LoadedSession:
     info: NativeSessionInfo
     view: SessionView | None
     error: str | None
+
+
+#: (path, mtime_ns, size) -> parsed info, or None for a file that failed to
+#: parse.  Keying on the file stat means a warm listing only stats the logs: an
+#: append or an archive rewrite changes the key and the file is parsed again.
+_INFO_CACHE: dict[tuple[str, int, int], NativeSessionInfo | None] = {}
+#: path spelling -> real path, so repeated globs do not call resolve() again.
+_RESOLVED_CACHE: dict[str, Path] = {}
+_CACHE_LOCK = threading.Lock()
+
+
+def clear_info_cache() -> None:
+    """Forget the per-file metadata cache (tests and long-lived hosts)."""
+    with _CACHE_LOCK:
+        _INFO_CACHE.clear()
+        _RESOLVED_CACHE.clear()
+
+
+def _cached_info(path: Path) -> NativeSessionInfo | None:
+    """Parse one log unless its stat says the file is unchanged since last time."""
+    try:
+        stat = path.stat()
+    except OSError:
+        stat = None
+    key = (str(path), stat.st_mtime_ns, stat.st_size) if stat is not None else None
+    if key is not None:
+        with _CACHE_LOCK:
+            cached = _INFO_CACHE.get(key, _MISSING)
+        if cached is not _MISSING:
+            return cast("NativeSessionInfo | None", cached)
+    try:
+        info = _load_session(path).info
+    except Exception:  # noqa: BLE001 - foreign or malformed files are skipped by design
+        info = None
+    if key is not None:
+        with _CACHE_LOCK:
+            if len(_INFO_CACHE) >= _CACHE_LIMIT:
+                _INFO_CACHE.clear()
+            _INFO_CACHE[key] = info
+    return info
+
+
+def _resolved_path(path: Path) -> Path:
+    """Resolve one path once per spelling (glob yields the same file repeatedly)."""
+    text = str(path)
+    with _CACHE_LOCK:
+        resolved = _RESOLVED_CACHE.get(text)
+    if resolved is not None:
+        return resolved
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    with _CACHE_LOCK:
+        if len(_RESOLVED_CACHE) >= _CACHE_LIMIT:
+            _RESOLVED_CACHE.clear()
+        _RESOLVED_CACHE[text] = resolved
+    return resolved
 
 
 def list_native_sessions(
@@ -182,10 +246,7 @@ def _candidate_paths(base: Path) -> list[Path]:
     unique: list[Path] = []
     seen: set[Path] = set()
     for path in paths:
-        try:
-            resolved = path.resolve()
-        except OSError:
-            resolved = path
+        resolved = _resolved_path(path)
         if resolved in seen:
             continue
         seen.add(resolved)
@@ -194,10 +255,7 @@ def _candidate_paths(base: Path) -> list[Path]:
 
 
 def _read_info(path: Path) -> NativeSessionInfo | None:
-    try:
-        return _load_session(path).info
-    except Exception:  # noqa: BLE001 - foreign or malformed files are skipped by design
-        return None
+    return _cached_info(path)
 
 
 def _precedence(info: NativeSessionInfo) -> tuple[int, int, int]:
