@@ -7,8 +7,9 @@ const FALLBACK_PRESET = 'standard';
 export interface NewSessionProps {
   open: boolean;
   defaultCwd: string;
+  workspaceMode?: boolean;
   recent: string[];
-  presets: { name: string; summary?: string }[];
+  presets: { id: string; name: string; summary?: string }[];
   busy: boolean;
   error: string | null;
   onClose: () => void;
@@ -18,6 +19,7 @@ export interface NewSessionProps {
 export function NewSession({
   open,
   defaultCwd,
+  workspaceMode = false,
   recent,
   presets,
   busy,
@@ -29,7 +31,7 @@ export function NewSession({
   const [title, setTitle] = useState('');
   const [preset, setPreset] = useState(FALLBACK_PRESET);
   const cwdRef = useRef<HTMLInputElement>(null);
-  const firstPreset = presets[0]?.name ?? FALLBACK_PRESET;
+  const firstPreset = presets[0]?.id ?? FALLBACK_PRESET;
 
   // Start every open of the dialog from the defaults.
   useLayoutEffect(() => {
@@ -59,9 +61,9 @@ export function NewSession({
 
   if (!open) return null;
 
-  const presetNames = presets.length > 0 ? presets.map((item) => item.name) : [FALLBACK_PRESET];
-  const activePreset = presetNames.includes(preset) ? preset : firstPreset;
-  const activeSummary = presets.find((item) => item.name === activePreset)?.summary;
+  const activePreset = presets.some((item) => item.id === preset) ? preset : firstPreset;
+  const activeSummary = presets.find((item) => item.id === activePreset)?.summary;
+  const presetOptions = presets.length > 0 ? presets : [{ id: FALLBACK_PRESET, name: 'Standard' }];
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -91,7 +93,7 @@ export function NewSession({
       >
         <div className="modal-head">
           <h2 className="modal-title" id="new-session-title">
-            New session
+            {workspaceMode ? 'Change working directory' : 'New session'}
           </h2>
           <button
             className="icon-button subtle modal-close"
@@ -104,6 +106,11 @@ export function NewSession({
           </button>
         </div>
         <div className="modal-body">
+          <p className="modal-lead">
+            {workspaceMode
+              ? 'A session keeps the directory it starts in. Start a new session here; the current one stays in the sidebar.'
+              : 'Choose the folder the new session starts in. Every session keeps its own working directory.'}
+          </p>
           <label className="field">
             <span className="field-label">Working directory</span>
             <input
@@ -148,9 +155,9 @@ export function NewSession({
               value={activePreset}
               onChange={(event) => setPreset(event.target.value)}
             >
-              {presetNames.map((name) => (
-                <option key={name} value={name}>
-                  {name}
+              {presetOptions.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
                 </option>
               ))}
             </select>
@@ -169,7 +176,7 @@ export function NewSession({
             Cancel
           </button>
           <button className="button primary" type="submit" disabled={busy}>
-            {busy ? 'Starting…' : 'Start session'}
+            {busy ? 'Starting…' : workspaceMode ? 'Start session here' : 'Start session'}
           </button>
         </div>
       </form>

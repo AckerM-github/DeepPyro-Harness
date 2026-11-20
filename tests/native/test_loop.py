@@ -582,6 +582,23 @@ async def test_typed_hooks_receive_lifecycle_events(tmp_path) -> None:
     assert finished.status == "completed"
 
 
+async def test_unexpected_error_leaves_a_repairable_turn(tmp_path) -> None:
+    session = _session(tmp_path)
+    provider = _ScriptedProvider([RuntimeError("worker exploded"), _simple_response("recovered")])
+    loop = AgentLoop(session=session, provider=provider, model="fake-model", cwd=tmp_path)
+    with pytest.raises(RuntimeError, match="worker exploded"):
+        await loop.run("first")
+    assert _types(session).count(EventKind.TURN_STARTED.value) == 1
+    assert _types(session).count(EventKind.TURN_ENDED.value) == 0
+    assert _types(session).count(EventKind.RUN_FINISHED.value) == 0
+    assert loop.repair_open_turn() is True
+    second = await loop.run("second")
+    assert second.final_text == "recovered"
+    assert _types(session).count(EventKind.TURN_STARTED.value) == 2
+    assert _types(session).count(EventKind.RUN_FINISHED.value) == 1
+    session.close()
+
+
 async def test_run_guards_and_fresh_second_run(tmp_path) -> None:
     session = _session(tmp_path)
     provider = _ScriptedProvider([_simple_response("one"), _simple_response("two")])

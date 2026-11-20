@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { SessionSummary } from '../types';
 import { groupLabel, sessionTitle, shortAgo } from '../lib/format';
 import { BrandMark, Icon } from './Icon';
@@ -19,6 +20,7 @@ interface SidebarProps {
   onToggleCollapse: () => void;
   onCloseMobile: () => void;
   onSelect: (sessionId: string) => void;
+  onArchiveSession: (session: SessionSummary, archived: boolean) => void;
   onNew: () => void;
   onOpenPalette: () => void;
   onOpenSettings: () => void;
@@ -29,6 +31,139 @@ interface SidebarProps {
 }
 
 const GROUPS = ['Today', 'Yesterday', 'Previous 7 days', 'Older'] as const;
+
+interface SessionRowProps {
+  session: SessionSummary;
+  active: boolean;
+  onSelect: () => void;
+  onArchiveSession: (session: SessionSummary, archived: boolean) => void;
+}
+
+function SessionRow({ session, active, onSelect, onArchiveSession }: SessionRowProps) {
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menu, setMenu] = useState<{ top: number; left: number } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<number | null>(null);
+  const close = useCallback(() => setMenu(null), []);
+
+  useEffect(() => {
+    if (!menu) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (menuRef.current?.contains(target) || moreRef.current?.contains(target)) return;
+      close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', close, true);
+    };
+  }, [menu, close]);
+
+  useEffect(
+    () => () => {
+      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+    },
+    [],
+  );
+
+  const toggleMenu = () => {
+    if (menu) {
+      close();
+      return;
+    }
+    const rect = moreRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = 192;
+    setMenu({
+      top: Math.min(rect.bottom + 4, window.innerHeight - 96),
+      left: Math.max(8, Math.min(rect.right - width - 4, window.innerWidth - width - 8)),
+    });
+  };
+
+  const archive = () => {
+    close();
+    onArchiveSession(session, !session.archived);
+  };
+
+  const copyId = async () => {
+    try {
+      await navigator.clipboard.writeText(session.session_id);
+      setCopied(true);
+      copyTimer.current = window.setTimeout(() => {
+        setCopied(false);
+        close();
+      }, 700);
+    } catch {
+      close();
+    }
+  };
+
+  return (
+    <div className={`session-row ${active ? 'active' : ''}`}>
+      <button
+        className={`session-item ${active ? 'active' : ''}`}
+        type="button"
+        aria-current={active ? 'page' : undefined}
+        onClick={onSelect}
+        title={session.cwd}
+      >
+        <span className={`session-dot ${session.busy ? 'busy' : ''} ${session.archived ? 'archived' : ''}`} />
+        <span className="session-copy">
+          <span className="session-name">{sessionTitle(session.title)}</span>
+          <span className="session-meta">
+            {session.archived ? 'Archived · ' : ''}
+            {session.turns} {session.turns === 1 ? 'turn' : 'turns'} · {session.preset || 'standard'}
+          </span>
+        </span>
+        <span className="session-time">{shortAgo(session.updated_at)}</span>
+      </button>
+      <button
+        ref={moreRef}
+        className={`session-more ${menu ? 'open' : ''}`}
+        type="button"
+        aria-label={`Actions for ${sessionTitle(session.title)}`}
+        aria-haspopup="menu"
+        aria-expanded={menu !== null}
+        title="Session actions"
+        onClick={toggleMenu}
+      >
+        <Icon name="more" size={15} />
+      </button>
+      {menu
+        ? createPortal(
+            <div
+              ref={menuRef}
+              className="session-menu"
+              role="menu"
+              aria-label={`Actions for ${sessionTitle(session.title)}`}
+              style={{ top: menu.top, left: menu.left }}
+            >
+              <button className="session-menu-item" type="button" role="menuitem" onClick={archive}>
+                <Icon name={session.archived ? 'refresh' : 'archive'} size={15} />
+                <span>{session.archived ? 'Unarchive session' : 'Archive session'}</span>
+              </button>
+              <button className="session-menu-item" type="button" role="menuitem" onClick={() => void copyId()}>
+                <Icon name={copied ? 'check' : 'copy'} size={15} />
+                <span>{copied ? 'Session ID copied' : 'Copy session ID'}</span>
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
 
 export function Sidebar({
   sessions,
@@ -46,6 +181,7 @@ export function Sidebar({
   onToggleCollapse,
   onCloseMobile,
   onSelect,
+  onArchiveSession,
   onNew,
   onOpenPalette,
   onOpenSettings,
@@ -223,27 +359,16 @@ export function Sidebar({
                 </button>
               </div>
               {group.items.map((session) => (
-                <button
+                <SessionRow
                   key={session.session_id}
-                  className={`session-item ${session.session_id === activeId ? 'active' : ''}`}
-                  type="button"
-                  aria-current={session.session_id === activeId ? 'page' : undefined}
-                  onClick={() => {
+                  session={session}
+                  active={session.session_id === activeId}
+                  onSelect={() => {
                     onSelect(session.session_id);
                     onCloseMobile();
                   }}
-                  title={session.cwd}
-                >
-                  <span className={`session-dot ${session.busy ? 'busy' : ''} ${session.archived ? 'archived' : ''}`} />
-                  <span className="session-copy">
-                    <span className="session-name">{sessionTitle(session.title)}</span>
-                    <span className="session-meta">
-                      {session.archived ? 'Archived · ' : ''}
-                      {session.turns} {session.turns === 1 ? 'turn' : 'turns'} · {session.preset || 'standard'}
-                    </span>
-                  </span>
-                  <span className="session-time">{shortAgo(session.updated_at)}</span>
-                </button>
+                  onArchiveSession={onArchiveSession}
+                />
               ))}
             </section>
           ))

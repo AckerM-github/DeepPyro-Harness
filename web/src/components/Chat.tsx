@@ -264,6 +264,8 @@ export function Transcript({
   approvals,
   loading,
   error,
+  turnError,
+  onDismissTurnError,
   onDecide,
   onResume,
   onPick,
@@ -273,6 +275,8 @@ export function Transcript({
   approvals: Approval[];
   loading: boolean;
   error: string | null;
+  turnError?: string | null;
+  onDismissTurnError?: () => void;
   onDecide: (approvalId: string, decision: 'allow' | 'deny') => void;
   onResume: () => void;
   onPick: (prompt: string) => void;
@@ -304,6 +308,17 @@ export function Transcript({
         <div className="inline-error">
           <Icon name="alert" size={15} />
           <span>{error}</span>
+        </div>
+      ) : null}
+      {turnError ? (
+        <div className="inline-error" role="alert">
+          <Icon name="alert" size={15} />
+          <span>{turnError}</span>
+          {onDismissTurnError ? (
+            <button className="text-button inline-error-dismiss" type="button" onClick={onDismissTurnError}>
+              Dismiss
+            </button>
+          ) : null}
         </div>
       ) : null}
       {readOnly && timeline.readable ? (

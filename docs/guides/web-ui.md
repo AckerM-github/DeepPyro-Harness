@@ -41,7 +41,9 @@
 
 - **Sidebar（最左）**：顶部品牌区（原创半面罩机器标 + DeepPyro + 工作目录）、搜索、
   Sessions / Commands / Plugins 导航、native 会话列表（标题、turn 数、preset、相对时间、
-  active 白点）、归档区、底部用户栏（头像与 Settings 入口）。
+  active 白点，行尾 `⋯` 菜单提供 Archive / Unarchive / Copy session ID）、底部的
+  **Show archived** 与 **Load more**、用户栏（头像与 Settings 入口）。会话列表分页加载，
+  归档会话默认隐藏，勾选后以 `Archived · N turns` 显示。
 - **Stage（主区）**：当前会话标题、preset/model/cwd、运行条、消息流（用户/助手/推理/
   markdown/代码块）、工具卡（PENDING/DONE/ERROR + 参数 + 结果）、审批卡、composer。
 - **Inspector（右侧）**：session id、model/provider、preset、turns、权限/审批策略、cwd、
@@ -76,6 +78,14 @@ Commands（25 个 core command）、Sessions（搜索/跳转）、Settings（分
 
 旧会话不会被删除或改写，仍留在侧栏；新会话继承当前 provider/model/preset 与权限策略。
 目录不存在或不是目录时弹窗/命令会显示服务端校验错误。
+
+Stage 顶部路径 chip 也可点击：它打开同一个 **Change working directory** 弹窗，并明确提示
+“会话绑定启动目录，当前会话留在侧栏”。这是唯一改变工作目录的 UI 入口；不会原地改写
+正在运行的会话。
+
+归档/取消归档都从会话行尾的 `⋯` 菜单触发。归档 active 会话时后端先创建替代会话再归档，
+UI 自动跳到替代会话；取消归档后可在 **Show archived** 结果里看到它恢复，刷新页面状态保持。
+触屏/窄屏下 `⋯` 按钮常显，不依赖 hover。
 
 ## 4. 设置
 

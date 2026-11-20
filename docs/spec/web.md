@@ -269,7 +269,12 @@ EventSource 不能设置自定义头，所以首连 token 可用 `?token=` 查�
     取消归档当前打开且已归档的会话会重新 attach 并返回 `session_id`。
 - 新建会话：Sidebar `+`、窄屏顶栏 `+`、`Ctrl/Cmd+N` 打开 New session 弹窗；空路径 POST `{}`，
   否则 `{"cwd": path}`；弹窗去重 Recent workspaces；服务端 `resolve_workspace` 的错误显示在弹窗内；
-  成功后刷新列表并导航 `/c/<id>`。cwd 在会话创建时固定。
+  成功后刷新列表并导航 `/c/<id>`。cwd 在会话创建时固定。弹窗的 preset `<option value>` 使用
+  `Preset.id`（`standard`/`ptc`/...），显示文本才用 `Preset.name`；提交 `preset` 字段必须是 id。
+  Stage 顶部 cwd chip 打开同一个弹窗（workspaceMode 文案），提交后 navigate 到新会话。
+- 会话行操作：每行 `⋯` 菜单调用 `/archive` / `/unarchive` + session id；active 会话归档后跟随
+  返回的 `data.session_id` 导航。`Show archived` 切 `include_archived`，`Load more` 用
+  `offset=已加载数量`；窄屏/触屏 `⋯` 常显。
 - 设置：`ConfigEditor` 对 `~/.dpro/config.toml` 做文本级编辑（保留注释、顺序、未知插件表），
   `Config.model_validate` 校验后用临时文件 + fsync + `os.replace` 原子写入，保留编号 `.bak`；
   API key 只回报 `api_key_set`，绝不明文返回。

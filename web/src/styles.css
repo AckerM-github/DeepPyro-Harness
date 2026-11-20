@@ -769,6 +769,95 @@ kbd,
   white-space: nowrap;
 }
 
+.session-row {
+  position: relative;
+}
+
+.session-row .session-more {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  z-index: 1;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  transform: translateY(-50%);
+  border-radius: 7px;
+  background: var(--bg-layer-2);
+  color: var(--text-caption);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--fast) var(--ease), background-color var(--fast) var(--ease),
+    color var(--fast) var(--ease);
+}
+
+.session-row:hover .session-more,
+.session-row:focus-within .session-more,
+.session-row .session-more.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.session-row:hover .session-time,
+.session-row:focus-within .session-time {
+  opacity: 0;
+}
+
+.session-row .session-more:hover,
+.session-row .session-more.open {
+  background: var(--hover);
+  color: var(--text-primary);
+}
+
+@media (hover: none) {
+  .session-row .session-more {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .session-row .session-time {
+    opacity: 0;
+  }
+}
+
+.session-menu {
+  position: fixed;
+  z-index: 88;
+  width: 192px;
+  padding: 4px;
+  border: 0.5px solid var(--border-l2);
+  border-radius: 10px;
+  background: var(--bg-layer-2);
+  box-shadow: var(--shadow-lg);
+  animation: fade-in var(--fast) var(--ease);
+}
+
+.session-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.session-menu-item:hover,
+.session-menu-item:focus-visible {
+  background: var(--hover);
+  color: var(--text-primary);
+}
+
+.session-menu-item svg {
+  flex: 0 0 auto;
+  color: var(--text-caption);
+}
+
 .session-empty {
   padding: 18px 10px;
   color: var(--text-caption);
@@ -1101,6 +1190,23 @@ kbd,
   font-size: 11.5px;
 }
 
+.path-button {
+  cursor: pointer;
+  transition: color var(--fast) var(--ease), background-color var(--fast) var(--ease),
+    border-color var(--fast) var(--ease);
+}
+
+.path-button:hover {
+  border-color: var(--border-l2);
+  background: var(--hover);
+  color: var(--text-primary);
+}
+
+.path-button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .busy-chip {
   border-color: rgba(122, 170, 255, 0.22);
   background: var(--accent-soft);
@@ -1150,6 +1256,18 @@ kbd,
 .inline-error svg {
   flex: 0 0 auto;
   margin-top: 2px;
+}
+
+.inline-error-dismiss {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--danger-text);
+  font-size: 11.5px;
+  opacity: 0.82;
+}
+
+.inline-error-dismiss:hover {
+  opacity: 1;
 }
 
 .read-only-banner {
@@ -2365,6 +2483,13 @@ select.field-select {
   flex: 0 0 auto;
 }
 
+.modal-lead {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 12.5px;
+  line-height: 19px;
+}
+
 .recent-row {
   display: flex;
   flex-wrap: wrap;
@@ -3359,6 +3484,15 @@ label.settings-row:hover {
 
   .mobile-only {
     display: inline-flex;
+  }
+
+  .session-row .session-more {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .session-row .session-time {
+    display: none;
   }
 
   .chat-header {

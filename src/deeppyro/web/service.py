@@ -1243,9 +1243,19 @@ class WebSessionHost:
             raise
         except (BudgetExceeded, ProviderStreamError) as exc:
             self._journal.publish(ErrorEvent(session_id=session_id, message=str(exc)))
+            self._journal.publish(StatusEvent(session_id=session_id, phase=StatusPhase.DONE))
         except Exception as exc:
             logger.exception("web turn failed")
+            # The agent loop treats an unexpected exception as a crash and
+            # leaves the turn open for checkpoint recovery. On the web surface
+            # the process is still alive, so close it here before accepting the
+            # next message; otherwise it would fail with an OrderingError.
+            try:
+                binding.host.restore()
+            except Exception:
+                logger.exception("web host could not repair the failed turn")
             self._journal.publish(ErrorEvent(session_id=session_id, message=f"{type(exc).__name__}: {exc}"))
+            self._journal.publish(StatusEvent(session_id=session_id, phase=StatusPhase.DONE))
         else:
             self._journal.publish(FinalEvent(session_id=session_id, text=result.final_text))
             usage = binding.host.usage()

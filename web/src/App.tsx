@@ -168,6 +168,14 @@ function applyEvent(timeline: Timeline, event: WebEvent): Timeline {
       next[index] = { ...next[index], text: event.text, has_text: Boolean(event.text), streaming: false };
       return { ...timeline, busy: false, messages: next };
     }
+    case 'error':
+      // A failed turn is terminal even if the transport never delivered the
+      // matching status event. Clear busy/streaming so the composer unlocks.
+      return {
+        ...timeline,
+        busy: false,
+        messages: timeline.messages.map((message) => ({ ...message, streaming: false })),
+      };
     case 'usage':
       return {
         ...timeline,
@@ -207,6 +215,7 @@ export function App() {
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [timelineLoading, setTimelineLoading] = useState(true);
   const [timelineError, setTimelineError] = useState<string | null>(null);
+  const [turnError, setTurnError] = useState<string | null>(null);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [composer, setComposer] = useState('');
@@ -222,6 +231,7 @@ export function App() {
   const [inspectorOpen, setInspectorOpen] = useState(() => window.innerWidth >= 1280);
 
   const [newOpen, setNewOpen] = useState(false);
+  const [newCwd, setNewCwd] = useState<string | null>(null);
   const [newBusy, setNewBusy] = useState(false);
   const [newError, setNewError] = useState<string | null>(null);
 
@@ -356,6 +366,7 @@ export function App() {
       setTimeline(null);
       setApprovals([]);
       setTimelineError(null);
+      setTurnError(null);
       setTimelineLoading(true);
       setMobileOpen(false);
       window.history.replaceState(null, '', `/c/${encodeURIComponent(sessionId)}`);
@@ -416,7 +427,11 @@ export function App() {
         if (event.session_id !== activeId) return;
         setTimeline((current) => (current ? applyEvent(current, event) : current));
         if (event.type === 'approval') void loadApprovals(activeId);
-        if (event.type === 'error') notify(event.message, 'error');
+        if (event.type === 'error') {
+          setTurnError(event.message);
+          notify(event.message, 'error');
+          scheduleRefresh(activeId);
+        }
         if (event.type === 'final' || (event.type === 'status' && event.phase !== 'thinking')) {
           scheduleRefresh(activeId);
         }
@@ -500,6 +515,7 @@ export function App() {
         void openSettings();
       } else if (mod && event.key.toLowerCase() === 'n') {
         event.preventDefault();
+        setNewCwd(null);
         setNewError(null);
         setNewOpen(true);
       } else if (event.key === 'Escape') {
@@ -517,6 +533,7 @@ export function App() {
     const text = composer.trim();
     if (!text || !timeline || !timeline.active || timeline.busy) return;
     setComposer('');
+    setTurnError(null);
     setTimeline((current) => (current ? { ...current, busy: true } : current));
     try {
       await api.sendMessage(timeline.session_id, text);
@@ -568,6 +585,24 @@ export function App() {
     }
   }, [loadTimeline, notify, refreshSessions, timeline]);
 
+  const handleSessionArchive = useCallback(
+    async (session: SessionSummary, archived: boolean) => {
+      try {
+        // The command layer keeps the UI reachable when the active session is
+        // archived: it opens a replacement and returns its id for navigation.
+        const result = await api.runCommand(archived ? '/archive' : '/unarchive', [session.session_id], activeId);
+        if (result.message) notify(result.message, result.status === 'error' ? 'error' : 'ok');
+        if (result.data?.session_id) {
+          await openSession(result.data.session_id);
+        }
+        await refreshSessions();
+      } catch (error) {
+        notify(errorMessage(error), 'error');
+      }
+    },
+    [activeId, notify, openSession, refreshSessions],
+  );
+
   const handleCreate = useCallback(
     async (input: { cwd: string; title: string; preset: string }) => {
       setNewBusy(true);
@@ -579,6 +614,7 @@ export function App() {
           preset: input.preset || undefined,
         });
         setNewOpen(false);
+        setNewCwd(null);
         await refreshSessions();
         await openSession(created.session_id);
         notify('Session created.');
@@ -596,6 +632,7 @@ export function App() {
       setPaletteOpen(false);
       const name = command.name.replace(/^\//, '');
       if (name === 'new') {
+        setNewCwd(null);
         setNewOpen(true);
         return;
       }
@@ -757,9 +794,11 @@ export function App() {
         onCloseMobile={() => setMobileOpen(false)}
         onSelect={(sessionId) => void openSession(sessionId)}
         onNew={() => {
+          setNewCwd(null);
           setNewError(null);
           setNewOpen(true);
         }}
+        onArchiveSession={(session, archived) => void handleSessionArchive(session, archived)}
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenSettings={() => void openSettings()}
         onOpenPlugins={() => void openSettings('plugins')}
@@ -822,10 +861,20 @@ export function App() {
               <Icon name="plug" size={13} />
               {provider} · {model}
             </span>
-            <span className="header-chip path-chip" title={timeline?.cwd ?? ''}>
+            <button
+              className="header-chip path-chip path-button"
+              type="button"
+              title={timeline?.cwd ? `Change working directory (${timeline.cwd})` : 'Choose a working directory'}
+              aria-label="Change working directory"
+              onClick={() => {
+                setNewCwd(timeline?.cwd || defaultCwd);
+                setNewError(null);
+                setNewOpen(true);
+              }}
+            >
               <Icon name="folder" size={13} />
               {timeline?.cwd || 'no workspace'}
-            </span>
+            </button>
             {timeline?.busy ? <span className="header-chip busy-chip">working</span> : null}
           </div>
         </header>
@@ -843,6 +892,8 @@ export function App() {
             approvals={approvals}
             loading={timelineLoading}
             error={timelineError}
+            turnError={turnError}
+            onDismissTurnError={() => setTurnError(null)}
             onDecide={(approvalId, decision) => void handleDecide(approvalId, decision)}
             onResume={() => void handleResume()}
             onPick={setComposer}
@@ -876,9 +927,14 @@ export function App() {
 
       <NewSession
         open={newOpen}
-        defaultCwd={defaultCwd}
+        defaultCwd={newCwd ?? defaultCwd}
+        workspaceMode={newCwd !== null}
         recent={recentCwds}
-        presets={(bootstrap?.presets ?? []).map((item) => ({ name: item.name, summary: item.description }))}
+        presets={(bootstrap?.presets ?? []).map((item) => ({
+          id: item.id,
+          name: item.name,
+          summary: item.description,
+        }))}
         busy={newBusy}
         error={newError}
         onClose={() => {
@@ -903,6 +959,7 @@ export function App() {
         }}
         onNewSession={() => {
           setPaletteOpen(false);
+          setNewCwd(null);
           setNewError(null);
           setNewOpen(true);
         }}

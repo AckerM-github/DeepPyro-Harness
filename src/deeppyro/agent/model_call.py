@@ -25,6 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from deeppyro.agent.errors import ProviderStreamError, RunCancelledError
+from deeppyro.core.errors import LlmError
 from deeppyro.core.ids import new_call_id
 from deeppyro.core.llm import (
     Finish,
@@ -124,6 +125,12 @@ async def complete_model_call(
                 finish = event
     except asyncio.CancelledError:
         raise
+    except LlmError as exc:
+        # A transport failure (HTTP status, timeout, closed stream) is the same
+        # user-visible outcome as a malformed in-stream Finish: the model call
+        # produced no assistant message. Normalize it here so the loop always
+        # closes the turn and never leaves a second run with an open turn.
+        raise ProviderStreamError(f"provider request failed: {exc}") from exc
     latency_ms = int((time.monotonic() - started) * 1000)
     if cancel is not None and cancel.is_set():
         raise RunCancelledError("run cancelled before the model call finished")

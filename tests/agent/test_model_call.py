@@ -14,6 +14,7 @@ import pytest
 
 from deeppyro.agent.errors import ProviderStreamError, RunCancelledError
 from deeppyro.agent.model_call import complete_model_call
+from deeppyro.core.errors import LlmError
 from deeppyro.core.ids import new_message_id
 from deeppyro.core.llm import (
     Finish,
@@ -208,6 +209,15 @@ async def test_finish_is_required() -> None:
     provider = _ScriptedProvider([TextDelta(text="hi")])
     with pytest.raises(ProviderStreamError, match="ended without a finish event"):
         await complete_model_call(provider, _request())
+
+
+async def test_provider_transport_error_is_a_stream_error() -> None:
+    # The http transport raises LlmError before any Finish arrives; the loop relies
+    # on the normalized ProviderStreamError to close the turn.
+    provider = _ScriptedProvider([LlmError("local: HTTP 502")])
+    with pytest.raises(ProviderStreamError, match="provider request failed: local: HTTP 502") as excinfo:
+        await complete_model_call(provider, _request())
+    assert isinstance(excinfo.value.__cause__, LlmError)
 
 
 async def test_unknown_finish_reason_is_a_stream_error() -> None:
