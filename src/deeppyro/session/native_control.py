@@ -41,6 +41,7 @@ from deeppyro.session.native_query import (
     NATIVE_QUERY_NOT_FOUND,
     NativeQueryError,
     archive_native_session,
+    delete_native_session,
     get_native_session,
     rename_native_session,
 )
@@ -195,6 +196,14 @@ class NativeSessionControl:
     def archive(self, session_id: str, *, archived: bool = True) -> bool:
         """Append an archive marker and return the resulting archived state."""
         return archive_native_session(session_id, archived=archived, root=self._root).archived
+
+    def delete(self, session_id: str) -> NativeSessionInfo:
+        """Delete one session log and return the row it had.
+
+        Raises NativeQueryError for an unknown id and SessionLockedError while
+        another live process holds the session open.
+        """
+        return delete_native_session(session_id, root=self._root)
 
     def path_for(self, session_id: str) -> Path:
         """Resolve one session's log path without reading it."""

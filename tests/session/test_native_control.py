@@ -155,6 +155,35 @@ def test_fork_copies_the_session_and_locks_the_child(tmp_path: Path) -> None:
     assert error.value.code == NATIVE_FORK_NOT_FOUND
 
 
+def test_delete_removes_the_log_and_its_lock(tmp_path: Path) -> None:
+    control = _control(tmp_path)
+    session = control.create(NewSession(cwd=tmp_path, session_id=SESSION_ID))
+    session.close()
+
+    info = control.delete(SESSION_ID)
+
+    assert info.id == SESSION_ID
+    assert not info.path.exists()
+    assert control.exists(SESSION_ID) is False
+    with pytest.raises(NativeQueryError) as error:
+        control.delete(SESSION_ID)
+    assert error.value.code == NATIVE_QUERY_NOT_FOUND
+
+
+def test_delete_refuses_while_another_writer_holds_the_session(tmp_path: Path) -> None:
+    control = _control(tmp_path)
+    session = control.create(NewSession(cwd=tmp_path, session_id=SESSION_ID))
+    try:
+        with pytest.raises(SessionLockedError):
+            control.delete(SESSION_ID)
+        assert session.path.exists()
+    finally:
+        session.close()
+
+    control.delete(SESSION_ID)
+    assert session.path.exists() is False
+
+
 def test_new_session_validates_its_fields(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         NewSession(cwd=tmp_path, origin="alien")

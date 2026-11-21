@@ -1357,6 +1357,23 @@ def _release_lock(lock_path: Path) -> None:
         lock_path.unlink()
 
 
+def delete_session_log(path: Path) -> None:
+    """Delete one session log, refusing while another live writer holds it.
+
+    The lock sidecar arbitrates with the TUI and other runtime processes: a
+    session open elsewhere raises SessionLockedError untouched, while a stale
+    sidecar left by a dead process is reclaimed exactly like open(). Missing
+    logs raise FileNotFoundError so callers can report them as unknown ids.
+    """
+    target = Path(path)
+    lock_path = _lock_path_for(target)
+    _acquire_lock(lock_path, target.stem)
+    try:
+        target.unlink()
+    finally:
+        _release_lock(lock_path)
+
+
 def _fsync_directory(path: Path) -> None:
     if os.name == "nt":
         return
@@ -1404,6 +1421,7 @@ __all__ = [
     "NativeSession",
     "SessionHeader",
     "SessionLog",
+    "delete_session_log",
     "iter_session_paths",
     "sessions_path_for",
     "validate_event_data",

@@ -46,6 +46,7 @@ from deeppyro.session.schema import (
     NativeCodec,
     NativeSession,
     SessionLog,
+    delete_session_log,
 )
 
 __all__ = [
@@ -62,6 +63,7 @@ __all__ = [
     "NativeSessionSearchHit",
     "NativeSessionSort",
     "archive_native_session",
+    "delete_native_session",
     "get_native_session",
     "is_native_session_archived",
     "query_native_sessions",
@@ -457,6 +459,22 @@ def archive_native_session(
     data = {"archived": archived, "source": source.strip(), "at": now_ms()}
     _append_native_event(path, ARCHIVE_EVENT, data, session_id=session_id)
     return _refresh_info(session_id, root)
+
+
+def delete_native_session(session_id: str, *, root: Path | None = None) -> NativeSessionInfo:
+    """Delete one native session log and return the row it had.
+
+    Refuses with SessionLockedError while another live process holds the
+    session open; unknown ids raise NativeQueryError(NATIVE_QUERY_NOT_FOUND).
+    """
+
+    _validate_session_id(session_id)
+    info = get_native_session(session_id, root=root)
+    try:
+        delete_session_log(info.path)
+    except FileNotFoundError as exc:
+        raise _not_found(session_id, cause=exc) from exc
+    return info
 
 
 def is_native_session_archived(session_id: str, *, root: Path | None = None) -> bool:

@@ -141,6 +141,16 @@ class SessionsPlugin(Service):
         self._invalidate_list_cache()
         return state
 
+    def native_delete(self, session_id: str) -> NativeSessionInfo:
+        """Delete one session log and return the row it had.
+
+        Raises NativeQueryError for an unknown id and SessionLockedError while
+        another live process holds the session open.
+        """
+        info = self.native.delete(session_id)
+        self._invalidate_list_cache()
+        return info
+
     def native_fork(self, session_id: str, *, new_id: str | None = None) -> NativeSession:
         """Copy a session into a fork and return it open (caller closes it)."""
         session = self.native.fork(session_id, new_id=new_id)
