@@ -43,17 +43,26 @@ conversation-first 工作台（左栏会话、中栏对话、右侧详情默认�
   会话搜索框、会话列表（标题、turn 数、preset、相对时间、active 白点，行尾 `⋯` 菜单提供
   **Rename / Archive**；双击标题也可改名）、底部的 **Show archived** 与 **Load more**、
   用户栏与 Settings 入口。会话列表分页加载，归档会话默认隐藏，勾选后以
-  `Archived · N turns` 显示。
+  `Archived · N turns` 显示。列表不显示空会话：从未发送消息的草稿只存在于前端，历史零 turn
+  的会话文件会在会话目录刷新时直接删除。
 - **Stage（主区）**：顶栏只有会话标题、非 live 时的连接状态、运行中的 `Working…`，
   以及 Reload / Session details 两个图标；中间是消息流（用户消息右侧气泡；助手消息无头像、
   无时间戳；推理与工具调用收进 `Used N tools` / `Working…` 折叠过程层，展开后是按工具
   语义化的卡片：命令用终端卡、改文件显示 Before/After、搜索按文件分组、读文件带行号）；
-  底部是 composer 栈：审批条（`Permission needed`）、排队条（`Queued · N`）、计划进度条、
-  composer 卡片（模型菜单、权限 preset、上下文用量、发送/Stop 按钮）。空会话显示
+  底部是 composer 栈：审批条（`Permission needed`）、排队条（`Queued · N`）、**Agent team**
+  行（会话级 team 开关，见下）、计划进度条、composer 卡片（模型菜单、权限 preset、上下文
+  用量、发送/Stop 按钮）。空会话显示
   `What should we build?` 与工作区建议。
 - **Session details（右侧，默认关闭）**：点顶栏 info 图标打开覆盖式抽屉，显示模型/Provider/
   preset/工作区、上下文用量进度、本会话 token 用量、权限 preset 与 Manage permissions 入口；
   点 scrim、关闭按钮或 `Esc` 收起。
+- **Agent team（会话级开关）**：每个会话在 composer 上方常驻一行 `Agent team`。Off 时右侧是
+  `Enable`：点击即用隐藏的 team preset 重建该会话的 native agent（换成 `team_*` 工具、不再
+  暴露 `subagent`；预览中的会话会先 attach 再切换）。On 时显示 `N/M members · K running ·
+  d/t tasks` 摘要，点开 popover 看成员（phase、model、last reply/error）与共享任务板
+  （状态与 owner），底部 `Turn off agent team` 停止成员并恢复进入前的 agent preset。正在运行
+  turn、有排队消息或仍有 live 成员（spawning/running/idle）时不允许切换。开关走
+  `POST /api/ui/sessions/{id}/team`，选择随 `agent-preset/selected` 持久化，刷新后保留。
 
 窄屏（<768px）时侧栏收进抽屉（顶栏菜单按钮打开），Session details 变成全屏抽屉；
 composer 仍保留模型与权限菜单。
@@ -72,15 +81,17 @@ composer 仍保留模型与权限菜单。
   `/new` 或侧栏新建会话。
 - **只读/说明**：`/provider`、`/model`、`/preset` 无参显示当前值；带参跳设置并提示
   “只影响下一 turn”。
-- **未接 Web 宿主**：`/compact`、`/jobs`、`/team`、`/thinking`、`/hooks` 返回明确错误，
-  不假装成功。团队模式请用 TUI/headless。
+- **会话级开关**：`/team on` 开启团队模式（等价于 composer 上方 Agent team 行的 `Enable`），
+  `/team off` 停止成员并恢复进入前的 agent preset，`/team` 或 `/team status` 输出成员与共享
+  任务摘要；成员/任务本身由 agent 通过 team 工具操作，浏览器侧只读展示。
+- **未接 Web 宿主**：`/compact`、`/jobs`、`/thinking`、`/hooks` 返回明确错误，不假装成功。
 
 每个 native 会话在**创建时**把 cwd 写进会话 header，运行中不改写。要换目录：
 
 1. 点侧栏 **New session**、或按 `Ctrl/Cmd+N` 打开 **New session** 弹窗：**Folder** 行
    显示当前工作区，点 **Choose…** 打开目录选择器（只列目录，可上溯、可切 Home/Workspace 根）；
-   也可以直接从 **Recent folders** 选最近用过的目录。填可选 **Title**、选 **Preset** 后点
-   **Start session**；留空目录则使用宿主启动时的 `--cwd`（默认当前目录）。
+   也可以直接从 **Recent folders** 选最近用过的目录。填可选 **Title**、选 agent **Preset**（standard/ptc/minimal/cordis；team
+   不在这里，创建后用会话上方 Agent team 行开启）后点 **Start session**；留空目录则使用宿主启动时的 `--cwd`（默认当前目录）。
 2. 或在 composer 输入 `/cwd D:\work\project`：等价地新建并切换到该目录的会话。
 3. `/cwd` 不带参数只显示当前会话的目录，不会改变它。
 
@@ -158,7 +169,8 @@ Stop 按钮向宿主发 `POST /interrupt`，由 `NativeAgentHost.interrupt()` �
 | 页面 401 | URL 缺 `?token=...` 或 token 来自旧进程；用当前 banner 的 URL 重开 |
 | 403 unexpected Host/Origin | 用了非回环主机名/端口/其他来源；从 `127.0.0.1:<port>` 打开 |
 | 409 session is already open | 同一 native 会话被另一个进程打开；先关闭它（死进程锁会自动回收） |
-| 409 team mode is not available | web 运行时拒绝 team 预设；团队请用 TUI/headless |
+| 409 cannot switch/leave team mode | 当前 turn 运行中、有排队消息或仍有 live 成员（spawning/running/idle）时不能开关 team；等结束后重试 |
+| 开启 Agent team 后 subagent 不可用 | team 模式与 subagent 工具集互斥；Turn off 后恢复 |
 | 409 stale settings revision | 设置被另一个窗口改过；点 Reload 后重试 |
 | 413 payload too large | 消息超过 100000 字符或 body 超过 1 MiB |
 | 429 turn queue is full | 当前 turn 未结束且已排 8 条；等完成或 Stop；队列条里也可逐条删除 |

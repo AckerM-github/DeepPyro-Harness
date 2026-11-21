@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from deeppyro.api import AGENT_MODE_TEAM
 from deeppyro.builtin.commands_builtin import core_command_specs
 from deeppyro.core.errors import ConfigError
 from deeppyro.web.service import WebSessionHost
@@ -127,6 +128,8 @@ async def _dispatch(
         return await _permission(service, target, args)
     if command == "status":
         return await _status(service, target)
+    if command == "team":
+        return await _team(service, target, args)
     if command == "plan":
         return await _plan(service, target)
     if command == "goal":
@@ -155,7 +158,7 @@ async def _dispatch(
         return await _selection(service, command, args)
     if command == "compact":
         return _error("compaction is not wired to the web surface yet; the runtime compacts before send")
-    if command in {"jobs", "team", "thinking", "hooks"}:
+    if command in {"jobs", "thinking", "hooks"}:
         return _error(f"/{command} is not available on the web surface yet")
     if command in {"exit", "quit", "q"}:
         return _error("close the browser tab or press Ctrl-C in the terminal to stop the host")
@@ -368,6 +371,41 @@ async def _status(service: WebSessionHost, target: str | None) -> CommandResult:
         f"busy: {bool(status.get('busy'))}",
     ]
     return _ok("\n".join(lines), status=status, state=state, turns=turns, rounds=rounds, goal=goal)
+
+
+def _without_ok(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Drop the transport-level ok flag before a command result wraps a snapshot."""
+    return {key: value for key, value in snapshot.items() if key != "ok"}
+
+
+async def _team(service: WebSessionHost, target: str | None, args: list[str]) -> CommandResult:
+    """Toggle team mode for the open session or report its team status."""
+    if not target:
+        return _error("no session is open")
+    action = (args[0] if args else "status").lower()
+    if action in {"on", "enable", "true", "1"}:
+        snapshot = await service.set_session_team(target, True)
+        return _ok("Agent team enabled.", **_without_ok(snapshot))
+    if action in {"off", "disable", "false", "0"}:
+        snapshot = await service.set_session_team(target, False)
+        return _ok("Agent team turned off.", **_without_ok(snapshot))
+    if action not in {"", "status", "board"}:
+        return _error("usage: /team [on|off|status]")
+    facts = await service.facts(target)
+    state = facts.get("state") or {}
+    preset = state.get("preset") or {}
+    if preset.get("mode") != AGENT_MODE_TEAM:
+        return _ok("Team mode is off · use /team on or the Agent team row to enable it.")
+    snapshot = service.team_state(target)
+    members = list(snapshot.get("members") or [])
+    tasks = list(snapshot.get("tasks") or [])
+    done = sum(1 for task in tasks if task.get("status") == "completed")
+    phases = (
+        ", ".join(dict.fromkeys(str(member.get("phase")) for member in members if member.get("phase")))
+        or "none yet"
+    )
+    message = f"Team mode is active · {len(members)} members ({phases}) · {done}/{len(tasks)} tasks done"
+    return _ok(message, members=members, tasks=tasks, max_members=snapshot.get("max_members", 0))
 
 
 async def _plan(service: WebSessionHost, target: str | None) -> CommandResult:

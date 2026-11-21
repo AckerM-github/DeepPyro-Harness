@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { ProviderProbe, SettingsPayload } from '../types';
 import { basename, sessionTitle, shortAgo } from '../lib/format';
@@ -77,15 +77,74 @@ const LOAD_TIMEOUT_MS = 8000;
 const SAVED_NOTICE_MS = 3200;
 const TEST_TIMEOUT_MS = 30000;
 
-const SECTIONS: Array<{ id: SectionId; label: string; icon: IconName }> = [
-  { id: 'provider', label: 'Provider', icon: 'plug' },
-  { id: 'agent', label: 'Agent', icon: 'sparkles' },
-  { id: 'permissions', label: 'Permissions', icon: 'key' },
-  { id: 'commands', label: 'Commands', icon: 'command' },
-  { id: 'plugins', label: 'Plugins', icon: 'terminal' },
-  { id: 'sessions', label: 'Sessions', icon: 'message' },
-  { id: 'web', label: 'Web', icon: 'globe' },
-  { id: 'about', label: 'About', icon: 'info' },
+interface SettingsSection {
+  id: SectionId;
+  label: string;
+  icon: IconName;
+  group: string;
+  description: string;
+}
+
+// Grouped so the navigation reads like product areas rather than a flat
+// configuration dump. Runtime controls live in the composer; this surface only
+// holds defaults.
+const SECTIONS: SettingsSection[] = [
+  {
+    id: 'provider',
+    label: 'Providers',
+    icon: 'plug',
+    group: 'Model',
+    description: 'Connections to model providers and the model used when a session starts.',
+  },
+  {
+    id: 'agent',
+    label: 'Agent',
+    icon: 'sparkles',
+    group: 'Model',
+    description: 'Sampling and step limits applied to new sessions.',
+  },
+  {
+    id: 'permissions',
+    label: 'Permissions',
+    icon: 'key',
+    group: 'Workspace',
+    description: 'What new sessions may read, write, and run without asking.',
+  },
+  {
+    id: 'sessions',
+    label: 'Sessions',
+    icon: 'message',
+    group: 'Workspace',
+    description: 'Where sessions are stored and what the runtime reports about them.',
+  },
+  {
+    id: 'commands',
+    label: 'Commands',
+    icon: 'command',
+    group: 'Advanced',
+    description: 'Slash commands registered by the runtime. Most actions are also available in the interface.',
+  },
+  {
+    id: 'plugins',
+    label: 'Plugins',
+    icon: 'terminal',
+    group: 'Advanced',
+    description: 'Plugins loaded into this runtime and their settings.',
+  },
+  {
+    id: 'web',
+    label: 'Web runtime',
+    icon: 'globe',
+    group: 'Advanced',
+    description: 'Listener addresses and runtime facts for this browser session.',
+  },
+  {
+    id: 'about',
+    label: 'About',
+    icon: 'info',
+    group: 'About',
+    description: 'Versions, build information, and configuration paths.',
+  },
 ];
 
 function probeLabel(probe: ProviderProbe): string {
@@ -174,6 +233,7 @@ function sessionUpdatedMs(value: number): number {
 
 function ProviderCard({
   provider,
+  active,
   busy,
   externalBusy,
   tracker,
@@ -181,6 +241,7 @@ function ProviderCard({
   onTest,
 }: {
   provider: ProviderConfig;
+  active: boolean;
   busy: boolean;
   externalBusy: boolean;
   tracker: SaveTracker;
@@ -278,19 +339,19 @@ function ProviderCard({
         save();
       }}
     >
-      <div className="settings-row">
-        <span className="field-label">{provider.name}</span>
-        <span className={'badge ' + (provider.api_key_set ? 'live' : 'idle')}>
-          {provider.api_key_set ? 'KEY SET' : 'NO KEY'}
+      <div className="settings-card-head">
+        <div className="settings-card-title">
+          <h3>{provider.name}</h3>
+          <span className={'settings-pill' + (provider.api_key_set ? ' on' : '')}>
+            {provider.api_key_set ? 'Key set' : 'No key'}
+          </span>
+          {active ? <span className="settings-pill">In use</span> : null}
+        </div>
+        <span className="settings-card-meta">
+          {provider.api || 'unknown API'} ·{' '}
+          {Array.isArray(provider.models) ? provider.models.length : 0}{' '}
+          {Array.isArray(provider.models) && provider.models.length === 1 ? 'model' : 'models'}
         </span>
-      </div>
-      <div className="settings-row">
-        <span className="field-label">API</span>
-        <span>{provider.api || '—'}</span>
-      </div>
-      <div className="settings-row">
-        <span className="field-label">Models</span>
-        <span>{Array.isArray(provider.models) ? provider.models.length : 0}</span>
       </div>
       <label className="field" htmlFor={baseUrlId}>
         <span className="field-label">Base URL</span>
@@ -367,7 +428,7 @@ function ProviderCard({
           type="submit"
           disabled={saveStage === 'saving' || testing || externalBusy}
         >
-          {saveStage === 'saving' ? 'Saving…' : 'Save'}
+          {saveStage === 'saving' ? 'Saving…' : 'Save changes'}
         </button>
         <button
           className="button ghost small"
@@ -375,7 +436,7 @@ function ProviderCard({
           disabled={busy || testing || saveStage === 'saving'}
           onClick={test}
         >
-          {testing ? 'Testing…' : 'Test'}
+          {testing ? 'Testing…' : 'Test connection'}
         </button>
         {saveStage === 'saved' ? (
           <span className="field-hint" role="status">
@@ -458,15 +519,22 @@ function ProviderSection({
   return (
     <>
       <form
-        className="settings-section"
+        className="settings-section settings-card"
         aria-labelledby={headingId + '-title'}
         onSubmit={(event) => {
           event.preventDefault();
           apply();
         }}
       >
-        <h3 id={headingId + '-title'}>Routing</h3>
-        <div className="settings-row">
+        <div className="settings-card-head">
+          <div className="settings-card-title">
+            <h3 id={headingId + '-title'}>Default model</h3>
+          </div>
+          <span className="settings-card-meta">
+            Used when a session starts. The model chip in the composer changes the current session.
+          </span>
+        </div>
+        <div className="settings-fields">
           <label className="field">
             <span className="field-label">Provider</span>
             <select
@@ -514,7 +582,7 @@ function ProviderSection({
             type="submit"
             disabled={routingStage === 'saving' || externalBusy || !providerName}
           >
-            {routingStage === 'saving' ? 'Applying…' : 'Apply routing'}
+            {routingStage === 'saving' ? 'Saving…' : 'Save default'}
           </button>
           {routingStage === 'saved' ? (
             <span className="field-hint" role="status">
@@ -530,11 +598,13 @@ function ProviderSection({
       </form>
 
       {probe ? (
-        <section className="settings-section" aria-label="Last provider test result">
-          <div className="settings-row">
-            <span className="field-label">Last test</span>
-            <span className={probeBadge(probe).className}>{probeBadge(probe).label}</span>
-            <span>{probeLabel(probe)}</span>
+        <section className="settings-section settings-card" aria-label="Last provider test result">
+          <div className="settings-card-head">
+            <div className="settings-card-title">
+              <h3>Last connection test</h3>
+              <span className={probeBadge(probe).className}>{probeBadge(probe).label}</span>
+            </div>
+            <span className="settings-card-meta">{probeLabel(probe)}</span>
           </div>
         </section>
       ) : null}
@@ -546,6 +616,11 @@ function ProviderSection({
           </div>
         </section>
       ) : null}
+
+      <div className="settings-group-head">
+        <h3>Providers</h3>
+        <span>Connections the runtime can use for new sessions.</span>
+      </div>
 
       {providers.map((provider) => (
         <ProviderCard
@@ -559,6 +634,7 @@ function ProviderSection({
             (provider.api_key_set ? 'set' : 'unset')
           }
           provider={provider}
+          active={provider.name === currentProvider}
           busy={busy}
           externalBusy={externalBusy}
           tracker={tracker}
@@ -572,13 +648,11 @@ function ProviderSection({
 
 function AgentSection({
   agent,
-  providers,
   externalBusy,
   tracker,
   onUpdateAgent,
 }: {
   agent: AgentConfig;
-  providers: ProviderConfig[];
   externalBusy: boolean;
   tracker: SaveTracker;
   onUpdateAgent: SettingsProps['onUpdateAgent'];
@@ -588,8 +662,6 @@ function AgentSection({
   const saveStage = tracker.stageOf(form);
   const saveMessage = tracker.messageOf(form);
 
-  const [providerName, setProviderName] = useState(agent.provider);
-  const [modelName, setModelName] = useState(agent.model);
   const [temperature, setTemperature] = useState(String(agent.temperature));
   const [maxTokens, setMaxTokens] = useState(String(agent.max_tokens));
   const [maxSteps, setMaxSteps] = useState(String(agent.max_steps));
@@ -598,17 +670,6 @@ function AgentSection({
     maxTokens?: string;
     maxSteps?: string;
   }>({});
-
-  const selected = providers.find((provider) => provider.name === providerName) ?? null;
-  const models = modelsOf(selected);
-  const hasModel = models.includes(modelName);
-
-  const changeProvider = (name: string) => {
-    setProviderName(name);
-    const next = providers.find((provider) => provider.name === name) ?? null;
-    const nextModels = modelsOf(next);
-    setModelName((previous) => (nextModels.includes(previous) ? previous : (nextModels[0] ?? '')));
-  };
 
   const apply = () => {
     const nextErrors: { temperature?: string; maxTokens?: string; maxSteps?: string } = {};
@@ -627,8 +688,6 @@ function AgentSection({
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
     const patch: {
-      provider?: string;
-      model?: string;
       temperature?: number;
       max_tokens?: number;
       max_steps?: number;
@@ -637,8 +696,6 @@ function AgentSection({
       max_tokens: tokensValue,
       max_steps: stepsValue,
     };
-    if (providerName) patch.provider = providerName;
-    if (modelName) patch.model = modelName;
     tracker.begin(form);
     onUpdateAgent(patch);
   };
@@ -652,42 +709,15 @@ function AgentSection({
         apply();
       }}
     >
-      <h3 id={fieldId + '-title'}>Agent defaults</h3>
-      <div className="settings-row">
-        <label className="field">
-          <span className="field-label">Provider</span>
-          <select
-            className="field-input"
-            value={providerName}
-            onChange={(event) => changeProvider(event.target.value)}
-          >
-            {providers.map((provider) => (
-              <option key={provider.name} value={provider.name}>
-                {provider.name}
-              </option>
-            ))}
-            {!providers.some((provider) => provider.name === providerName) ? (
-              <option value={providerName}>{providerName || 'No provider'}</option>
-            ) : null}
-          </select>
-        </label>
-        <label className="field">
-          <span className="field-label">Model</span>
-          <select
-            className="field-input"
-            value={modelName}
-            onChange={(event) => setModelName(event.target.value)}
-          >
-            {models.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
-            ))}
-            {!hasModel ? <option value={modelName}>{modelName || 'No model'}</option> : null}
-          </select>
-        </label>
+      <div className="settings-card-head">
+        <div className="settings-card-title">
+          <h3 id={fieldId + '-title'}>Sampling and limits</h3>
+        </div>
+        <span className="settings-card-meta">
+          Chosen provider and model: {agent.provider} · {agent.model}
+        </span>
       </div>
-      <div className="settings-row">
+      <div className="settings-fields settings-fields-3">
         <label className="field" htmlFor={fieldId + '-temperature'}>
           <span className="field-label">Temperature</span>
           <input
@@ -762,7 +792,7 @@ function AgentSection({
           type="submit"
           disabled={saveStage === 'saving' || externalBusy}
         >
-          {saveStage === 'saving' ? 'Applying…' : 'Apply'}
+          {saveStage === 'saving' ? 'Saving…' : 'Save defaults'}
         </button>
         {saveStage === 'saved' ? (
           <span className="field-hint" role="status">
@@ -819,11 +849,13 @@ function PermissionsSection({
         apply();
       }}
     >
-      <h3 id={fieldId + '-title'}>Permission presets</h3>
-      <div className="settings-row">
-        <span className="field-label">Current</span>
-        <span className={'badge ' + (current ? 'live' : 'idle')}>{current || 'default'}</span>
-        {custom ? <span className="badge idle">CUSTOM</span> : null}
+      <div className="settings-card-head">
+        <div className="settings-card-title">
+          <h3 id={fieldId + '-title'}>Default permission</h3>
+          <span className={'settings-pill' + (current ? ' on' : '')}>{current || 'default'}</span>
+          {custom ? <span className="settings-pill">Custom</span> : null}
+        </div>
+        <span className="settings-card-meta">Applied when a session starts; the composer changes the current session.</span>
       </div>
       <span className="sr-only" id={groupLabelId}>
         Default permission preset
@@ -833,13 +865,9 @@ function PermissionsSection({
           <span className="field-label">No permission presets were reported by the runtime.</span>
         </div>
       ) : (
-        <div
-          role="radiogroup"
-          aria-labelledby={groupLabelId}
-          style={{ display: 'flex', flexDirection: 'column', gap: 1 }}
-        >
+        <div className="settings-choices" role="radiogroup" aria-labelledby={groupLabelId}>
           {presets.map((preset) => (
-            <label className="settings-row" key={preset.name}>
+            <label className={'settings-choice' + (choice === preset.name ? ' selected' : '')} key={preset.name}>
               <input
                 type="radio"
                 name={fieldId + '-preset'}
@@ -848,10 +876,12 @@ function PermissionsSection({
                 disabled={saveStage === 'saving'}
                 onChange={() => setChoice(preset.name)}
               />
-              <span className="field-label">{preset.label ?? preset.name}</span>
-              <span>{preset.description || '—'}</span>
-              <span className="badge">
-                {preset.sandbox}/{preset.approval}
+              <span className="settings-choice-body">
+                <span className="settings-choice-title">{preset.label ?? preset.name}</span>
+                <span className="settings-choice-desc">{preset.description || 'No description reported.'}</span>
+                <span className="settings-choice-meta">
+                  {preset.sandbox} · {preset.approval}
+                </span>
               </span>
             </label>
           ))}
@@ -869,7 +899,7 @@ function PermissionsSection({
           type="submit"
           disabled={saveStage === 'saving' || externalBusy || !choice || choice === current}
         >
-          {saveStage === 'saving' ? 'Applying…' : 'Apply'}
+          {saveStage === 'saving' ? 'Saving…' : 'Save permission'}
         </button>
         {saveStage === 'saved' ? (
           <span className="field-hint" role="status">
@@ -1284,40 +1314,48 @@ export function Settings({
       <div className="settings-panel" aria-busy={!payload && loading ? true : undefined}>
         <nav className="settings-nav" aria-label="Settings navigation">
           <div className="settings-nav-head">
-            <span className="field-label">SETTINGS</span>
+            <span className="settings-brand">Settings</span>
           </div>
           <div
             role="tablist"
             aria-orientation="vertical"
             aria-label="Settings sections"
-            style={{ display: 'flex', flexDirection: 'column', gap: 1 }}
+            className="settings-nav-list"
           >
-            {SECTIONS.map((item, index) => (
-              <button
-                key={item.id}
-                ref={(element) => {
-                  tabRefs.current[index] = element;
-                }}
-                id={'settings-tab-' + item.id}
-                className={'settings-nav-item' + (section === item.id ? ' active' : '')}
-                type="button"
-                role="tab"
-                aria-selected={section === item.id}
-                aria-controls={'settings-panel-' + item.id}
-                tabIndex={section === item.id ? 0 : -1}
-                onClick={() => setSection(item.id)}
-                onKeyDown={(event) => moveTab(event, index)}
-              >
-                <Icon name={item.icon} size={16} />
-                <span>{item.label}</span>
-              </button>
-            ))}
+            {SECTIONS.map((item, index) => {
+              const startsGroup = index === 0 || SECTIONS[index - 1].group !== item.group;
+              return (
+                <Fragment key={item.id}>
+                  {startsGroup ? <div className="settings-nav-group">{item.group}</div> : null}
+                  <button
+                    ref={(element) => {
+                      tabRefs.current[index] = element;
+                    }}
+                    id={'settings-tab-' + item.id}
+                    className={'settings-nav-item' + (section === item.id ? ' active' : '')}
+                    type="button"
+                    role="tab"
+                    aria-selected={section === item.id}
+                    aria-controls={'settings-panel-' + item.id}
+                    tabIndex={section === item.id ? 0 : -1}
+                    onClick={() => setSection(item.id)}
+                    onKeyDown={(event) => moveTab(event, index)}
+                  >
+                    <Icon name={item.icon} size={16} />
+                    <span>{item.label}</span>
+                  </button>
+                </Fragment>
+              );
+            })}
           </div>
         </nav>
 
         <div className="settings-main">
           <div className="settings-head">
-            <h2>{activeSection.label}</h2>
+            <div className="settings-title">
+              <h2>{activeSection.label}</h2>
+              <p className="settings-subtitle">{activeSection.description}</p>
+            </div>
             <div className="settings-actions">
               <button className="button ghost small" type="button" onClick={reload} disabled={loading || busy}>
                 <Icon name="refresh" size={14} />
@@ -1426,7 +1464,6 @@ export function Settings({
                     <AgentSection
                       key={agentKey}
                       agent={agent}
-                      providers={providers}
                       externalBusy={externalBusy}
                       tracker={tracker}
                       onUpdateAgent={onUpdateAgent}

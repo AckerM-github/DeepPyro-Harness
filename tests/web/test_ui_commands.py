@@ -429,7 +429,7 @@ async def test_unknown_commands_report_an_error_without_raising() -> None:
 
 @pytest.mark.asyncio
 async def test_unwired_commands_say_so() -> None:
-    for name in ("compact", "jobs", "team", "thinking", "hooks", "exit"):
+    for name in ("compact", "jobs", "thinking", "hooks", "exit"):
         result = await execute(FakeService(), context(), name)
         assert result.status == STATUS_ERROR
         assert result.message

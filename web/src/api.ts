@@ -11,6 +11,7 @@ import type {
   SessionPage,
   SettingsMutation,
   SettingsPayload,
+  TeamState,
   Timeline,
   WebEvent,
 } from './types';
@@ -174,6 +175,13 @@ export const api = {
     request<ModelChangeResult>(`/api/ui/sessions/${encodeURIComponent(sessionId)}/model`, {
       method: 'POST',
       body: { provider, model },
+    }),
+  sessionTeam: (sessionId: string) =>
+    request<TeamState>(`/api/ui/sessions/${encodeURIComponent(sessionId)}/team`),
+  setSessionTeam: (sessionId: string, enabled: boolean) =>
+    request<TeamState>(`/api/ui/sessions/${encodeURIComponent(sessionId)}/team`, {
+      method: 'POST',
+      body: { enabled },
     }),
   queue: (sessionId: string) =>
     request<{ session_id: string; items: QueuedMessage[] }>(

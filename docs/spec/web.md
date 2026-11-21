@@ -16,9 +16,9 @@ Web UI 是 native 运行时的**浏览器外壳**，不是第二个 agent：
   详情抽屉默认关闭）、流式聊天气泡、语义化工具卡与折叠过程层、审批条（once/session 两种
   scope）、排队条、计划进度条、composer 宿主控件（模型/权限/上下文用量）、快速切换器、
   目录选择器、slash 命令、全屏设置面板、TUI splash F1 与 `python -m deeppyro.web` 两种入口、
-  web 测试。
-- 0.3.0 范围外：多会话并行、远程/TLS、team UI、附件上传、压缩 UI、移动优先布局、消息编辑/
-  重新生成、会话内全文搜索、退出命令（关页面或 Ctrl-C）。
+  会话级 Agent team 开关与 composer 上方常驻 team 状态条（成员/共享任务）、`/team on|off|status`、web 测试。
+- 0.3.0 范围外：多会话并行、远程/TLS、team 成员/任务写操作（浏览器只提供开关与只读投影）、附件上传、压缩 UI、
+  移动优先布局、消息编辑/重新生成、会话内全文搜索、退出命令（关页面或 Ctrl-C）。
 
 硬约束：
 
@@ -75,7 +75,7 @@ browser (React SPA, typed fetch + EventSource)
 | `web/src/api.ts` | typed fetch API + 自管重连的 `subscribeEvents()` |
 | `web/src/types.ts` | wire 类型（`Bootstrap`、`Timeline`、`WebEvent`、`SettingsPayload` 等） |
 | `web/src/styles.css` | DSH 风格暗色 token + conversation-first 版式 |
-| `web/src/components/` | `Sidebar`、`Chat`（Transcript）、`Composer`、`ToolCard`、`PermissionMenu`、`ModelMenu`、`ApprovalBar`、`QueueDock`、`PlanBar`、`Inspector`、`Markdown`、`Palette`、`Settings`、`NewSession`、`DirectoryPicker`、`Icon` |
+| `web/src/components/` | `Sidebar`、`Chat`（Transcript）、`Composer`、`ToolCard`、`PermissionMenu`、`ModelMenu`、`ApprovalBar`、`QueueDock`、`PlanBar`、`TeamBar`（含 `team.css`）、`Inspector`、`Markdown`、`Palette`、`Settings`、`NewSession`、`DirectoryPicker`、`Icon` |
 | `web/src/lib/` | `format.ts`（含 `humanError`）、`toolMeta.ts`、`commandArgs.ts`、`liveTurn.ts`（流式状态机） |
 | `web/public/brand/cyborg-mark.svg` | Vite 公共资产（构建时复制为 `static/brand/`） |
 
@@ -136,6 +136,8 @@ browser (React SPA, typed fetch + EventSource)
 | GET | `/api/ui/bootstrap` | `{version, health, sessions, active_session_id, commands, presets, permissions, plugins, providers, defaults}` |
 | GET | `/api/ui/sessions` | 查询参数 `limit`（默认 50，1..200）、`offset`、`query`、`include_archived`；返回 `{sessions: SessionSummary[], active_session_id, total, limit, offset, has_more, query}` |
 | GET | `/api/ui/sessions/{id}/timeline` | `Timeline`；额外带 `journal_seq`（SSE 订阅起点）与顶层 `state`（goal/todos/deliverables/tasks/handoffs 只读快照，可为 null） |
+| GET | `/api/ui/sessions/{id}/team` | `TeamSnapshot`：只读 team 快照；当前 attach 的 team 会话 `active=true`，已知但未 attach 的会话返回 `active=false` 空结构，未知会话 404 |
+| POST | `/api/ui/sessions/{id}/team` | `{enabled: bool}` → `TeamSnapshot` + `ok/enabled/preset`；会话级开关：enable 用隐藏 team preset 重建 native agent，disable 停止成员并恢复进入前的 preset；运行中/有排队 409、仍有 live 成员 409、非法 body 400、未知会话 404 |
 | POST | `/api/ui/sessions` | `{cwd?, preset?, provider?, model?, title?}` → 201 `{session_id,title,cwd,provider,model,preset}` |
 | POST | `/api/ui/sessions/{id}/resume` | `{}` → `{session_id,resumed}`；会话被其它进程锁定时 409 |
 | POST | `/api/ui/sessions/{id}/messages` | `{text: 1..100000}` → 202 `{session_id,accepted,queued}` |
@@ -166,6 +168,11 @@ browser (React SPA, typed fetch + EventSource)
   `state` 与 `web/service.py:_state_facts` 同源（title/cwd/model/preset/permission_policy/
   sandbox_mode/plan_mode/rounds_started/goal/todos/deliverables/tasks/handoffs），active 与
   非 active 路径形状一致；计划条、进度条与详情抽屉都读它。
+- `TeamSnapshot`：`session_id,active,mode,members,tasks,max_members`。`mode` 是当前会话的
+  preset mode（`team`/`default`）；`members` 每项 `id,name,description,provider,model,preset,
+  phase,session_id,last_reply,error,created_at`（phase 为 spawning/idle/running/completed/
+  failed/cancelled）；`tasks` 是 team task board 的 `to_dict()` 形状（`id,revision,subject,
+  description,status,blocked_by,write_scopes,owner,created_at`）；`max_members` 恒为 int。
 - `Approval`：`approval_id,session_id,tool,summary,detail,created_at,status`。
 - 所有字段 snake_case；`messages` 为 native fold 出的消息列表（文本、reasoning、工具调用/结果等 part）。
 
@@ -297,8 +304,16 @@ EventSource 不能设置自定义头，所以首连 token 可用 `?token=` 查�
     返回 `data.session_id` 供前端跳转。
   - 导航：`/settings`、`/panel`；只读查询 `/provider`、`/model`、`/preset` 返回当前值，带参数时
     跳设置并提示 provider/model 从下一 turn 生效（preset 仍只影响新会话）。
-  - 诚实拒绝：`/compact`、`/jobs`、`/team`、`/thinking`、`/hooks` 返回 `status=error` + 原因；
+  - 诚实拒绝：`/compact`、`/jobs`、`/thinking`、`/hooks` 返回 `status=error` + 原因；
     `/exit` 提示关闭标签页。
+  - `/team on|off|status`：`on` 在会话内启用 agent team（等价于 composer 上方的 Agent team
+    开关），`off` 停止成员并恢复进入前的 preset，`status`/无参返回 `Team mode is active · N
+    members (phase, ...) · done/total tasks done` 或 `Team mode is off · use /team on or the Agent
+    team row to enable it.`；`on/off` 附带 `data.enabled/mode/preset/members/tasks/max_members`。
+    启用后 native agent 以隐藏 team preset 重建（工具集换成 team_*，subagent 工具移除）；关闭后
+    恢复原 preset（默认 standard）。运行中/有排队消息、或仍有 live 成员（spawning/running/idle）
+    时拒绝切换。浏览器侧的 `TeamBar` 只展示成员与共享任务（打开 popover 看详情），不写 team
+    状态。未 attach 的会话在 composer 上方显示 `Agent team · Off`（点 Enable 才 attach）。
   - `/archive` 归档当前 active 会话时**先**创建替代 native 会话再归档；创建失败时旧会话保持 attached/unarchived，
     归档写失败返回 `status=error` 但仍带 `data.session_id` 供前端跟随替代会话。`data.session_id` 只用于导航；
     后台归档/取消归档用 `archived_session_id`/`unarchived_session_id`。`/unarchive` 对未归档会话是安全 no-op；
@@ -310,7 +325,9 @@ EventSource 不能设置自定义头，所以首连 token 可用 `?token=` 查�
   调 `GET /api/ui/fs/roots` 与 `GET /api/ui/fs/dirs?path=`，只列目录、跳过隐藏项。空路径
   POST `{}`，否则 `{"cwd": path}`；服务端 `resolve_workspace` 的错误显示在弹窗内；成功后
   刷新列表并导航 `/c/<id>`。cwd 在会话创建时固定。preset 提交的是 `Preset.id`
-  （`standard`/`ptc`/...），显示文本才用 `Preset.name`。
+  （`standard`/`ptc`/...），显示文本才用 `Preset.name`。bootstrap 的 `presets` 只列非隐藏
+  preset，TEAM preset 不再出现在创建弹窗；team 是会话级开关（`POST /api/ui/sessions/{id}/team`
+  或 `/team on`），由隐藏的 team preset 在会话内部重建 agent。TUI 调色板仍按 `hidden` 过滤。
 - 会话级模型切换：`POST /api/ui/sessions/{id}/model` 走 `_apply_selection`，重定向当前绑定
   的 provider/model；idle 返回 `applied=next_turn`，streaming 时返回 `deferred` 并在当前
   turn 结束后应用。只影响当前会话，不改 `config.toml`（全局默认仍走 PATCH /settings/agent）。
@@ -318,9 +335,13 @@ EventSource 不能设置自定义头，所以首连 token 可用 `?token=` 查�
   `GET /queue` 的结果，可 `DELETE /queue/{queue_id}` 单条撤回；interrupt 会丢弃整个队列。
 - 新建会话是 **deferred native session**：header、system prompt、model/preset 选择和标题先只存在内存，不创建
   `sessions/<id>.jsonl` 或锁文件；首条 `user.message` 或 `turn.started` 才把 header + 缓冲事件原子写入
-  （temp file + fsync + `os.replace`）。未对话就切换/关闭的 draft 直接丢弃，不落盘、不进入历史列表；只有
-  active draft 会以 0 turns 出现在 `/api/ui/sessions` 与 timeline（来自内存投影）。归档未对话 draft 等同丢弃，
-  返回 `data.discarded=true` 并启动替代会话。
+  （temp file + fsync + `os.replace`）。未对话就切换/关闭的 draft 直接丢弃，不落盘、不进入历史列表；attached
+  draft 在首条 `user.message` 写入前同样是输入目标而非会话，不出现在 `/api/ui/sessions` 目录（timeline 仍可
+  从内存投影读取），写入后才作为会话出现。归档未对话 draft 等同丢弃，
+  返回 `data.discarded=true` 并启动替代会话。会话目录刷新时还会清理历史空会话：非 attached、`turns==0`
+  且日志里既无 `user.message` 也无 `turn.*` 的会话由 session 层 `delete_session_log()` 加锁后物理删除
+  （锁被其它进程占用则跳过、留给持有者；含 user message 但 turn 未开始的 crashed send 只隐藏不删）；
+  `_detach` 时也删除从未使用的 draft。
 - 会话行操作：行尾 `⋯` 菜单提供 **Rename**（`POST /rename`）与 **Archive / Unarchive**
   （`/archive` 命令）；双击标题也打开改名对话框。active 会话归档后跟随返回的
   `data.session_id` 导航。`Show archived` 切 `include_archived`，`Load more` 用
@@ -417,7 +438,15 @@ python -m deeppyro.web --host 127.0.0.1 --port 0 --cwd PATH [--session ID] [--pr
 - 一个进程同时只绑定一个会话：多标签 resume 会移动绑定，旧标签的 send/interrupt 失效。
 - 队列、审批、journal 都在内存：进程退出即丢失；历史只来自 native log。
 - 无 TLS、单本地用户；token 出现在 URL/历史中一次，随后换成 HttpOnly cookie。
-- team preset 在 web 运行时被 409 拒绝（仅 TUI/headless 支持）。
+- agent team 是**会话级开关**而不是新建 preset：`POST /api/ui/sessions/{id}/team`（或
+  `/team on|off`）在会话内部用隐藏 team preset 重建 native agent，关闭时恢复进入前的 preset；
+  选项随 `agent-preset/selected` 事件持久化，重开/刷新保留。attach 时按 TUI 同源语义
+  configure/bind TeamService 与 SubagentService，会话每个 id 只 `restore()` 一次，detach 时
+  `stop()` 并清掉恢复标记。剩余限制：team UI 只读（`TeamBar` 对开启 team 的会话每 2 秒轮询 +
+  SSE 结算后刷新，`/team` 与 `GET /api/ui/sessions/{id}/team` 同样只读），不能操作成员/任务；
+  运行中、有排队消息、或仍有 live 成员（spawning/running/idle）时不能开关；成员子会话
+  （`origin=subagent`）不出现在 `/api/ui/sessions` 列表，零 turn 空会话在会话目录刷新时直接
+  删除（见 §7）；team 会话同样受“一个进程只绑定一个会话”约束。
 - 未 attach 的会话 usage 从 `~/.dpro/usage/usage.jsonl` 回填，context 取最后一次请求的
   input_tokens，不是实时值。
 - 无附件上传、无压缩 UI、无多会话并行、无移动优先布局、无消息编辑/重新生成、无会话内
@@ -439,6 +468,8 @@ python -m deeppyro.web --host 127.0.0.1 --port 0 --cwd PATH [--session ID] [--pr
 | `test_frontend.py` | 提交的 static 构建产物与引用文件、Vite 配置、wheel 打包配置、CSP 契约、旧资源已删除 |
 | `test_timeline.py` / `test_approvals.py` | timeline 回放、审批 broker（含 scope=session） |
 | `test_ui_session_extras.py` | 会话级 model 切换、queue 列表/撤回、fs roots/dirs、timeline state |
+| `test_ui_api.py` | host 会话目录：删除空 draft、保留被锁空会话、隐藏 crashed send、过滤 subagent 子会话 |
+| `test_ui_team.py` | 会话级 team 开关（enable 重建 preset、幂等、disable 恢复原 preset、busy/live 成员拒绝、预览会话 attach、HTTP 路由）、TeamService/SubagentService 接线、每会话只 restore 一次、detach 停止并删除未使用 draft、team 快照与 GET/POST `/api/ui/sessions/{id}/team`、bootstrap 只列非隐藏 preset、`/team on|off|status` 文本 |
 | `test_ui_commands.py` / `test_ui_settings.py` | 命令执行、设置 CAS |
 | `test_launch.py` | CLI/splash 启动路径 |
 

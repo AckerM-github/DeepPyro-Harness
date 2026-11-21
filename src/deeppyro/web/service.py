@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import time
 import uuid
@@ -28,7 +29,7 @@ from deeppyro.agent.errors import ProviderStreamError
 from deeppyro.agent.native_factory import AgentBuild, PromptFacts
 from deeppyro.agent.native_host import NativeAgentHost, NativeSessionHandle
 from deeppyro.agent.native_records import RECORD_KIND_MAP, UnsupportedRecordTypeError
-from deeppyro.api import AGENT_MODE_TEAM, DEFAULT_PRESET_ID, PluginContext
+from deeppyro.api import AGENT_MODE_DEFAULT, AGENT_MODE_TEAM, DEFAULT_PRESET_ID, PluginContext
 from deeppyro.api.errors import PluginDependencyError
 from deeppyro.api.services import service_name
 from deeppyro.api.types import PresetSpec
@@ -37,7 +38,7 @@ from deeppyro.builtin.agents import AgentsPlugin
 from deeppyro.builtin.inspect import InspectPlugin
 from deeppyro.builtin.llm import LlmPlugin
 from deeppyro.builtin.plugin_manager import PluginManagerPlugin
-from deeppyro.builtin.presets import PresetsPlugin
+from deeppyro.builtin.presets import TEAM_PRESET_ID, PresetsPlugin
 from deeppyro.builtin.sandbox import SandboxPlugin
 from deeppyro.builtin.schedule import SchedulePlugin
 from deeppyro.builtin.sessions import SessionsPlugin
@@ -79,6 +80,7 @@ from deeppyro.session.native_query import (
 )
 from deeppyro.subagent.manager import SubagentService
 from deeppyro.team.manager import TeamService
+from deeppyro.team.types import LIVE_PHASES, MAX_MEMBERS
 from deeppyro.user_questions.service import UserQuestionsService
 from deeppyro.web.approvals import ApprovalBroker, ApprovalDecision, ApprovalPrompt
 from deeppyro.web.events import (
@@ -397,6 +399,10 @@ class SessionBinding:
     #: A model switch accepted while the turn was streaming, applied before
     #: the next queued turn starts.
     deferred_selection: Selection | None = None
+    #: The preset mode this session runs in (single-agent or team).
+    mode: str = AGENT_MODE_DEFAULT
+    #: The preset to restore when the session leaves team mode.
+    team_previous_preset: str = DEFAULT_PRESET_ID
 
     @property
     def session_id(self) -> str:
@@ -408,6 +414,34 @@ async def _deny_approval(_request: Any) -> bool:
     """Refuse approval requests until the web UI grows an approval surface."""
     logger.debug("web host denied an approval request: no approval surface yet")
     return False
+
+
+async def _maybe_await(value: Any) -> Any:
+    """Await one service callback result when it is awaitable (TUI parity)."""
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+#: Fields of a team MemberInfo the browser needs; the native type has no to_dict.
+_TEAM_MEMBER_FIELDS = (
+    "id",
+    "name",
+    "description",
+    "provider",
+    "model",
+    "preset",
+    "phase",
+    "session_id",
+    "last_reply",
+    "error",
+    "created_at",
+)
+
+
+def _team_member_payload(member: Any) -> dict[str, Any]:
+    """Serialise one team member for the browser without importing the type."""
+    return {name: getattr(member, name, None) for name in _TEAM_MEMBER_FIELDS}
 
 
 def _pin_permission(view: _NativeView, presets: PermissionPresetsService) -> None:
@@ -501,6 +535,9 @@ class WebSessionHost:
             notify=self._approval_pending,
             on_decided=self._approval_decided,
         )
+        #: Team sessions whose persisted facts were already folded into the
+        #: bound team manager; detach clears the id so re-attach restores again.
+        self._restored_team_sessions: set[str] = set()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -693,6 +730,38 @@ class WebSessionHost:
             # missing from the 2 s list cache. The attached session is always
             # newest-or-known, so merging it here keeps the sidebar complete.
             infos = [self._draft_info(binding), *infos]
+        # Zero-turn drafts are discarded, not just hidden: a TUI that was opened
+        # and closed, or an aborted web draft, must not leave a file behind.
+        # Only logs that never received a user message or a started turn are
+        # deleted; a crashed send keeps its content, and a session another live
+        # process holds is left alone. The attached draft is hidden until its
+        # first user message: it is an input target, not a conversation, and a
+        # deferred draft has no file to delete yet.
+        attached_id = binding.session_id if binding is not None else None
+        kept: list[NativeSessionInfo] = []
+        purged = 0
+        for info in infos:
+            if info.id == attached_id:
+                if info.turns > 0 or self._has_user_message(info.id):
+                    kept.append(info)
+                continue
+            if info.turns > 0:
+                kept.append(info)
+                continue
+            if self._purge_empty_session(info.id):
+                purged += 1
+                continue
+            kept.append(info)
+        if purged:
+            logger.info("deleted %d empty sessions", purged)
+        infos = kept
+        # Teammate/subagent child sessions are execution detail, not
+        # conversations the user opened: keep them out of the catalogue.
+        infos = [
+            info
+            for info in infos
+            if info.id == attached_id or (info.turns > 0 and str(info.origin or "user") != "subagent")
+        ]
         needle = (query or "").strip().casefold()
         if needle:
             infos = [
@@ -746,7 +815,6 @@ class WebSessionHost:
         """Create and attach a new native session."""
         self._ensure_open()
         spec = await self._ensure_preset(request.preset)
-        self._refuse_team(spec)
         selection = resolve_selection(self._services.config, request.provider, request.model)
         workspace = resolve_workspace(request.cwd or self._default_cwd)
         await self._detach()
@@ -799,7 +867,6 @@ class WebSessionHost:
         state = view.fold().state
         preset = state.preset.preset if state.preset is not None else (info.preset or DEFAULT_PRESET_ID)
         spec = await self._ensure_preset(preset)
-        self._refuse_team(spec)
         provider = state.model.provider if state.model is not None else None
         model = state.model.model if state.model is not None else None
         try:
@@ -1159,9 +1226,122 @@ class WebSessionHost:
             "pending": 0,
         }
 
-    async def send_message(self, session_id: str, request: SendMessageRequest) -> dict[str, Any]:
-        """Queue one user turn for the attached session."""
+    def team_state(self, session_id: str) -> dict[str, Any]:
+        """Read-only team snapshot for the browser Session Inspector.
+
+        The bound session reports its preset mode plus the serialised member and
+        task lists; a known but unattached session reports an empty structure
+        with the manager's member cap so every payload has the same shape.
+        Unknown sessions raise NotFound like the other read routes.
+        """
+        team = self._tool_service("team")
+        if team is None:
+            return self._empty_team_state(session_id, MAX_MEMBERS)
+        binding = self._binding
+        if binding is None or binding.session_id != session_id:
+            self._look(session_id)
+            return self._empty_team_state(session_id, int(getattr(team, "max_members", MAX_MEMBERS)))
+        members_fn = getattr(team, "members", None)
+        tasks_fn = getattr(team, "tasks", None)
+        members = list(members_fn()) if callable(members_fn) else []
+        tasks = list(tasks_fn()) if callable(tasks_fn) else []
+        return {
+            "session_id": session_id,
+            "active": True,
+            "mode": binding.mode,
+            "members": [_team_member_payload(member) for member in members],
+            "tasks": [task.to_dict() for task in tasks],
+            "max_members": int(getattr(team, "max_members", MAX_MEMBERS)),
+        }
+
+    @staticmethod
+    def _empty_team_state(session_id: str, max_members: int) -> dict[str, Any]:
+        """The inactive team snapshot shared by detached and unwired sessions."""
+        return {
+            "session_id": session_id,
+            "active": False,
+            "mode": "",
+            "members": [],
+            "tasks": [],
+            "max_members": max_members,
+        }
+
+    async def set_session_team(self, session_id: str, enabled: bool) -> dict[str, Any]:
+        """Turn the agent team on or off inside one session.
+
+        Team mode is a session-level capability, not a preset the browser picks
+        when a conversation starts: enabling rebuilds the native agent with the
+        hidden team preset, disabling stops the members and restores the preset
+        the session came from. Both persist the choice against the session
+        facts, matching the TUI's /team on|off semantics.
+        """
         self._ensure_open()
+        binding = self._binding
+        if binding is None or binding.session_id != session_id:
+            await self.resume_session(session_id)
+        binding = self._require_active(session_id)
+        if binding.host.busy or binding.pending:
+            raise Conflict("cannot switch team mode while a turn is running or queued")
+        team = self._tool_service("team")
+        current = binding.mode == AGENT_MODE_TEAM
+        if enabled == current:
+            return self._team_switch_payload(binding, team)
+        if enabled:
+            spec = await self._ensure_preset(TEAM_PRESET_ID)
+            binding.team_previous_preset = (
+                binding.preset if binding.preset and binding.preset != TEAM_PRESET_ID else DEFAULT_PRESET_ID
+            )
+            await self._rebuild_agent(binding, spec)
+            return self._team_switch_payload(binding, team)
+        members = list(getattr(team, "members", lambda: [])()) if team is not None else []
+        live = [member for member in members if str(getattr(member, "phase", "")) in LIVE_PHASES]
+        if live:
+            names = ", ".join(
+                f"{getattr(member, 'name', 'member')} ({getattr(member, 'phase', 'active')})"
+                for member in live
+            )
+            raise Conflict(f"cannot leave team mode while members are active: {names}")
+        self._restored_team_sessions.discard(session_id)
+        if team is not None:
+            await self._call_service_async(team, "stop")
+        previous = binding.team_previous_preset or DEFAULT_PRESET_ID
+        try:
+            spec = await self._ensure_preset(previous)
+        except BadRequest:
+            spec = await self._ensure_preset(DEFAULT_PRESET_ID)
+        binding.team_previous_preset = DEFAULT_PRESET_ID
+        await self._rebuild_agent(binding, spec)
+        return self._team_switch_payload(binding, team)
+
+    @staticmethod
+    def _team_switch_payload(binding: SessionBinding, team: Any) -> dict[str, Any]:
+        """Snapshot returned by the team toggle so the bar updates immediately."""
+        members_fn = getattr(team, "members", None)
+        tasks_fn = getattr(team, "tasks", None)
+        members = list(members_fn()) if callable(members_fn) else []
+        tasks = list(tasks_fn()) if callable(tasks_fn) else []
+        return {
+            "ok": True,
+            "session_id": binding.session_id,
+            "enabled": binding.mode == AGENT_MODE_TEAM,
+            "mode": binding.mode,
+            "preset": binding.preset,
+            "members": [_team_member_payload(member) for member in members],
+            "tasks": [task.to_dict() for task in tasks],
+            "max_members": int(getattr(team, "max_members", MAX_MEMBERS)),
+        }
+
+    async def send_message(self, session_id: str, request: SendMessageRequest) -> dict[str, Any]:
+        """Queue one user turn, attaching the session on first send.
+
+        Opening a session for preview must not activate it: the browser only
+        reads the timeline. The first message is the activation point, so it
+        attaches atomically here before the turn is queued.
+        """
+        self._ensure_open()
+        binding = self._binding
+        if binding is None or binding.session_id != session_id:
+            await self.resume_session(session_id)
         binding = self._require_active(session_id)
         if len(binding.pending) >= self._pending_limit:
             raise TooManyRequests("the turn queue is full; wait for the active turn to finish")
@@ -1349,6 +1529,51 @@ class WebSessionHost:
         except OSError as exc:
             raise Conflict(f"could not read session {session_id}: {exc}") from exc
 
+    def _has_user_message(self, session_id: str) -> bool:
+        """Whether a session log already holds the user's first message.
+
+        A deferred draft has no file yet, which reads as "not used".
+        """
+        try:
+            log = self._services.sessions.native_read(session_id)
+        except (NativeQueryError, OSError):
+            return False
+        return any(event.type == "user.message" for event in log.events)
+
+    def _purge_empty_session(self, session_id: str) -> bool:
+        """Delete a session that holds no conversation at all.
+
+        A TUI start, a discarded web draft and an aborted API create all write
+        a header plus session facts but no user message and no turn. Those logs
+        have no value, so the catalogue pass removes them. Returns True when
+        the file was deleted; locked or unreadable sessions are skipped.
+        """
+        try:
+            log = self._services.sessions.native_read(session_id)
+        except (NativeQueryError, OSError):
+            return False
+        if any(event.type == "user.message" or event.type.startswith("turn.") for event in log.events):
+            return False
+        try:
+            self._services.sessions.native_delete(session_id)
+        except SessionLockedError:
+            logger.debug("skipped deleting locked empty session %s", session_id)
+            return False
+        except (NativeQueryError, OSError):
+            logger.warning("could not delete empty session %s", session_id, exc_info=True)
+            return False
+        logger.debug("deleted empty session %s", session_id)
+        return True
+
+    def _purge_detached_session(self, session_id: str) -> None:
+        """Drop a never-used session as soon as the browser detaches from it."""
+        try:
+            info = self._services.sessions.native_look(session_id)
+        except (NativeQueryError, OSError):
+            return
+        if info.turns == 0:
+            self._purge_empty_session(session_id)
+
     @staticmethod
     def _draft_info(binding: SessionBinding) -> NativeSessionInfo:
         """Build the native row for an attached, not-yet-persisted draft."""
@@ -1382,14 +1607,168 @@ class WebSessionHost:
         except PluginDependencyError as exc:
             raise BadRequest(str(exc)) from exc
 
-    @staticmethod
-    def _refuse_team(spec: PresetSpec) -> None:
-        if spec.mode == AGENT_MODE_TEAM:
-            raise Conflict("team mode is not available in the web runtime yet; choose a single-agent preset")
-
     def _emit(self, event: WebEvent) -> None:
         """Publish one typed hook event to the journal (the WebAgentHooks callback)."""
         self._journal.publish(event)
+
+    def _tool_service(self, name: str) -> Any:
+        """One optional tool-context service, if the kernel provided it."""
+        return self._services.tool_services.get(name)
+
+    def _call_service(self, service: Any, name: str, *args: Any, **kwargs: Any) -> bool:
+        """Call one optional manager hook; a failure only logs.
+
+        TeamService and SubagentService are plugin-provided managers that run
+        plugin code between their hooks, so wiring one must never fail attach.
+        """
+        method = getattr(service, name, None)
+        if not callable(method):
+            return False
+        try:
+            method(*args, **kwargs)
+        except Exception:  # boundary: plugin manager hooks must not fail attach
+            logger.warning("web host could not call %s.%s", type(service).__name__, name, exc_info=True)
+            return False
+        return True
+
+    async def _call_service_async(self, service: Any, name: str) -> None:
+        """Await one optional manager hook; a failure only logs."""
+        method = getattr(service, name, None)
+        if not callable(method):
+            return
+        try:
+            await _maybe_await(method())
+        except Exception:  # boundary: plugin manager hooks must not fail detach
+            logger.warning("web host could not call %s.%s", type(service).__name__, name, exc_info=True)
+
+    def _provider_object(self, name: str) -> Any:
+        """Resolve one provider object for the tool managers (TUI parity).
+
+        The TUI configures team and subagent with a provider *object*; the
+        subagent manager derives the child provider name from that object's
+        name attribute, so a bare string makes spawn fail with "requires a
+        provider". Fall back to the name when construction fails so a broken
+        provider never breaks attach.
+        """
+        if not name:
+            return name
+        try:
+            return self._services.llm.native_provider(name)
+        except Exception:  # boundary: provider construction runs plugin code
+            logger.warning("web host could not resolve provider %r", name, exc_info=True)
+            return name
+
+    def _configure_tool_services(self, binding: SessionBinding) -> None:
+        """Wire the team/subagent managers to the attached session like the TUI."""
+        services = self._services.tool_services
+        provider = self._provider_object(binding.provider)
+        for name in ("team", "subagent"):
+            service = services.get(name)
+            if service is None:
+                continue
+            self._call_service(
+                service,
+                "configure",
+                cwd=binding.workspace,
+                provider=provider,
+                registry=None,
+                permission=binding.gate,
+                model=binding.model,
+                context_window=binding.context_window,
+                preset=binding.preset,
+                preset_revision=binding.preset_revision,
+                services=services,
+                ask=self._ask_approval,
+            )
+            self._call_service(service, "bind_session", binding.handle.native_session)
+            self._call_service(service, "bind_parent", binding.host)
+
+    async def _restore_team(self, binding: SessionBinding) -> None:
+        """Fold persisted team facts into the bound manager once per session."""
+        session_id = binding.session_id
+        if session_id in self._restored_team_sessions:
+            return
+        # Mark before awaiting: restore folds plugin events and must not run
+        # twice even when it fails (the TUI keeps the same guard).
+        self._restored_team_sessions.add(session_id)
+        team = self._tool_service("team")
+        if team is None:
+            return
+        restore = getattr(team, "restore", None)
+        if not callable(restore):
+            return
+        try:
+            await _maybe_await(restore())
+        # boundary: team restore runs plugin code and must not break opening
+        except Exception:
+            logger.warning("failed to restore team state", exc_info=True)
+
+    async def _rebuild_agent(self, binding: SessionBinding, spec: PresetSpec) -> None:
+        """Rebuild the attached session's native agent with another preset.
+
+        The native session is shared with the current host, so the old host is
+        only replaced, never closed: closing it would close the underlying
+        session (the TUI keeps the same rule when it switches presets).
+        """
+        selection = Selection(
+            provider=binding.provider,
+            model=binding.model,
+            context_window=binding.context_window,
+        )
+        _record_selection(binding.view, selection, spec)
+        facts = _prompt_facts(
+            binding.view,
+            binding.gate,
+            selection.model,
+            binding.workspace,
+            self._services.permission_presets,
+        )
+        build = AgentBuild(
+            provider=selection.provider,
+            model=selection.model,
+            cwd=binding.workspace,
+            preset=spec.id,
+            preset_revision=spec.revision,
+            permission=binding.gate,
+            hooks=binding.hooks,
+            prompt_facts=facts,
+            services=self._services.tool_services,
+            context_window=selection.context_window,
+            temperature=self._services.config.agent.temperature,
+            max_tokens=self._services.config.agent.max_tokens,
+            max_steps=self._services.config.agent.max_steps,
+        )
+        try:
+            host = self._services.agents.host(binding.handle.native_session, build)
+        except (PluginDependencyError, ConfigError, ValueError) as exc:
+            raise Conflict(f"could not build the native agent: {exc}") from exc
+        binding.host = host
+        binding.preset = spec.id
+        binding.preset_revision = spec.revision
+        binding.mode = spec.mode
+        self._journal.publish(SessionEvent(session_id=binding.session_id))
+        self._configure_tool_services(binding)
+        if spec.mode == AGENT_MODE_TEAM:
+            await self._restore_team(binding)
+
+    async def _release_tool_services(self, binding: SessionBinding) -> None:
+        """Detach the managers from a closing session without poisoning them.
+
+        Team and subagent managers are process-wide singletons that the kernel
+        wires once (the TUI keeps them for the whole process). Detaching may
+        cancel their in-memory work, but it must never close the subagent
+        manager: close() sets a permanent closed flag, so every later attach in
+        this process would fail with "native subagent service is closed".
+        """
+        self._restored_team_sessions.discard(binding.session_id)
+        team = self._tool_service("team")
+        if team is not None:
+            await self._call_service_async(team, "stop")
+        subagent = self._tool_service("subagent")
+        if subagent is not None:
+            await self._call_service_async(subagent, "cancel_all")
+            self._call_service(subagent, "bind_session", None)
+            self._call_service(subagent, "bind_parent", None)
 
     async def _attach(
         self,
@@ -1445,9 +1824,13 @@ class WebSessionHost:
             preset_revision=spec.revision,
             context_window=selection.context_window,
             workspace=workspace,
+            mode=spec.mode,
         )
         self._binding = binding
         self._journal.publish(SessionEvent(session_id=binding.session_id))
+        self._configure_tool_services(binding)
+        if spec.mode == AGENT_MODE_TEAM:
+            await self._restore_team(binding)
         return binding
 
     async def _detach(self) -> None:
@@ -1476,11 +1859,13 @@ class WebSessionHost:
         if working_directory is not None:
             with contextlib.suppress(Exception):
                 working_directory.unbind(binding.view)
+        await self._release_tool_services(binding)
         binding.hooks.reset()
         with contextlib.suppress(Exception):
             await binding.host.aclose()
         with contextlib.suppress(Exception):
             binding.handle.aclose()
+        self._purge_detached_session(binding.session_id)
 
     def _start_turn_worker(self, binding: SessionBinding) -> None:
         """Start the per-session turn worker unless one is already running."""

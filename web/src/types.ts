@@ -227,11 +227,22 @@ export interface TaskState {
 }
 
 /** Structured session state exposed by the timeline (P1 backend). */
+export interface TimelinePresetState {
+  preset: string;
+  mode: string;
+  revision?: number;
+}
+
+export interface TimelineModelState {
+  provider: string;
+  model: string;
+}
+
 export interface TimelineState {
   title?: string;
   cwd?: string;
-  model?: string | null;
-  preset?: string;
+  model?: TimelineModelState | null;
+  preset?: TimelinePresetState;
   permission_policy?: string;
   sandbox_mode?: string;
   plan_mode?: boolean;
@@ -241,6 +252,44 @@ export interface TimelineState {
   deliverables?: DeliverableState[];
   tasks?: TaskState[];
   handoffs?: unknown[];
+}
+
+/** One teammate in a team session (GET /api/ui/sessions/{id}/team). */
+export interface TeamMember {
+  id: string;
+  name: string;
+  description?: string;
+  provider?: string;
+  model?: string;
+  preset?: string;
+  phase: string;
+  session_id?: string;
+  last_reply?: string;
+  error?: string | null;
+  created_at?: number;
+}
+
+/** One shared task on the team board. */
+export interface TeamTask {
+  id: string;
+  revision?: number;
+  subject: string;
+  description?: string;
+  status: string;
+  blocked_by?: string[];
+  write_scopes?: string[];
+  owner?: string;
+  created_at?: number;
+}
+
+/** Read-only projection of the agent team behind a team session. */
+export interface TeamState {
+  session_id: string;
+  active: boolean;
+  mode: string;
+  members: TeamMember[];
+  tasks: TeamTask[];
+  max_members: number;
 }
 
 /** One message waiting behind the running turn. */

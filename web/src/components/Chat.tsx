@@ -360,25 +360,33 @@ export function Transcript({
   error,
   turnError,
   onDismissTurnError,
-  onResume,
   onPick,
   onRetry,
   notices,
-  resumeBusy,
+  draftCwd,
 }: {
   timeline: Timeline | null;
   loading: boolean;
   error: string | null;
   turnError?: string | null;
   onDismissTurnError?: () => void;
-  onResume: () => void;
   onPick: (prompt: string) => void;
   onRetry?: (text: string) => void;
   notices?: ChatMessage[];
-  resumeBusy: boolean;
+  /** A local, unsaved new session: shows the hero instead of an empty state. */
+  draftCwd?: string | null;
 }) {
   if (loading && !timeline) return <Skeleton />;
   if (!timeline) {
+    // A fresh draft is a real starting point, not a missing selection: the
+    // browser creates the session only when the first message is sent.
+    if (draftCwd !== null && draftCwd !== undefined) {
+      return (
+        <div className="transcript">
+          <EmptyHero onPick={onPick} cwd={draftCwd || undefined} />
+        </div>
+      );
+    }
     return (
       <div className="transcript-empty-state">
         <Icon name="message" size={28} />
@@ -419,17 +427,6 @@ export function Transcript({
               Dismiss
             </button>
           ) : null}
-        </div>
-      ) : null}
-      {readOnly && timeline.readable ? (
-        <div className="read-only-banner">
-          <div>
-            <strong>This session is read-only.</strong>
-            <span>Resume it to keep chatting.</span>
-          </div>
-          <button className="button primary small" type="button" disabled={resumeBusy} onClick={onResume}>
-            {resumeBusy ? 'Resuming…' : 'Resume'}
-          </button>
         </div>
       ) : null}
       {messages.length === 0 && !timeline.busy ? (

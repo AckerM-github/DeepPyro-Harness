@@ -26,8 +26,9 @@ composer 宿主控件、抽屉式详情），而不是把终端界面的密度�
 web/ (Vite/React 源码, 独立构建)
   index.html  src/main.tsx  src/App.tsx  src/api.ts  src/types.ts  src/styles.css
   src/components/{Sidebar,Chat,Composer,ToolCard,PermissionMenu,ModelMenu,ApprovalBar,
-                 QueueDock,PlanBar,Inspector,Markdown,Palette,Settings,NewSession,
+                 QueueDock,PlanBar,TeamBar,Inspector,Markdown,Palette,Settings,NewSession,
                  DirectoryPicker,Icon}.tsx
+  src/components/{new-session,panels,toolcard,team}.css   ← 组件私有样式
   src/lib/{format,toolMeta,commandArgs,liveTurn}.ts
   src/lib/{commandArgs,liveTurn}.test.ts  src/api.sse.test.ts   ← vitest 单测
   public/brand/cyborg-mark.svg
@@ -59,6 +60,11 @@ src/deeppyro/web/ui/server.py      FastAPI app + uvicorn（127.0.0.1）
   `pyproject.toml`），前端依赖不进入 Python 包。
 
 ## 会话渲染与流式状态机
+
+会话列表只显示真正有内容的会话：New session 只是前端草稿，首条消息发送时才创建 native session；
+历史零 turn 空日志在会话目录刷新时由 Web host 直接删除（见 `docs/spec/web.md` §7）。点击侧栏
+会话只是**预览**（加载 timeline 并换 `/c/<id>` URL），必须在 composer 发送后才 attach 激活，
+因此查看历史不会打断正在运行的会话。
 
 转录区按 **conversation-first** 渲染：一条用户消息与它触发的若干 assistant step 组成一个
 turn（`Chat.tsx` 的 `groupTurns()`）；每个 backend step 是**独立的一条** assistant 消息，
@@ -131,6 +137,16 @@ turn 内的 reasoning、工具调用与中间文本收进可折叠过程层，�
   待处理事项不离开输入区。
 - 侧栏只保留会话与设置；会话行菜单提供 Rename / Archive（双击标题也可改名）。命令面板降级为
   `Ctrl/Cmd+K` 快速切换器（只有输入以 `/` 开头才列命令），任何动作都必须先在 GUI 上可点到。
+- agent team 是**会话级开关**，不是新建会话的 preset：composer 上方常驻一条 **Agent team**
+  行。Off 时右侧是 `Enable`（会话未 attach 时点它才会 attach），On 时显示
+  `N/M members · K running · d/t tasks` 与 live 点，点开 popover 查看成员状态
+  （Starting/Working/Done…、model、last reply）与共享任务板（to do/in progress/done、owner），
+  底部 `Turn off agent team` 在运行中或仍有 live 成员时禁用并说明原因。开关走
+  `POST /api/ui/sessions/{id}/team`：enable 用隐藏 team preset 重建 native agent（team_* 工具、
+  无 subagent 工具），disable 停止成员并恢复进入前的 preset（默认 standard），选择随
+  `agent-preset/selected` 持久化，刷新/重开保留。数据来自
+  `GET /api/ui/sessions/{id}/team`，SSE 结算后刷新，On 时每 2 秒轮询。成员/任务的创建与更新
+  仍由 agent 通过 team 工具完成，浏览器侧不写 team 状态。
 - 设置仍是覆盖层（不是独立路由）；窄屏（<768px）侧栏为抽屉，右栏详情全屏覆盖。所有图标是
   内联 SVG/CSS，不引外部图标库或字体。
 

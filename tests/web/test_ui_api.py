@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 import pytest
 
+from deeppyro.session.errors import SessionLockedError
 from deeppyro.session.native_index import NativeSessionInfo
 from deeppyro.web.service import MAX_SESSION_LIST_LIMIT, SESSION_LIST_LIMIT, WebSessionHost
 from deeppyro.web.ui import server as ui_server
@@ -209,6 +210,7 @@ def _info(
     preset: str = "standard",
     archived: bool = False,
     turns: int = 1,
+    origin: str = "user",
 ) -> NativeSessionInfo:
     ident = f"session-{index:03d}"
     created_at = 1_000_000 - index
@@ -223,18 +225,25 @@ def _info(
         event_count=turns * 2,
         preset=preset,
         parent_id=None,
-        origin="user",
+        origin=origin,
         preview=None,
         archived=archived,
     )
 
 
 class FakeSessionsPlugin:
-    """One native session plugin with the real native_list signature."""
+    """One native session plugin with the real native_list signature.
+
+    empty_ids marks logs that hold no user message and no turn; locked_ids
+    simulates a session another live process still holds open.
+    """
 
     def __init__(self, infos: list[NativeSessionInfo]) -> None:
         self.infos = list(infos)
         self.calls: list[dict[str, Any]] = []
+        self.empty_ids: set[str] = set()
+        self.locked_ids: set[str] = set()
+        self.deleted: list[str] = []
 
     def native_list(
         self,
@@ -248,6 +257,18 @@ class FakeSessionsPlugin:
         if limit is None:
             return rows[offset:]
         return rows[offset : offset + limit]
+
+    def native_read(self, session_id: str) -> Any:
+        events = () if session_id in self.empty_ids else (SimpleNamespace(type="user.message"),)
+        return SimpleNamespace(events=events)
+
+    def native_delete(self, session_id: str) -> NativeSessionInfo:
+        if session_id in self.locked_ids:
+            raise SessionLockedError(f"session {session_id!r} is locked by pid 1")
+        row = next(info for info in self.infos if info.id == session_id)
+        self.deleted.append(session_id)
+        self.infos = [info for info in self.infos if info.id != session_id]
+        return row
 
 
 def _host(tmp_path: Path, infos: list[NativeSessionInfo]) -> tuple[WebSessionHost, FakeSessionsPlugin]:
@@ -343,6 +364,62 @@ async def test_host_include_archived_off_by_default(tmp_path: Path) -> None:
     assert both["total"] == 3
     assert both["sessions"][-1]["archived"] is True
     assert plugin.calls[-1]["include_archived"] is True
+
+
+async def test_host_hides_empty_drafts_and_subagent_children(tmp_path: Path) -> None:
+    infos = [
+        _info(1),
+        _info(2, turns=0),
+        _info(3, origin="subagent"),
+        _info(4, origin="headless"),
+        _info(5, origin="fork"),
+    ]
+    host, _ = _host(tmp_path, infos)
+
+    page = await host.list_sessions()
+
+    # Zero-turn drafts and teammate/subagent children are not conversations;
+    # headless and fork sessions still are.
+    assert [row["session_id"] for row in page["sessions"]] == [
+        "session-001",
+        "session-004",
+        "session-005",
+    ]
+    assert page["total"] == 3
+
+
+async def test_host_deletes_empty_drafts(tmp_path: Path) -> None:
+    host, plugin = _host(tmp_path, [_info(1), _info(2, turns=0)])
+    plugin.empty_ids = {"session-002"}
+
+    page = await host.list_sessions()
+
+    assert [row["session_id"] for row in page["sessions"]] == ["session-001"]
+    assert plugin.deleted == ["session-002"]
+    assert [info.id for info in plugin.infos] == ["session-001"]
+
+
+async def test_host_keeps_a_locked_empty_session_for_its_owner(tmp_path: Path) -> None:
+    host, plugin = _host(tmp_path, [_info(1), _info(2, turns=0)])
+    plugin.empty_ids = {"session-002"}
+    plugin.locked_ids = {"session-002"}
+
+    page = await host.list_sessions()
+
+    assert [row["session_id"] for row in page["sessions"]] == ["session-001"]
+    assert plugin.deleted == []
+    assert [info.id for info in plugin.infos] == ["session-001", "session-002"]
+
+
+async def test_host_hides_but_keeps_a_crashed_send_without_a_turn(tmp_path: Path) -> None:
+    host, plugin = _host(tmp_path, [_info(1), _info(2, turns=0)])
+
+    page = await host.list_sessions()
+
+    # session-002 has a user message but no turn: keep the content on disk,
+    # just do not offer it as a conversation.
+    assert [row["session_id"] for row in page["sessions"]] == ["session-001"]
+    assert plugin.deleted == []
 
 
 async def test_host_rejects_invalid_catalogue_arguments(tmp_path: Path) -> None:

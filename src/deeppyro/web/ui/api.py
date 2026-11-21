@@ -215,6 +215,8 @@ def _presets(service: Any) -> list[dict[str, Any]]:
             "order": spec.order,
         }
         for spec in specs
+        # Team mode is a session-level switch (POST .../team), so the hidden
+        # team preset is not offered as a starting preset.
         if not spec.hidden
     ]
 
@@ -320,6 +322,18 @@ def build_router(
         if journal is not None:
             payload["journal_seq"] = journal.last_seq
         return json_body(payload)
+
+    @router.get("/api/ui/sessions/{session_id}/team")
+    async def session_team(request: Request) -> JSONResponse:
+        return json_body(_service(service_provider).team_state(_sid(request)))
+
+    @router.post("/api/ui/sessions/{session_id}/team")
+    async def set_session_team(request: Request) -> JSONResponse:
+        payload = await _body(request)
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise BadRequest('"enabled" must be a boolean')
+        return json_body(await _service(service_provider).set_session_team(_sid(request), enabled))
 
     @router.post("/api/ui/sessions/{session_id}/model")
     async def set_session_model(request: Request) -> JSONResponse:

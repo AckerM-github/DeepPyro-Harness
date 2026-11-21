@@ -12,7 +12,9 @@ import type {
   QueuedMessage,
   SessionSummary,
   SettingsPayload,
+  TeamState,
   Timeline,
+  TimelineState,
 } from './types';
 import { Sidebar } from './components/Sidebar';
 import { Transcript } from './components/Chat';
@@ -26,6 +28,7 @@ import { ApprovalBar } from './components/ApprovalBar';
 import { QueueDock } from './components/QueueDock';
 import { PlanBar } from './components/PlanBar';
 import { ModelMenu } from './components/ModelMenu';
+import { TeamBar } from './components/TeamBar';
 import { PermissionMenu } from './components/PermissionMenu';
 import { formatTokens, humanError } from './lib/format';
 import {
@@ -37,6 +40,11 @@ import {
   reconcileTimeline,
   resetLiveContext,
 } from './lib/liveTurn';
+
+function isTeamPreset(state: TimelineState | null | undefined): boolean {
+  const preset = state?.preset;
+  return preset?.mode === 'team' || preset?.preset === 'team';
+}
 
 const SETTINGS_SECTIONS: Record<string, SectionId> = {
   provider: 'provider',
@@ -93,6 +101,8 @@ export function App() {
   const [turnError, setTurnError] = useState<string | null>(null);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
+  const [team, setTeam] = useState<TeamState | null>(null);
+  const [teamBusy, setTeamBusy] = useState(false);
   const [notices, setNotices] = useState<ChatMessage[]>([]);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [composer, setComposer] = useState('');
@@ -110,8 +120,9 @@ export function App() {
 
   const [newOpen, setNewOpen] = useState(false);
   const [newCwd, setNewCwd] = useState<string | null>(null);
-  const [newBusy, setNewBusy] = useState(false);
-  const [newError, setNewError] = useState<string | null>(null);
+  // A new session is a local draft until its first message is sent: pressing
+  // "Start session" must not persist an empty conversation.
+  const [draft, setDraft] = useState<{ cwd: string; title: string; preset: string } | null>(null);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -121,7 +132,6 @@ export function App() {
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [probe, setProbe] = useState<ProviderProbe | null>(null);
 
-  const [resumeBusy, setResumeBusy] = useState(false);
   const [toast, setToast] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
   const activeRef = useRef<string | null>(null);
@@ -159,6 +169,9 @@ export function App() {
     setTimeline((current) =>
       current && current.session_id === next.session_id ? reconcileTimeline(current, next) : next,
     );
+    // Only an attached session has a live event stream; a previewed one is
+    // subscribed by the timeline that follows the first send.
+    setReadySessionId(next.active ? next.session_id : null);
   }, []);
 
   const addNotice = useCallback((text: string, kind: 'ok' | 'error' = 'ok') => {
@@ -232,6 +245,16 @@ export function App() {
     }
   }, []);
 
+  const loadTeam = useCallback(async (sessionId: string) => {
+    try {
+      const result = await api.sessionTeam(sessionId);
+      if (activeRef.current === sessionId) setTeam(result);
+    } catch {
+      // Only team sessions expose a team projection; other sessions stay quiet.
+      if (activeRef.current === sessionId) setTeam(null);
+    }
+  }, []);
+
   const loadTimeline = useCallback(
     async (sessionId: string, quiet = false) => {
       const ticket = ++requestRef.current;
@@ -244,13 +267,14 @@ export function App() {
         setTimelineLoading(false);
         void loadApprovals(sessionId);
         void loadQueue(sessionId);
+        void loadTeam(sessionId);
       } catch (error) {
         if (ticket !== requestRef.current) return;
         setTimelineError(humanError(error));
         setTimelineLoading(false);
       }
     },
-    [commitTimeline, loadApprovals, loadQueue],
+    [commitTimeline, loadApprovals, loadQueue, loadTeam],
   );
 
   const scheduleRefresh = useCallback(
@@ -274,6 +298,8 @@ export function App() {
       setTimeline(null);
       setApprovals([]);
       setQueue([]);
+      setTeam(null);
+      setTeamBusy(false);
       queueRef.current = [];
       resetLiveContext(liveRef.current);
       stickRef.current = true;
@@ -283,31 +309,26 @@ export function App() {
       setTurnError(null);
       setTimelineLoading(true);
       setMobileOpen(false);
+      setDraft(null);
       window.history.replaceState(null, '', `/c/${encodeURIComponent(sessionId)}`);
       try {
-        let next = await api.timeline(sessionId);
-        if (!next.active && next.readable) {
-          try {
-            await api.resumeSession(sessionId);
-            next = await api.timeline(sessionId);
-          } catch {
-            // The session is still shown read-only; do not hide the transcript.
-          }
-        }
+        // Opening is a preview: reading the transcript must not detach another
+        // session. The first message attaches this one server-side.
+        const next = await api.timeline(sessionId);
         if (activeRef.current !== sessionId) return;
         setTimelineError(null);
         commitTimeline(next);
-        setReadySessionId(sessionId);
         setTimelineLoading(false);
         void loadApprovals(sessionId);
         void loadQueue(sessionId);
+        void loadTeam(sessionId);
       } catch (error) {
         if (activeRef.current !== sessionId) return;
         setTimelineError(humanError(error));
         setTimelineLoading(false);
       }
     },
-    [commitTimeline, loadApprovals, loadQueue],
+    [commitTimeline, loadApprovals, loadQueue, loadTeam],
   );
 
   useEffect(() => {
@@ -324,6 +345,7 @@ export function App() {
         if (candidate) {
           await openSession(candidate);
         } else {
+          setDraft({ cwd: boot.defaults.cwd ?? '', title: '', preset: '' });
           setTimelineLoading(false);
         }
       } catch (error) {
@@ -363,13 +385,27 @@ export function App() {
         }
         if (thinking || event.type === 'final' || (event.type === 'status' && event.phase !== 'thinking') || event.type === 'approval') {
           void loadQueue(activeId);
+          void loadTeam(activeId);
           scheduleRefresh(activeId);
         }
       },
       setConnection,
     );
     return () => handle.close();
-  }, [activeId, readySessionId, loadApprovals, loadQueue, scheduleRefresh]);
+  }, [activeId, readySessionId, loadApprovals, loadQueue, loadTeam, scheduleRefresh]);
+
+  // Team members run in their own loops, so the read-only projection refresh
+  // cannot rely on the parent session events alone. Poll for any team session —
+  // including a preview that has not been attached yet — so the bar picks up
+  // members as soon as another client (or this one) attaches the session.
+  const teamEnabled = team?.mode === 'team' || isTeamPreset(timeline?.state);
+  useEffect(() => {
+    if (!activeId || !teamEnabled) return;
+    const timer = window.setInterval(() => {
+      void loadTeam(activeId);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [activeId, teamEnabled, loadTeam]);
 
   useEffect(() => {
     const element = scrollerRef.current;
@@ -449,7 +485,6 @@ export function App() {
       } else if (mod && event.key.toLowerCase() === 'n') {
         event.preventDefault();
         setNewCwd(null);
-        setNewError(null);
         setNewOpen(true);
       } else if (event.key === 'Escape') {
         setPaletteOpen(false);
@@ -465,7 +500,37 @@ export function App() {
 
   const handleSend = useCallback(async () => {
     const text = composer.trim();
-    if (!text || !timeline || !timeline.active) return;
+    if (!text) return;
+    if (draft) {
+      setComposer('');
+      setTurnError(null);
+      stickRef.current = true;
+      setAtBottom(true);
+      try {
+        // The draft session is created on the first send, so abandoned new
+        // sessions never write an empty log.
+        const created = await api.createSession({
+          cwd: draft.cwd || undefined,
+          title: draft.title || undefined,
+          preset: draft.preset || undefined,
+        });
+        setDraft(null);
+        await openSession(created.session_id);
+        if (activeRef.current !== created.session_id) return;
+        setTimeline((current) =>
+          current ? beginUserTurn(current, text, liveRef.current) : current,
+        );
+        await api.sendMessage(created.session_id, text);
+        scheduleRefresh(created.session_id);
+        void refreshSessions();
+      } catch (error) {
+        setComposer(text);
+        notify(humanError(error), 'error');
+      }
+      return;
+    }
+    if (!timeline || !timeline.readable) return;
+    const sessionId = timeline.session_id;
     const queued = Boolean(timeline.busy);
     setComposer('');
     setTurnError(null);
@@ -474,18 +539,18 @@ export function App() {
     // Show the question immediately; the canonical timeline replaces it later.
     if (!queued) setTimeline((current) => (current ? beginUserTurn(current, text, liveRef.current) : current));
     try {
-      const result = await api.sendMessage(timeline.session_id, text);
-      if (result.queued) void loadQueue(timeline.session_id);
-      scheduleRefresh(timeline.session_id);
+      const result = await api.sendMessage(sessionId, text);
+      if (result.queued) void loadQueue(sessionId);
+      scheduleRefresh(sessionId);
       void refreshSessions();
     } catch (error) {
       if (!queued) {
         setTimeline((current) => (current ? dropUserTurn(current, liveRef.current) : current));
-        setComposer(text);
       }
+      setComposer(text);
       notify(humanError(error), 'error');
     }
-  }, [composer, loadQueue, notify, refreshSessions, scheduleRefresh, timeline]);
+  }, [composer, draft, loadQueue, notify, openSession, refreshSessions, scheduleRefresh, timeline]);
 
   const handleRetry = useCallback(
     async (text: string) => {
@@ -575,19 +640,25 @@ export function App() {
     [notify, timeline],
   );
 
-  const handleResume = useCallback(async () => {
-    if (!timeline) return;
-    setResumeBusy(true);
-    try {
-      await api.resumeSession(timeline.session_id);
-      await loadTimeline(timeline.session_id, true);
-      void refreshSessions();
-    } catch (error) {
-      notify(humanError(error), 'error');
-    } finally {
-      setResumeBusy(false);
-    }
-  }, [loadTimeline, notify, refreshSessions, timeline]);
+  // Team mode is a session-level switch: the row above the composer either
+  // enables it for this conversation or leaves it, matching /team on|off.
+  const handleTeamToggle = useCallback(
+    async (enabled: boolean) => {
+      if (!timeline) return;
+      setTeamBusy(true);
+      try {
+        const result = await api.setSessionTeam(timeline.session_id, enabled);
+        setTeam(result);
+        await loadTimeline(timeline.session_id, true);
+        notify(enabled ? 'Agent team enabled.' : 'Agent team turned off.');
+      } catch (error) {
+        notify(humanError(error), 'error');
+      } finally {
+        setTeamBusy(false);
+      }
+    },
+    [loadTimeline, notify, timeline],
+  );
 
   const handleSessionArchive = useCallback(
     async (session: SessionSummary, archived: boolean) => {
@@ -607,28 +678,32 @@ export function App() {
     [activeId, addNotice, notify, openSession, refreshSessions],
   );
 
-  const handleCreate = useCallback(
-    async (input: { cwd: string; title: string; preset: string }) => {
-      setNewBusy(true);
-      setNewError(null);
-      try {
-        const created = await api.createSession({
-          cwd: input.cwd || undefined,
-          title: input.title || undefined,
-          preset: input.preset || undefined,
-        });
-        setNewOpen(false);
-        setNewCwd(null);
-        await refreshSessions();
-        await openSession(created.session_id);
-      } catch (error) {
-        setNewError(humanError(error));
-      } finally {
-        setNewBusy(false);
-      }
-    },
-    [openSession, refreshSessions],
-  );
+  const handleCreate = useCallback((input: { cwd: string; title: string; preset: string }) => {
+    setNewOpen(false);
+    setNewCwd(null);
+    setDraft({ cwd: input.cwd, title: input.title, preset: input.preset });
+    // Clear the previous conversation: the draft starts from the empty state,
+    // and nothing is persisted until the first message.
+    activeRef.current = null;
+    journalRef.current = 0;
+    setActiveId(null);
+    setReadySessionId(null);
+    setTimeline(null);
+    setApprovals([]);
+    setQueue([]);
+    setTeam(null);
+    setTeamBusy(false);
+    queueRef.current = [];
+    resetLiveContext(liveRef.current);
+    stickRef.current = true;
+    setAtBottom(true);
+    setNotices([]);
+    setTimelineError(null);
+    setTurnError(null);
+    setTimelineLoading(false);
+    setMobileOpen(false);
+    window.history.replaceState(null, '', '/');
+  }, []);
 
   const handleCommand = useCallback(
     async (command: CommandSpec, args: string[]) => {
@@ -804,7 +879,6 @@ export function App() {
         onSelect={(sessionId) => void openSession(sessionId)}
         onNew={() => {
           setNewCwd(null);
-          setNewError(null);
           setNewOpen(true);
         }}
         onArchiveSession={(session, archived) => void handleSessionArchive(session, archived)}
@@ -878,11 +952,10 @@ export function App() {
               error={timelineError}
               turnError={turnError}
               onDismissTurnError={() => setTurnError(null)}
-              onResume={() => void handleResume()}
               onPick={setComposer}
               onRetry={(text) => void handleRetry(text)}
               notices={notices}
-              resumeBusy={resumeBusy}
+              draftCwd={draft?.cwd ?? null}
             />
           </div>
           {!atBottom && timeline && timeline.messages.length > 0 ? (
@@ -912,6 +985,15 @@ export function App() {
             />
           ))}
           <QueueDock items={queue} onCancel={(queueId) => void handleCancelQueued(queueId)} />
+          {timeline ? (
+            <TeamBar
+              state={team}
+              enabled={teamEnabled}
+              busy={Boolean(timeline.busy)}
+              pending={teamBusy}
+              onToggle={(enabled) => void handleTeamToggle(enabled)}
+            />
+          ) : null}
           <PlanBar state={timeline?.state ?? null} onOpenDetails={() => setInspectorOpen(true)} />
           <Composer
             value={composer}
@@ -919,8 +1001,8 @@ export function App() {
             onSend={() => void handleSend()}
             onStop={() => void handleStop()}
             busy={Boolean(timeline?.busy)}
-            disabled={!timeline || !timeline.active}
-            placeholder={timeline?.active ? 'Message DeepPyro…' : 'This session is read-only'}
+            disabled={!draft && (!timeline || !timeline.readable)}
+            placeholder="Message DeepPyro…"
             modelSlot={
               <ModelMenu
                 provider={provider}
@@ -973,12 +1055,10 @@ export function App() {
           name: item.name,
           summary: item.description,
         }))}
-        busy={newBusy}
-        error={newError}
-        onClose={() => {
-          if (!newBusy) setNewOpen(false);
-        }}
-        onCreate={(input) => void handleCreate(input)}
+        busy={false}
+        error={null}
+        onClose={() => setNewOpen(false)}
+        onCreate={(input) => handleCreate(input)}
       />
 
       <Palette
@@ -998,7 +1078,6 @@ export function App() {
         onNewSession={() => {
           setPaletteOpen(false);
           setNewCwd(null);
-          setNewError(null);
           setNewOpen(true);
         }}
       />

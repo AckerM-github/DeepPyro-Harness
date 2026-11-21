@@ -1009,7 +1009,8 @@ async def test_native_resume_and_inactive_status(kernel_app: Any, web_env: Simpl
             listed = (await client.get("/api/sessions", params={"token": host.token})).json()
             ids = [row["session_id"] for row in listed["sessions"]]
             assert first_id in ids
-            assert second_id in ids
+            # The new draft is an input target, not a conversation yet.
+            assert second_id not in ids
             assert listed["active_session_id"] == second_id
             inactive = (await client.get(f"/api/sessions/{first_id}", params={"token": host.token})).json()
             assert inactive["active"] is False
@@ -1042,7 +1043,7 @@ async def test_new_session_is_deferred_until_the_first_turn(
         assert not first_path.exists()
 
         listed = await service.list_sessions()
-        assert first_id in [row["session_id"] for row in listed["sessions"]]
+        assert first_id not in [row["session_id"] for row in listed["sessions"]]
 
         second = await service.create_session(CreateSessionRequest())
         second_id = second["session_id"]
@@ -1050,7 +1051,7 @@ async def test_new_session_is_deferred_until_the_first_turn(
         assert not second_path.exists()
         listed = await service.list_sessions()
         ids = [row["session_id"] for row in listed["sessions"]]
-        assert second_id in ids
+        assert second_id not in ids
         assert first_id not in ids
         assert not first_path.exists()
 
@@ -1092,7 +1093,8 @@ async def test_archiving_an_unused_draft_discards_it(kernel_app: Any, web_env: S
         listed = await host.service.list_sessions()
         ids = [row["session_id"] for row in listed["sessions"]]
         assert first_id not in ids
-        assert replacement in ids
+        # The replacement is a fresh draft, so it is not a conversation yet.
+        assert replacement not in ids
     finally:
         await host.stop()
 

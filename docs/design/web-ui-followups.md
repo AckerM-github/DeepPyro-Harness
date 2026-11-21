@@ -1,6 +1,6 @@
 # Web UI 后续事项（React SPA 迁移后）
 
-状态：2026-11-20 本轮收口。NiceGUI 已移除，生产 Web UI 是 Vite + React + TypeScript SPA；
+状态：2026-11-21 本轮收口。NiceGUI 已移除，生产 Web UI 是 Vite + React + TypeScript SPA；
 Python 仍负责 host/auth/API/SSE。下列 P0/P1/P2 为迁移评审时的清单，已完成项保留证据，
 未完成项不再阻塞提交。评审原始证据在 `D:/dshworkspace/webui-review/`。
 
@@ -82,6 +82,128 @@ timeline，丢掉本地节点与滚动位置。
 canonical 用户消息到达）在 timeline 刷新前会先显示成匿名 assistant 组，刷新后归位；
 消息编辑/分叉、会话内搜索、虚拟列表仍是 P2；上一轮 P2 的其它遗留（设置覆盖层视觉、
 附件上传、主题/字号、自动化浏览器测试入库、动态 import 与单包体积）本轮未动。
+
+## 2026-11-21 第四轮：team 会话接入与设置 P2（已完成）
+
+这一轮补两个遗留：Web 运行时此前对 team preset 直接 409 拒绝（只能用单 agent 会话），
+设置覆盖层仍是迁移前的 admin console 视觉。改动只落在 `web/` 与 `src/deeppyro/web/`，
+native/TUI 行为未改。
+
+> 注：本轮「把 team preset 暴露成新建会话选项、bootstrap 不隐藏 team preset、/team 只读」
+> 的做法已被第六轮推翻——team 改为会话级开关；detach 时对 subagent `close()` 的问题也由
+> 第五轮修正。以下保留当时的实现记录。
+
+### team 会话
+
+- **后端**（`src/deeppyro/web/`）：删除 `_refuse_team`；attach 时按 TUI 同源语义接线
+  `TeamService`/`SubagentService`（`configure()` + `bind_session()`/`bind_parent()`，
+  best-effort），detach 时 `stop()`/`close()` 并清掉恢复标记，team preset 会话每 session id
+  只 `restore()` 一次；新增 `GET /api/ui/sessions/{id}/team`（只读 `TeamSnapshot`）；
+  bootstrap 的 `presets` 不再隐藏 team preset；`/team` 改为只读文本输出。team 工具的可见性
+  仍由 `native_factory` 按 mode 过滤（team preset 有 team_* 工具、普通会话有 subagent 工具）。
+- **前端**：新增 `web/src/components/TeamBar.tsx` + `team.css`，在 composer 上方显示折叠条
+  （`Agent team`、`N/M members · K running · d/t tasks`，有运行中成员/未完成任务时 live 点），
+  popover 展示成员（phase、model、last reply/error）与共享任务板（状态排序、owner）；
+  `App.tsx` 在 SSE settle/审批事件后刷新，并对 team preset 会话每 2 秒轮询（未 attach 的预览态也轮询，
+  这样另一客户端 attach 后成员/任务会出现）。
+- **预览态（2026-11-21 修正）**：未 attach 的 team 会话只显示 `Agent team · Preview`，发送首条消息
+  attach 后才加载成员/任务。注意 timeline 的 `state.preset` 是 `{preset, mode, revision}` 对象、
+  `state.model` 是 `{provider, model}` 对象，前端必须读 `mode`/`preset` 字段（`isTeamPreset`），
+  不能与字符串比较——之前写成 `state.preset === 'team'` 导致预览中的 team 会话不渲染 TeamBar。
+- **已知剩余**：TeamBar 只读（成员/任务仍由 agent 通过 team 工具写）；team 成员的子会话
+  （`origin=subagent`）已从会话列表过滤；没有成员详情页/中断按钮。
+
+### 设置覆盖层 P2
+
+- `web/src/components/Settings.tsx` 重组为「分组导航 + 分区标题/说明」：Model（Providers、
+  Agent）、Workspace（Permissions、Sessions）、Advanced（Commands、Plugins、Web runtime）、
+  About；Providers 页改为 `Default model` 卡（provider/model + Save default）加每个 provider
+  的连接卡（base URL、API key env、状态徽标、Test、保存）；Permissions 页改为可点选的
+  read-only / workspace-write / danger-full-access 卡片。运行期控制（模型、权限 preset）仍只
+  在 composer，设置只放默认值。
+- `web/src/styles.css` 重写设置段样式（分组导航、面板 800px 级宽度、发丝线卡片、choice 卡、
+  移动端单列），与主 shell 共用同一套 token；仍是覆盖层而非独立路由。
+- **仍未做**：Appearance（主题/字号/密度）没有设置项；Commands/Plugins 仍留在 Advanced；
+  设置没有搜索；JS 单包体积与动态 import 未处理。
+
+### 验证
+
+- `pytest tests/web` 220 passed（新增 `tests/web/test_ui_team.py` 13 条覆盖 team 接线、
+  `/team`、bootstrap preset、detach 释放）；`ruff check`/`format --check` 干净。
+- `pnpm typecheck` 干净；Vitest 29 passed；`pnpm build` 成功更新 `src/deeppyro/web/ui/static/`。
+- CDP 驱动真实宿主验证：team preset 会话里 `team_spawn`/`team_wait` 与
+  `team_task_create/update/list` 两轮，TeamBar 从空态到 `1/8 members · 1 running`、
+  `1/8 members · 1/2 tasks`，popover 成员/任务正确；设置 Ctrl+, 打开各分区截图；移动端
+  390x844 下 bar/popover 正常。控制台无 error。
+
+## 2026-11-21 第五轮：会话生命周期与空会话清理（已完成）
+
+用户报告四个会话生命周期问题，这一轮只动 `web/`、`src/deeppyro/web/` 与 session 控制面
+（TUI 未改）：
+
+- **点击只预览、发送才激活**：`App.tsx` 的 `openSession()` 只加载 timeline 并换
+  `/c/<id>` URL，不再自动 `POST /resume`（此前点一下就会 detach 当前会话、打断运行中的
+  turn）；首次发送时后端 `send_message` 发现目标未 attach 会先 `resume_session()` 再入队。
+  SSE 等 timeline 首次落地（`readySessionId`）后才订阅，避免历史 journal 被重放成重复消息；
+  预览态 composer 可直接输入，`Chat` 删掉 "This session is read-only" 横幅与 Resume 按钮。
+- **新建会话改纯前端草稿**：New session 对话框的 Start session 不再立刻建会话，只记录
+  cwd/title/preset；首条消息发送时才 `POST /api/ui/sessions` 创建（native deferred session），
+  未使用的草稿不落盘、不进入会话列表。
+- **native agent 启动失败**：detach 时 `_release_tool_services()` 对进程级
+  `NativeSubagentService` 调 `close()` 会把 `_closed` 永久置 True，之后所有 subagent/team
+  调用都报 "native subagent service is closed"，直到重启宿主。改为 `cancel_all()` +
+  `bind_session(None)` + `bind_parent(None)`，不再 close；team 仍用 `stop()`（其
+  `bind_session` 会重置恢复标记）。另修 web 把 provider 字符串传给 subagent 管理器导致的
+  "native subagent service requires a provider"：attach 时用 `services.llm.native_provider(name)`
+  解析成 provider 对象。
+- **空会话直接删除**（用户要求「空会话没有价值，直接删除」）：session 层新增锁安全的
+  `delete_session_log()`（`src/deeppyro/session/schema.py`）、`delete_native_session()`
+  （`session/native_query.py`）、`NativeSessionControl.delete()`（`session/native_control.py`）
+  与 `SessionsPlugin.native_delete()`（`builtin/sessions.py`）；web `list_sessions()` 对
+  非 attached、`turns==0` 且日志里既无 `user.message` 也无 `turn.*` 的会话物理删除，
+  锁被其它进程占用时跳过、含 user message 的 crashed send 只隐藏，`_detach` 时也清掉
+  从未使用的 draft。team/subagent 子会话（`origin=subagent`）同时从列表过滤。
+  用户真实 home 已清掉 91 个历史空会话文件。
+
+验证：`pytest tests/web` 225 passed（生命周期修复后）；`pytest tests/web tests/session`
+377 passed（删除空会话后，新增 `tests/session/test_native_control.py` 2 条、
+`tests/web/test_ui_api.py` 3 条、`tests/web/test_ui_team.py` 1 条）；`ruff check`/
+`format --check` 干净；`pnpm typecheck` 干净、Vitest 29 passed、`pnpm build` 更新
+`src/deeppyro/web/ui/static/`；CDP 驱动真实宿主验证点击预览不切换 active、预览态发送后
+激活并回复、草稿首次发送才建会话、detach 前后 subagent 均成功、镜像目录空会话被删。
+
+## 2026-11-21 第六轮：agent team 改为会话级开关（已完成）
+
+第四轮把隐藏的 team preset 暴露成新建会话选项，用户指出方向错了：「team 应该是在 session
+内部开启的，preset 只针对 agent 预设」。这一轮把 team 从「选 preset 建会话」改成「每个会话
+常驻的开关」，只动 `web/` 与 `src/deeppyro/web/`，TUI 仍是会话内 `/team on|off`（未改）。
+
+- **后端**（`src/deeppyro/web/`）：`bootstrap` 的 `presets` 恢复为只列非隐藏 preset
+  （team 不再出现在 New session 里）；`SessionBinding` 新增 `team_previous_preset` 记住
+  进入前的 agent preset；新增 `WebSessionHost.set_session_team(session_id, enabled)` 与
+  `_rebuild_agent()`——用隐藏 team preset 重建同一个 native session 的 host（不 aclose 旧
+  host，否则会关掉共享 session，与 TUI `_attach` 同规则），切换后调用
+  `_configure_tool_services()` 重新绑定 TeamService/SubagentService，team 模式再
+  `_restore_team()`；关闭时先检查 live 成员（spawning/running/idle）再 `team.stop()`，
+  恢复进入前 preset（默认 standard）。选择通过既有 `agent-preset/selected` 事件持久化，
+  resume 时由 fold 的 `state.preset` 读回。新增 `POST /api/ui/sessions/{id}/team`
+  （body `{enabled: bool}`）；运行中/有排队消息或仍有 live 成员时 409，非法 body 400。
+  `/team` 命令改为 `on|off|status`，无参输出摘要，不再返回「请用 Team preset」的提示。
+- **前端**：`TeamBar` 从「只读状态条」改成常驻开关行——Off 显示 `Enable`，On 显示
+  `N/M members · K running · d/t tasks` 与「Turn off agent team」（运行中或仍有 live 成员
+  时禁用并在 title/note 里说明原因，pending 显示 `Switching…`）；`api.setSessionTeam()`
+  调用新端点，`App.tsx` 用 `teamBusy` 处理 pending，成功后用返回快照更新并重新加载
+  timeline；轮询条件从「team preset 会话」改为「team 已开启」（timeline 的
+  `state.preset.mode === 'team'`）每 2 秒刷新成员/任务。
+- **验证**：`pytest tests/web` 约 238 passed（`test_ui_team.py` 新增开关/幂等/busy 拒绝/
+  live 成员拒绝/恢复 preset/预览会话自动 attach/POST 校验等 7 条，并改掉 bootstrap 与
+  `/team` 的旧断言）；`ruff check`/`format --check` 干净；`pnpm typecheck` 干净、
+  Vitest 29 passed、`pnpm build` 更新 `src/deeppyro/web/ui/static/`。CDP 真实宿主验证：
+  新建会话 preset 列表无 team；普通会话点 Enable 后 team 工具可用、bar 出现成员/任务、
+  `/team status` 正确；刷新后保持 On；`Turn off` 后 subagent 恢复可用；运行中或仍有
+  running 成员时 Turn off 被禁用；控制台无 error。
+- **已知剩余**：TeamBar 仍只读（不能操作成员/任务，写操作由 agent 用 team 工具完成）；
+  切换在运行中/排队/live 成员时被拒绝，没有强制中断入口；团队仍受单 attached session 约束。
 
 ## P0 — 已完成
 
